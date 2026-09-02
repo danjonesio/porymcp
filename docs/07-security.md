@@ -148,10 +148,10 @@
   scope is not.
 - A blocked `tools/call` never reaches the upstream and never presents the
   real credential. It answers `200` with the JSON-RPC error
-  `-32602 "tool blocked"` against the request's own id, and writes an audit row with
-  `status = "blocked"`, `error_message` naming which rule rejected it. A blocked
+  `-32602 "tool blocked"` against the request's own id. A blocked
   *notification* (a `tools/call` sent with no id, so there is nothing to
-  correlate) answers `202` with an empty body. Before
+  correlate) answers `202` with an empty body. Both write an audit row with
+  `status = "blocked"`, `error_message` naming which rule rejected it. Before
   v0.1 a `tool_filter` only hid tools from the aggregate `tools/list`, so a
   client that already knew a name could still call it; a filter written then
   is enforced now.
