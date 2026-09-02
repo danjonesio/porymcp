@@ -395,7 +395,7 @@ export default function UpstreamsPage() {
                       <Strong>
                         The MCP endpoint, not the home page.
                       </Strong>{' '}
-                      Usually the address ends in <span className="font-mono wrap-break-word">/mcp</span> — copy it from
+                      Usually the address ends in <span className="font-mono wrap-break-word">/mcp</span>. Copy it from
                       the server’s documentation or from a working Claude Code or Cursor config.
                     </p>
                     <p>

@@ -71,7 +71,7 @@ export default function GroupsPage() {
         </Button>
       </div>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
-        Bundle several upstreams into one shape that an agent can call through a single key.
+        A group combines several upstreams so one virtual key can reach all of them.
       </p>
       {error ? <p className="mt-4 text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400">{error}</p> : null}
 

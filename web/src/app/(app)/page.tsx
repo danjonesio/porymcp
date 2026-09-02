@@ -43,7 +43,7 @@ function CredentialNotice({ stats }: { stats: Stats }) {
             <span className="font-mono">ENCRYPTION_KEY</span>.
           </p>
           <p className="mt-1 max-w-[72ch] text-base/7 text-pretty text-zinc-600 sm:text-sm/6 dark:text-zinc-400">
-            PoryMCP refuses to call {bad === 1 ? 'that upstream' : 'those upstreams'}. Restore the previous key — or set{' '}
+            PoryMCP refuses to call {bad === 1 ? 'that upstream' : 'those upstreams'}. Restore the previous key, or set{' '}
             <span className="font-mono">ENCRYPTION_KEY_PREVIOUS</span> to it, restart, run{' '}
             <span className="font-mono">porymcp rekey</span>, then restart without it. If the key is gone for good, re-enter
             each credential. See docs/07-security.md.
@@ -91,7 +91,7 @@ export default function OverviewPage() {
     <>
       <Heading>Overview</Heading>
       <Text className="mt-2 max-w-[56ch] text-pretty">
-        One clean form that can take whatever shape your agents need.
+        This page summarises your virtual keys, upstream connections and recent proxy activity.
       </Text>
       {error ? <Text className="mt-4 text-pink-600 dark:text-pink-400">{error}</Text> : null}
       <div role="status" aria-live="polite">

@@ -342,7 +342,7 @@ export default function VirtualKeysPage() {
                     <p>
                       <Strong>One combined server</Strong> gives
                       this key one entry. Every upstream’s tools land in a single list, each renamed to its slug, two
-                      underscores, then the tool name — <span className="font-mono wrap-break-word">search</span> on{' '}
+                      underscores, then the tool name: <span className="font-mono wrap-break-word">search</span> on{' '}
                       {example.name} becomes <span className="font-mono wrap-break-word">{example.slug}__search</span>.
                       The client switches them all on or off together.
                     </p>

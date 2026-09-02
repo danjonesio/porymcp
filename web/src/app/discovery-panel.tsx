@@ -212,7 +212,7 @@ export function DiscoveryPanel({
       {result ? (
         <Text className="mt-3">
           {surface === 'saved'
-            ? 'PoryMCP records when this upstream was last tested and whether it passed — the Status column shows it. The tool list itself is not stored; this is what the server said just now.'
+            ? 'PoryMCP records when this upstream was last tested and whether it passed. The Status column shows it. The tool list itself is not stored; this is what the server said just now.'
             : 'Discovered just now from the server; PoryMCP does not store this list.'}
         </Text>
       ) : null}
@@ -272,7 +272,7 @@ export function DiscoveryPanel({
                   count it actually has rather than a number it may not. */}
               {result.truncated ? (
                 <Text className="mt-3">
-                  {`Not every tool is listed — ${result.tool_count} shown. This server offers more.`}
+                  {`Not every tool is listed. ${result.tool_count} shown. This server offers more.`}
                 </Text>
               ) : null}
               {unnameable > 0 ? (
