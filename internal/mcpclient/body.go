@@ -20,8 +20,8 @@ var (
 
 // rpcPayload pulls the JSON-RPC documents out of an upstream response: the
 // body itself when it is JSON, and EVERY event's data when it is an event
-// stream. Which of them answers the request is the caller's decision — see
-// pickResponse — because a Streamable HTTP server is allowed to put its own
+// stream. Which of them answers the request is the caller's decision (see
+// pickResponse) because a Streamable HTTP server is allowed to put its own
 // notifications and requests on the POST's stream ahead of the response, and
 // logging and progress notifications are the common case.
 //
@@ -58,7 +58,7 @@ func rpcPayload(contentType string, body []byte) ([][]byte, error) {
 }
 
 // eventData returns the data of every event that carried any, in the order the
-// stream sent them. Every other field — comments, event:, id:, retry: — is
+// stream sent them. Every other field (comments, event:, id:, retry:) is
 // skipped, because the only thing wanted here is the JSON-RPC documents the
 // server put in the stream.
 //

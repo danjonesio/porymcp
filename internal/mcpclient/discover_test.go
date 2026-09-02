@@ -56,7 +56,7 @@ func TestDiscoverSendsInitializeFirst(t *testing.T) {
 			t.Errorf("%s carried session %q, want the one initialize minted", r.RPC, r.Session)
 		}
 		if r.Accept != AcceptMCP {
-			t.Errorf("%s sent Accept %q, want %q — the reference servers 406 anything else", r.RPC, r.Accept, AcceptMCP)
+			t.Errorf("%s sent Accept %q, want %q: the reference servers 406 anything else", r.RPC, r.Accept, AcceptMCP)
 		}
 	}
 }
@@ -79,7 +79,7 @@ func TestDiscoverReadsSSEFramedResponses(t *testing.T) {
 
 // A Streamable HTTP server may put its own notifications on the stream it
 // answers a POST with, ahead of the answer, and the reference servers do. The
-// answer is picked out of the whole stream — on initialize AND on tools/list —
+// answer is picked out of the whole stream (on initialize AND on tools/list)
 // rather than assumed to be the first event, and not a byte of the
 // notifications travels.
 func TestDiscoverSkipsNotificationsOnTheStream(t *testing.T) {
@@ -165,7 +165,7 @@ func TestDiscoverStatelessServer(t *testing.T) {
 	}
 }
 
-// The session PoryMCP opened is the session PoryMCP closes — at the upstream's
+// The session PoryMCP opened is the session PoryMCP closes, at the upstream's
 // own configured URL, never one derived from a response, and with the
 // credential, because a server needs auth to end its own session.
 func TestDiscoverEndsTheSession(t *testing.T) {
@@ -214,8 +214,8 @@ func TestDiscoverEndsTheSession(t *testing.T) {
 	})
 
 	// The one step between minting a session and the paging loop. A server
-	// that answers the notification with a 500 — a token that expired
-	// mid-handshake does exactly this — used to keep its session forever, and
+	// that answers the notification with a 500 (a token that expired
+	// mid-handshake does exactly this) used to keep its session forever, and
 	// every press of Refresh minted another.
 	t.Run("after the notification fails", func(t *testing.T) {
 		f := newFixture(t)
@@ -328,7 +328,7 @@ func TestDiscoverBoundsEmptyPageLoop(t *testing.T) {
 }
 
 // A cursor is only followed when it is a bounded JSON string. Anything else is
-// "there may be more, but not by a cursor this will send" — said out loud
+// "there may be more, but not by a cursor this will send", said out loud
 // rather than passed off as a complete catalogue, and never sent back.
 func TestDiscoverRefusesAnUnusableCursor(t *testing.T) {
 	for name, cursor := range map[string]any{
@@ -351,7 +351,7 @@ func TestDiscoverRefusesAnUnusableCursor(t *testing.T) {
 				t.Errorf("tool_count=%d, want the page that did arrive", got.ToolCount)
 			}
 			if n := strings.Count(strings.Join(f.rpcCalls(), " "), "tools/list"); n != 1 {
-				t.Errorf("%d tools/list calls, want 1 — an unusable cursor is not sent back", n)
+				t.Errorf("%d tools/list calls, want 1: an unusable cursor is not sent back", n)
 			}
 		})
 	}
@@ -371,7 +371,7 @@ func TestDiscoverStopsOnRepeatedCursor(t *testing.T) {
 		t.Fatalf("ok=%v truncated=%v, want ok and truncated", got.OK, got.Truncated)
 	}
 	if n := strings.Count(strings.Join(f.rpcCalls(), " "), "tools/list"); n != 2 {
-		t.Errorf("%d tools/list calls, want 2 — the second repeat is the stop", n)
+		t.Errorf("%d tools/list calls, want 2: the second repeat is the stop", n)
 	}
 }
 
@@ -773,7 +773,7 @@ func TestDiscoverTimesOut(t *testing.T) {
 	// The shipped budget, pinned before it is shortened: the sentence an
 	// operator reads names it.
 	if discoverBudget != 10*time.Second {
-		t.Fatalf("discoverBudget=%v, want 10s — the shipped whole-sequence budget", discoverBudget)
+		t.Fatalf("discoverBudget=%v, want 10s: the shipped whole-sequence budget", discoverBudget)
 	}
 	// A package var, mutated here and read by TestDiscoverBoundsEmptyPageLoop.
 	// Safe only because NOTHING in this package calls t.Parallel: the first

@@ -222,7 +222,7 @@ func (f *fixture) page(cursor string) map[string]any {
 }
 
 // Errorf and a 500, never Fatalf: these run on the SERVER's goroutine, and
-// t.Fatal outside the test goroutine Goexits the wrong one — the test then
+// t.Fatal outside the test goroutine Goexits the wrong one, the test then
 // hangs until the package timeout instead of printing a line.
 func (f *fixture) writeResult(w http.ResponseWriter, result any) {
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
@@ -267,8 +267,8 @@ func (f *fixture) writeFramed(w http.ResponseWriter, status int, body []byte) {
 	}
 }
 
-// stream is the event stream one answer goes out as: the answer alone, or —
-// when the fixture is noisy — the notifications a real server sends first.
+// stream is the event stream one answer goes out as: the answer alone, or
+// (when the fixture is noisy) the notifications a real server sends first.
 func (f *fixture) stream(body []byte) []byte {
 	if !f.noisy {
 		return sseFrame(body)

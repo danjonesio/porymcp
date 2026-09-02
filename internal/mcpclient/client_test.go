@@ -28,13 +28,13 @@ func TestClientRefusesRedirectsByConstruction(t *testing.T) {
 		t.Fatal("the client has no CheckRedirect; Go follows up to ten redirects with the real credential")
 	}
 	if err := c.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {
-		t.Fatalf("CheckRedirect returned %v, want http.ErrUseLastResponse — any other error is wrapped in a *url.Error carrying the raw Location", err)
+		t.Fatalf("CheckRedirect returned %v, want http.ErrUseLastResponse: any other error is wrapped in a *url.Error carrying the raw Location", err)
 	}
 	if _, ok := c.Transport.(UpstreamTransport); !ok {
-		t.Fatalf("transport is %T, want UpstreamTransport — without it a Location Go cannot parse reaches an operator verbatim", c.Transport)
+		t.Fatalf("transport is %T, want UpstreamTransport: without it a Location Go cannot parse reaches an operator verbatim", c.Transport)
 	}
 	if c.Timeout != 10*time.Second {
-		t.Errorf("Timeout=%v, want the option's value — the timeout is the only knob", c.Timeout)
+		t.Errorf("Timeout=%v, want the option's value: the timeout is the only knob", c.Timeout)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestClientDoesNotWeakenTLS(t *testing.T) {
 		t.Fatal("transport is not an UpstreamTransport")
 	}
 	if tr.Next != http.DefaultTransport {
-		t.Fatalf("UpstreamTransport.Next is %T, want http.DefaultTransport — a replacement transport is where a TLSClientConfig would arrive", tr.Next)
+		t.Fatalf("UpstreamTransport.Next is %T, want http.DefaultTransport: a replacement transport is where a TLSClientConfig would arrive", tr.Next)
 	}
 }
 
@@ -102,13 +102,13 @@ func TestSendRefusesEveryRedirectClass(t *testing.T) {
 					t.Errorf("err=%q, want the host it pointed at", err)
 				}
 				if strings.Contains(err.Error(), "REDIRECT_QUERY_MARKER") || strings.Contains(err.Error(), "/redirected") {
-					t.Errorf("err=%q carries the Location's path or query — an OAuth code lives there", err)
+					t.Errorf("err=%q carries the Location's path or query: an OAuth code lives there", err)
 				}
 			})
 		}
 	}
 	if n := targetHits.Load(); n != 0 {
-		t.Fatalf("the redirect target was called %d times, want 0 — the credential must never reach a host an upstream named", n)
+		t.Fatalf("the redirect target was called %d times, want 0: the credential must never reach a host an upstream named", n)
 	}
 }
 
@@ -163,8 +163,8 @@ var packageClients = map[string]bool{
 // ownHTTPClient reports, as "line N: shape", every place in one file's source
 // that builds an http.Client or reaches for the package-level one.
 //
-// It parses rather than greps. The substring this used to look for —
-// "&http.Client{" — matched a mention in a comment and missed every real
+// It parses rather than greps. The substring this used to look for
+// ("&http.Client{") matched a mention in a comment and missed every real
 // bypass: new(http.Client), a value literal without the &, var c http.Client,
 // an import alias, an extra space before the brace, and http.DefaultClient,
 // which needs no literal at all.
@@ -179,9 +179,9 @@ func ownHTTPClient(name, src string) ([]string, error) {
 		found = append(found, fmt.Sprintf("line %d: %s", fset.Position(pos).Line, what))
 	}
 
-	// The local name net/http is bound to in THIS file, so that an alias — or
+	// The local name net/http is bound to in THIS file, so that an alias (or
 	// a dot-import, which puts Client and DefaultClient in scope with no
-	// qualifier at all — cannot walk past the check.
+	// qualifier at all) cannot walk past the check.
 	locals := map[string]bool{}
 	for _, spec := range file.Imports {
 		if spec.Path.Value != `"net/http"` {

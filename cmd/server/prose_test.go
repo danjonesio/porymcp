@@ -126,7 +126,6 @@ var notYetRewritten = []string{
 	"internal/config/",
 	"internal/credential/",
 	"internal/crypto/",
-	"internal/mcpclient/",
 	"internal/models/",
 	"internal/webutil/",
 	"cmd/server/",

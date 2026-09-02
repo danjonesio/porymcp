@@ -24,7 +24,7 @@ const (
 	// is about 1 MiB, so 2 MiB is generous for the largest legitimate answer.
 	discoverBodyBytes = 2 << 20
 	// maxTools is how many tools are reported. Past it the catalogue is
-	// truncated rather than refused — an operator with 600 tools on one server
+	// truncated rather than refused, an operator with 600 tools on one server
 	// still wants to see the first 500 and be told there are more.
 	maxTools = 500
 	// maxPages bounds the paging loop, which maxTools does not: a server
@@ -49,8 +49,8 @@ const (
 	maxCursorBytes          = 1 << 10
 )
 
-// discoverBudget is the whole sequence's deadline — initialize, the
-// notification, every tools/list page — not a per-request one, which would let
+// discoverBudget is the whole sequence's deadline (initialize, the
+// notification, every tools/list page) not a per-request one, which would let
 // fifty pages cost fifty times as much. It is a var only so a timing test can
 // shorten it; TestDiscoverTimesOut pins the shipped value at 10s first.
 var discoverBudget = 10 * time.Second
@@ -97,7 +97,7 @@ const (
 // Annotations is the MCP tool-annotation block, decoded into a fixed shape
 // rather than carried as raw JSON: annotations are upstream-controlled and
 // PORM-95 will act on these hints, so what arrives here has to be five known
-// fields and not an arbitrary document. Absent hints stay absent — a nil
+// fields and not an arbitrary document. Absent hints stay absent, a nil
 // *bool is "the server said nothing", which is not the same as false.
 type Annotations struct {
 	Title           string `json:"title,omitempty"`
@@ -115,8 +115,8 @@ type Annotations struct {
 type Tool struct {
 	// Name is the tool's name exactly as its upstream advertises it.
 	Name string `json:"name"`
-	// ScopedName is the identity a rule is written against — "{slug}__{name}"
-	// — and is present only when the upstream has a stored, valid slug. An
+	// ScopedName is the identity a rule is written against ("{slug}__{name}")
+	// and is present only when the upstream has a stored, valid slug. An
 	// unsaved payload has none, and inventing one would hand an operator a
 	// deny rule naming a tool that will be called something else once saved.
 	ScopedName           string       `json:"scoped_name,omitempty"`
@@ -139,15 +139,15 @@ type Info struct {
 // Every string in it is either PoryMCP's own or a bounded upstream string that
 // exists to be read: a tool's name, title and description, the server's name
 // and version, the protocol version, and UpstreamMessage. No header value and
-// no raw body byte reaches any field — Mcp-Session-Id is used and never
-// returned — and Error is built from the closed set of templates in this file.
+// no raw body byte reaches any field (Mcp-Session-Id is used and never
+// returned) and Error is built from the closed set of templates in this file.
 type Discovery struct {
 	OK              bool   `json:"ok"`
 	LatencyMS       int    `json:"latency_ms"`
 	ProtocolVersion string `json:"protocol_version,omitempty"`
 	ServerInfo      *Info  `json:"server_info,omitempty"`
 	Slug            string `json:"slug,omitempty"`
-	// ToolCount is len(Tools) — how many tools are SHOWN, after unnameable
+	// ToolCount is len(Tools), how many tools are SHOWN, after unnameable
 	// ones are dropped and after truncation. It is at most 500, and on a
 	// catalogue cut short by the page cap or by a repeated cursor it is
 	// however many arrived first; it is never the upstream's true total,
@@ -170,8 +170,8 @@ type Discovery struct {
 }
 
 // fail stamps a refusal on a Discovery and returns it. Failures after
-// initialize keep what was already learned — protocol version, server info,
-// latency — because "initialize worked, tools/list did not" is the most useful
+// initialize keep what was already learned (protocol version, server info,
+// latency) because "initialize worked, tools/list did not" is the most useful
 // thing an operator can be told.
 func (d Discovery) fail(msg string) Discovery {
 	d.OK = false
@@ -189,7 +189,7 @@ func (d Discovery) fail(msg string) Discovery {
 // sentence CheckCredential's refusal ever produces.
 const errNeedsCredential = "this auth type needs a credential; add one or choose None"
 
-// Failed is a Discovery for a refusal decided before this package is reached —
+// Failed is a Discovery for a refusal decided before this package is reached,
 // the management API's "the stored credential will not decrypt", which must
 // stop before any request goes out. Same shape, same empty tool array.
 func Failed(msg string) Discovery {
@@ -218,7 +218,7 @@ func New() *Client {
 // every cursor, then DELETE to end the session it opened.
 //
 // It is a pure function of its arguments. plainAuth is the DECRYPTED
-// credential — this package holds no key and reads no config, which is what
+// credential, this package holds no key and reads no config, which is what
 // lets both internal/proxy and internal/api use it.
 func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth json.RawMessage) Discovery {
 	out := Discovery{Tools: []Tool{}}
@@ -246,7 +246,7 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 		return out.fail("url must be an absolute http or https URL")
 	}
 	// The one variable ever interpolated into an error. A host that is not
-	// plain ASCII is not written down at all — see HostSafe.
+	// plain ASCII is not written down at all, see HostSafe.
 	host := "the upstream"
 	if HostSafe(u.Host) {
 		host = bound(u.Host, MaxErrorBytes)
@@ -282,7 +282,7 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	// outbound requests, so it is checked before it is trusted with that:
 	// net/http accepted a 100 KB value in a probe, and a CRLF in it makes Do
 	// fail with the header NAME quoted, which would be misread as a transport
-	// failure. Absent is not a failure — a stateless server sends none, and
+	// failure. Absent is not a failure, a stateless server sends none, and
 	// then PoryMCP sends none and skips the DELETE.
 	if sid := res.header.Get("Mcp-Session-Id"); sid != "" {
 		if !visibleASCII(sid, maxSessionIDBytes) {
@@ -293,7 +293,7 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 		}
 		p.session = sid
 		// Deferred the moment there IS a session, so every later failure ends
-		// it — including the notification's, which sits between opening a
+		// it, including the notification's, which sits between opening a
 		// session and the paging loop and used to leak one per press of
 		// Refresh. It no-ops on an empty session, it runs after LatencyMS is
 		// taken so a slow teardown never inflates the number an operator
@@ -470,8 +470,8 @@ type rpcEnvelope struct {
 // answers the request wantID was put on.
 //
 // A Streamable HTTP server may write JSON-RPC notifications and requests of
-// its own onto the stream it answers a POST with — notifications/message and
-// progress notifications are the common case — and they are allowed to come
+// its own onto the stream it answers a POST with (notifications/message and
+// progress notifications are the common case) and they are allowed to come
 // first. Reading only the first event reported such a server as one that
 // answered with no result, which is how a client comes to work against a
 // fixture and fail against the reference implementation.
@@ -537,7 +537,7 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 	payloads, perr := rpcPayload(hdr.Get("Content-Type"), raw)
 	env, decoded := pickResponse(payloads, rpcID(step))
 	if perr == nil && !decoded && len(payloads) > 1 {
-		// Events arrived and not one of them answered what was sent — the same
+		// Events arrived and not one of them answered what was sent, the same
 		// news, for an operator, as a stream with no data event at all.
 		perr = errNoEvent
 	}
@@ -590,7 +590,7 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 // The credential goes on FIRST and the three protocol headers after it, so
 // that PoryMCP's own half of the conversation wins whatever an auth_config
 // asks for. sendableHeaderName already refuses those three names, so this is
-// belt and braces — but the order is the half that cannot be got round, and
+// belt and braces, but the order is the half that cannot be got round, and
 // with it the other way an auth_config of {"headers":{"Mcp-Session-Id":"…"}}
 // handed the upstream a session id PoryMCP never minted, on every request.
 // ApplyAuth clears the three header names a credential can arrive in before it
@@ -617,10 +617,10 @@ func (p *probe) setHeaders(req *http.Request) error {
 //
 // It goes to the upstream's own configured URL, never to anything derived from
 // a response, and carries the credential and the session id like every other
-// request. 404 and 405 are normal answers — plenty of servers do not implement
-// it — so every outcome is ignored. It is skipped when the CALLER's context
-// was cancelled, because then the operator's browser has already gone and
-// there is nobody left to be slow for.
+// request. 404 and 405 are normal answers (plenty of servers do not implement
+// it) so every outcome is ignored. It is skipped when the CALLER's context was
+// cancelled, because then the operator's browser has already gone and there is
+// nobody left to be slow for.
 func (p *probe) endSession(ctx context.Context) {
 	if p.session == "" {
 		return
@@ -678,7 +678,7 @@ func (p *probe) transportFailure(step string, err error) string {
 	if errors.As(err, &verify) {
 		return "tls handshake with " + p.host + " failed"
 	}
-	// The rest of the TLS failures keep no type through *url.Error — a
+	// The rest of the TLS failures keep no type through *url.Error, a
 	// protocol version mismatch, a bad record header, an https request to a
 	// plaintext port. The text is read to classify and never to report.
 	if msg := err.Error(); strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:") {
@@ -717,10 +717,10 @@ func statusFailure(status int, step string) (string, bool) {
 //
 // TODO(PORM-79): refusing loopback, link-local and cloud-metadata addresses
 // does NOT belong in this function. A check that resolves the host here and
-// inspects the answer is defeated by the second resolution at dial time — Go
-// re-resolves, which is classic DNS rebinding — so the real block has to sit
-// on the transport's DialContext/Control hook inside NewHTTPClient, where it
-// can read the peer address the connection actually got. This is the seam that
+// inspects the answer is defeated by the second resolution at dial time (Go
+// re-resolves, which is classic DNS rebinding) so the real block has to sit on
+// the transport's DialContext/Control hook inside NewHTTPClient, where it can
+// read the peer address the connection actually got. This is the seam that
 // says the decision has one owner, not the decision.
 func CheckTarget(u *url.URL) error {
 	switch {
@@ -738,8 +738,8 @@ func CheckTarget(u *url.URL) error {
 
 // authHeadersSendable reports whether every header name the stored auth_config
 // asks for is one net/http will actually send. A name that is not a token, or
-// one of the four the transport owns, makes Do fail with the name quoted back
-// — late, and in a string this package must not repeat.
+// one of the four the transport owns, makes Do fail with the name quoted back,
+// late, and in a string this package must not repeat.
 func authHeadersSendable(authType string, raw json.RawMessage) bool {
 	switch authType {
 	case models.AuthHeader, models.AuthAPIKey, models.AuthCustom:
@@ -749,8 +749,8 @@ func authHeadersSendable(authType string, raw json.RawMessage) bool {
 	// The error is DISCARDED here on purpose: encoding/json populates every
 	// field it decoded before it hits the failure, so
 	// {"header":"X-Bad\r\nInject","headers":123} leaves a header name behind.
-	// This check answers a different question from ApplyAuth — are the NAMES
-	// sendable — and runs first, so a bad name gets its own sentence instead
+	// This check answers a different question from ApplyAuth (are the NAMES
+	// sendable) and runs first, so a bad name gets its own sentence instead
 	// of CheckCredential's generic "needs a credential"; ApplyAuth itself now
 	// refuses a value that does not decode (ErrNoCredential), which is why
 	// that one never reaches the network either way.
@@ -779,7 +779,7 @@ func authHeadersSendable(authType string, raw json.RawMessage) bool {
 // point of the list is that it is closed, and Proxy-Authorization is a
 // credential-shaped header an operator could otherwise aim at any upstream.
 // Accept, Mcp-Session-Id and MCP-Protocol-Version are PoryMCP's own half of
-// the conversation — a stored auth_config must not get to choose what Accept
+// the conversation, a stored auth_config must not get to choose what Accept
 // PoryMCP offers, or hand an upstream a session id PoryMCP never minted.
 func sendableHeaderName(name string) bool {
 	for i := 0; i < len(name); i++ {
@@ -827,8 +827,8 @@ func rpcID(step string) string {
 }
 
 // readCursor accepts a nextCursor only when it is a bounded JSON string. ok is
-// false for anything else — a number, an object, a megabyte of text — which
-// the caller treats as "there may be more, but not by a cursor this will send".
+// false for anything else (a number, an object, a megabyte of text) which the
+// caller treats as "there may be more, but not by a cursor this will send".
 func readCursor(raw json.RawMessage) (string, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return "", true
@@ -849,18 +849,18 @@ func readCursor(raw json.RawMessage) (string, bool) {
 // information there, and invalid UTF-8 arrives as one), and the ends are
 // trimmed. One line out, always.
 //
-// It is applied to every upstream string that reaches a response — a tool's
+// It is applied to every upstream string that reaches a response (a tool's
 // description and title, the annotations' title, the server's name and
-// version, the protocol version, and the upstream's own error message —
-// because an operator reading the API with `curl | jq -r` gets those bytes
-// raw, and \x1b[31m from a server nobody at PoryMCP controls is somebody
-// else's escape sequence in an operator's terminal. A tool's NAME needs none
-// of this: models.UsableToolName already refuses every one of these characters
+// version, the protocol version, and the upstream's own error message) because
+// an operator reading the API with `curl | jq -r` gets those bytes raw, and
+// \x1b[31m from a server nobody at PoryMCP controls is somebody else's escape
+// sequence in an operator's terminal. A tool's NAME needs none of this:
+// models.UsableToolName already refuses every one of these characters
 // outright, because a name is an identity a rule is written against.
 //
-// It deliberately does NOT touch the invisible and bidi class — U+202E,
-// U+200B, U+FEFF, U+2066 and the rest. Those cannot escape the element they
-// are rendered in (every one carries dir="ltr") and flagging them is PORM-83's
+// It deliberately does NOT touch the invisible and bidi class, U+202E, U+200B,
+// U+FEFF, U+2066 and the rest. Those cannot escape the element they are
+// rendered in (every one carries dir="ltr") and flagging them is PORM-83's
 // job, which needs the whole run to say anything useful about it.
 func scrub(s string) string {
 	var b strings.Builder
@@ -888,7 +888,7 @@ func sanitiseMessage(s string) string {
 }
 
 // visibleASCII reports whether s is at most max bytes of printable ASCII
-// (0x21-0x7E) — what the MCP spec says a session id is, and what a header
+// (0x21-0x7E), what the MCP spec says a session id is, and what a header
 // value may hold without making net/http refuse the request.
 func visibleASCII(s string, max int) bool {
 	if s == "" || len(s) > max {
