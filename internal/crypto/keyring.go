@@ -26,7 +26,7 @@ const fingerprintLabel = "porymcp-key-fp"
 const fingerprintLen = 16
 
 // ErrUnknownKey reports a v1 ciphertext whose fingerprint names a key this
-// process does not hold — the distinguishable "wrong key" outcome, as opposed
+// process does not hold, the distinguishable "wrong key" outcome, as opposed
 // to ErrInvalidCipher for bytes that no key would open. The text carries no
 // fingerprint: it can reach an audit row, and audit error_message is not
 // redacted.
@@ -117,7 +117,7 @@ func (k Keyring) Open(encoded string) ([]byte, string, error) {
 	return nil, "", ErrInvalidCipher
 }
 
-// byFingerprint selects the key fp names — the current key first, then the
+// byFingerprint selects the key fp names, the current key first, then the
 // previous keys in the order they were given.
 func (k Keyring) byFingerprint(fp string) ([]byte, bool) {
 	for _, key := range k.all() {

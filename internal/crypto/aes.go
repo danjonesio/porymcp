@@ -49,7 +49,7 @@ func RandomKey() ([]byte, error) {
 // EncryptLegacy seals plaintext in the pre-PORM-52 form: base64(nonce ||
 // ciphertext), no version prefix, no additional authenticated data. It exists
 // so tests can seed the rows a database written by an older build holds;
-// nothing in production may call it — every production write goes through
+// nothing in production may call it, every production write goes through
 // Keyring.Seal, which always writes the v1 form. Keyring.Open reads both.
 func EncryptLegacy(key, plaintext []byte) (string, error) {
 	sealed, err := seal(key, plaintext, nil)

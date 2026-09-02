@@ -36,7 +36,7 @@ func TestSealAlwaysWritesV1(t *testing.T) {
 }
 
 // TestAAD covers acceptance criterion 1's middle clause: the same ciphertext
-// relabelled with another fingerprint fails, distinguishably — ErrUnknownKey
+// relabelled with another fingerprint fails, distinguishably, ErrUnknownKey
 // when the label names no held key, ErrInvalidCipher when it names a held key
 // that did not seal it.
 func TestAAD(t *testing.T) {
