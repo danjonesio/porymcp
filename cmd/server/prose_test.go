@@ -323,6 +323,14 @@ func TestCheckFile_EmDashInsideFence(t *testing.T) {
 	}
 }
 
+// Inside a fence the emoji rule still applies, as the guide says.
+func TestCheckFile_EmojiInsideFence(t *testing.T) {
+	vs := mustCheck(t, "docs/x.md", "```\nok \u2718\n```\n")
+	if got, want := rules(vs), "2:4 emoji"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 // A quotations line is exempt from the emoji check and nothing else.
 func TestCheckFile_Emoji(t *testing.T) {
 	vs := mustCheck(t, "docs/x.md", "ok \u2718 bad\nface \U0001F600\n")

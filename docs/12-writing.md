@@ -14,7 +14,7 @@ Text in this repository is read by people: the README on GitHub, the docs, the O
 |---|---|
 | Real upstream URLs and API keys stay hidden [em-dash] agents only see the proxy. | Real upstream URLs and API keys stay hidden. Agents only see the proxy. |
 
-2. **An arrow (U+2192) in prose.** Write "then", or put a diagram in a fenced block, where arrows are allowed. Inside a fence only the dash rules apply.
+2. **An arrow (U+2192) in prose.** Write "then", or put a diagram in a fenced block, where arrows are allowed. Inside a fence, arrows and banned words are not checked; dashes and emoji still are.
 
 | Before | After |
 |---|---|
@@ -22,7 +22,7 @@ Text in this repository is read by people: the README on GitHub, the docs, the O
 
 3. **An emoji or dingbat** (U+1F000 to U+1FAFF, U+2600 to U+27BF, U+2B00 to U+2BFF, U+FE0F). Write the word.
 
-4. **A word from the banned list** (`bannedWords` in `cmd/server/prose_test.go`), matched case-insensitively on word boundaries. The list is the source of truth and this page does not repeat it. It holds marketing adjectives (seamless, robust, powerful, polished, first-class, beautiful, elegant), intensifiers (dead-simple, super simple, trivial, zero-config, out of the box), verbs borrowed from sales copy (unlock, empower, streamline, leverage, delve) and filler (simply, basically, essentially, note that, of course, obviously, let's). In Go files the word check covers comments only, because identifiers such as `Unlock` are not prose. In every other file it covers the whole file.
+4. **A word from the banned list** (`bannedWords` in `cmd/server/prose_test.go`), matched case-insensitively on word boundaries. The list is the source of truth and this page does not repeat it. It holds marketing adjectives (seamless, robust, powerful, polished, first-class, beautiful, elegant), intensifiers (dead-simple, super simple, trivial, zero-config, out of the box), verbs borrowed from sales copy (unlock, empower, streamline, leverage, delve) and filler (simply, basically, essentially, note that, of course, obviously, let's). In Go files the word check covers comments only, because identifiers such as `Unlock` are not prose. In every other file it covers the whole file, except inside a Markdown fence.
 
 | Before | After |
 |---|---|
