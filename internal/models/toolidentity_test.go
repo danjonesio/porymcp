@@ -15,8 +15,8 @@ var slugCorpus = []string{
 	"550e8400-e29b-41d4-a716-44665544000",
 }
 
-// toolNameCorpus is the awkward half. A tool name is opaque — MCP constrains
-// nothing about it — so the interesting names are the ones that hold the
+// toolNameCorpus is the awkward half. A tool name is opaque (MCP constrains
+// nothing about it) so the interesting names are the ones that hold the
 // separator themselves or lead with an underscore, which is exactly where a
 // split at the last separator, or a trim, would recover the wrong pair.
 var toolNameCorpus = []string{
@@ -79,7 +79,7 @@ func TestValidToolIdentity(t *testing.T) {
 		"alpha___search", // the tool's own name is "_search"
 		"gh__a__b",       // the tool's own name holds the separator
 		// Syntax is not membership. This is true because "mcp" is a
-		// well-formed slug, not because any upstream has it — no upstream may,
+		// well-formed slug, not because any upstream has it, no upstream may,
 		// since "mcp" is reserved. The check reads no store on purpose, so a
 		// caller cannot use it to learn which slugs a group holds.
 		"mcp__server__tool",
@@ -175,8 +175,8 @@ func TestMatchToolEntry(t *testing.T) {
 		{"unscoped name holding the separator", "__x", ToolIdentity{"docs", "__x"}, false, true},
 		{"scoped name holding the separator", "gh__mcp__fetch", ToolIdentity{"gh", "mcp__fetch"}, false, true},
 
-		// A ToolIdentity with no slug — the zero value, or a policy that never
-		// learned which member it stands on — can satisfy no scoped entry.
+		// A ToolIdentity with no slug (the zero value, or a policy that never
+		// learned which member it stands on) can satisfy no scoped entry.
 		{"identity with no slug misses a scoped entry", "docs__search", ToolIdentity{"", "search"}, false, false},
 		{"identity with no slug misses a scoped prefix", "docs__", ToolIdentity{"", "search"}, true, false},
 		{"identity with no slug still matches unscoped", "search", ToolIdentity{"", "search"}, false, true},

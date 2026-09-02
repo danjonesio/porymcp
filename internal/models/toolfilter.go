@@ -23,19 +23,19 @@ const (
 //
 // The proxy matches a filter byte for byte: proxy.toolPolicy.blockedBy compares
 // ToolFilter.Mode against the literals "allow" and "deny", and compares an entry
-// against the tool's identity — the upstream's slug and the tool's own name —
-// with no trimming, case folding or Unicode normalisation. Anything else decodes
-// into a ToolFilter with no error at all and then matches nothing, which is
+// against the tool's identity (the upstream's slug and the tool's own name) with
+// no trimming, case folding or Unicode normalisation. Anything else decodes into
+// a ToolFilter with no error at all and then matches nothing, which is
 // indistinguishable from having no filter: {"mode":"Deny"}, {"mode":"deny "}
 // with a trailing space and {"mode":"deny","tool":[...]} with the key misspelt
-// are all silently permissive. While the filter was cosmetic that was
-// invisible. PORM-19 makes it load-bearing, so the same typo becomes a silent
-// authorization bypass.
+// are all silently permissive. While the filter was cosmetic that was invisible.
+// PORM-19 makes it load-bearing, so the same typo becomes a silent authorization
+// bypass.
 //
 // Both ends of a filter's life ask this one function the same question, so they
 // cannot disagree about what is enforceable: the management API rejects a
 // filter it could not enforce when a group is written, and the proxy fails
-// closed — blocking every tool on the group — when a filter already in the
+// closed (blocking every tool on the group) when a filter already in the
 // database does not validate when it is read.
 //
 // The API asks ValidateToolFilterWrite, which is this plus the rules that only
@@ -97,7 +97,7 @@ func ValidateToolFilter(raw json.RawMessage) error {
 //
 // The two are separate because the read side fails closed. A rule added there
 // would turn a filter already in the database into a group that blocks every
-// tool — and would leave the store's migration with no valid filter to rewrite,
+// tool, and would leave the store's migration with no valid filter to rewrite,
 // since it refuses to marshal a filter the validator rejects. So new rules land
 // here, where the operator is present, the entry can be quoted back, and the
 // worst outcome is a 400.
@@ -110,7 +110,7 @@ func ValidateToolFilter(raw json.RawMessage) error {
 //   - a scoped tools entry must name a tool after the separator, since tools
 //     entries are matched for equality and only a prefixes entry says something
 //     useful when it ends at the separator; and
-//   - under mode "allow" every entry must be scoped — see requireScoped.
+//   - under mode "allow" every entry must be scoped: see requireScoped.
 func ValidateToolFilterWrite(raw json.RawMessage) error {
 	if err := ValidateToolFilter(raw); err != nil {
 		return err
@@ -171,8 +171,8 @@ func ValidateToolList(field string, entries []string, groupTarget bool) error {
 // validateToolFilterEntries is the read side's entry check: the text rules
 // only, and deliberately not the {slug}__{tool} shape rules validateEntries
 // adds. A filter written before the identity grammar existed can hold entries
-// this accepts and ValidateToolFilterWrite would not — a head that is not a
-// slug, say — and the proxy blocks every tool on a group whose filter fails to
+// this accepts and ValidateToolFilterWrite would not (a head that is not a
+// slug, say) and the proxy blocks every tool on a group whose filter fails to
 // validate. Tightening this would take those groups offline rather than merely
 // correct an operator: the store's migration rewrites such entries, and the
 // management API refuses new ones.
@@ -186,7 +186,7 @@ func validateToolFilterEntries(field string, entries []string) error {
 }
 
 // validateEntries is every check an entry must pass on the way in, for a
-// group's filter and a virtual key's lists alike — one function, so the two
+// group's filter and a virtual key's lists alike, one function, so the two
 // cannot drift into accepting different things.
 //
 // allowEmptyRest is true only for tool_filter prefixes, the one list where a
@@ -218,10 +218,10 @@ func validateEntries(field string, entries []string, allowEmptyRest bool) error 
 // requireScoped rejects the entries of an allow rule that name no member.
 //
 // On a group, an allow entry is a promise that one named thing is permitted,
-// and an unscoped entry cannot keep it. The enforcement side skips it — reading
+// and an unscoped entry cannot keep it. The enforcement side skips it, reading
 // it as "this tool name on every member" would widen the rule to the whole
 // group, the opposite of what an operator narrowing access to one member's tool
-// meant — so an allow rule holding nothing else admits nothing and the key or
+// meant, so an allow rule holding nothing else admits nothing and the key or
 // group is silently dead. Far better to say so while the operator is here, with
 // the entry they sent and the spelling that works.
 func requireScoped(field string, entries []string) error {
@@ -240,12 +240,12 @@ func requireScoped(field string, entries []string) error {
 //
 // This is the text half of the entry rules and deliberately not the shape half.
 // Whether an entry is scoped, whether its head is a slug and whether anything
-// follows the separator are questions about what an entry means, and the
-// answers differ by list: a prefixes entry ending at the separator is every tool
-// on that member, where the same text in a tools list names a tool with no name.
-// Callers that judge an entry an operator is writing want validateEntries and
-// the errors it returns; callers reasoning about an entry already stored — the
-// store's migration — want this.
+// follows the separator are questions about what an entry means, and the answers
+// differ by list: a prefixes entry ending at the separator is every tool on that
+// member, where the same text in a tools list names a tool with no name. Callers
+// that judge an entry an operator is writing want validateEntries and the errors
+// it returns; callers reasoning about an entry already stored (the store's
+// migration) want this.
 func CleanToolEntry(e string) bool {
 	if e == "" {
 		return false
@@ -284,9 +284,9 @@ func validateEntryText(field string, i int, e string) error {
 			// never equal the name such a client sends.
 			return fmt.Errorf("%s[%d] %q is not valid UTF-8", field, i, e)
 		case unicode.IsSpace(r), unicode.IsControl(r):
-			// %q keeps a control character out of the operator's terminal
-			// and makes a trailing space — the typo that turns a deny into a
-			// no-op — visible.
+			// %q keeps a control character out of the operator's terminal and
+			// makes a trailing space (the typo that turns a deny into a no-op)
+			// visible.
 			return fmt.Errorf("%s[%d] %q contains whitespace or a control character; entries are matched byte for byte against the tool identity", field, i, e)
 		}
 	}
