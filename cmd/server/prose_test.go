@@ -117,9 +117,6 @@ var wordCheckExempt = map[string]bool{
 // Each rewrite commit deletes its entry; the last one deletes this variable
 // and notYetRewrittenPath, so the exemption cannot quietly regain an entry.
 var notYetRewritten = []string{
-	"web/fs.go",
-	"web/sourceguard_test.go",
-	"web/nodanger_test.go",
 	"docker-compose.yml",
 	"docker-compose.tls.yml",
 	"Dockerfile",
