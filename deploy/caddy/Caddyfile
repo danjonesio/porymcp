@@ -1,0 +1,9 @@
+localhost {
+	tls internal
+	reverse_proxy porymcp:8080 {
+		# Drop a client-supplied Forwarded so a trusted socket cannot
+		# inherit proto=/host= from the caller. Caddy still sets
+		# X-Forwarded-Proto / Host / For.
+		header_up -Forwarded
+	}
+}

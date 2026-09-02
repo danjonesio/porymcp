@@ -1,0 +1,69 @@
+# NOTICE
+
+PoryMCP is licensed under the MIT License (see `LICENSE`). Every source file
+in this repository, including the dashboard components under
+`web/src/components/`, is PoryMCP's own work under that licence.
+
+The built dashboard tracked under `web/out/` (and embedded in the binary and
+the Docker image) is a build product that redistributes, minified, the
+third-party packages below; their own notices do not survive the build, so
+this file carries them. The list is the dashboard's production dependency
+graph (`cd web && npm ls --omit=dev --all`, generated on 2026-09-01) plus the
+CSS toolchain (`tailwindcss`, `@tailwindcss/postcss`, whose output the
+shipped stylesheet is). Each copyright line is the one in the package's own
+licence file, except where noted (a composite of two files, or a package
+that ships no licence file). Packages marked *build-time only* run inside the
+build and do not ship in the bundle or the image. Inter is fetched at runtime
+from `https://rsms.me` and is not redistributed here.
+
+## MIT
+
+- `@floating-ui/core`, `@floating-ui/dom`, `@floating-ui/react`, `@floating-ui/react-dom`, `@floating-ui/utils` — Copyright (c) 2021-present Floating UI contributors
+- `@headlessui/react` — Copyright (c) 2020 Tailwind Labs
+- `@heroicons/react` — Copyright (c) Tailwind Labs, Inc.
+- `@img/colour` — Copyright (c) 2012 Heather Arthur (build-time only)
+- `@next/env` — Copyright (c) Next.js Team (build-time only)
+- `@next/swc-linux-x64-gnu`, `@next/swc-linux-x64-musl` — Vercel, Inc. (build-time only)
+- `@tanstack/react-virtual`, `@tanstack/virtual-core` — Copyright (c) 2021-present Tanner Linsley
+- `aria-hidden` — Copyright (c) 2017 Anton Korzunov
+- `client-only` — Vercel, Inc.
+- `clsx` — Copyright (c) Luke Edwards
+- `framer-motion`, `motion`, `motion-dom`, `motion-utils` — Copyright (c) 2018 Framer B.V. (`framer-motion`) and Copyright (c) 2024 Motion B.V. (`motion`); one line for the four packages of one project
+- `nanoid` — Copyright 2017 Andrey Sitnik (build-time only)
+- `next` — Copyright (c) 2025 Vercel, Inc.
+- `postcss` — Copyright 2013 Andrey Sitnik (build-time only)
+- `react`, `react-dom`, `scheduler`, `use-sync-external-store` — Copyright (c) Meta Platforms, Inc. and affiliates.
+- `styled-jsx` — Copyright (c) 2016-present Vercel, Inc.
+- `tabbable` — Copyright (c) 2015 David Clark
+- `tailwindcss`, `@tailwindcss/postcss` — Copyright (c) Tailwind Labs, Inc. (build-time only; the generated CSS is PoryMCP's)
+
+## Apache-2.0
+
+Licence text: https://www.apache.org/licenses/LICENSE-2.0. None of these
+packages ships a NOTICE file of its own.
+
+- `@react-aria/focus`, `@react-aria/interactions`, `@react-types/shared`, `react-aria`, `react-stately` — Copyright 2019 Adobe. Runtime dependencies of `@headlessui/react`, bundled with it.
+- `@internationalized/date`, `@internationalized/number`, `@internationalized/string` — Copyright 2019 Adobe (in the dependency graph; not present in the built chunks)
+- `@swc/helpers` — Copyright 2024 SWC contributors (in the dependency graph; not present in the built chunks)
+- `@img/sharp-linux-x64`, `@img/sharp-linuxmusl-x64`, `sharp`, `detect-libc`, `baseline-browser-mapping` — build-time only
+
+## BSD-3-Clause
+
+- `source-map-js` — Copyright (c) 2009-2011, Mozilla Foundation and contributors (build-time only)
+
+## ISC
+
+- `picocolors` — Copyright (c) 2021-2024 Oleksii Raspopov, Kostiantyn Denysov, Anton Verinov (build-time only)
+- `semver` — Copyright (c) Isaac Z. Schlueter and Contributors (build-time only)
+
+## 0BSD
+
+- `tslib` — Copyright (c) Microsoft Corporation.
+
+## CC-BY-4.0
+
+- `caniuse-lite` — browser-support data used by the build (build-time only)
+
+## LGPL-3.0-or-later
+
+- `@img/sharp-libvips-linux-x64`, `@img/sharp-libvips-linuxmusl-x64` — Lovell Fuller (the packages ship no licence file; the holder is their `package.json` author). Native image libraries used by the build only; neither the bundle nor the image contains them.

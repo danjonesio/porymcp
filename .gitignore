@@ -1,0 +1,47 @@
+# Binaries and build output
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+porymcp
+
+# Data and local secrets
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+# tracked on purpose: the split-origin npm run dev flow (docs/06-ui.md)
+!web/.env.development
+
+# Node / Next.js
+node_modules/
+web/.next/
+web/next-env.d.ts
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+coverage.out
+coverage.html
+
+# TypeScript incremental cache written by `tsc --noEmit`
+web/tsconfig.tsbuildinfo
+
+# Local working files, not part of the product
+/docs/plans/
+/docs/10-linear-issues.md
+/AGENTS.md
+/CLAUDE.md
+/.agents/
+/.claude/

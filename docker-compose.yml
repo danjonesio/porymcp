@@ -1,0 +1,81 @@
+services:
+  porymcp:
+    build: .
+    image: porymcp:local
+    # store.Open failure is os.Exit(1); a lost race against a starting
+    # database must self-heal, not leave a permanently exited container.
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Required: set it in .env (compose reads .env automatically). Quoted
+      # with a colon-free message for the same reason as ENCRYPTION_KEY below.
+      ADMIN_API_KEY: "${ADMIN_API_KEY:?set it in .env - copy .env.example to .env and generate a value with 'openssl rand -hex 32' - see docs/08-docker.md}"
+      # Required: set it in .env (compose reads .env automatically). The value
+      # stays double-quoted with a colon-free message — unquoted, a ": " in
+      # the message is a YAML scanner error, not the message.
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set it in .env - copy .env.example to .env and generate a key with 'openssl rand -hex 32' - see docs/08-docker.md}"
+      # Rotation window only (docs/11-deployment.md section 12); empty means unset.
+      ENCRYPTION_KEY_PREVIOUS: ${ENCRYPTION_KEY_PREVIOUS:-}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      # Duplicates the image default (Dockerfile ENV DATABASE_URL)
+      # deliberately; keep the two in sync.
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///data/porymcp.db}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Pass-through for .env-set config with no Dockerfile default; empty
+      # reads as unset. DATA_DIR / LISTEN_ADDR are deliberately NOT passed
+      # through: the Dockerfile sets them, and a bare ${VAR:-} empty string
+      # would override the image ENV.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      ALLOW_INSECURE_HTTP: ${ALLOW_INSECURE_HTTP:-}
+      ALLOW_LOCALHOST: ${ALLOW_LOCALHOST:-}
+      EXTRA_ALLOWED_HOSTS: ${EXTRA_ALLOWED_HOSTS:-}
+      TLS_CERT_FILE: ${TLS_CERT_FILE:-}
+      TLS_KEY_FILE: ${TLS_KEY_FILE:-}
+    volumes:
+      - porymcp-data:/data
+    healthcheck:
+      test: ["CMD", "/porymcp", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      # This block replaces the whole Dockerfile HEALTHCHECK, so restore its
+      # start period; start_interval keeps `up --wait` from blocking a full
+      # 30s interval before the first probe.
+      start_period: 5s
+      start_interval: 2s
+    depends_on:
+      postgres:
+        condition: service_healthy
+        # postgres is behind a profile; without `required: false` a plain
+        # `docker compose up` is an invalid project.
+        required: false
+
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    # Same policy as porymcp: a database that dies after a clean start must
+    # come back, or porymcp restart-loops against it forever.
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: porymcp
+      POSTGRES_PASSWORD: porymcp
+      POSTGRES_DB: porymcp
+    volumes:
+      - porymcp-pg:/var/lib/postgresql/data
+    # No published port: porymcp reaches this service over the compose
+    # network, and publishing 0.0.0.0:5432 behind a repo-published password
+    # is the defect PORM-25 exists to remove. Host-side access:
+    # docker compose --profile postgres exec postgres psql -U porymcp -d porymcp
+    healthcheck:
+      # -h 127.0.0.1: probe TCP, the thing porymcp actually connects to —
+      # initdb's temporary server answers on the Unix socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U porymcp -d porymcp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  porymcp-data:
+  porymcp-pg:

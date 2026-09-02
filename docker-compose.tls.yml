@@ -1,0 +1,37 @@
+# docker-compose.tls.yml
+# Usage: docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build
+#
+# Adds Caddy in front of PoryMCP. Does not unpublish 8080:8080 — Compose
+# merges ports additively, and the direct-hit acceptance check needs the
+# published container port.
+#
+# Caddy image is a 2.x alpine tag, not a digest: Docker was unavailable when
+# this overlay was written, so no RepoDigest was recorded. PORM-42 will
+# digest-pin it.
+
+services:
+  porymcp:
+    environment:
+      PUBLIC_URL: https://localhost
+      TRUSTED_PROXIES: 172.28.0.4/32
+
+  caddy:
+    image: caddy:2.10-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      porymcp:
+        condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.28.0.4
+
+networks:
+  default:
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

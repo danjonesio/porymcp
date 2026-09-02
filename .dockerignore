@@ -1,0 +1,14 @@
+.git
+data
+bin
+web/node_modules
+web/.next
+**/.DS_Store
+*.db
+# Anchored patterns miss web/.env.local, which Next would inline into the
+# embedded export via NEXT_PUBLIC_*; mirror .gitignore's triple.
+**/.env
+**/.env.*
+!.env.example
+# Built by the web stage inside the image; never ship the tracked copy.
+web/out

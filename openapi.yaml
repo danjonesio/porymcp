@@ -1,0 +1,1066 @@
+openapi: 3.1.0
+info:
+  title: PoryMCP Management API
+  version: 0.1.0
+  description: |
+    REST API for registering MCP upstreams, grouping them, minting per-agent virtual keys,
+    and querying audit logs. All routes below are served under `/api/v1` and require
+    `Authorization: Bearer <ADMIN_API_KEY>` except `GET /health`. Errors are JSON
+    `{"error": "..."}`; an unknown path under `/api/v1` returns `404 {"error":"not found"}`.
+    The MCP proxy endpoints (`POST /{virtual_key_id}/{upstream_slug}/mcp`,
+    `POST /{virtual_key_id}/mcp` and `POST /mcp`) are not part of this spec; see
+    `docs/03-api.md`.
+servers:
+  - url: /api/v1
+security:
+  - adminKey: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Liveness and database ping
+      description: >
+        Also served unauthenticated at `/health` (root). Reports
+        scheme_enforced, a trusted_proxies count (never the CIDRs), and
+        the encryption verdict.
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: >-
+            Unhealthy (store ping failed) or degraded (stored credentials
+            cannot be read with the current encryption key). Either body still
+            includes scheme_enforced, trusted_proxies and encryption.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /stats:
+    get:
+      summary: Dashboard overview counters
+      responses:
+        "200":
+          description: Stats payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Stats"
+  /upstreams:
+    get:
+      summary: List upstreams
+      responses:
+        "200":
+          description: Upstream list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upstreams]
+                properties:
+                  upstreams:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Upstream"
+    post:
+      summary: Register an upstream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpstreamWrite"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Upstream"
+        "400":
+          description: Invalid field or slug
+        "409":
+          description: Slug already taken, or no unique slug could be derived
+  /upstreams/discover:
+    post:
+      summary: Discover the tools an unsaved upstream would offer
+      description: >-
+        Runs the handshake a client would run — initialize,
+        notifications/initialized, tools/list followed to the end of its cursors,
+        then a DELETE of the session so none is left open on the upstream —
+        against the URL in the body, using the credential in the body, and
+        persists nothing. It exists so the Add upstream dialog can check a URL
+        and a token before writing a row that does not work. Takes the same body
+        as POST /upstreams, of which only `url` is required; `transport` defaults
+        to streamable-http and `auth_type` to none. POST rather than GET because
+        the call has an effect outside PoryMCP and must never be prefetched —
+        GET /upstreams/discover is not a route at all, it falls through to
+        GET /upstreams/{id} with `discover` as the id and answers the ordinary
+        404. The response carries no `slug` and no `scoped_name`: see
+        `Discovery.slug`. The whole sequence is bounded at 10 seconds and the
+        teardown at a further 2, so a hung upstream cannot hold an admin request
+        open.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpstreamWrite"
+      responses:
+        "200":
+          description: >-
+            The result of the attempt, whether or not the upstream answered: the
+            HTTP status describes the request, `ok` describes the upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Discovery"
+        "400":
+          description: Malformed body, missing url, or an invalid transport or auth_type
+        "429":
+          $ref: "#/components/responses/DiscoveryRateLimited"
+  /upstreams/{id}/discover:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Discover the tools a saved upstream offers
+      description: >-
+        The same handshake as POST /upstreams/discover, made with the upstream's
+        stored (encrypted) credential. The request body is ignored, as on rotate
+        and revoke. A disabled upstream is still discovered — an operator who has
+        turned one off is usually the operator diagnosing it. A stored credential
+        that is present but cannot be decrypted, after a rotated ENCRYPTION_KEY,
+        answers 200 with ok false and makes no outbound request at all: sending
+        an unauthenticated one instead would come back as a 401 that looks
+        exactly like a bad token. The catalogue is neither stored nor cached, so
+        the answer is what the server said just now; the run itself is recorded
+        on the upstream as `last_test_at` and `last_test_ok`.
+      responses:
+        "200":
+          description: >-
+            The result of the attempt, whether or not the upstream answered: the
+            HTTP status describes the request, `ok` describes the upstream.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Discovery"
+        "404":
+          description: Unknown upstream id. Byte-identical to GET /upstreams/{id}.
+        "429":
+          $ref: "#/components/responses/DiscoveryRateLimited"
+  /upstreams/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Get an upstream
+      responses:
+        "200":
+          description: Upstream
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Upstream"
+    patch:
+      summary: Update an upstream
+      description: >-
+        Changing `url`, `transport`, `auth_type`, or sending any `auth_config`
+        other than an explicit null, resets `last_test_at` and `last_test_ok` to
+        null in the same statement as the edit, so a recorded result never
+        vouches for a connection nobody has tried; a credential is encrypted
+        under a fresh nonce, so two ciphertexts of one secret never compare
+        equal and any non-null `auth_config` in the body counts as a change.
+        `name`, `description` and `enabled` never reset it. The reset is in this
+        response, not only in the next GET. Neither field can be set by a body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpstreamWrite"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Upstream"
+        "400":
+          description: Invalid field, or slug differs from the stored value
+    delete:
+      summary: Delete an upstream
+      responses:
+        "204":
+          description: Deleted
+  /groups:
+    get:
+      summary: List groups
+      responses:
+        "200":
+          description: Group list
+    post:
+      summary: Create a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupWrite"
+      responses:
+        "201":
+          description: Created
+  /groups/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Get a group
+      responses:
+        "200":
+          description: Group
+    patch:
+      summary: Update a group
+      description: >-
+        A partial update: an absent key keeps the stored value, `null` clears
+        `description`, `upstream_ids` and `tool_filter`, and a blank or null
+        `name` is 400. See docs/03-api.md, Partial updates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupWrite"
+      responses:
+        "200":
+          description: Updated
+    delete:
+      summary: Delete a group
+      responses:
+        "204":
+          description: Deleted
+  /virtual-keys:
+    get:
+      summary: List virtual keys (never includes plaintext keys)
+      responses:
+        "200":
+          description: Virtual key list, each with proxy_url and endpoints
+          content:
+            application/json:
+              schema:
+                # Partial: only the field PORM-14 adds. The complete virtual-key
+                # read model is PORM-22's to define; PORM-22 replaces this.
+                type: object
+                properties:
+                  virtual_keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        endpoints:
+                          type: array
+                          items:
+                            $ref: "#/components/schemas/VirtualKeyEndpoint"
+    post:
+      summary: Create a virtual key and return the plaintext key once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VirtualKeyWrite"
+      responses:
+        "201":
+          description: Created with api_key, proxy_url and endpoints
+          content:
+            application/json:
+              schema:
+                # Partial: only the field PORM-14 adds. The complete virtual-key
+                # read model is PORM-22's to define; PORM-22 replaces this.
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VirtualKeyEndpoint"
+  /virtual-keys/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Get a virtual key
+      responses:
+        "200":
+          description: Virtual key, with proxy_url and endpoints
+          content:
+            application/json:
+              schema:
+                # Partial: only the field PORM-14 adds. The complete virtual-key
+                # read model is PORM-22's to define; PORM-22 replaces this.
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VirtualKeyEndpoint"
+        "404":
+          description: Not found
+    patch:
+      summary: Update a virtual key
+      description: >-
+        A partial update: an absent key keeps the stored value; `null` clears
+        `rate_limit`, `expires_at`, `tool_allowlist`, `tool_denylist` and
+        `metadata`; a blank or null `name`, `target_type` or `target_id` is 400.
+        See docs/03-api.md, Partial updates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VirtualKeyPatch"
+      responses:
+        "200":
+          description: Updated, with the endpoints the new target reaches
+          content:
+            application/json:
+              schema:
+                # Partial: only the field PORM-14 adds. The complete virtual-key
+                # read model is PORM-22's to define; PORM-22 replaces this.
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VirtualKeyEndpoint"
+        "404":
+          description: Not found
+    delete:
+      summary: Delete a virtual key
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+  /virtual-keys/{id}/rotate:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Rotate the virtual key (new plaintext returned once)
+      responses:
+        "200":
+          description: New key, with proxy_url and endpoints (unchanged by rotation)
+          content:
+            application/json:
+              schema:
+                # Partial: only the field PORM-14 adds. The complete virtual-key
+                # read model is PORM-22's to define; PORM-22 replaces this.
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VirtualKeyEndpoint"
+        "404":
+          description: Not found
+  /virtual-keys/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Revoke a virtual key
+      responses:
+        "200":
+          description: Revoked; endpoints are unchanged, they simply stop authenticating
+          content:
+            application/json:
+              schema:
+                # Partial: only the field PORM-14 adds. The complete virtual-key
+                # read model is PORM-22's to define; PORM-22 replaces this.
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VirtualKeyEndpoint"
+        "404":
+          description: Not found
+  /logs:
+    get:
+      summary: Query audit logs
+      parameters:
+        - name: virtual_key_id
+          in: query
+          schema:
+            type: string
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: method
+          in: query
+          schema:
+            type: string
+        - name: tool
+          in: query
+          description: >-
+            Exact match on the recorded `tool_name` — not a prefix or a
+            substring. The recorded name is the one the client sent, so on the
+            aggregate endpoint of a group it is the canonical
+            `{upstream_slug}__{tool}` and on a per-member endpoint or a
+            single-upstream key it is the upstream's own bare name.
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: >-
+            `success` and `error` describe a request that reached an upstream,
+            with one exception: on the aggregate endpoint of a group, a
+            `tools/call` naming a tool the endpoint never advertised is recorded
+            as `error` and reached no upstream at all — no rule fired, so it is
+            not a policy decision. `blocked` is a request refused by tool policy
+            — the group `tool_filter` or the key's
+            `tool_denylist`/`tool_allowlist` — before any upstream was
+            contacted; `error_message` names the rule that rejected it.
+            `GET /logs?status=blocked` is the list of policy rejections.
+          schema:
+            type: string
+            enum: [success, error, blocked]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Page of logs
+  /logs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Get one audit log
+      responses:
+        "200":
+          description: Log
+components:
+  securitySchemes:
+    adminKey:
+      type: http
+      scheme: bearer
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    DiscoveryRateLimited:
+      description: >-
+        Too many discovery calls. `{"error":"too many discovery requests"}` when
+        the budget of thirty a minute is spent, `{"error":"too many concurrent
+        discoveries"}` when four are already in flight. The budget is spent
+        before the store is read, so a flood of unknown ids costs a caller what
+        real ones do, and both are counted apart from the failed-admin-auth
+        budget so a burst of discoveries cannot lock an operator out of the rest
+        of the API.
+      headers:
+        Retry-After:
+          description: >-
+            Seconds to wait: the limiter's own figure when the per-minute budget
+            is what refused the call, and 5 when the concurrency cap did.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+  schemas:
+    Health:
+      type: object
+      required: [status, scheme_enforced, trusted_proxies, encryption]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, unhealthy]
+          description: >-
+            `ok` when healthy; `degraded` (503) when the boot check found a
+            stored credential no configured encryption key opens; `unhealthy`
+            (503) when the store ping failed — which outranks degraded.
+        service:
+          type: string
+          description: Present unless unhealthy (`porymcp`).
+        time:
+          type: string
+          format: date-time
+          description: RFC 3339 UTC timestamp, present unless unhealthy.
+        scheme_enforced:
+          type: boolean
+          description: True when PUBLIC_URL is https and ALLOW_INSECURE_HTTP is unset.
+        trusted_proxies:
+          type: integer
+          description: Count of configured trusted-proxy CIDRs. Never the CIDR list.
+        encryption:
+          type: string
+          enum: [ok, mismatch]
+          description: >-
+            The boot integrity check's verdict on whether every stored
+            credential opens under the configured key(s). A verdict only —
+            never a fingerprint, a count or a name on this unauthenticated
+            route — and a boot fact: the restart that ends a rotation
+            refreshes it, while auth_status and /stats are live.
+        error:
+          type: string
+          description: >-
+            Present when unhealthy, as the fixed string "database unavailable";
+            the real store error is in the server log at Error level.
+    Stats:
+      type: object
+      description: >-
+        Dashboard overview counters. The three credential counts are computed
+        live from one pass over the upstreams — the same pass the boot check
+        makes — and never count auth_type none upstreams.
+      required: [active_virtual_keys, total_virtual_keys, upstreams, groups,
+        calls_today, errors_today, error_rate, calls_last_7_days, blocked_today,
+        undecryptable_upstreams, unreadable_upstreams, upstreams_under_previous_key]
+      properties:
+        active_virtual_keys:
+          type: integer
+        total_virtual_keys:
+          type: integer
+        upstreams:
+          type: integer
+        groups:
+          type: integer
+        calls_today:
+          type: integer
+        errors_today:
+          type: integer
+        error_rate:
+          type: number
+        calls_last_7_days:
+          type: integer
+        blocked_today:
+          type: integer
+        undecryptable_upstreams:
+          type: integer
+          description: Upstreams whose stored credential no configured encryption key opens.
+        unreadable_upstreams:
+          type: integer
+          description: Upstreams whose stored credential is empty or holds nothing its auth type can send.
+        upstreams_under_previous_key:
+          type: integer
+          description: Upstreams still sealed under an ENCRYPTION_KEY_PREVIOUS key; `porymcp rekey` finishes the rotation.
+    Upstream:
+      type: object
+      description: >-
+        A registered upstream as every read returns it. It never carries
+        `auth_config` or the credential in any form: the stored credential is
+        encrypted at rest and leaves the process only as a header on a call to
+        this upstream's own URL.
+      required: [id, name, slug, url, transport, auth_type, enabled, auth_configured, auth_status, last_test_at, last_test_ok, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Assigned on create and stable for the life of the upstream.
+        name:
+          type: string
+          description: The operator's label. Renaming never moves the slug.
+        slug:
+          type: string
+          description: The stored slug, fixed at create. Its rules are on `UpstreamWrite.slug`.
+        description:
+          type: string
+          description: Optional free text; absent when empty.
+        url:
+          type: string
+          format: uri
+          description: The endpoint this upstream's credential is sent to. Its rules are on `UpstreamWrite.url`.
+        transport:
+          type: string
+          enum: [streamable-http, sse]
+          description: The transport PoryMCP speaks here. `sse` is accepted on write but not implemented (PORM-28).
+        auth_type:
+          type: string
+          enum: [none, bearer, header, api_key, custom]
+          description: How the stored credential is presented to the upstream.
+        auth_configured:
+          type: boolean
+          description: Whether a credential is stored for this upstream. Never the credential itself.
+        auth_status:
+          type: string
+          enum: [none, ok, undecryptable, unreadable]
+          description: >-
+            Whether PoryMCP can use the stored credential. `none` iff auth_type
+            is none, whatever is stored beside it; `undecryptable` — no
+            configured encryption key opens it (the key changed; the proxy and
+            discovery refuse this upstream); `unreadable` — nothing stored, or
+            nothing the auth type can send, likewise refused; `ok`. Computed
+            live on every read.
+        auth_hint:
+          type: object
+          additionalProperties:
+            type: string
+          description: Names the header the credential is sent in. Never the credential.
+        enabled:
+          type: boolean
+          description: Whether virtual keys may reach it. A disabled upstream is still discoverable.
+        last_test_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the last Tools/Refresh press ran. null until the first; reset by a connection edit.
+        last_test_ok:
+          type: [boolean, "null"]
+          description: Whether that run completed the handshake and the catalogue. null until the first.
+        created_at:
+          type: string
+          format: date-time
+          description: When the upstream was registered.
+        updated_at:
+          type: string
+          format: date-time
+          description: When it was last edited. Recording a test does not move it.
+    UpstreamWrite:
+      type: object
+      description: >-
+        The body POST /upstreams and PATCH /upstreams/{id} accept.
+        `last_test_at` and `last_test_ok` are deliberately absent: they are
+        written only by POST /upstreams/{id}/discover and are ignored in a body.
+        On PATCH an absent key keeps the stored value, `null` or `""` clears
+        `description`, `null` on `auth_config` keeps the stored credential, and
+        `null` or `""` on any other field is 400 (see docs/03-api.md, Partial
+        updates). The property types below are the strict PATCH shape; on POST
+        the handler additionally reads `transport` and `auth_type` sent as
+        `null` or `""`, and `enabled` sent as `null`, as their defaults.
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          description: >-
+            Stable URL- and tool-name-safe identifier. Optional on create: an
+            omitted, empty or whitespace-only value is derived from the name and
+            de-duplicated. Supplied, it must not contain a repeated separator
+            (`__`, `--`, `-_`, `_-`) — `__` in particular is what separates the
+            slug from the tool name in a tool identity, so a slug holding one
+            would make the split unrecoverable — must not be UUID-shaped, and
+            must not be `mcp`, `api`, `health` or `metrics`. Never changes on
+            rename. Immutable after create: PATCH with a different value returns
+            400.
+          pattern: "^([a-z0-9]([a-z0-9_-]{0,38}[a-z0-9])?)?$"
+          maxLength: 40
+        description:
+          type: [string, "null"]
+          description: On PATCH, `null` or `""` clears it; absent keeps it.
+        url:
+          type: string
+          format: uri
+          description: >-
+            The real MCP server's endpoint, and it must be the final URL: the
+            proxy forwards to this URL and never to a host the upstream names in
+            a redirect, so a `3xx` answer is a failed call (`502` to the client,
+            and an audit row reading `upstream redirected to <host>`) rather
+            than a hop. Prefer `https://` and the exact path the server serves,
+            trailing slash included. See `docs/07-security.md`. It must be an
+            absolute http or https URL with a host and no fragment — the same
+            check discovery applies before it opens a socket, so a stored value
+            is one PoryMCP can actually dial; anything else is `400`. Whether
+            that host should be dialled at all (loopback, link-local, cloud
+            metadata) is not checked yet — see PORM-79.
+        transport:
+          type: string
+          enum: [streamable-http, sse]
+        auth_type:
+          type: string
+          enum: [none, bearer, header, api_key, custom]
+        auth_config:
+          type: [object, "null"]
+          description: >-
+            Write-only. A value replaces the stored credential; `null` leaves
+            it unchanged, on PATCH and on POST alike (on POST that means no
+            credential).
+        enabled:
+          type: boolean
+    Discovery:
+      type: object
+      description: >-
+        What one discovery attempt learned, and nothing else: every field is
+        PoryMCP's own or a clamped copy of something the upstream said. The
+        response never carries auth_config, the credential in any form, an
+        upstream response header, or any byte of an upstream response body
+        outside these fields and `upstream_message`. Discovery is made on an
+        operator's behalf rather than a virtual key's, so it writes no audit row.
+      required: [ok, latency_ms, tools, tool_count, unnameable_tools, truncated]
+      properties:
+        ok:
+          type: boolean
+          description: >-
+            Whether the upstream completed the handshake. The HTTP status
+            describes the request PoryMCP received; this describes the upstream.
+        error:
+          type: string
+          description: >-
+            Present only when `ok` is false, and drawn from a closed set of
+            sentences whose only variables are a status code, the step that
+            failed (initialize, notifications/initialized, tools/list) and a
+            host — `cannot resolve <host>`, `cannot connect to <host>`, `tls
+            handshake with <host> failed`, `upstream did not answer within 10s`,
+            `upstream redirected to <host>`, `upstream rejected the credential
+            (401) at initialize`, `upstream's answer to <step> is larger than
+            discovery will read` (the 2 MiB read cap: an answer over it is
+            refused rather than decoded from a document that stops mid-object),
+            `stored credential cannot be decrypted`, `stored credential is not
+            usable for this auth type` (it opens, but holds nothing the auth
+            type can send — a blank token stored as `{}`), `this auth type
+            needs a credential; add one or choose None` (an unsaved draft),
+            and the rest. A URL is never
+            written into one: Go's own transport errors mask the password but
+            keep the username, the path and the whole query string.
+        upstream_message:
+          type: string
+          description: >-
+            The upstream's own JSON-RPC error.message when it sent one — single
+            line, visible characters, at most 200 bytes. It has a field of its
+            own so that `error` stays a string PoryMCP wrote: "token lacks the
+            repo scope" is the answer an operator came for, but it is the
+            upstream talking.
+        latency_ms:
+          type: integer
+          description: >-
+            The whole handshake, rounded to 10 ms — enough to tell a slow server
+            from a fast one, blunt enough not to be a stopwatch on the network
+            PoryMCP sits in.
+        protocol_version:
+          type: string
+          description: The MCP protocol version the upstream negotiated. Clamped to 32 bytes.
+        server_info:
+          $ref: "#/components/schemas/ServerInfo"
+        slug:
+          type: string
+          description: >-
+            The upstream's stored slug, on POST /upstreams/{id}/discover only.
+            Absent on POST /upstreams/discover, which has no row and therefore no
+            slug: deriving a provisional one would be worse than showing none,
+            because create de-duplicates and the `github` computed before saving
+            can be stored as `github-2` — and an operator who copied the identity
+            built from it into a deny rule would have written an entry that
+            matches nothing and fails open.
+        tool_count:
+          type: integer
+          description: >-
+            The length of `tools` after drops — how many tools are shown, not how
+            many the server has. At most 500; when `truncated` is true it is how
+            many survived the cut, which the page cap or a repeated cursor can
+            make fewer than 500.
+        truncated:
+          type: boolean
+          description: >-
+            True when the catalogue was cut short: at 500 tools, at 50 pages, or
+            when the upstream returned a cursor it had already returned.
+        unnameable_tools:
+          type: integer
+          description: >-
+            How many tools were left out because the proxy could not hold a
+            caller to their names — empty, over 256 bytes, or carrying a control
+            character or U+FFFD: the same rule that governs a tool identity
+            everywhere else, plus a 256-byte cap on what discovery will show.
+            Counted, never repeated back.
+        tools:
+          type: array
+          description: Always present and never null; empty when the server's catalogue is.
+          items:
+            $ref: "#/components/schemas/DiscoveredTool"
+    DiscoveredTool:
+      type: object
+      description: >-
+        One tool as the upstream advertises it, with every string clamped to a
+        byte budget and forced back to valid UTF-8. Duplicate names are kept as
+        sent, because an ambiguity in a server's own catalogue is one of the
+        things an operator reads this list to find. There is no inputSchema: an
+        unbounded upstream blob is precisely what this response is shaped to
+        exclude, and an opt-in `?include=schema` can be added later without
+        breaking anything.
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: The upstream's own name for the tool — what a per-member endpoint serves.
+        title:
+          type: string
+          description: Optional display title from the upstream. Clamped to 256 bytes.
+        description:
+          type: string
+          description: Optional, and clamped to 4096 bytes on a rune boundary.
+        description_truncated:
+          type: boolean
+          description: Present only when `description` was cut.
+        scoped_name:
+          type: string
+          description: >-
+            The tool identity `{upstream_slug}__{tool}` — what a group
+            tool_filter entry and a virtual key's tool_allowlist/tool_denylist
+            name, on every path. Present on POST /upstreams/{id}/discover only,
+            for the reason given on `Discovery.slug`.
+        annotations:
+          $ref: "#/components/schemas/ToolAnnotations"
+    ToolAnnotations:
+      type: object
+      description: >-
+        The upstream's own behaviour hints, decoded into a fixed set of fields
+        rather than passed through as whatever object it sent. They are hints
+        from an untrusted server and nothing enforces them: policy is the group's
+        tool_filter and the key's allow/deny lists.
+      properties:
+        title:
+          type: string
+        readOnlyHint:
+          type: boolean
+        destructiveHint:
+          type: boolean
+        idempotentHint:
+          type: boolean
+        openWorldHint:
+          type: boolean
+    ServerInfo:
+      type: object
+      description: >-
+        What the upstream called itself in its initialize result, clamped to 128
+        and 64 bytes. Upstream-controlled text: it is rendered in an operator's
+        browser as text, never as markup.
+      required: [name]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+    GroupWrite:
+      type: object
+      description: >-
+        The body POST /groups and PATCH /groups/{id} accept. On PATCH an absent
+        key keeps the stored value, `null` or `""` clears `description`, `null`
+        or `[]` empties `upstream_ids`, `null` clears `tool_filter`, and a blank
+        or null `name` is 400 (see docs/03-api.md, Partial updates).
+      properties:
+        name:
+          type: string
+        description:
+          type: [string, "null"]
+        upstream_ids:
+          type: [array, "null"]
+          items:
+            type: string
+        tool_filter:
+          oneOf:
+            - $ref: "#/components/schemas/ToolFilter"
+            - type: "null"
+    VirtualKeyWrite:
+      type: object
+      description: >-
+        The body POST /virtual-keys accepts. The property types are the strict
+        shape; the handler additionally reads `rate_limit`, `expires_at`,
+        `tool_allowlist`, `tool_denylist` or `metadata` sent as `null` as
+        absent, and `target_type` sent as `null` or `""` as its default,
+        `upstream`. PATCH /virtual-keys/{id} takes VirtualKeyPatch.
+      required: [name, target_id]
+      properties:
+        name:
+          type: string
+        target_type:
+          type: string
+          enum: [upstream, group]
+        target_id:
+          type: string
+        rate_limit:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+        tool_allowlist:
+          type: array
+          description: >-
+            If non-empty, only these tool names may be listed or called.
+            Applied after `tool_denylist` and before the group `tool_filter`, so
+            it narrows and never widens: a name here is still subject to the
+            group filter. Matched byte-exactly — no wildcards, regular
+            expressions or case folding — against the tool identity
+            `{upstream_slug}__{tool}`, which is the same on the aggregate
+            endpoint, on a per-member endpoint and under a single-upstream key.
+            Validated on write, with the same entry rules as
+            `tool_filter.tools`, plus one that follows the key's target: on a
+            **group** target every entry must be scoped, because an unscoped
+            allow entry admits nothing there and is refused with 400; on an
+            **upstream** target a bare tool name is exactly right and is
+            accepted. Retargeting a key re-checks this list against the new
+            target in both directions and answers 400 naming the entries that
+            would be stranded — unscoped ones when moving onto a group, ones
+            scoped to another slug when moving onto an upstream — unless the
+            same request sends a rewritten list. `prompts/get` and the other
+            `params.name` methods match the name whole, with no slug and no
+            scoping. If either stored list cannot be decoded, every call on the
+            key is blocked and both columns are left untouched by a rename, a
+            rotate and a revoke; a PATCH sending **both** lists replaces them
+            and clears the block, while one alone answers 400.
+          items:
+            type: string
+        tool_denylist:
+          type: array
+          description: >-
+            Tool names this key may never list or call. Evaluated first, ahead
+            of `tool_allowlist` and the group `tool_filter`. Matched
+            byte-exactly, against the same tool identity as `tool_allowlist`.
+            Takes scoped and unscoped entries on either kind of target, and is
+            never refused for a retarget: an unscoped entry is "block this name
+            wherever it appears", which is what an operator writing one means
+            and what should survive a move.
+          items:
+            type: string
+        metadata:
+          type: object
+    VirtualKeyPatch:
+      type: object
+      description: >-
+        The body PATCH /virtual-keys/{id} accepts: VirtualKeyWrite's fields
+        with nothing required and the clearable ones accepting null. An absent key
+        keeps the stored value; `null` clears `rate_limit` (unlimited),
+        `expires_at` (a key that had expired is active again), `tool_allowlist`
+        and `tool_denylist` (to `[]`, and a null side counts as sent for the
+        both-lists rule) and `metadata`; a blank or null `name`, `target_type`
+        or `target_id` is 400. The list entry rules are VirtualKeyWrite's. See
+        docs/03-api.md, Partial updates.
+      properties:
+        name:
+          type: string
+        target_type:
+          type: string
+          enum: [upstream, group]
+        target_id:
+          type: string
+        rate_limit:
+          type: [integer, "null"]
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        tool_allowlist:
+          type: [array, "null"]
+          items:
+            type: string
+        tool_denylist:
+          type: [array, "null"]
+          items:
+            type: string
+        metadata:
+          type: [object, "null"]
+    VirtualKeyEndpoint:
+      type: object
+      description: >-
+        One 1:1 endpoint this virtual key can connect to, speaking exactly one
+        upstream with that upstream's own tool names, initialize, capabilities,
+        prompts, resources and sessions. Read-only and computed per response,
+        never stored. A group target has one entry per **enabled** member, in
+        the group's `upstream_ids` order, at
+        `{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp`; a disabled member, or one
+        removed from the group, has no entry and its URL answers 404. A
+        single-upstream target has exactly one entry whose `url` is `proxy_url`
+        itself — the aggregate endpoint is already 1:1 there, and the
+        `/{slug}/mcp` form is a group-only route. `proxy_url` on a group key is
+        the aggregate endpoint and is never an entry. The array is always
+        present, and empty when nothing is reachable; revoking or expiring the
+        key does not change it.
+      required: [upstream_id, slug, name, url]
+      properties:
+        upstream_id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          description: The upstream's immutable slug; also the URL path segment.
+        name:
+          type: string
+          description: The upstream's display name. A sensible default server name in a client config.
+        url:
+          type: string
+          format: uri
+          description: "`{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp` for a group member; `proxy_url` for a single-upstream target."
+    ToolFilter:
+      type: object
+      description: >-
+        Tool policy for every virtual key that targets this group. Enforced on
+        both `tools/list` and `tools/call`: a filtered tool is neither
+        advertised nor callable, and a blocked call answers `200` with JSON-RPC
+        `-32602 "tool blocked"` without contacting any upstream. Evaluated after
+        the key's own `tool_denylist` and `tool_allowlist`, so it can only
+        narrow them. Matched byte-exactly — no wildcards, regular expressions or
+        case folding. A `tools` entry names the tool identity
+        `{upstream_slug}__{tool}`; a `prefixes` entry is matched against the
+        upstream's own tool name. Both are the same on every path a key over
+        this group reaches: the aggregate endpoint and each per-member endpoint.
+        Omit the
+        field (or send `null`) for no filter. Validated on write, and again when
+        the proxy reads it: a stored filter that fails validation blocks every
+        call on the group until it is fixed, and is reported once at startup.
+        The write side adds the identity rules — a scoped entry's head must be a
+        valid slug, a scoped `tools` entry must name a tool after the separator,
+        and every entry of an `allow` filter must be scoped — which the read
+        side deliberately does not enforce, so that a filter stored before those
+        rules existed is corrected by its author rather than taken offline.
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [allow, deny]
+          description: >-
+            Required whenever `tools` or `prefixes` has an entry, and matched
+            byte-exactly (`Deny` and `DENY` are rejected). `deny` rejects a tool
+            listed in `tools`, or whose own name starts with a `prefixes`
+            entry's tool part; `allow` admits only those and rejects everything
+            else, so it needs at least one entry — and every one of them must
+            name a member (see `tools`). A group of one member is still a group:
+            a bare entry is rejected there too.
+        tools:
+          type: array
+          description: >-
+            Exact tool identities, matched for equality. A *scoped* entry names
+            one tool on one member as `{upstream_slug}__{tool}` — two
+            underscores, the member's immutable slug and the upstream's own name
+            for the tool — and the same entry is enforced on the aggregate
+            endpoint (where it is also the name the client sees) and on every
+            per-member endpoint. It is the same identity a virtual key's
+            `tool_allowlist`/`tool_denylist` names, including under a
+            single-upstream key. An *unscoped*
+            entry carries no `__` and matches that tool name on every member;
+            it is allowed under `deny`, and rejected under `allow`, where
+            reading it as "this name on every member" would widen the rule to
+            the whole group. A scoped entry must have a valid slug before the
+            `__` and a non-empty tool name after it; membership is not checked,
+            since a group's members change. No entry may be an empty string, or
+            hold whitespace, a control character or U+FFFD.
+          items:
+            type: string
+        prefixes:
+          type: array
+          description: >-
+            Literal string prefixes, not globs or regular expressions, and
+            matched against the upstream's **own** tool name on every path —
+            never against the composed `{upstream_slug}__{tool}` string the
+            aggregate endpoint advertises. Write `delete_`, or
+            `github__delete_` to scope it to the `github` member.
+            A scoped entry may end at the separator: `github__` is every tool on
+            `github`, which is worth reading twice in an `allow` filter.
+            `github_`, with one underscore, is not a scope — it is a name shape,
+            and matches any tool whose own name starts `github_` on every member
+            the rule covers. Under `allow` on a group an unscoped entry is
+            rejected, exactly as in `tools`. No entry may be an empty string, or
+            hold whitespace, a control character or U+FFFD.
+          items:
+            type: string
