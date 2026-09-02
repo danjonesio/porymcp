@@ -39,7 +39,6 @@ func TestProseStyle(t *testing.T) {
 		vs, err := checkFile(file, src)
 		if err != nil {
 			t.Errorf("%s: parse: %v", file, err)
-			continue
 		}
 		all = append(all, vs...)
 	}
@@ -140,8 +139,9 @@ func proseFile(p string) bool {
 // reported everywhere except inside a fence, on a quotations line, in a
 // wordCheckExempt file, and, for Go files, outside comments: Go comments
 // come from go/parser, because identifiers such as Unlock are not prose. A
-// Go file that fails to parse returns the error; it is never scanned as plain
-// text and never skipped.
+// Go file that fails to parse returns the error together with the code-point
+// violations already found; its word check is skipped, and the file is never
+// skipped as a whole.
 func checkFile(p string, src []byte) ([]violation, error) {
 	var out []violation
 	isMarkdown := path.Ext(p) == ".md"
@@ -178,7 +178,8 @@ func checkFile(p string, src []byte) ([]violation, error) {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, p, src, parser.ParseComments)
 		if err != nil {
-			return nil, err
+			sortViolations(out)
+			return out, err
 		}
 		for _, group := range f.Comments {
 			for _, c := range group.List {
@@ -201,13 +202,17 @@ func checkFile(p string, src []byte) ([]violation, error) {
 			}
 		}
 	}
+	sortViolations(out)
+	return out, nil
+}
+
+func sortViolations(out []violation) {
 	sort.SliceStable(out, func(a, b int) bool {
 		if out[a].Line != out[b].Line {
 			return out[a].Line < out[b].Line
 		}
 		return out[a].Col < out[b].Col
 	})
-	return out, nil
 }
 
 // bannedIn returns a violation for each banned word in text, whose first
@@ -364,15 +369,16 @@ func TestCheckFile_GoWordsOnlyInComments(t *testing.T) {
 	}
 }
 
-// A Go file that does not parse is an error, never a silent pass and never
-// a plain-text scan.
+// A Go file that does not parse is an error, never a silent pass; the
+// code-point violations found before the parse are still returned, and no
+// word check runs on it as plain text.
 func TestCheckFile_GoParseError(t *testing.T) {
-	vs, err := checkFile("internal/x/x.go", []byte("package x\nfunc {\n"))
+	vs, err := checkFile("internal/x/x.go", []byte("package x\n// a \u2014 b, seamless\nfunc {\n"))
 	if err == nil {
 		t.Fatalf("expected a parse error, got %d violations", len(vs))
 	}
-	if len(vs) != 0 {
-		t.Fatalf("expected no violations on a parse error, got %v", vs)
+	if got, want := rules(vs), "2:6 em-dash"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
