@@ -120,7 +120,6 @@ var notYetRewritten = []string{
 	"web/fs.go",
 	"web/sourceguard_test.go",
 	"web/nodanger_test.go",
-	"cmd/server/",
 	"docker-compose.yml",
 	"docker-compose.tls.yml",
 	"Dockerfile",

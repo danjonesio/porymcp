@@ -28,7 +28,7 @@ import (
 //
 // Its output is the binary's one log format, slog JSON on stdout, at a FIXED
 // level: the counts are the command's result, not telemetry, and LOG_LEVEL
-// must not be able to hide them. Fingerprints, counts, ids and names only —
+// must not be able to hide them. Fingerprints, counts, ids and names only,
 // never a key, a ciphertext or a plaintext. Exit 0 on success (a second run
 // reports rewritten=0), 1 on any failure, with nothing written.
 func rekey(out io.Writer) int {
@@ -81,9 +81,9 @@ func (e *undecryptableRows) Error() string {
 }
 
 // rekeyRewriter is the crypto half of RekeyUpstreams: it classifies EVERY row
-// before deciding — so one run names every dead row — and returns one
-// replacement per row. A v1 value already under the current key is left
-// alone (""); a legacy value is always rewritten, whatever key it opens under,
+// before deciding (so one run names every dead row) and returns one
+// replacement per row. A v1 value already under the current key is left alone
+// (""); a legacy value is always rewritten, whatever key it opens under,
 // because it carries no AAD. Every new value is opened again and compared to
 // the plaintext before it is handed back: a bug in the writer must not convert
 // the whole table to unrecoverable bytes in one commit. seal is the keyring's

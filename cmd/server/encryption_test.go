@@ -97,7 +97,7 @@ func msgs(records []map[string]any) string {
 
 // TestBootEncryptionMismatchLogsFingerprintsAndNames covers acceptance
 // criterion 3: exactly one Error record, both fingerprints, the counts, the
-// affected names — and the hint names the fix.
+// affected names, and the hint names the fix.
 func TestBootEncryptionMismatchLogsFingerprintsAndNames(t *testing.T) {
 	old, cur := mustKey(t), mustKey(t)
 	cfg := &config.Config{EncryptionKey: cur}
@@ -244,9 +244,9 @@ func TestBootNeverStampsOnMismatch(t *testing.T) {
 	}
 }
 
-// TestBootRotationPendingIsNotDegraded: the documented rotation window —
-// stored fingerprint = the key now in ENCRYPTION_KEY_PREVIOUS, every row
-// opens — is ok, one Warn, no stamp, no Error.
+// TestBootRotationPendingIsNotDegraded: the documented rotation window
+// (stored fingerprint = the key now in ENCRYPTION_KEY_PREVIOUS, every
+// row opens) is ok, one Warn, no stamp, no Error.
 func TestBootRotationPendingIsNotDegraded(t *testing.T) {
 	old, cur := mustKey(t), mustKey(t)
 	cfg := &config.Config{EncryptionKey: cur, EncryptionKeyPrevious: [][]byte{old}}
@@ -353,7 +353,7 @@ func TestEphemeralKeyAgainstCredentialsExits(t *testing.T) {
 	}
 }
 
-// TestEphemeralKeyStartsWithNoneUpstreams: the zero-config path keeps working
+// TestEphemeralKeyStartsWithNoneUpstreams: the ephemeral-key path keeps working
 // with upstreams that need no credential, whatever the dashboard stored.
 func TestEphemeralKeyStartsWithNoneUpstreams(t *testing.T) {
 	old := mustKey(t)

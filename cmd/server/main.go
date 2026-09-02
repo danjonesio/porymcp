@@ -51,7 +51,7 @@ func main() {
 	defer st.Close()
 	// Counts only, never names or urls: url is stored in plaintext and MCP
 	// endpoints commonly carry a key in the query string. Zeroes are logged as
-	// they are — a fresh install and a Postgres replica that waited on the
+	// they are, a fresh install and a Postgres replica that waited on the
 	// advisory lock both report 0, which is true: the step ran and found nothing.
 	if m := st.LastMigration(); m.Applied {
 		log.Info("schema migrated", "version", m.Version,
@@ -63,8 +63,8 @@ func main() {
 
 	// The encryption verdict is a boot fact: computed once here, handed to the
 	// two /health routes as a value, and never recomputed per request. A
-	// mismatch never aborts — the operator needs the dashboard to fix it —
-	// only the ephemeral-key guard does.
+	// mismatch never aborts (the operator needs the dashboard to fix it) only
+	// the ephemeral-key guard does.
 	encryption, err := checkEncryption(context.Background(), st, cfg, log)
 	if err != nil {
 		log.Error("encryption", "err", err)
@@ -80,7 +80,7 @@ func main() {
 	srv := newHTTPServer(cfg, r)
 
 	go func() {
-		// tls is a boolean on purpose — cert paths must not appear in logs.
+		// tls is a boolean on purpose, cert paths must not appear in logs.
 		log.Info("porymcp listening", "addr", cfg.ListenAddr, "public_url", cfg.PublicURL, "tls", cfg.TLSEnabled())
 		if err := serve(srv, cfg); err != nil && err != http.ErrServerClosed {
 			log.Error("server", "err", err)
@@ -107,7 +107,7 @@ func main() {
 //
 // An upstream whose stored slug is not a valid slug is an ERROR. The store
 // validates every stored slug once, at the migration step that introduced the
-// {slug}__{tool} identity, and never again — so a slug edited by hand in the
+// {slug}__{tool} identity, and never again, so a slug edited by hand in the
 // database afterwards arrives here unchallenged. A group's aggregate endpoint
 // composes its catalogue from that slug unconditionally, while the proxy parses
 // the name it is called with and refuses anything whose head is not a slug, so
@@ -122,22 +122,22 @@ func main() {
 // member an entry would have named is not the operator's problem while nothing
 // on the group runs at all.
 //
-// An entry scoped to a member the target does not have — "docs__search" on a
-// group holding only github — is a WARN. models.MatchToolEntry compares a
-// scoped entry's head against the identity's slug, and no tool on this target
-// carries that slug, so the entry matches nothing anywhere: on the deny side it
-// is a rule the operator believes is stopping something and which stops
-// nothing, on the allow side one that admits nothing. Membership counts the
-// group's upstreams including the disabled ones, because disabling an upstream
-// is reversible and a rule written for it is dormant rather than wrong.
+// An entry scoped to a member the target does not have ("docs__search" on a
+// group holding only github) is a WARN. models.MatchToolEntry compares a scoped
+// entry's head against the identity's slug, and no tool on this target carries
+// that slug, so the entry matches nothing anywhere: on the deny side it is a
+// rule the operator believes is stopping something and which stops nothing, on
+// the allow side one that admits nothing. Membership counts the group's
+// upstreams including the disabled ones, because disabling an upstream is
+// reversible and a rule written for it is dormant rather than wrong.
 //
-// An unscoped entry in an allow rule on a group — a bare "search" in a
-// tool_filter in mode "allow", or in a group key's tool_allowlist — is a WARN
+// An unscoped entry in an allow rule on a group (a bare "search" in a
+// tool_filter in mode "allow", or in a group key's tool_allowlist) is a WARN
 // too. The proxy skips it outright (proxy.toolPolicy.matchesAny owns the
 // reasoning), so an allow rule holding nothing else admits nothing and the
 // group or key is silently dead. The management API refuses to write one and
-// the store's migration leaves the ones already stored alone — widening an
-// allowlist is not a migration's decision to make — so this is the only place
+// the store's migration leaves the ones already stored alone (widening an
+// allowlist is not a migration's decision to make) so this is the only place
 // an operator hears about them.
 //
 // A virtual key whose tool_allowlist or tool_denylist did not decode out of
@@ -156,17 +156,17 @@ func main() {
 //
 // Nor does it report the rest of what that migration writes: a deny entry whose
 // head is not a member, standing beside "{member}__{entry}" for every member of
-// the target. That is the schema-3 rewrite's own output for a pre-v0.1 entry
-// like "mcp__fetch" — the scoped forms do the blocking, and the original is kept
+// the target. That is the schema-3 rewrite's own output for a pre-v0.1 entry like
+// "mcp__fetch", the scoped forms do the blocking, and the original is kept
 // because dropping an entry from a deny rule widens it, and because on a key's
-// lists it still matches a prompt or a resource literally called "mcp__fetch".
-// A warning there would fire on a perfectly migrated deployment on every
-// restart, and the only way to silence it would be to delete the entry: an
-// operator breaking working configuration to quieten a report, and then filtering
-// out the report anyway, taking the five findings above with it. An entry
-// covering only some of the members is a different thing and still counted —
-// it does nothing on the rest, which is a gap worth closing — and so is a
-// stranger's scope nothing else in the list mentions.
+// lists it still matches a prompt or a resource literally called "mcp__fetch". A
+// warning there would fire on a perfectly migrated deployment on every restart,
+// and the only way to silence it would be to delete the entry: an operator
+// breaking working configuration to quieten a report, and then filtering out the
+// report anyway, taking the five findings above with it. An entry covering only
+// some of the members is a different thing and still counted (it does nothing on
+// the rest, which is a gap worth closing) and so is a stranger's scope nothing
+// else in the list mentions.
 //
 // Ids, names and counts reach the log and nothing else. Entries are
 // operator-written text about someone's private deployment, and the id is
@@ -225,10 +225,10 @@ func reportToolPolicyProblems(ctx context.Context, st store.Store, log *slog.Log
 	// targetMembers answers the slugs a rule on this target may name, and false
 	// when there is nothing to compare an entry against: the upstreams could not
 	// be read, or the target itself is gone. Both mean the entries cannot be
-	// judged at all — without the slugs every scoped entry in the deployment
-	// would look like it named a member that does not exist — and a warning
-	// built on a guess is worse than no warning. The rules that need no
-	// membership are still reported in that case.
+	// judged at all (without the slugs every scoped entry in the deployment
+	// would look like it named a member that does not exist) and a warning built
+	// on a guess is worse than no warning. The rules that need no membership are
+	// still reported in that case.
 	targetMembers := func(targetType, targetID string) (map[string]bool, bool) {
 		if upstreamsErr != nil {
 			return nil, false
@@ -263,7 +263,7 @@ func reportToolPolicyProblems(ctx context.Context, st store.Store, log *slog.Log
 			continue
 		}
 		// tools and prefixes are counted together. They are matched differently
-		// — equality against HasPrefix — but a head naming no member is the same
+		// (equality against HasPrefix) but a head naming no member is the same
 		// mistake in both, and two counts for one filter would read as two
 		// separate problems to chase.
 		entries := append(append([]string(nil), tf.Tools...), tf.Prefixes...)
@@ -334,17 +334,17 @@ func policyArgs(args []any, unmatched, unscopedAllow int) []any {
 //
 // deny says these entries come from a deny rule, where one such entry is not a
 // mistake but this report's own migration talking back. The store's schema-3
-// rewrite takes a pre-v0.1 entry whose head no upstream can hold — "mcp__fetch",
-// where mcp is a reserved word — adds "{member}__mcp__fetch" for every member,
+// rewrite takes a pre-v0.1 entry whose head no upstream can hold ("mcp__fetch",
+// where mcp is a reserved word) adds "{member}__mcp__fetch" for every member,
 // and keeps the original, because removing an entry from a deny rule widens it
 // and on a key's lists the original still matches a prompt or a resource
 // literally called "mcp__fetch". The kept entry looks scoped to a stranger for
 // ever after, so counting it would warn about a deployment that migrated
-// perfectly, on every restart, and the only way to silence it would be to
-// delete the entry — breaking working configuration to quieten a report. An
-// entry whose scoped form is present for every member is therefore not counted
-// on the deny side. An operator's typo, "zzz__delete_repo", has no such
-// siblings and is counted as it always was.
+// perfectly, on every restart, and the only way to silence it would be to delete
+// the entry, breaking working configuration to quieten a report. An entry whose
+// scoped form is present for every member is therefore not counted on the deny
+// side. An operator's typo, "zzz__delete_repo", has no such siblings and is
+// counted as it always was.
 func unmatchedEntries(entries []string, members map[string]bool, deny bool) int {
 	n := 0
 	for _, e := range entries {
@@ -361,7 +361,7 @@ func unmatchedEntries(entries []string, members map[string]bool, deny bool) int 
 }
 
 // scopedForEveryMember reports whether entries holds "{slug}__{e}" for every
-// slug the target carries — the migration's own output for e, and only that.
+// slug the target carries, the migration's own output for e, and only that.
 // Covering some members and not others leaves the entry doing nothing on the
 // rest, which is a gap the operator wants told about; it is what the migration's
 // output becomes when the group gains a member afterwards.
@@ -418,7 +418,7 @@ func serve(srv *http.Server, cfg *config.Config) error {
 // under /api/v1, the proxy's shared door and per-key route, and the dashboard
 // as the fallback for everything else (spa may be nil when no dashboard is
 // built). It is a function rather than inline in main so tests can exercise
-// the real route table — the API mount, the proxy routes and the dashboard
+// the real route table, the API mount, the proxy routes and the dashboard
 // fallback all compete for the same paths, and only the assembled router
 // shows who wins.
 func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *slog.Logger, spa *webutil.SPA, encryption string) *chi.Mux {
@@ -435,11 +435,11 @@ func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *s
 	r.Get("/health", healthAlias(st, cfg, encryption, log))
 
 	// One construction for every outbound call PoryMCP makes with a real
-	// credential.
-	// The management API's discoveries go out on it; the proxy builds its own
-	// from the same construction, and mcpclient is where that policy — refuse
-	// every redirect, wrap rather than replace the default transport — lives
-	// so there is one place to forget it rather than two (PORM-94).
+	// credential. The management API's discoveries go out on it; the proxy
+	// builds its own from the same construction, and mcpclient is where that
+	// policy (refuse every redirect, wrap rather than replace the default
+	// transport) lives so there is one place to forget it rather than two
+	// (PORM-94).
 	r.Mount("/api/v1", api.New(cfg, st, log, mcpclient.New(), encryption).Routes())
 	px := proxy.New(cfg, st, auditor, log)
 	r.HandleFunc("/mcp", px.ServeHTTP)
@@ -484,8 +484,8 @@ func dispatch(args []string, out, errOut io.Writer) (code int, handled bool) {
 
 // healthcheckURL always probes 127.0.0.1. Concatenating LISTEN_ADDR onto
 // "http://127.0.0.1" produced "http://127.0.0.10.0.0.0:8080" when the
-// process bound 0.0.0.0:8080 — the container healthcheck then failed
-// even though the process was up.
+// process bound 0.0.0.0:8080, the container healthcheck then failed even
+// though the process was up.
 func healthcheckURL(listenAddr, scheme string) string {
 	port := "8080"
 	if listenAddr != "" {
@@ -501,11 +501,11 @@ func healthcheckURL(listenAddr, scheme string) string {
 // healthcheckResult is the container-liveness decision, apart from the probe
 // so it can be tested. 200 is alive. A 503 whose body says "degraded" is alive
 // too (PORM-52): the process is serving, the dashboard the operator needs is
-// reachable, and a restart cannot change an environment variable — restarting
+// reachable, and a restart cannot change an environment variable, restarting
 // it would only take working upstreams offline and, behind
 // docker-compose.tls.yml, keep Caddy from ever starting. The message is
 // printed so `docker inspect` (.State.Health.Log) says why. A 503 that says
-// "unhealthy" — the store ping failed — stays what it always was: exit 1.
+// "unhealthy" (the store ping failed) stays what it always was: exit 1.
 // Anything else, or a body that does not parse, is exit 1. An HTTP monitor on
 // GET /health still sees the 503; the tolerance lives here only.
 func healthcheckResult(status int, body webutil.HealthBody) (code int, msg string) {

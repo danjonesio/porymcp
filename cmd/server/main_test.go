@@ -67,7 +67,7 @@ func TestRouterTopology(t *testing.T) {
 		// order, the middleware and the dashboard fallback all compete.
 		{"unauthenticated discovery is refused", http.MethodPost, "/api/v1/upstreams/discover", "", 401, "application/json", "", "SPA-MARKER"},
 		// A JSON-RPC body is not an upstream payload, so this reaches the
-		// unsaved handler and is turned away for the one field it requires —
+		// unsaved handler and is turned away for the one field it requires,
 		// which is how the row proves the route resolves at all.
 		{"unsaved discovery route reaches the API", http.MethodPost, "/api/v1/upstreams/discover", "test-admin", 400, "application/json", `"url is required"`, "SPA-MARKER"},
 		{"saved discovery route reaches the API", http.MethodPost, "/api/v1/upstreams/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/discover", "test-admin", 404, "application/json", `{"error":"not found"}`, "SPA-MARKER"},
