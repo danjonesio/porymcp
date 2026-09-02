@@ -3,7 +3,7 @@ import test from 'node:test'
 import { ApiError } from './api.ts'
 import { discoverable, discoveryErrorMessage, hostOf, plainHTTPCredential, scopedToolName } from './discovery.ts'
 
-// Run with: npm test (node --test). The .ts extensions above are required —
+// Run with: npm test (node --test). The .ts extensions above are required:
 // Node will not resolve an extensionless TypeScript specifier; tsconfig.json
 // sets allowImportingTsExtensions so tsc accepts them.
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { retryAfterSeconds } from './api.ts'
 
-// Run with: npm test (node --test). The .ts extension above is required —
+// Run with: npm test (node --test). The .ts extension above is required:
 // Node will not resolve an extensionless TypeScript specifier; tsconfig.json
 // sets allowImportingTsExtensions so tsc accepts it.
 

@@ -117,12 +117,9 @@ var wordCheckExempt = map[string]bool{
 // Each rewrite commit deletes its entry; the last one deletes this variable
 // and notYetRewrittenPath, so the exemption cannot quietly regain an entry.
 var notYetRewritten = []string{
-	"web/src/",
 	"web/fs.go",
 	"web/sourceguard_test.go",
 	"web/nodanger_test.go",
-	"web/next.config.mjs",
-	"web/eslint.config.mjs",
 	"internal/api/",
 	"internal/audit/",
 	"internal/auth/",

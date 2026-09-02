@@ -39,11 +39,11 @@ function authConfigFrom(form: { auth_type: string; token: string; header: string
  * The second line of the Status cell: whether the last deliberate connection
  * test passed, and how long ago it ran. A press of Tools or Refresh records it,
  * and changing the URL, transport, auth type or credential clears it back to
- * "Not tested" — a green dot against a connection nobody has tried is worse
+ * "Not tested": a green dot against a connection nobody has tried is worse
  * than no dot.
  *
  * `nowMs` is read where the list arrives rather than here, because a clock read
- * in render is impure — the same row would print a different label on a render
+ * in render is impure: the same row would print a different label on a render
  * nothing else changed, and it would run on the prerendered pass too. Every run
  * of a test refreshes the list, so "just now" is right when it matters; there is
  * no timer, and the exact instant is in the time element either way.
@@ -72,7 +72,7 @@ function AuthCell({ upstream }: { upstream: Upstream }) {
   )
 }
 
-/** The dot is decoration — the word beside it is the whole text alternative. */
+/** The dot is decoration: the word beside it is the whole text alternative. */
 const DOT = {
   never: 'bg-zinc-400 dark:bg-zinc-500',
   passed: 'bg-lime-500 dark:bg-lime-400',
@@ -81,7 +81,7 @@ const DOT = {
 
 export default function UpstreamsPage() {
   const [items, setItems] = useState<Upstream[]>([])
-  /** When the list on screen arrived — the clock the Status cell's "3m ago" counts from. */
+  /** When the list on screen arrived: the clock the Status cell's "3m ago" counts from. */
   const [loadedAt, setLoadedAt] = useState(0)
   const [open, setOpen] = useState(false)
   const [error, setError] = useState('')
@@ -144,7 +144,7 @@ export default function UpstreamsPage() {
 
   /**
    * Edit one of the fields discovery actually used. The panel below describes
-   * the URL, transport and credential — header name included — as they were
+   * the URL, transport and credential (header name included) as they were
    * when it ran, so it is a lie the moment one of them changes. Name, slug and
    * description are not here: they only change the previewed tool names, which
    * recompute from props on every render.
@@ -170,7 +170,7 @@ export default function UpstreamsPage() {
     // The saved route stamps the row, so the table is stale the moment this
     // resolves. The refresh hangs off the promise rather than sitting inside
     // run(): closeTools bumps rowSeq, and a refresh behind that guard would be
-    // skipped in exactly the case the record was made for — a dialog closed
+    // skipped in exactly the case the record was made for: a dialog closed
     // while the handshake was still running.
     void run(rowSeq, setRowDiscovery, () => discoverUpstream(u.id)).then(refresh)
   }
@@ -192,7 +192,7 @@ export default function UpstreamsPage() {
   /**
    * Take one list from the server. The clock is read here, in a promise
    * callback, rather than in the cell that prints "3m ago": a clock read during
-   * render is impure — it would give one row two answers on two renders of the
+   * render is impure: it would give one row two answers on two renders of the
    * same data, and it would run on the prerendered pass as well.
    */
   function show(d: { upstreams: Upstream[] }) {
@@ -210,7 +210,7 @@ export default function UpstreamsPage() {
    * Read the table again, because the durable record of a test lives on the
    * server and not in the Discovery the dialog just showed. Not load(): load()'s
    * catch paints the page-level error line, and a failed background refresh
-   * after a successful test is not a page error — items stays as it was until
+   * after a successful test is not a page error: items stays as it was until
    * the next load.
    */
   function refresh() {
@@ -307,8 +307,8 @@ export default function UpstreamsPage() {
                 <TableCell>{u.transport}</TableCell>
                 <TableCell>
                   {/* The type, then what the stored credential is worth: "· set"
-                      when PoryMCP can use it, a badge when it cannot — Unreadable
-                      is the key, Incomplete is the credential — and nothing for
+                      when PoryMCP can use it, a badge when it cannot (Unreadable
+                      is the key, Incomplete is the credential) and nothing for
                       none. The Status cell's Failed line says a test failed; this
                       cell says why. */}
                   <AuthCell upstream={u} />

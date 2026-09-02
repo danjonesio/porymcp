@@ -3,7 +3,7 @@ import clsx from 'clsx'
 type Level = 1 | 2 | 3 | 4 | 5 | 6
 type HeadingProps = { level?: Level } & React.ComponentPropsWithoutRef<'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'>
 
-/** The page title — one per route, larger on a phone than from `sm`. */
+/** The page title: one per route, larger on a phone than from `sm`. */
 export function Heading({ level = 1, className, ...props }: HeadingProps) {
   const Tag = `h${level}` as const
   return (

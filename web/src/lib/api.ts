@@ -74,12 +74,12 @@ export type Upstream = {
   transport: string
   auth_type: string
   enabled: boolean
-  /** A credential blob is stored — whatever it holds. */
+  /** A credential blob is stored, whatever it holds. */
   auth_configured: boolean
   /**
    * Whether PoryMCP can use the stored credential (PORM-52), always present.
-   * `none` iff `auth_type` is none; `ok`; `undecryptable` — no configured key
-   * opens the blob, ENCRYPTION_KEY changed; `unreadable` — nothing stored, or
+   * `none` iff `auth_type` is none; `ok`; `undecryptable`: no configured key
+   * opens the blob, ENCRYPTION_KEY changed; `unreadable`: nothing stored, or
    * nothing the auth type can send (a blank token). Typed as a string like every
    * other server enum here; `authState()` in upstream-auth.ts decides what the
    * table shows, and renders nothing for a value it does not know.
@@ -88,7 +88,7 @@ export type Upstream = {
   // Required and nullable, not the `field?: string` this file uses elsewhere: the
   // Status cell is three-state, so "never tested" has to arrive as an explicit
   // null rather than as a missing key, and an Upstream is only ever produced by
-  // an api<…>() call — nothing here writes one as an object literal.
+  // an api<…>() call: nothing here writes one as an object literal.
   /** null until the first Tools/Refresh press. Written together with last_test_ok; reset by a connection edit. */
   last_test_at: string | null
   last_test_ok: boolean | null
@@ -99,7 +99,7 @@ export type Upstream = {
 /**
  * Hints an MCP server may publish beside a tool. A fixed set of fields, not open
  * JSON, so an upstream cannot decide what arrives here. Nothing renders them yet
- * — PORM-95 adds the hint chips.
+ * PORM-95 adds the hint chips.
  */
 export type ToolAnnotations = {
   title?: string
@@ -138,7 +138,7 @@ export type Discovery = {
   tools: DiscoveredTool[]
   /** True when the upstream offered more tools than this call returns. */
   truncated: boolean
-  /** Tools whose names a group endpoint cannot hold a caller to — counted, never named. */
+  /** Tools whose names a group endpoint cannot hold a caller to: counted, never named. */
   unnameable_tools: number
   /** Why the upstream did not answer: a closed set of sentences, printed verbatim. */
   error?: string
@@ -157,7 +157,7 @@ export type DiscoverPayload = {
 
 /** Discover a saved upstream, using its stored credential. The result is recorded on the row as its last test. */
 export function discoverUpstream(id: string): Promise<Discovery> {
-  // body: '{}' follows rotate/revoke — api() only sets Content-Type when there is a body.
+  // body: '{}' follows rotate/revoke: api() only sets Content-Type when there is a body.
   return api<Discovery>(`/upstreams/${id}/discover`, { method: 'POST', body: '{}' })
 }
 
@@ -229,7 +229,7 @@ export type Stats = {
   blocked_today: number
   /** Upstreams whose stored credential no configured ENCRYPTION_KEY opens (PORM-52). Drives the Overview banner. */
   undecryptable_upstreams: number
-  /** Upstreams whose stored credential is empty or unusable for its auth type — never a key problem. */
+  /** Upstreams whose stored credential is empty or unusable for its auth type, never a key problem. */
   unreadable_upstreams: number
   /** Upstreams still sealed under a previous key: a rotation `porymcp rekey` has not finished. */
   upstreams_under_previous_key: number

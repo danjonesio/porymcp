@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { authState } from './upstream-auth.ts'
 
-// Run with: npm test (node --test). The .ts extension above is required —
+// Run with: npm test (node --test). The .ts extension above is required:
 // Node will not resolve an extensionless TypeScript specifier.
 
 test('authState: ok shows the usual suffix and no badge', () => {

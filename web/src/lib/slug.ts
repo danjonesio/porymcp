@@ -3,7 +3,7 @@
 // the authority for de-duplication and for the reserved-word list, which is
 // deliberately not mirrored here.
 //
-// Parity with the Go version was brute-forced over U+0001–U+2FFFF: with the
+// Parity with the Go version was brute-forced over U+0001 to U+2FFFF: with the
 // pre-map below, zero divergences.
 export function deriveSlug(name: string): string {
   let s = name

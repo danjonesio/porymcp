@@ -16,8 +16,8 @@ function formatRate(n: number) {
 
 /**
  * The one notice the Overview shows about stored credentials (PORM-52). Driven
- * by the live counts on /stats — the same sweep the boot line and the Upstreams
- * badges use — never by /health: this notice tracks live credential state,
+ * by the live counts on /stats (the same sweep the boot line and the Upstreams
+ * badges use), never by /health: this notice tracks live credential state,
  * and /health's verdict is a boot fact. Two variants,
  * the worse one first: credentials the current key cannot read (the proxy
  * refuses those upstreams until the key or the credential is fixed), else a
@@ -26,7 +26,7 @@ function formatRate(n: number) {
  * banner's. The copy is written here: no server string is rendered.
  *
  * The caller mounts the live region itself, always, so a screen reader is
- * already observing it when content arrives — a region inserted together with
+ * already observing it when content arrives: a region inserted together with
  * its content is announced inconsistently (discovery-panel.tsx does the same).
  * The guards are written as !(n > 0) so an absent count renders nothing.
  */

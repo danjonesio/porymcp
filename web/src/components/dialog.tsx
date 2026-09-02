@@ -9,7 +9,7 @@ const widths = {
 
 /**
  * A modal dialog. Headless owns the focus trap, initial focus, focus restore,
- * scroll lock, Escape and outside-click — `onClose` is passed straight through
+ * scroll lock, Escape and outside-click: `onClose` is passed straight through
  * so every dismissal path reaches the caller. On a phone the panel is a
  * bottom sheet that slides up; from `sm:` it is a centred card that scales in.
  */

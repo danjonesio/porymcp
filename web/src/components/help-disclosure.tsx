@@ -8,7 +8,7 @@ import { ChevronDownIcon } from '@heroicons/react/16/solid'
  *
  * PoryMCP's own Headless UI disclosure, and the house pattern for every
  * component in this directory. It is deliberately the dullest possible affordance: a real button
- * that opens on click, Enter and Space and on nothing else — no hover, no
+ * that opens on click, Enter and Space and on nothing else: no hover, no
  * focus-open, nothing that fires before the reader asked. The answer expands
  * into a well below it and pushes the rest of the dialog down rather than
  * covering it, so the options it compares stay on screen while it is read.

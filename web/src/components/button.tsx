@@ -20,7 +20,7 @@ export type ButtonProps = Variant & { className?: string; children: React.ReactN
 /**
  * Shared by every look: the mobile-first size scale, the focus ring, icon
  * sizing off `data-slot="icon"` (which Heroicons emit themselves), and the
- * arrow cursor — buttons here are controls, not links. Borders are inset
+ * arrow cursor: buttons here are controls, not links. Borders are inset
  * rings so the padding needs no pixel arithmetic.
  */
 const base = clsx(

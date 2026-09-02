@@ -19,7 +19,7 @@ export function scopedToolName(slug: string, name: string): string {
 /**
  * True when a URL is one discovery can be pointed at: absolute, http or https.
  * Discover is not a submit, so the form's `required` and `type="url"` never run
- * for it — without this a press on `githu` spends a rate-limit token on a call
+ * for it: without this a press on `githu` spends a rate-limit token on a call
  * that cannot work.
  */
 export function discoverable(url: string): boolean {
@@ -34,7 +34,7 @@ export function discoverable(url: string): boolean {
 /**
  * The host for the "Connecting to …" line. URL.host never includes userinfo, so a
  * URL of the form https://user:secret@host/mcp cannot leak its credential into the
- * dashboard — the same rule the API applies to its own error strings. Pinned by a
+ * dashboard, the same rule the API applies to its own error strings. Pinned by a
  * test so nobody replaces this with a regex.
  */
 export function hostOf(url: string): string {
@@ -65,7 +65,7 @@ export function plainHTTPCredential(url: string, authType: string): boolean {
 
 /**
  * One sentence for a request that never produced a Discovery. An upstream that
- * answers badly is not this function's business — that arrives as `ok: false`
+ * answers badly is not this function's business: that arrives as `ok: false`
  * with the server's own sentence in `error`.
  */
 export function discoveryErrorMessage(err: unknown): string {

@@ -35,7 +35,7 @@ export function TableBody(props: React.ComponentPropsWithoutRef<'tbody'>) {
 
 /**
  * A row. With `href` the whole row is one link (see TableCell): it gets a
- * hover wash and draws the focus outline when its link is keyboard-focused —
+ * hover wash and draws the focus outline when its link is keyboard-focused,
  * `:focus-visible`, so a mouse click does not paint it.
  */
 const linkedRow = clsx(
@@ -66,7 +66,7 @@ export function TableHeader({ className, ...props }: React.ComponentPropsWithout
 
 /**
  * A cell. In a linked row every cell carries an absolutely-inset link so the
- * whole row is clickable, and only the first cell's link is tabbable — one
+ * whole row is clickable, and only the first cell's link is tabbable: one
  * tab stop per row. The ref callback re-renders once the cell is mounted so
  * `previousElementSibling` can be read; a counter would reset per render.
  */
