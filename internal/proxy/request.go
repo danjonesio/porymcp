@@ -39,8 +39,8 @@ const bom = "\ufeff"
 
 // parseRequest decodes an inbound MCP request and refuses anything the rest of
 // the proxy could not gate reliably. It is what lets tool policy be a single
-// check: every dispatch site downstream — the tool gate, shouldAggregate,
-// aggregate's own switch — compares the method byte-exactly, and that is only
+// check: every dispatch site downstream (the tool gate, shouldAggregate,
+// aggregate's own switch) compares the method byte-exactly, and that is only
 // sound if a body which reaches them carries exactly one call, spelled one way.
 //
 // Each rule closes a path that used to end in the body being forwarded
@@ -64,7 +64,7 @@ const bom = "\ufeff"
 //     of the two policy-relevant names: "Tools/Call" satisfied a gate keyed on
 //     the raw string and then missed shouldAggregate, so a group request
 //     skipped routing entirely. Only tools/call and tools/list are
-//     case-checked — MCP has legitimate mixed-case methods such as
+//     case-checked, MCP has legitimate mixed-case methods such as
 //     logging/setLevel and sampling/createMessage.
 //   - An object whose member names collide under case folding is two requests
 //     in one body: Go binds the last of them, an upstream looks the name up
@@ -111,8 +111,8 @@ func parseRequest(body []byte) (rpcRequest, *rpcError) {
 // win, while a JavaScript or Python server looks the key up exactly. So
 // {"method":"tools/call","Method":"ping","params":{"name":"delete_repo"}} is
 // two requests in one body: the gate reads it as ping, judges it by the key's
-// lists alone and never applies the group's tool_filter, and the upstream —
-// which the body reaches verbatim — runs tools/call delete_repo. The same
+// lists alone and never applies the group's tool_filter, and the upstream
+// (which the body reaches verbatim) runs tools/call delete_repo. The same
 // trick on params, or on params.name, hands the gate a permitted tool name and
 // the upstream a denied one. One request was judged and a different one was
 // executed, which is the whole property the gate exists to provide.
@@ -121,8 +121,8 @@ func parseRequest(body []byte) (rpcRequest, *rpcError) {
 // rather than normalised: normalising would only change what the gate reads,
 // and the body forwarded upstream would still carry both.
 //
-// A same-case duplicate ({"name":"a","name":"b"}) is not that bug — Go and
-// JavaScript both take the last one, so there is nothing to diverge — but
+// A same-case duplicate ({"name":"a","name":"b"}) is not that bug (Go and
+// JavaScript both take the last one, so there is nothing to diverge) but
 // folding the name catches it too, and refusing it costs an honest client
 // nothing.
 //

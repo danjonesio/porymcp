@@ -26,7 +26,7 @@ import (
 
 type Handler struct {
 	cfg *config.Config
-	// keys is the process keyring — ENCRYPTION_KEY plus any previous keys.
+	// keys is the process keyring, ENCRYPTION_KEY plus any previous keys.
 	// Every stored credential is opened through internal/credential before a
 	// request is built, and one that will not open is never dialled (PORM-52).
 	keys   crypto.Keyring
@@ -187,9 +187,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// operator's row and log line say which it was.
 			//
 			// A notification gets the envelope too, with "id":null. There is
-			// nothing to correlate it against, but the endpoint does not
-			// exist, so the status is the message — a 202 would tell a client
-			// its call had been accepted by a server that is not there.
+			// nothing to correlate it against, but the endpoint does not exist,
+			// so the status is the message, a 202 would tell a client its call
+			// had been accepted by a server that is not there.
 			size := writeRPCError(w, http.StatusNotFound, req.ID, -32000, "unknown endpoint")
 			h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes), "",
 				models.StatusBlocked, unknownEndpointReason(slug, err), start, size, boundedParams(req.Params))
@@ -215,8 +215,8 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	} else {
 		upstreams, group, err = h.resolveTargets(r.Context(), vk)
 		if err != nil {
-			// No upstream is contacted on this path — a valid key against a
-			// disabled upstream or an empty group provokes it — so the row is
+			// No upstream is contacted on this path (a valid key against a
+			// disabled upstream or an empty group provokes it) so the row is
 			// bounded like every other one the proxy writes for free.
 			h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes), "", models.StatusError,
 				truncate(err.Error(), auditFieldBytes), start, 0, nil)
@@ -233,16 +233,16 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// measurably different speeds.
 	//
 	// The two arms are not the same policy. tools/call gets everything. Any
-	// other method that happens to carry a params.name — prompts/get,
-	// resources/read — is judged by the key's own lists alone, which is
+	// other method that happens to carry a params.name (prompts/get,
+	// resources/read) is judged by the key's own lists alone, which is
 	// exactly the reach that check has had all along; a group's tool_filter
 	// says nothing about prompts, and PORM-6 owns making that a real policy.
 	// Methods carrying no name at all (initialize, tools/list, ping) fall
 	// through both arms untouched: permits("") is false under any allowlist,
 	// so gating them would take every key with an allowlist offline.
 	//
-	// A rule is written against a tool's identity — the member's slug and the
-	// tool's own name — and the three endpoints spell that identity
+	// A rule is written against a tool's identity (the member's slug and the
+	// tool's own name) and the three endpoints spell that identity
 	// differently. A group's aggregate endpoint advertises it whole, so the
 	// name is split back into its halves; a member endpoint and a
 	// single-upstream key show the tool's own name and name their upstream in
@@ -264,15 +264,15 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	if group == nil || member != nil {
 		// A member endpoint names its upstream in the URL, so the row can say
 		// which credential the refused call was aimed at without contacting
-		// anything — the single-upstream arm's argument, one route further on.
+		// anything, the single-upstream arm's argument, one route further on.
 		blockedUpstream = upstreams[0].ID
 	}
 	switch {
 	case method == "tools/call":
 		if !hasName {
 			// The MCP schema requires params.name, so this is a malformed
-			// request rather than a policy decision — audited as an error, not
-			// as a block, and still refused before anything is forwarded.
+			// request rather than a policy decision, audited as an error, not as
+			// a block, and still refused before anything is forwarded.
 			h.finish(vk, requestID, truncate(method, auditFieldBytes), "", "", models.StatusError, "tools/call without a tool name", start, 0, boundedParams(req.Params))
 			writeRPCError(w, http.StatusOK, req.ID, codeInvalidParams, "invalid params: tools/call requires a tool name")
 			return
@@ -284,9 +284,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			//
 			// The check is purely syntactic: one strings.Index and one pass of
 			// ValidSlug over the client's own string. It reads no group, no
-			// member and no store, so a member's slug and a stranger's cost
-			// the same and get the same answer — this route cannot be walked
-			// to find out which upstreams sit behind a group.
+			// member and no store, so a member's slug and a stranger's cost the
+			// same and get the same answer, this route cannot be walked to find
+			// out which upstreams sit behind a group.
 			//
 			// It sits before the policy because a name of the wrong shape is a
 			// malformed request rather than a policy decision, which is the
@@ -296,10 +296,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// shown a probe for a name that never existed. The row still
 			// carries the name, so the probing is visible to anyone looking.
 			//
-			// The echo is bounded because this path is free to provoke —
-			// nothing is contacted, so the reply and the row are the only cost
-			// — and truncate leaves no split rune behind. A notification gets
-			// the envelope with "id":null, as writeRPCError does everywhere.
+			// The echo is bounded because this path is free to provoke (nothing
+			// is contacted, so the reply and the row are the only cost) and
+			// truncate leaves no split rune behind. A notification gets the
+			// envelope with "id":null, as writeRPCError does everywhere.
 			size := writeRPCError(w, http.StatusOK, req.ID, codeInvalidParams, "unknown tool: "+truncate(tool, auditFieldBytes))
 			h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes), "",
 				models.StatusError, "unknown tool", start, size, boundedParams(req.Params))
@@ -344,7 +344,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	if errors.Is(err, errUnknownTool) {
 		// A name of the right shape that names no tool the group has. The
 		// client is told the same thing the gate above tells it, and the row
-		// keeps the message this path has always recorded — now bounded, since
+		// keeps the message this path has always recorded, now bounded, since
 		// the name is the client's and only the catalogue requests were spent
 		// getting here.
 		msg := "unknown tool: " + truncate(tool, auditFieldBytes)
@@ -355,8 +355,8 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	}
 	if err != nil {
 		// Bounded because the message is not always the proxy's own words: a
-		// transport error quotes what the upstream sent — a malformed header
-		// line, say — and http.Client.Do would quote an unparseable Location
+		// transport error quotes what the upstream sent (a malformed header
+		// line, say) and http.Client.Do would quote an unparseable Location
 		// the same way, a megabyte of it if the upstream sent a megabyte, were
 		// upstreamTransport not dropping that header first.
 		h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes),
@@ -406,7 +406,7 @@ func (h *Handler) hostAllowed(r *http.Request) bool {
 func (h *Handler) writeInvalidHost(w http.ResponseWriter, r *http.Request) {
 	// http.Error would be text/plain; the operator needs JSON they can parse
 	// and the seen/expected pair so a rewritten container Host is diagnosable.
-	// CIDRs stay out of the body — only the resolved host values.
+	// CIDRs stay out of the body, only the resolved host values.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -487,7 +487,7 @@ func (h *Handler) resolveTargets(ctx context.Context, vk *models.VirtualKey) ([]
 // It deliberately does not use store.GetUpstreamBySlug. A lookup across the
 // deployment would make a slug that exists elsewhere cost one row read more
 // than one that exists nowhere, and would need separate membership and enabled
-// branches — three chances to answer differently, from a route a valid key can
+// branches, three chances to answer differently, from a route a valid key can
 // call once per candidate slug.
 //
 // err is non-nil only for a failure that is not a configuration state (not
@@ -523,7 +523,7 @@ func (h *Handler) resolveMember(ctx context.Context, vk *models.VirtualKey, slug
 
 // unknownEndpointReason is the operator-facing half of the uniform 404: which
 // of the misses this was. The slug is only repeated once it has passed
-// ValidSlug — error_message is an unbounded column, and an unvalidated segment
+// ValidSlug, error_message is an unbounded column, and an unvalidated segment
 // carrying a NUL would fail a Postgres insert and drop the row entirely.
 func unknownEndpointReason(slug string, err error) string {
 	switch {
@@ -536,9 +536,9 @@ func unknownEndpointReason(slug string, err error) string {
 	}
 }
 
-// credential is the plaintext the proxy presents to an upstream, or the
-// reason it must not dial: credential.ErrUndecryptable (no configured key opens
-// the stored blob — ENCRYPTION_KEY changed) or errCredentialUnreadable (nothing
+// credential is the plaintext the proxy presents to an upstream, or the reason
+// it must not dial: credential.ErrUndecryptable (no configured key opens the
+// stored blob, ENCRYPTION_KEY changed) or errCredentialUnreadable (nothing
 // stored, or nothing the auth type can send). auth_type none is (nil, nil) and
 // never consults the blob. Both errors are bare sentinels, because they reach
 // the audit row's error_message, which is not redacted; the client sees the
@@ -554,11 +554,11 @@ const listToolsRequest = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params"
 // forward relays the client's own request to an upstream: its verb, its hop
 // headers and its body, with the virtual key swapped for the real credential.
 // Everything the client sent that an upstream might act on reaches that
-// upstream — which is exactly what makes it the wrong thing to use for a
+// upstream, which is exactly what makes it the wrong thing to use for a
 // request the proxy makes on its own behalf. See listTools.
 func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte) ([]byte, int, http.Header, error) {
 	// Before the request exists: a credential that cannot be presented means
-	// nothing is dialled — not a request with the virtual key stripped and
+	// nothing is dialled, not a request with the virtual key stripped and
 	// nothing put back, which is what a wrong ENCRYPTION_KEY used to send.
 	plain, err := h.credential(up)
 	if err != nil {
@@ -590,13 +590,13 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 // the client a vote in that: its Mcp-Session-Id, Accept, Last-Event-ID and
 // Mcp-Protocol-Version were copied to every member, and a member that refused
 // any of them was silently dropped from the merge. A bogus session id was
-// enough to make a member's tools vanish from the catalogue — and, while an
+// enough to make a member's tools vanish from the catalogue, and, while an
 // advertised name still depended on how many members answered, to move a tool
 // out from under the rule written against it.
 //
 // Nothing legitimate is lost by composing the request here. A group endpoint
-// never hands the client a member's session id — aggregate returns no upstream
-// headers and answers initialize itself — so no working client holds a session
+// never hands the client a member's session id (aggregate returns no upstream
+// headers and answers initialize itself) so no working client holds a session
 // for a member to recognise, and there is no client header a member could
 // need. The Accept below is the one the reference servers require.
 //
@@ -636,14 +636,14 @@ type upstreamTransport = mcpclient.UpstreamTransport
 // A member that fails is skipped rather than failing the whole request. That
 // is the behaviour this endpoint has always had and it is deliberately kept:
 // refusing every call while one member is unreachable would let a single
-// outage take a whole group offline, and a member answering over SSE — the
-// reference SDKs' default — is unreadable here today, so the outage would be
+// outage take a whole group offline, and a member answering over SSE (the
+// reference SDKs' default) is unreadable here today, so the outage would be
 // permanent rather than transient.
 //
 // What a dropout costs is now confined to the member that dropped out: its own
 // tools disappear from the catalogue and cannot be routed, and every other
 // member's names are exactly what they were, because each is composed from its
-// own slug. Routability is the part still tied to this walk — PORM-32 routes a
+// own slug. Routability is the part still tied to this walk, PORM-32 routes a
 // call by the slug the name carries and takes the catalogue off the call path.
 func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) ([]*models.Upstream, [][]mcpTool) {
 	active := make([]*models.Upstream, 0, len(ups))
@@ -651,8 +651,8 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 	// A dropout is otherwise invisible: the row belongs to the client's
 	// request, which succeeded on the survivors, so nothing anywhere says why
 	// a member's tools are missing. Warn rather than Debug because a member
-	// that cannot be listed stays unlistable — the commonest cause, a member
-	// answering tools/list over SSE, is permanent — and a group quietly
+	// that cannot be listed stays unlistable (the commonest cause, a member
+	// answering tools/list over SSE, is permanent) and a group quietly
 	// serving fewer tools than it was built with is worth being loud about.
 	// The error is bounded because a redirect's is the upstream's own string.
 	skip := func(up *models.Upstream, err error) {
@@ -724,16 +724,16 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		_, routes := h.buildRoutes(active, lists)
 		route, ok := routes[name]
 		if !ok {
-			// The name is a well-formed identity — serve refuses anything else
-			// before this — but no member's catalogue holds it: a tool that has
-			// gone, a member that could not be listed, or a slug belonging to
-			// no member of this group. serve answers it, so that the reply and
-			// the row are bounded there exactly as the gate's are.
+			// The name is a well-formed identity (serve refuses anything else
+			// before this) but no member's catalogue holds it: a tool that has
+			// gone, a member that could not be listed, or a slug belonging to no
+			// member of this group. serve answers it, so that the reply and the
+			// row are bounded there exactly as the gate's are.
 			return nil, 0, "", errUnknownTool
 		}
 		// No policy check here. ServeHTTP gated this call on the same
 		// advertised name before any upstream was contacted, so a check on
-		// these bytes could only ever agree with it — which is why the one
+		// these bytes could only ever agree with it, which is why the one
 		// that used to live here was unreachable, and why a group's filter
 		// went unenforced with no audit row to show for it.
 		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original))
@@ -801,7 +801,7 @@ func rpcErrorMessage(body []byte) string {
 }
 
 // block refuses one call at the gate: it answers the client, records the row
-// and returns. The caller must return too — falling through to the status
+// and returns. The caller must return too, falling through to the status
 // classification below would let rpcFailed see the error member and relabel
 // the row error, which is precisely the row an operator filtering for blocked
 // calls would never find.
@@ -893,7 +893,7 @@ func writeRPCError(w http.ResponseWriter, status int, id json.RawMessage, code i
 
 // errUnknownTool is aggregate's answer for a call that resolved to no member.
 // It is an error value rather than a ready-made body so that the one place
-// that can bound a client-controlled string against the audit row — serve —
+// that can bound a client-controlled string against the audit row (serve)
 // writes both the reply and the row, and so that this refusal and the gate's
 // cannot drift into telling a client two different things.
 var errUnknownTool = errors.New("unknown tool")
@@ -901,9 +901,9 @@ var errUnknownTool = errors.New("unknown tool")
 // A stored credential stops a request before it is built for two reasons
 // (PORM-52), both the credential package's own bare sentinels, which reach the
 // audit row's error_message as exactly their text: credential.ErrUndecryptable
-// ("credential undecryptable" — no configured key opens the blob), which
+// ("credential undecryptable" (no configured key opens the blob), which
 // propagates out of credential.Read untouched, and credential.ErrUnreadable
-// ("credential unreadable" — it opens to nothing the auth type can send),
+// ("credential unreadable") it opens to nothing the auth type can send),
 // aliased below for the ApplyAuth defence-in-depth returns. The client is told
 // "upstream request failed" like any other 502: a key holder must not learn
 // that the operator's encryption key is wrong (docs/07-security.md).

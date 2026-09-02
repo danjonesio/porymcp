@@ -4,7 +4,7 @@ import "net/http"
 
 // copyHopHeaders forwards the headers of a client's own request that an
 // upstream may need to act on. The credential the request is made with is not
-// among them — mcpclient.ApplyAuth writes that, after this, from the stored
+// among them, mcpclient.ApplyAuth writes that, after this, from the stored
 // upstream config.
 func copyHopHeaders(dst, src http.Header) {
 	for _, key := range []string{

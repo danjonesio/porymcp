@@ -22,7 +22,7 @@ import (
 // counters on every stub.
 
 // toolCall builds a tools/call body. id is raw JSON so a test can send an
-// integer larger than a float64 holds exactly, a string, or — with "" — no id
+// integer larger than a float64 holds exactly, a string, or (with "") no id
 // at all, which makes the request a notification.
 func toolCall(id, name string) string {
 	if id == "" {
@@ -144,7 +144,7 @@ func TestGroupToolFilterHidesFromList(t *testing.T) {
 }
 
 // AC4 at the proxy level: the row an operator filters for is status=blocked,
-// and it names the rule that fired. Returning early is what makes that true —
+// and it names the rule that fired. Returning early is what makes that true,
 // falling through would let the error member in the response body relabel the
 // row as an error.
 func TestBlockedCallIsAuditedAsBlocked(t *testing.T) {
@@ -183,7 +183,7 @@ func TestBlockedCallIsAuditedAsBlocked(t *testing.T) {
 	// A key bound to one upstream shows the tool's own name and accepts both
 	// spellings of a rule about it: the identity, whose head is that upstream's
 	// slug, and the bare name. The two sub-tests are the same block written
-	// each way, and the client's call is "delete_repo" in both — the entry
+	// each way, and the client's call is "delete_repo" in both, the entry
 	// changes, never what a client has to send.
 	t.Run("virtual key denylist", func(t *testing.T) {
 		f := newSingleFixture(t, upstreamSpec{Tools: []string{"delete_repo"}}, nil, []string{"solo__delete_repo"})
@@ -236,7 +236,7 @@ func TestKeyAllowlistNarrowsGroupAllow(t *testing.T) {
 }
 
 // Tripwire. permits("") is false under any allowlist, so a gate that ran on
-// every method — rather than only on the ones that name a tool — would refuse
+// every method (rather than only on the ones that name a tool) would refuse
 // initialize, tools/list and ping for every key that has an allowlist, which
 // is every one of those keys offline.
 func TestKeyAllowlistDoesNotBlockNonToolMethods(t *testing.T) {
@@ -285,7 +285,7 @@ func TestGroupAllowFilterDoesNotBlockListOrInitialize(t *testing.T) {
 // The bare entry here is the tripwire for modeLiteral. A prompt name is not a
 // tool identity: it is matched whole, with no slug composed into it and no
 // unscoped entry skipped for naming no member. Rewrite this entry as
-// "solo__secret_prompt" and it must stop matching — that is the failure the
+// "solo__secret_prompt" and it must stop matching, that is the failure the
 // literal mode exists to prevent, and it would be silent.
 func TestPromptsGetStillHonoursKeyDenylist(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{Tools: []string{"safe_tool"}}, nil, []string{"secret_prompt"})
@@ -324,7 +324,7 @@ func TestToolCallWithoutStringNameFailsClosed(t *testing.T) {
 		{"empty params", head + `,"params":{}}`},
 		{"absent params", head + `}`},
 		// Go's decoder turns a lone surrogate into U+FFFD while JavaScript and
-		// Python clients keep it, and the body is forwarded verbatim — so the
+		// Python clients keep it, and the body is forwarded verbatim, so the
 		// name the proxy would authorise is not the one the upstream executes.
 		{"lone surrogate", head + `,"params":{"name":"\ud800"}}`},
 		{"control character", head + `,"params":{"name":"a\u0001b"}}`},
@@ -449,7 +449,7 @@ func TestMalformedToolFilterFailsClosed(t *testing.T) {
 }
 
 // A blocked call costs zero upstream requests, so the audit write is the only
-// cost of sending one — and audit.Record redacts params on the request
+// cost of sending one, and audit.Record redacts params on the request
 // goroutine before they are stored. Both ends of the row are bounded.
 func TestBlockedAuditRowIsBounded(t *testing.T) {
 	t.Run("params", func(t *testing.T) {
@@ -524,13 +524,13 @@ func TestToolFilterIdentityAppliesOnBothPaths(t *testing.T) {
 
 // AC6. A key bound to one upstream is a pass-through: the client sees the
 // upstream's own names and calls them by those names. Only the rules change
-// shape, and both shapes are legal there — the identity, whose head must be
+// shape, and both shapes are legal there, the identity, whose head must be
 // that upstream's slug, and the bare name.
 func TestSingleUpstreamKeyKeepsOriginalNames(t *testing.T) {
 	t.Run("the catalogue is the upstream's own", func(t *testing.T) {
 		f := newSingleFixture(t, upstreamSpec{Tools: []string{"safe_tool", "danger"}}, nil, nil)
 		if got := strings.Join(listedNames(t, f.post(listRequest).Body.Bytes()), ","); got != "danger,safe_tool" {
-			t.Errorf("listed %q want danger,safe_tool — a 1:1 key prefixes nothing", got)
+			t.Errorf("listed %q want danger,safe_tool: a 1:1 key prefixes nothing", got)
 		}
 	})
 
@@ -565,7 +565,7 @@ func TestSingleUpstreamKeyKeepsOriginalNames(t *testing.T) {
 }
 
 // D4. A prefixes entry names a shape of tool name, and the tool's own name is
-// the only thing that shape can be measured against — on every path. Matched
+// the only thing that shape can be measured against, on every path. Matched
 // against a group's composed names instead, "delete_" would match nothing at
 // all and the deny would fail open with the real credential presented.
 func TestPrefixesMatchTheOriginalNameOnEveryPath(t *testing.T) {
@@ -617,7 +617,7 @@ func TestScopedPrefixEmptyRest(t *testing.T) {
 // The same entry read the wrong way round would be inert. "github__" is not a
 // tool name and does not prefix any tool's own name, so an implementation that
 // dropped the head or refused an empty rest would leave this filter matching
-// nothing — a deny that looks written and enforces nothing.
+// nothing, a deny that looks written and enforces nothing.
 func TestSlugShapedPrefixIsNotInert(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{
 		"github": {"create_issue", "delete_repo"},
@@ -631,7 +631,7 @@ func TestSlugShapedPrefixIsNotInert(t *testing.T) {
 
 // The head of a scoped entry is a member check, not a string prefix of the
 // composed name. gh advertises a tool actually called docs__exfiltrate, so an
-// allow rule for the docs member must not admit it — reading the entry as a
+// allow rule for the docs member must not admit it, reading the entry as a
 // prefix of the tool's own name would.
 func TestScopedAllowPrefixIsMemberScoped(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{
@@ -648,7 +648,7 @@ func TestScopedAllowPrefixIsMemberScoped(t *testing.T) {
 
 // An allow entry on a group that names no member admits nothing. The
 // management API refuses to write one, so this seeds the filter straight
-// through the store — which is also how a filter written before the identity
+// through the store, which is also how a filter written before the identity
 // grammar existed arrives. Reading it as "this name on every member" would
 // widen an operator's rule to the whole group, so it is read as naming nothing
 // instead, and the startup report says which group holds it.
@@ -682,7 +682,7 @@ func TestUnscopedAllowEntryAdmitsNothingOnAGroup(t *testing.T) {
 
 // A group of one is still a group. Its member's tools are advertised as
 // identities, and the allow rule that governs them must name the member even
-// though there is only one it could mean — the alternative is a rule whose
+// though there is only one it could mean, the alternative is a rule whose
 // meaning changes the day a second member is added.
 func TestOneMemberGroupIsAGroup(t *testing.T) {
 	t.Run("an unscoped allow entry admits nothing", func(t *testing.T) {
@@ -710,7 +710,7 @@ func TestOneMemberGroupIsAGroup(t *testing.T) {
 // R5. A prompt name is not a tool identity, so a key's lists are matched
 // against it whole: an entry holding the separator blocks the prompt of exactly
 // that name, and a bare entry is not skipped for naming no member. Both halves
-// fail silently if the tool grammar is reused here — the entry simply stops
+// fail silently if the tool grammar is reused here, the entry stops
 // matching, and a denylist that reads as enforced enforces nothing.
 func TestKeyListsOnlyMatchesEntriesLiterally(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{"docs": {"search"}, "gh": {"read"}},
@@ -817,7 +817,7 @@ func TestPolicyGateAgreesWithCatalogue(t *testing.T) {
 			t.Errorf("%s: HTTP code=%d want 200; body=%s", call, rr.Code, rr.Body.String())
 		}
 		if code, _, _ := rpcErrorOf(t, rr.Body.Bytes()); code != codeInvalidParams {
-			t.Errorf("%s: rpc code=%d want %d — a name the catalogue withholds must be refused", call, code, codeInvalidParams)
+			t.Errorf("%s: rpc code=%d want %d: a name the catalogue withholds must be refused", call, code, codeInvalidParams)
 		}
 		if c.slug != "" {
 			if got := f.count(c.slug, "tools/call", c.name); got != 0 {

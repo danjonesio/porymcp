@@ -15,7 +15,7 @@ import (
 
 // A member endpoint is the aggregate endpoint's opposite: nothing is merged,
 // nothing is synthesised and nothing is renamed. Every test here therefore
-// asserts two things at once — what the one named member saw, and that the
+// asserts two things at once, what the one named member saw, and that the
 // other members of the same group saw nothing at all. The aggregate contrast
 // is pinned beside it in the same test wherever the two could drift, because
 // the failure this route has is silent: serve the merged catalogue at
@@ -42,7 +42,7 @@ func TestPerUpstreamRouteHitsOnlyThatMember(t *testing.T) {
 		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
 	}
 	if got, want := strings.Join(listedNames(t, rr.Body.Bytes()), ","), "only_alpha,search"; got != want {
-		t.Errorf("listed %q want %q — a member endpoint advertises the member's own names, unprefixed", got, want)
+		t.Errorf("listed %q want %q: a member endpoint advertises the member's own names, unprefixed", got, want)
 	}
 	if n := f.totalReqs("beta"); n != 0 {
 		t.Errorf("beta saw %d requests for a list on alpha's endpoint; the member route must not merge", n)
@@ -82,7 +82,7 @@ func TestPerUpstreamRouteHitsOnlyThatMember(t *testing.T) {
 }
 
 // AC2a. initialize on a member endpoint is the member's own answer, byte for
-// byte — its protocol version, its serverInfo, its capabilities, its
+// byte, its protocol version, its serverInfo, its capabilities, its
 // instructions. The aggregate endpoint synthesises one instead, and a client
 // that got the synthesised answer from a 1:1 endpoint would believe the server
 // has no prompts and no resources.
@@ -176,7 +176,7 @@ func TestPerUpstreamSessionRoundTrips(t *testing.T) {
 	})
 }
 
-// AC3. Every way a member endpoint can fail to resolve answers identically —
+// AC3. Every way a member endpoint can fail to resolve answers identically,
 // same status, same code, same message, same echoed id, same audit shape, and
 // no upstream contacted. That uniformity is the whole security property: a
 // valid key must not be able to walk this route and learn which slugs the
@@ -277,7 +277,7 @@ func TestPerUpstreamUnresolvableSlugIsNotFound(t *testing.T) {
 				t.Errorf("rpc code=%d want -32000", code)
 			}
 			if msg != "unknown endpoint" {
-				t.Errorf("message=%q want %q — every miss says the same thing", msg, "unknown endpoint")
+				t.Errorf("message=%q want %q: every miss says the same thing", msg, "unknown endpoint")
 			}
 			if id != float64(9) {
 				t.Errorf("id=%v want 9; a client that cannot match the error waits out its own timeout", id)
@@ -298,8 +298,8 @@ func TestPerUpstreamUnresolvableSlugIsNotFound(t *testing.T) {
 		})
 	}
 
-	// The security assertion. Anything that told these cases apart — a
-	// different message, a different id, a stray space — would be an oracle a
+	// The security assertion. Anything that told these cases apart (a
+	// different message, a different id, a stray space) would be an oracle a
 	// valid key could walk to enumerate the deployment's slugs.
 	if len(bodies) != 1 {
 		keys := make([]string, 0, len(bodies))
@@ -329,8 +329,8 @@ func disable(t *testing.T, f *fixture, id string) {
 // AC6. A rule is written against a tool's identity, and a member endpoint is
 // the path where the client's spelling and the rule's differ: the client sends
 // the member's own bare name and the entry names {slug}__{tool}, so the policy
-// composes the slug the URL already carries. An entry's rest — and every
-// prefixes entry — is matched against the tool's own name, which is what lets
+// composes the slug the URL already carries. An entry's rest (and every
+// prefixes entry) is matched against the tool's own name, which is what lets
 // one entry mean the same thing here as on the group's endpoint.
 func TestPerUpstreamToolFilterBlocksWithComposedIdentity(t *testing.T) {
 	// Slugs sort docs, github, so the seeded ids are u1 and u2.
@@ -501,7 +501,7 @@ func TestPerUpstreamDeleteForwardsSession(t *testing.T) {
 		t.Fatalf("alpha saw %d requests, want 1", len(reqs))
 	}
 	if reqs[0].HTTPMethod != http.MethodDelete {
-		t.Errorf("alpha saw %s, want DELETE — forward replays the client's verb", reqs[0].HTTPMethod)
+		t.Errorf("alpha saw %s, want DELETE: forward replays the client's verb", reqs[0].HTTPMethod)
 	}
 	if got := reqs[0].Header.Get("Mcp-Session-Id"); got != "sess-alpha-1" {
 		t.Errorf("alpha saw Mcp-Session-Id=%q want sess-alpha-1", got)
@@ -533,7 +533,7 @@ func TestPerUpstreamBlockedNotificationReturns202(t *testing.T) {
 
 // N4. Authentication runs before anything else, on every route. A key that is
 // revoked, expired or over its budget is refused on a member URL without the
-// slug being looked at — so an invalid key learns nothing about the
+// slug being looked at, so an invalid key learns nothing about the
 // deployment's members, and a revoked one cannot keep using the new route.
 func TestPerUpstreamAuthRunsBeforeAnySlugWork(t *testing.T) {
 	t.Run("revoked", func(t *testing.T) {
@@ -601,7 +601,7 @@ func mutateKey(t *testing.T, f *fixture, fn func(*models.VirtualKey)) {
 // D21. Two URL shapes the router produces that no document advertises, pinned
 // so a later change to the route table has to argue with a test.
 func TestPerUpstreamRouteEdgeShapes(t *testing.T) {
-	// "mcp" is a reserved slug, so no upstream can carry it — but the reserved
+	// "mcp" is a reserved slug, so no upstream can carry it, but the reserved
 	// list is not what makes /a1/mcp/mcp unambiguous. chi routes it as a
 	// member endpoint with slug "mcp", and it 404s like any other slug no
 	// member has. The reserved list is defence in depth, not the mechanism.
@@ -621,8 +621,8 @@ func TestPerUpstreamRouteEdgeShapes(t *testing.T) {
 
 	// The member analogue of the shared /mcp door: an empty keyID skips the
 	// endpoint-binding check, so the request resolves against the caller's own
-	// key. No cross-key reach — the key still only ever reaches its own
-	// members — but it is a second URL for every member. PORM-66 covers the
+	// key. No cross-key reach (the key still only ever reaches its own
+	// members) but it is a second URL for every member. PORM-66 covers the
 	// trailing-slash sibling of this.
 	t.Run("an empty key id is the keyless member door", func(t *testing.T) {
 		f := newGroupFixture(t, map[string][]string{"gh": {"safe_tool"}, "docs": {"other"}}, nil, nil, nil)

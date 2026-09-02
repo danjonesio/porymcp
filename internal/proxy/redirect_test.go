@@ -15,8 +15,8 @@ import (
 
 // A redirect is the one upstream answer that asks the proxy to do something
 // with the credential rather than something with the response, so every test
-// here asserts the same thing first: the recorder below — a second server the
-// upstream points at — saw nothing at all. What the client is told and what
+// here asserts the same thing first: the recorder below (a second server the
+// upstream points at) saw nothing at all. What the client is told and what
 // the operator's row says come after that, because they only matter once the
 // secret has stayed where it was put.
 
@@ -26,12 +26,12 @@ import (
 // with the Logs page open.
 const redirectQueryMarker = "SECRET-QUERY-STRING"
 
-// recorder is the redirect target — the host the credential must never reach.
+// recorder is the redirect target, the host the credential must never reach.
 // It is addressed as localhost while httptest binds 127.0.0.1, so it is a
 // DIFFERENT host to Go: net/http drops Authorization across a host change and
 // copies every other header, which is why bearer looks safe and the other
 // three auth types are not. Once CheckRedirect returns ErrUseLastResponse none
-// of that is consulted — no second request is made at all — so the naming
+// of that is consulted (no second request is made at all) so the naming
 // matters only to make the failure on an unfixed proxy the one PORM-94
 // documents. The swap is best-effort: should httptest ever bind [::1] the two
 // names would be one host again, and only the red run's shape would change.
@@ -39,7 +39,7 @@ type recorder struct {
 	mu   sync.Mutex
 	reqs []recordedRequest
 	URL  string // http://localhost:<port>
-	Host string // localhost:<port> — the only part an audit row may name
+	Host string // localhost:<port>: the only part an audit row may name
 }
 
 func newRecorder(t *testing.T) *recorder {
@@ -143,9 +143,9 @@ func TestUpstreamRedirectIsNotFollowed(t *testing.T) {
 			// 2. Exactly one request reached the upstream itself: refused, not
 			//    retried.
 			if n := f.totalReqs(tc.slug); n != 1 {
-				t.Errorf("%s saw %d requests, want exactly 1 — a redirect must not be replayed", tc.slug, n)
+				t.Errorf("%s saw %d requests, want exactly 1: a redirect must not be replayed", tc.slug, n)
 			}
-			// 3. No other member of the group was drawn into it — counted as a
+			// 3. No other member of the group was drawn into it: counted as a
 			//    total, so a fan-out under a rewritten name would show too.
 			for _, other := range redirectAuthCases {
 				if other.slug == tc.slug {
@@ -178,7 +178,7 @@ func TestUpstreamRedirectIsNotFollowed(t *testing.T) {
 				t.Errorf("error_message=%q want it to name the redirect", row.ErrorMessage)
 			}
 			if !strings.Contains(row.ErrorMessage, b.Host) {
-				t.Errorf("error_message=%q want it to name %q — an operator has to know which host was aimed at", row.ErrorMessage, b.Host)
+				t.Errorf("error_message=%q want it to name %q: an operator has to know which host was aimed at", row.ErrorMessage, b.Host)
 			}
 			for _, leak := range []string{redirectQueryMarker, "/oauth/callback"} {
 				if strings.Contains(row.ErrorMessage, leak) {
@@ -186,19 +186,19 @@ func TestUpstreamRedirectIsNotFollowed(t *testing.T) {
 				}
 			}
 			if len(row.ErrorMessage) > auditFieldBytes {
-				t.Errorf("error_message is %d bytes, want at most %d — the host is the upstream's own string", len(row.ErrorMessage), auditFieldBytes)
+				t.Errorf("error_message is %d bytes, want at most %d: the host is the upstream's own string", len(row.ErrorMessage), auditFieldBytes)
 			}
 		})
 	}
 }
 
 // Every 3xx is one refusal, not only the five Go would have followed. The verb
-// and body Go would have sent differ by code — 301/303 arrive at the target as
+// and body Go would have sent differ by code (301/303 arrive at the target as
 // a GET with no body, 307/308 as the original POST carrying the client's own
-// JSON-RPC request — while 300 and a Location-less 3xx were not followed at
-// all and were relayed to the client as a success, Location attached. 304
-// appears twice: once carrying a Location, which nothing stops an upstream
-// doing, and once without, as the no-Location case.
+// JSON-RPC request) while 300 and a Location-less 3xx were not followed at all
+// and were relayed to the client as a success, Location attached. 304 appears
+// twice: once carrying a Location, which nothing stops an upstream doing, and
+// once without, as the no-Location case.
 func TestUpstreamRedirectStatusCodes(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -245,7 +245,7 @@ func TestUpstreamRedirectStatusCodes(t *testing.T) {
 					t.Errorf("error_message=%q want %q", row.ErrorMessage, want)
 				}
 			} else if row.ErrorMessage != "upstream redirected" {
-				t.Errorf("error_message=%q want exactly %q — there was no host to name", row.ErrorMessage, "upstream redirected")
+				t.Errorf("error_message=%q want exactly %q: there was no host to name", row.ErrorMessage, "upstream redirected")
 			}
 		})
 	}
@@ -284,7 +284,7 @@ func TestUpstreamRedirectRefusedOnEveryVerb(t *testing.T) {
 }
 
 // A relative Location names no host, and following it is what Go does ten
-// times over — each hop carrying the real credential — before giving up with a
+// times over (each hop carrying the real credential) before giving up with a
 // *url.Error whose message holds the path and query string the upstream chose.
 // One request, one row, no host, and nothing of the Location's text.
 func TestUpstreamRelativeRedirectNamesNoHost(t *testing.T) {
@@ -301,11 +301,11 @@ func TestUpstreamRelativeRedirectNamesNoHost(t *testing.T) {
 		t.Fatalf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
 	}
 	if n := f.totalReqs("solo"); n != 1 {
-		t.Errorf("the upstream saw %d requests, want exactly 1 — a relative Location is followed ten times, each hop with the real credential", n)
+		t.Errorf("the upstream saw %d requests, want exactly 1: a relative Location is followed ten times, each hop with the real credential", n)
 	}
 	row := f.waitAudit(models.LogFilter{Status: models.StatusError, Tool: "ping_tool"})[0]
 	if row.ErrorMessage != "upstream redirected" {
-		t.Errorf("error_message=%q want %q — there was no host to name", row.ErrorMessage, "upstream redirected")
+		t.Errorf("error_message=%q want %q: there was no host to name", row.ErrorMessage, "upstream redirected")
 	}
 	for _, leak := range []string{redirectQueryMarker, "elsewhere"} {
 		if strings.Contains(row.ErrorMessage, leak) {
@@ -320,7 +320,7 @@ func TestUpstreamRelativeRedirectNamesNoHost(t *testing.T) {
 // see on its own: Go parses a Location before it consults CheckRedirect and
 // would hand back a *url.Error quoting the raw header, query string included.
 // upstreamTransport drops such a Location first, so the row is the bare
-// refusal and nothing of the header survives — the bound on the audit sink is
+// refusal and nothing of the header survives, the bound on the audit sink is
 // only the backstop.
 func TestUpstreamRedirectAuditRowIsBounded(t *testing.T) {
 	cases := []struct {
@@ -370,8 +370,8 @@ func TestUpstreamRedirectAuditRowIsBounded(t *testing.T) {
 	}
 }
 
-// Everything a Location can carry beyond the host — userinfo, a path, a query
-// string — stops at the proxy, and the Location itself never reaches the
+// Everything a Location can carry beyond the host (userinfo, a path, a query
+// string) stops at the proxy, and the Location itself never reaches the
 // client, because the 502 mapping returns before the header copy-back loop.
 func TestUpstreamRedirectLocationNeverReachesTheClient(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{
@@ -409,7 +409,7 @@ func TestUpstreamRedirectLocationNeverReachesTheClient(t *testing.T) {
 
 // A member whose catalogue request is answered with a redirect drops out of
 // the merge exactly as a member that is down does, and the redirect target is
-// never contacted — a catalogue request the proxy composes for itself carries
+// never contacted, a catalogue request the proxy composes for itself carries
 // the real credential too. The rest of the group is unaffected: every
 // surviving name is composed from its own slug, so nothing moves when a member
 // disappears. The client's request still succeeds, so the log line is the only
@@ -437,14 +437,14 @@ func TestGroupCatalogueSkipsRedirectingMember(t *testing.T) {
 		t.Fatalf("the redirect target saw %d catalogue requests; a proxy-composed tools/list carries the real credential too: %+v", len(got), got)
 	}
 	if got, want := strings.Join(listedNames(t, rr.Body.Bytes()), ","), "alpha__search_docs"; got != want {
-		t.Errorf("listed %q want %q — one member's redirect must cost only that member's tools", got, want)
+		t.Errorf("listed %q want %q: one member's redirect must cost only that member's tools", got, want)
 	}
 	if n := f.totalReqs("beta"); n != 1 {
 		t.Errorf("beta saw %d requests, want 1", n)
 	}
 	row := f.waitAudit(models.LogFilter{})[0]
 	if row.Status != models.StatusSuccess {
-		t.Errorf("row status=%q want %q — the request succeeded on the surviving member", row.Status, models.StatusSuccess)
+		t.Errorf("row status=%q want %q: the request succeeded on the surviving member", row.Status, models.StatusSuccess)
 	}
 	recs := logRecords(t, logs)
 	if len(recs) != 1 {
@@ -472,7 +472,7 @@ func TestGroupCatalogueSkipsRedirectingMember(t *testing.T) {
 }
 
 // The aggregate path's other arm: the catalogue is readable, so the call
-// routes, and the redirect is met on the forward — where forward's error is
+// routes, and the redirect is met on the forward, where forward's error is
 // serve's error and the whole request fails. 307 is the shape that would have
 // replayed the client's own body at the target, and the row names the member
 // so an operator knows which credential was aimed where.
@@ -502,7 +502,7 @@ func TestGroupCallOnRedirectingMemberIs502(t *testing.T) {
 		t.Errorf("error_message=%q want it to name the redirect and %q", row.ErrorMessage, b.Host)
 	}
 	if row.UpstreamID != "u2" {
-		t.Errorf("row upstream_id=%q want %q — an operator has to know which member redirected", row.UpstreamID, "u2")
+		t.Errorf("row upstream_id=%q want %q: an operator has to know which member redirected", row.UpstreamID, "u2")
 	}
 }
 
@@ -520,11 +520,11 @@ func TestUpstreamRelayErrorMessageIsBounded(t *testing.T) {
 
 	rr := f.post(toolCall("1", "ping_tool"))
 	if rr.Code != http.StatusOK {
-		t.Fatalf("HTTP code=%d want 200 — the upstream answered, badly; the transport did not fail", rr.Code)
+		t.Fatalf("HTTP code=%d want 200: the upstream answered, badly; the transport did not fail", rr.Code)
 	}
 	row := f.waitAudit(models.LogFilter{Status: models.StatusError, Tool: "ping_tool"})[0]
 	if len(row.ErrorMessage) > auditFieldBytes {
-		t.Errorf("error_message is %d bytes, want at most %d — it is the upstream's own string", len(row.ErrorMessage), auditFieldBytes)
+		t.Errorf("error_message is %d bytes, want at most %d: it is the upstream's own string", len(row.ErrorMessage), auditFieldBytes)
 	}
 }
 
@@ -538,9 +538,9 @@ func TestProxyClientRefusesRedirectsByConstruction(t *testing.T) {
 		t.Fatal("the proxy's client has no CheckRedirect; Go follows up to ten redirects with the real credential")
 	}
 	if err := h.client.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {
-		t.Fatalf("CheckRedirect returned %v, want http.ErrUseLastResponse — any other error is wrapped in a *url.Error carrying the raw Location", err)
+		t.Fatalf("CheckRedirect returned %v, want http.ErrUseLastResponse: any other error is wrapped in a *url.Error carrying the raw Location", err)
 	}
 	if _, ok := h.client.Transport.(upstreamTransport); !ok {
-		t.Fatalf("the proxy's transport is %T, want upstreamTransport — without it a Location Go cannot parse reaches error_message verbatim", h.client.Transport)
+		t.Fatalf("the proxy's transport is %T, want upstreamTransport: without it a Location Go cannot parse reaches error_message verbatim", h.client.Transport)
 	}
 }

@@ -11,7 +11,7 @@ import (
 
 // A group's aggregate endpoint advertises one name per tool per member, and
 // that name is the tool's identity: the member's slug, two underscores, the
-// tool's own name. Every test here is about that one string — that it is
+// tool's own name. Every test here is about that one string, that it is
 // always composed, that distinct tools never share it, and that the call it
 // carries reaches the member the slug names with the name that member
 // advertises.
@@ -48,7 +48,7 @@ func TestAggregateIdentityIsInjective(t *testing.T) {
 	} {
 		assertNotBlocked(t, f.post(toolCall("1", c.call)), c.call)
 		if got := f.count(c.slug, "tools/call", c.original); got != 1 {
-			t.Errorf("%s: %s saw %d calls to %q, want 1 — the name resolved to the wrong member's credential",
+			t.Errorf("%s: %s saw %d calls to %q, want 1: the name resolved to the wrong member's credential",
 				c.call, c.slug, got, c.original)
 		}
 	}
@@ -62,7 +62,7 @@ func TestAggregateIdentityIsInjective(t *testing.T) {
 	}
 }
 
-// AC1, AC2, AC4. Every tool on a group endpoint carries its member's slug —
+// AC1, AC2, AC4. Every tool on a group endpoint carries its member's slug,
 // whether or not another member advertises the same tool, and whether or not
 // the group has more than one member. The old scheme prefixed only on a clash,
 // which made an advertised name a fact about the other members rather than
@@ -172,7 +172,7 @@ func TestAggregateCallRewritesToOriginalName(t *testing.T) {
 
 // A tool whose own name holds the separator, which is what an upstream that is
 // itself a proxy advertises. The split is at the FIRST separator, so a name
-// survives the round trip whatever it contains — and a member whose slug is the
+// survives the round trip whatever it contains, and a member whose slug is the
 // head of another member's tool name gets a different string, not a fight over
 // the same one.
 func TestAggregateToolNameContainingSeparator(t *testing.T) {
@@ -223,7 +223,7 @@ func TestAggregateDropsNamelessTools(t *testing.T) {
 }
 
 // The audit row for a block on the aggregate records the name the client used,
-// which is the identity — so the operator reading the row and the agent that
+// which is the identity, so the operator reading the row and the agent that
 // sent the call are talking about the same string.
 func TestAggregateBlockAuditsTheNameTheClientUsed(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{
@@ -344,7 +344,7 @@ func TestAggregateUnknownToolIsRefusedBeforeAnyUpstream(t *testing.T) {
 }
 
 // The other half of the same promise, for a name that IS an identity but names
-// no tool the group holds — an unknown slug, a member that could not be listed,
+// no tool the group holds, an unknown slug, a member that could not be listed,
 // a tool that has gone. This one is answered after the catalogues have been
 // fetched, so it is not free; the reply and the row are bounded all the same,
 // because the string in them is still the client's.

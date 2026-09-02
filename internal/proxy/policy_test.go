@@ -7,8 +7,8 @@ import (
 	"github.com/netcasklabs/porymcp/internal/models"
 )
 
-// A rule is matched against the tool's identity — the upstream's slug and the
-// tool's own name — and the endpoint decides how the name the client used
+// A rule is matched against the tool's identity (the upstream's slug and the
+// tool's own name) and the endpoint decides how the name the client used
 // becomes that pair. modeCompose is the shape where the two differ: the client
 // sends the tool's own name and the endpoint already knows the slug, as a
 // member endpoint and a single-upstream key both do. A scoped entry then has to
@@ -55,8 +55,8 @@ func TestToolPolicyComposedIdentity(t *testing.T) {
 	// prefixes go against the tool's own name, and getting this backwards
 	// inverts the rule rather than narrowing it. A prefixes entry names a shape
 	// of tool name; matched against a composed "{slug}__{tool}" a deny prefix
-	// would match nothing at all — the tool would be forwarded with the real
-	// credential — and an allow prefix that happens to prefix "{slug}__" would
+	// would match nothing at all (the tool would be forwarded with the real
+	// credential) and an allow prefix that happens to prefix "{slug}__" would
 	// admit every tool on the member instead of the ones it names.
 	denyPrefix := toolPolicy{
 		tf:   models.ToolFilter{Mode: "deny", Prefixes: []string{"delete_"}},
@@ -99,8 +99,8 @@ func TestToolPolicyComposedIdentity(t *testing.T) {
 }
 
 // The one rule that reads an entry as saying nothing: an allow entry on a
-// group that names no member. It cannot keep the promise an allow rule makes —
-// "this one named thing is permitted" — because on a group there is no one
+// group that names no member. It cannot keep the promise an allow rule makes
+// ("this one named thing is permitted") because on a group there is no one
 // named thing, and reading it as "on every member" would widen the rule to the
 // whole group. A deny is unaffected, and so is a key bound to one upstream.
 func TestUnscopedAllowEntryIsSkippedOnAGroup(t *testing.T) {
@@ -153,7 +153,7 @@ func TestToolPolicyZeroValueIsPermissive(t *testing.T) {
 	}
 }
 
-// active is what lets a caller skip work it does not need — rewriting a
+// active is what lets a caller skip work it does not need, rewriting a
 // tools/list response, in the commit that follows this one. The malformed row
 // is the one that matters: a filter that fails validation refuses every call,
 // so a policy that called itself inactive would leave the client holding a
@@ -218,7 +218,7 @@ func TestToolPolicyKeyListsOnly(t *testing.T) {
 	// The identity grammar goes with the filter. {slug}__{tool} is a tool
 	// identity; a prompt name is not one. If the grammar reached the key's
 	// lists, a denylist entry that works on the key's other endpoints would be
-	// inert on the member endpoint — the one shape of failure that looks like
+	// inert on the member endpoint, the one shape of failure that looks like
 	// success.
 	member := newToolPolicy(nil, &models.VirtualKey{ToolDenylist: []string{"secret_prompt"}}, modeCompose, "gh").keyListsOnly()
 	if member.mode != modeLiteral {

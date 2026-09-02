@@ -15,7 +15,7 @@ import (
 // The sharpest form of that is gone. While a tool was prefixed only when more
 // than one member advertised it, a client that could make a member drop out of
 // the merge un-collided a name and walked out from under the rule written
-// against the collided one — a bogus session id was enough. Every name now
+// against the collided one, a bogus session id was enough. Every name now
 // carries its member's slug whatever else answered, so a dropout can only
 // remove that member's own tools. It can still do that, which is why the
 // header hygiene below is still a control and not a tidy-up: a client that can
@@ -60,7 +60,7 @@ func TestRoutingListsIgnoreClientHopHeaders(t *testing.T) {
 				t.Errorf("%s: catalogue request used %s, want POST", slug, got.HTTPMethod)
 			}
 			if v, want := got.Header.Get("Accept"), "application/json, text/event-stream"; v != want {
-				t.Errorf("%s: Accept=%q want %q — the client chose what the member was allowed to answer with", slug, v, want)
+				t.Errorf("%s: Accept=%q want %q: the client chose what the member was allowed to answer with", slug, v, want)
 			}
 			if v, want := got.Header.Get("Content-Type"), "application/json"; v != want {
 				t.Errorf("%s: Content-Type=%q want %q", slug, v, want)

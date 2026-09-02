@@ -44,7 +44,7 @@ func (n namedFixture) post(rpc string) *httptest.ResponseRecorder {
 // to a single upstream, one bound to a group whose tool_filter denies
 // delete_repo, and one member endpoint of that same group. The parser runs
 // before any of them is resolved, and it has to refuse the same bodies at all
-// three doors — a member endpoint that parsed more leniently would forward a
+// three doors, a member endpoint that parsed more leniently would forward a
 // batch verbatim with the real credential, which is the bypass these rules
 // exist to close.
 func bypassFixtures(t *testing.T) []namedFixture {
@@ -177,8 +177,8 @@ func TestMethodVariantsRejected(t *testing.T) {
 // carries two spellings of one member name: Go binds the last match
 // case-insensitively, a JavaScript or Python server looks the name up exactly,
 // and the body is forwarded verbatim. Each probe below walks around a real
-// rule — the key's denylist on the single shape, the group's tool_filter on
-// the other — so a regression is a live bypass, not a lint failure.
+// rule (the key's denylist on the single shape, the group's tool_filter on the
+// other) so a regression is a live bypass, not a lint failure.
 func TestDuplicateEnvelopeKeysRejected(t *testing.T) {
 	probes := []struct{ name, body string }{
 		// Judged as tools/call safe_tool, executed as tools/call delete_repo.
@@ -347,7 +347,7 @@ func TestParseRequest(t *testing.T) {
 		{"method and Method", `{"id":1,"method":"ping","Method":"pong"}`, codeInvalidRequest, "pong"},
 		{"params and Params", `{"id":1,"method":"tools/call","params":{"name":"a"},"Params":{"name":"b"}}`, codeInvalidRequest, "tools/call"},
 		{"name and Name inside params", `{"id":1,"method":"tools/call","params":{"name":"a","Name":"b"}}`, codeInvalidRequest, "tools/call"},
-		// Not the divergence — every decoder takes the last one — but folding
+		// Not the divergence (every decoder takes the last one) but folding
 		// the name catches it as well, and no honest client sends it.
 		{"same-case duplicate", `{"id":1,"method":"ping","method":"pong"}`, codeInvalidRequest, "pong"},
 		// A non-object has no member names to bind, and arguments are

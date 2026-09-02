@@ -10,8 +10,8 @@ import (
 // The reasons a tool can be refused. They are written verbatim into the audit
 // row's error_message, because the operator's question about a block is always
 // "which rule do I edit?" and a single opaque string makes them diff the group
-// against the key by hand. The client is told none of this — it gets one
-// generic "tool blocked" — so the reason cannot be used to map out a policy
+// against the key by hand. The client is told none of this (it gets one
+// generic "tool blocked") so the reason cannot be used to map out a policy
 // from outside.
 const (
 	reasonKeyDenylist   = "blocked by virtual key denylist"
@@ -30,7 +30,7 @@ const (
 )
 
 // identityMode says how the name a client used is turned into the tool
-// identity — the member's slug and the tool's own name — that a rule entry is
+// identity (the member's slug and the tool's own name) that a rule entry is
 // matched against. The three modes are the three shapes of endpoint, and the
 // mode is what makes one entry mean the same thing on all of them.
 type identityMode int
@@ -39,12 +39,12 @@ const (
 	// modeLiteral does not resolve an identity at all: the name is matched
 	// whole against each entry. It is what methods other than tools/call are
 	// judged by (keyListsOnly), where the name is a prompt or a resource and
-	// not a tool — so a key entry "docs__search" blocks the prompt actually
+	// not a tool, so a key entry "docs__search" blocks the prompt actually
 	// called "docs__search", and nothing is split, scoped or skipped.
 	//
 	// It is the zero value, and that is deliberate: the alternative would make
-	// a toolPolicy nobody built — a struct literal in a test, a field left
-	// unset — resolve identities against an empty slug and refuse tools it was
+	// a toolPolicy nobody built (a struct literal in a test, a field left
+	// unset) resolve identities against an empty slug and refuse tools it was
 	// never given a rule about. The cost is the other direction: a production
 	// call site that forgot to pass a mode would judge a group's canonical
 	// names literally, and an unscoped deny entry would then match none of them
@@ -52,9 +52,9 @@ const (
 	// reason, serve is the only production caller, and
 	// TestServePassesTheIdentityMode is the tripwire.
 	modeLiteral identityMode = iota
-	// modeCompose is an endpoint that speaks for exactly one upstream — a
-	// member endpoint, or a key bound to a single upstream. The client sees the
-	// tool's own name, and the identity is that name together with the slug the
+	// modeCompose is an endpoint that speaks for exactly one upstream, a member
+	// endpoint, or a key bound to a single upstream. The client sees the tool's
+	// own name, and the identity is that name together with the slug the
 	// endpoint already names.
 	modeCompose
 	// modeParse is a group's aggregate endpoint, where every advertised name is
@@ -66,13 +66,13 @@ const (
 // then asked the same question by everything that needs an answer: the gate in
 // ServeHTTP before an upstream is contacted, and the filter that decides what
 // tools/list is allowed to advertise. They used to be two separate predicates
-// over the same data — keyToolAllowed for the key's lists and applyToolFilter
-// for the group's — which is how a group's tool_filter came to hide a tool
-// from the catalogue and still let it be called.
+// over the same data (keyToolAllowed for the key's lists and applyToolFilter
+// for the group's) which is how a group's tool_filter came to hide a tool from
+// the catalogue and still let it be called.
 //
 // The zero value permits everything. That is deliberate and load-bearing: a
 // field meaning "this policy was constructed properly" would make every
-// zero-value toolPolicy — a struct literal in a test, a field nobody set —
+// zero-value toolPolicy (a struct literal in a test, a field nobody set)
 // silently block every tool, so the flag is inverted to malformed instead.
 type toolPolicy struct {
 	tf    models.ToolFilter // the group's filter, empty when there is no group
@@ -84,13 +84,13 @@ type toolPolicy struct {
 	mode identityMode
 	slug string
 	// groupTarget records that the rules apply to a group rather than to one
-	// upstream. It is what makes an unscoped allow entry a rule about nothing —
+	// upstream. It is what makes an unscoped allow entry a rule about nothing,
 	// see matchesAny.
 	groupTarget bool
 	// malformed records that the group's tool_filter did not validate, which
 	// blocks every tool on that group. A filter with a typo'd mode decodes
 	// without error into a filter that matches nothing, and "matches nothing"
-	// is indistinguishable from "no filter" — so the alternative to failing
+	// is indistinguishable from "no filter", so the alternative to failing
 	// closed is an authorization bypass that looks exactly like a working
 	// deny.
 	malformed bool
@@ -133,8 +133,8 @@ func newToolPolicy(group *models.Group, vk *models.VirtualKey, mode identityMode
 }
 
 // active reports whether any rule applies. A policy that is not active cannot
-// refuse anything, so callers that only exist to enforce it — rewriting a
-// tools/list response, for one — can skip their work entirely. A malformed
+// refuse anything, so callers that only exist to enforce it (rewriting a
+// tools/list response, for one) can skip their work entirely. A malformed
 // filter is active: it refuses everything, and a catalogue listing tools that
 // can no longer be called would be the worst of both answers.
 func (p toolPolicy) active() bool {
@@ -156,7 +156,7 @@ func (p toolPolicy) blockedBy(advertised string) string {
 	if !p.active() {
 		// No rules, so nothing to resolve. Checked before the identity so that
 		// a policy with nothing to say never has an opinion about the shape of
-		// a name — the zero value included.
+		// a name, the zero value included.
 		return ""
 	}
 	id, ok := p.identity(advertised)
@@ -187,7 +187,7 @@ func (p toolPolicy) blockedBy(advertised string) string {
 
 // identity turns the name the client used into the pair a rule is written
 // against. It reports false only in modeParse, for a name that is not an
-// identity at all — one serve has already refused, and one that could match no
+// identity at all, one serve has already refused, and one that could match no
 // rule and route to no member if it ever got here.
 func (p toolPolicy) identity(advertised string) (models.ToolIdentity, bool) {
 	switch p.mode {
@@ -201,8 +201,8 @@ func (p toolPolicy) identity(advertised string) (models.ToolIdentity, bool) {
 }
 
 // matchesAny reports whether any entry names this tool. allowSide says the
-// entries come from an allow rule — a tool_filter in mode "allow", or a key's
-// tool_allowlist — which is the one place an entry can be skipped.
+// entries come from an allow rule (a tool_filter in mode "allow", or a key's
+// tool_allowlist) which is the one place an entry can be skipped.
 //
 // An unscoped allow entry on a group is skipped because it cannot mean what it
 // says. "search" as an allow entry is a promise that one named thing is
@@ -212,8 +212,8 @@ func (p toolPolicy) identity(advertised string) (models.ToolIdentity, bool) {
 // it admits nothing, the management API refuses to write one, the store's
 // migration leaves it alone (widening an allowlist is not a migration's
 // decision to make) and the startup report names the key or group holding it.
-// A deny entry has no such problem — "block this name wherever it appears" is
-// exactly what an operator writing one means — and neither does an allow entry
+// A deny entry has no such problem ("block this name wherever it appears" is
+// exactly what an operator writing one means) and neither does an allow entry
 // on a key bound to a single upstream, where every tool belongs to that
 // upstream. The skip never applies in modeLiteral: there is no member to scope
 // to, and a prompt named "search" would otherwise become uncallable.
@@ -237,14 +237,14 @@ func (p toolPolicy) matchesAny(entries []string, advertised string, id models.To
 // the upstream does not execute.
 //
 // Under modeLiteral the entry is compared with the whole name the client used,
-// which is what a prompt or resource name needs — it is not a tool identity
-// and has no slug to split off. Everywhere else models.MatchToolEntry decides,
+// which is what a prompt or resource name needs, it is not a tool identity and
+// has no slug to split off. Everywhere else models.MatchToolEntry decides,
 // which is the same function the API, the store and the startup report use, so
 // an entry cannot mean one thing where it is written and another where it is
 // enforced.
 //
 // prefix selects HasPrefix over equality, and it is the tool's OWN name that a
-// prefixes entry is matched against — never the composed one. A prefixes entry
+// prefixes entry is matched against, never the composed one. A prefixes entry
 // names a shape of tool name, "everything starting delete_", and that shape
 // does not survive composition: matched against "{slug}__{tool}" a deny prefix
 // would match nothing and fail open, while an allow prefix that happened to
@@ -277,14 +277,14 @@ func (p toolPolicy) permits(advertised string) bool { return p.blockedBy(adverti
 // allow/deny lists have always applied to anything carrying a params.name
 // (prompts/get, resources/read), while a group's tool_filter is about tools
 // and only tools. PORM-6 owns real prompt and resource policy; until then this
-// keeps PORM-19 from quietly extending the filter's reach — and keeps a group
+// keeps PORM-19 from quietly extending the filter's reach, and keeps a group
 // with a typo in its filter from blocking prompts as collateral.
 func (p toolPolicy) keyListsOnly() toolPolicy {
 	p.tf = models.ToolFilter{}
 	p.malformed = false
 	// The identity grammar goes with it. {slug}__{tool} is a TOOL identity: it
 	// exists to disambiguate one tool across the members of a group. A prompt
-	// or a resource name is not one, so it is matched whole — an entry
+	// or a resource name is not one, so it is matched whole, an entry
 	// "docs__search" blocks the prompt called "docs__search", a bare entry
 	// blocks the prompt of that name on every path, and nothing is skipped for
 	// being unscoped. Resolving one instead would silently invert both: an
@@ -292,7 +292,7 @@ func (p toolPolicy) keyListsOnly() toolPolicy {
 	// group key's allowlist would stop admitting the prompts it names. PORM-6
 	// owns real prompt and resource policy; until then this is exactly the
 	// reach the key's lists have always had. slug and groupTarget are left as
-	// they are — modeLiteral consults neither.
+	// they are, modeLiteral consults neither.
 	p.mode = modeLiteral
 	return p
 }

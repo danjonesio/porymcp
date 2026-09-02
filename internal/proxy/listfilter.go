@@ -26,11 +26,11 @@ var (
 // would let this key call, and returns the headers that still describe the
 // body it produced.
 //
-// It runs on the forward path — a single-upstream key, and a member endpoint
-// by inheritance, which is why it is guarded on being on that path rather than
-// on the key having no group. Before it, a key with an allowlist was handed
-// the upstream's entire catalogue and discovered its own policy one refused
-// call at a time.
+// It runs on the forward path, a single-upstream key, and a member endpoint by
+// inheritance, which is why it is guarded on being on that path rather than on
+// the key having no group. Before it, a key with an allowlist was handed the
+// upstream's entire catalogue and discovered its own policy one refused call
+// at a time.
 //
 // Anything it cannot prove it understands is returned exactly as it arrived.
 // That is the deliberate failure policy: the gate in ServeHTTP is the control
@@ -116,8 +116,8 @@ func (h *Handler) warnListPassThrough(vk *models.VirtualKey, up *models.Upstream
 // those fields, and re-encoding an id through an interface is how it corrupts
 // large ones.
 //
-// When nothing was removed — the common case, and every case for a key with no
-// policy — the original bytes are returned. Not re-encoding is both free and
+// When nothing was removed (the common case, and every case for a key with no
+// policy) the original bytes are returned. Not re-encoding is both free and
 // the only way to guarantee a body the proxy did not need to touch is passed
 // on byte for byte.
 func filterToolsListJSON(body []byte, pol toolPolicy) ([]byte, bool, error) {
@@ -156,7 +156,7 @@ func filterToolsListJSON(body []byte, pol toolPolicy) ([]byte, bool, error) {
 	kept := make([]json.RawMessage, 0, len(tools))
 	for _, tool := range tools {
 		// Only the name is decoded. An element that is not an object, or that
-		// carries no name, has the identity "" — which the policy then judges
+		// carries no name, has the identity "", which the policy then judges
 		// exactly as the gate would judge a call naming nothing: dropped under
 		// an allowlist, kept when only a denylist applies.
 		var probe struct {
@@ -198,9 +198,9 @@ var dataField = []byte("data:")
 // buffered event stream and copies every other byte through untouched.
 //
 // It exists because the reference MCP SDKs answer a POST with
-// text/event-stream unless they are configured not to — enableJsonResponse in
+// text/event-stream unless they are configured not to (enableJsonResponse in
 // the TypeScript transport, json_response in the Python one, both false by
-// default — so a JSON-only filter would be inert against most real upstreams
+// default) so a JSON-only filter would be inert against most real upstreams
 // and this proxy would only look like it worked against a hand-written test
 // server.
 //

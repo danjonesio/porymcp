@@ -142,7 +142,7 @@ func TestKeyPathMustMatchKey(t *testing.T) {
 
 	// The binding check reads KeyParam, which MemberRoute binds too. If the
 	// route and the lookup ever drifted, chi would hand the handler "" and
-	// this would fail open — a valid key would reach another key's members.
+	// this would fail open, a valid key would reach another key's members.
 	rr = post("http://localhost:8080/other-id/mock/mcp", ping)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("member path, mismatched key: code=%d body=%s (endpoint binding has failed open)", rr.Code, rr.Body.String())
@@ -161,20 +161,20 @@ func TestKeyPathMustMatchKey(t *testing.T) {
 		"http://localhost:8080/other-id/mock/mcp",
 	} {
 		if rr := post(url, batch); rr.Code != http.StatusForbidden {
-			t.Errorf("%s with an unparseable body: code=%d want 403, not 400 — the binding check must run before the body is read; body=%s", url, rr.Code, rr.Body.String())
+			t.Errorf("%s with an unparseable body: code=%d want 403, not 400: the binding check must run before the body is read; body=%s", url, rr.Code, rr.Body.String())
 		}
 	}
 }
 
 // TestProxyURLUnchangedAcrossRename pins the one promise the rename makes to
-// running clients: a proxy URL minted before it — /{id}/mcp with the key's id
-// — keeps working unchanged. The URL is a hard-coded literal on purpose; it is
+// running clients: a proxy URL minted before it (/{id}/mcp with the key's id)
+// keeps working unchanged. The URL is a hard-coded literal on purpose; it is
 // the string a client already holds in its config. The second half asserts
 // that the endpoint-binding check still fires under the renamed route
 // parameter: the same valid key on the wrong id must get 403, not the
 // upstream. If KeyRoute and the KeyParam lookup ever disagreed, chi would
 // return "" for the parameter and that check would silently pass every key on
-// every path — which nothing else in the suite would notice.
+// every path, which nothing else in the suite would notice.
 func TestProxyURLUnchangedAcrossRename(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

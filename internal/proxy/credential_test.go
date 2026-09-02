@@ -131,7 +131,7 @@ func TestUnreadableCredentialFailsClosed(t *testing.T) {
 
 // TestAggregateSkipsUndecryptableMember records the aggregate-endpoint answer
 // the plan settled: an undecryptable member is skipped exactly like any
-// unlistable member — its tools leave the merged catalogue, the group's
+// unlistable member, its tools leave the merged catalogue, the group's
 // tools/list is audited as a success, a call for one of its tools is "unknown
 // tool" (200, -32602), zero requests reach it, and the skip Warn names the
 // cause. The operator's signals are auth_status, /stats, the banner and the
@@ -222,8 +222,8 @@ func TestPreviousKeyStillForwards(t *testing.T) {
 }
 
 // TestAuditRowCarriesOnlyTheSentinel pins security requirement 1 on the row:
-// error_message is the sentinel text and nothing else — no fingerprint, no
-// ciphertext, no plaintext — because audit does not redact it.
+// error_message is the sentinel text and nothing else (no fingerprint, no
+// ciphertext, no plaintext) because audit does not redact it.
 func TestAuditRowCarriesOnlyTheSentinel(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, Bearer: "sk-real"}, nil, nil)
 	enc, other := foreignSealed(t, `{"token":"sk-PLAINTEXT"}`)

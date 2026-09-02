@@ -128,7 +128,6 @@ var notYetRewritten = []string{
 	"internal/crypto/",
 	"internal/mcpclient/",
 	"internal/models/",
-	"internal/proxy/",
 	"internal/webutil/",
 	"cmd/server/",
 	"docker-compose.yml",
