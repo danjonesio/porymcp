@@ -7,6 +7,7 @@ import { Link } from '@/components/link'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { Text } from '@/components/text'
 import { api, type AuditLog, type Stats } from '@/lib/api'
+import { LOADING } from '@/lib/placeholder'
 import { useEffect, useState } from 'react'
 
 function formatRate(n: number) {
@@ -99,12 +100,12 @@ export default function OverviewPage() {
 
       <div className="@container mt-8">
         <div className="grid gap-8 sm:grid-cols-2 xl:grid-cols-4">
-          <Stat title="Active virtual keys" value={stats ? String(stats.active_virtual_keys) : '—'} hint="Not revoked or expired" />
-          <Stat title="Calls today" value={stats ? String(stats.calls_today) : '—'} hint="Last 24 hours" />
-          <Stat title="Upstreams" value={stats ? String(stats.upstreams) : '—'} hint="Registered MCP servers" />
+          <Stat title="Active virtual keys" value={stats ? String(stats.active_virtual_keys) : LOADING} hint="Not revoked or expired" />
+          <Stat title="Calls today" value={stats ? String(stats.calls_today) : LOADING} hint="Last 24 hours" />
+          <Stat title="Upstreams" value={stats ? String(stats.upstreams) : LOADING} hint="Registered MCP servers" />
           <Stat
             title="Error rate"
-            value={stats ? formatRate(stats.error_rate) : '—'}
+            value={stats ? formatRate(stats.error_rate) : LOADING}
             hint={stats ? `${stats.errors_today} errors today` : undefined}
           />
         </div>

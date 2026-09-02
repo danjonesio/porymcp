@@ -16,6 +16,7 @@ import { Strong } from '@/components/text'
 import { Textarea } from '@/components/textarea'
 import { api, type Endpoint, type Group, type Upstream, type VirtualKey } from '@/lib/api'
 import { clientHint, clientLabels, clientSnippet, slugName, type ClientKind, type SnippetServer } from '@/lib/clients'
+import { ABSENT } from '@/lib/placeholder'
 import { Fragment, useEffect, useState } from 'react'
 
 /** How the dialog offers a key's endpoints: one server per upstream, or the single aggregate URL. */
@@ -201,7 +202,7 @@ export default function VirtualKeysPage() {
                 <TableCell className="font-medium">{a.name}</TableCell>
                 <TableCell className="font-mono text-zinc-500">{a.key_prefix}…</TableCell>
                 <TableCell className="max-w-xs font-mono text-zinc-500">
-                  <div className="truncate">{a.proxy_url || '—'}</div>
+                  <div className="truncate">{a.proxy_url || ABSENT}</div>
                   {(a.endpoints?.length ?? 0) > 1 ? (
                     <div className="text-base/6 sm:text-sm/6">+{a.endpoints?.length ?? 0} per-server</div>
                   ) : null}

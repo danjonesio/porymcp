@@ -8,6 +8,7 @@ import { Heading } from '@/components/heading'
 import { Input } from '@/components/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { api, type Group, type Upstream } from '@/lib/api'
+import { ABSENT } from '@/lib/placeholder'
 import { useEffect, useState } from 'react'
 
 export default function GroupsPage() {
@@ -90,7 +91,7 @@ export default function GroupsPage() {
               <TableRow key={g.id}>
                 <TableCell className="font-medium">{g.name}</TableCell>
                 <TableCell className="text-zinc-500">
-                  {g.upstream_ids.length === 0 ? 'None' : g.upstream_ids.map(nameFor).join(', ')}
+                  {g.upstream_ids.length === 0 ? ABSENT : g.upstream_ids.map(nameFor).join(', ')}
                 </TableCell>
                 <TableCell className="text-right">
                   <Button type="button" plain onClick={() => remove(g.id)}>

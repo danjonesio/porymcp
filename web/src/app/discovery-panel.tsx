@@ -33,7 +33,7 @@ export function DiscoverySummary({ result }: { result: Discovery }) {
         <dt className="text-base/7 font-medium sm:text-sm/6">Server</dt>
         {/* Upstream-controlled text: React children, left-to-right, and it wraps. */}
         <dd dir="ltr" className="mt-1 text-base/7 wrap-break-word text-zinc-500 sm:text-sm/6 dark:text-zinc-400">
-          {server || '—'}
+          {server || 'Not reported'}
         </dd>
       </div>
       <div>
