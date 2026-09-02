@@ -24,7 +24,7 @@ func TestProseStyle(t *testing.T) {
 	root := repoRoot(t)
 	var all []violation
 	for _, file := range trackedFiles(t, root) {
-		if !proseFile(file) || notYetRewrittenPath(file) {
+		if !proseFile(file) {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join(root, file))
@@ -111,21 +111,6 @@ var quotations = []struct{ Path, Contains, Reason string }{
 var wordCheckExempt = map[string]bool{
 	"docs/12-writing.md":       true,
 	"cmd/server/prose_test.go": true,
-}
-
-// notYetRewritten lists the path prefixes PORM-130 has not rewritten yet.
-// Each rewrite commit deletes its entry; the last one deletes this variable
-// and notYetRewrittenPath, so the exemption cannot quietly regain an entry.
-var notYetRewritten = []string{
-}
-
-func notYetRewrittenPath(file string) bool {
-	for _, prefix := range notYetRewritten {
-		if strings.HasPrefix(file, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // proseFile reports whether the gate scans a tracked path: the text and
