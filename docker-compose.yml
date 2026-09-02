@@ -68,7 +68,7 @@ services:
     # is the defect PORM-25 exists to remove. Host-side access:
     # docker compose --profile postgres exec postgres psql -U porymcp -d porymcp
     healthcheck:
-      # -h 127.0.0.1: probe TCP, the thing porymcp connects to,
+      # -h 127.0.0.1: probe TCP, the thing porymcp connects to;
       # initdb's temporary server answers on the Unix socket only.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U porymcp -d porymcp"]
       interval: 5s
