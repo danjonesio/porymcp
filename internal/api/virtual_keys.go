@@ -101,8 +101,8 @@ func (ix *endpointIndex) groups(ctx context.Context) (map[string]*models.Group, 
 // skipped in silence, exactly as the proxy's resolveTargets does: the API must
 // never advertise a URL the proxy would refuse, and it must not fail a whole
 // list page because one key's group lost a member. Each of those is a map miss
-// here, not an error. A ListUpstreams/ListGroups failure is different — the
-// answer would be silently incomplete — so only that propagates.
+// here, not an error. A ListUpstreams/ListGroups failure is different (the
+// answer would be silently incomplete) so only that propagates.
 //
 // The resolver reads only ID, Slug and Name; a models.Upstream carries the
 // encrypted auth_config and must never escape into a response.
@@ -138,9 +138,9 @@ func (s *Server) endpointsFor(ctx context.Context, ix *endpointIndex, vk *models
 		g, ok := grps[vk.TargetID]
 		if !ok {
 			// The group was deleted out from under the key. Reachable only by
-			// editing the database — DeleteGroup returns ErrInUse while a key
-			// references the group — but the key row is still real and must
-			// still be listed.
+			// editing the database (DeleteGroup returns ErrInUse while a key
+			// references the group) but the key row is still real and must still
+			// be listed.
 			return make([]virtualKeyEndpoint, 0), nil
 		}
 		ups, err := ix.upstreams(ctx)
@@ -154,9 +154,9 @@ func (s *Server) endpointsFor(ctx context.Context, ix *endpointIndex, vk *models
 		seen := make(map[string]bool, len(g.UpstreamIDs))
 		for _, id := range g.UpstreamIDs {
 			u, ok := ups[id]
-			// Duplicate ids are storable — the groups API does not de-dupe
-			// them — and would otherwise register one server twice in a
-			// client under the same name.
+			// Duplicate ids are storable (the groups API does not de-dupe them)
+			// and would otherwise register one server twice in a client under
+			// the same name.
 			if !ok || !u.Enabled || seen[id] {
 				continue
 			}
@@ -205,7 +205,7 @@ func (s *Server) presentVirtualKeyWithEndpoints(a *models.VirtualKey, plaintext 
 
 // presentError answers a presenter failure. It is deliberately not storeError:
 // that maps store.ErrNotFound to 404, which would report a virtual key that
-// plainly exists as missing — and would 404 a whole list page because one key's
+// plainly exists as missing, and would 404 a whole list page because one key's
 // target could not be read.
 func presentError(w http.ResponseWriter) {
 	writeError(w, http.StatusInternalServerError, "internal error")
@@ -281,13 +281,13 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// A key's own two lists outrank the group's filter — the denylist outranks
-	// everything — and the proxy matches them byte for byte, yet until now
+	// A key's own two lists outrank the group's filter (the denylist outranks
+	// everything) and the proxy matches them byte for byte, yet until now
 	// nothing checked either of them on the way in. That made them the one rule
 	// in the system that failed OPEN on a typo: a denylist entry with a
 	// trailing space is a deny that denies nothing, and it looks right in the
 	// dashboard. Everything the validator rejects is quoted back to the caller,
-	// which costs nothing — they sent it in this request.
+	// which costs nothing, they sent it in this request.
 	//
 	// Before auth.GenerateKey, not after. The plaintext key exists only in the
 	// 201 response, so a key minted for a request that then 400s is a row
@@ -295,10 +295,10 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 	// nothing; the same instinct puts endpoint resolution before the insert
 	// below.
 	//
-	// targetType is the target this key will have — defaulted and confirmed
-	// just above — and it is what decides the allow-side rule: on one upstream
-	// an unscoped entry is a bare tool name and exactly right, while on a group
-	// it names nothing the proxy will ever match.
+	// targetType is the target this key will have (defaulted and confirmed just
+	// above) and it is what decides the allow-side rule: on one upstream an
+	// unscoped entry is a bare tool name and exactly right, while on a group it
+	// names nothing the proxy will ever match.
 	groupTarget := targetType == models.TargetGroup
 	if err := models.ValidateToolList(models.FieldToolAllowlist, in.ToolAllowlist.Value, groupTarget); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -422,7 +422,7 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 	// as in.*, never as the merged key. A key written before these checks
 	// existed may hold an entry they reject, and re-checking an untouched list
 	// would make that key unrenamable, unexpirable and unrevokable through the
-	// API — a validation rule that locks operators out of their own keys is
+	// API, a validation rule that locks operators out of their own keys is
 	// worse than the entry it objects to. An operator answers for what they
 	// send.
 	//
@@ -457,13 +457,13 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 	// A key whose stored lists did not decode is the one case where a patch of
 	// a single list cannot do what it says. The scan answers nil for BOTH lists
 	// on such a key, so the merged key here carries the sent list beside a nil
-	// the operator never wrote — and the store refuses to touch either column
+	// the operator never wrote, and the store refuses to touch either column
 	// while the flag is set, which would make this request a silent no-op
 	// answered 200 with the new list echoed back. Saying so is better than
 	// either half-truth, and it names the request that works.
 	//
 	// "Sent" is presence: a null counts, because null now clears a list. One
-	// side alone must still refuse — if it cleared the flag, the store would
+	// side alone must still refuse, if it cleared the flag, the store would
 	// write both columns and an unreadable allowlist, which fails closed, would
 	// become [], which permits everything.
 	sentAllow, sentDeny := in.ToolAllowlist.Set, in.ToolDenylist.Set
@@ -572,10 +572,10 @@ func (s *Server) revokeVirtualKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A revoked key keeps its endpoints: they are a property of the target, not
-	// of the key's status, exactly as proxy_url is. The URLs simply stop
-	// authenticating. Presented after the write, so a presenter failure
-	// reports 500 for a revocation that has already happened — which is the
-	// safe direction, and revoking again is a no-op.
+	// of the key's status, exactly as proxy_url is. The URLs stop
+	// authenticating. Presented after the write, so a presenter failure reports
+	// 500 for a revocation that has already happened, which is the safe
+	// direction, and revoking again is a no-op.
 	pub, err := s.presentVirtualKey(r.Context(), &endpointIndex{store: s.store}, a, "")
 	if err != nil {
 		presentError(w)
@@ -625,7 +625,7 @@ func (s *Server) validateTarget(r *http.Request, targetType, targetID string) er
 // tools it can name is not. The allow side is where that goes wrong quietly. A
 // stranded allow entry is a permission the operator believes they granted and
 // the proxy will never grant, and when the whole list is stranded the key is
-// simply dead — it authenticates, it lists tools, and it blocks every one of
+// useless: it authenticates, it lists tools, and it blocks every one of
 // them, with nothing in the request that said so.
 //
 // Only the allow side. A deny entry that stops matching after a move stops
@@ -642,7 +642,7 @@ func (s *Server) checkRetargetedAllowlist(r *http.Request, vk *models.VirtualKey
 	case models.TargetGroup:
 		// On a group the proxy skips an unscoped allow entry rather than read
 		// it as "this name on every member", which would widen the rule to the
-		// whole group — the opposite of what an allowlist is for. So the entry
+		// whole group, the opposite of what an allowlist is for. So the entry
 		// admits nothing at all once the key lands here.
 		for _, e := range vk.ToolAllowlist {
 			if _, _, scoped := models.SplitEntry(e); !scoped {

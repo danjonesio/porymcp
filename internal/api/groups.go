@@ -138,7 +138,7 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 	// Same reasoning as createGroup, and the same write-side validator: this
 	// guards the replacement, and a rejected filter leaves the group untouched
 	// because nothing is written until UpdateGroup below. Only a filter this
-	// request actually sends is judged — a group whose stored filter predates
+	// request actually sends is judged, a group whose stored filter predates
 	// the identity rules keeps it, and can still be renamed or have members
 	// added, until someone rewrites the filter itself. A null clears the
 	// filter: Value is nil, which the validator accepts as "no filter" and the

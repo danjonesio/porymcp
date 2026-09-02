@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// TestOptionalDecode pins the three states Optional carries — absent, null
-// and value — through the same decoder entry point decodeBody uses, plus the
+// TestOptionalDecode pins the three states Optional carries (absent, null and
+// value) through the same decoder entry point decodeBody uses, plus the
 // duplicate-key rules (last wins, including a case-variant duplicate, which
 // encoding/json binds through its folded-name lookup) and the field-named type
 // error the outer decoder adds. PORM-21 security requirement 5: presence

@@ -48,12 +48,12 @@ var errSlugsExhausted = errors.New("slug candidates exhausted")
 
 type upstreamPublic struct {
 	models.Upstream
-	// AuthConfigured says a blob is stored — whatever it holds.
+	// AuthConfigured says a blob is stored, whatever it holds.
 	AuthConfigured bool `json:"auth_configured"`
 	// AuthStatus is credential.Status (PORM-52), always present: "none" iff
 	// auth_type is none (whatever the dashboard stored beside it); "ok";
-	// "undecryptable" — no configured key opens the blob, the key changed;
-	// "unreadable" — nothing stored, or nothing the auth type can send, never
+	// "undecryptable" (no configured key opens the blob, the key changed;
+	// "unreadable") nothing stored, or nothing the auth type can send, never
 	// a key problem. auth_hint appears only when ok. auth_configured false
 	// and auth_status "unreadable" together mean a non-none type with no
 	// credential yet.
@@ -86,7 +86,7 @@ func (s *Server) presentUpstream(u *models.Upstream) upstreamPublic {
 // last_test_ok are deliberately absent: they are written only by
 // POST /upstreams/{id}/discover, and a client that round-trips an upstream
 // object back through this struct must not be able to claim a test that never
-// ran. decodeBody does not DisallowUnknownFields, so the two keys are simply
+// ran. decodeBody does not DisallowUnknownFields, so the two keys are
 // ignored when they arrive.
 type upsertUpstream struct {
 	Name        Optional[string]          `json:"name"`
@@ -154,7 +154,7 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 	var slug string
 	if in.Slug.Has() {
 		slug = models.NormalizeSlug(in.Slug.Value)
-		// Blank means "derive one" on create — the dashboard posts "" for an
+		// Blank means "derive one" on create, the dashboard posts "" for an
 		// untouched field. PATCH never accepts a changed slug at all: there, a
 		// slug already exists and it is immutable.
 		if slug != "" {
@@ -169,7 +169,7 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// A null auth_config is no credential: Value is nil, encryptAuth stores
-	// nothing, and the row reports auth_configured false — not ciphertext of
+	// nothing, and the row reports auth_configured false, not ciphertext of
 	// the four bytes "null".
 	enc, err := s.encryptAuth(in.AuthConfig.Value)
 	if err != nil {
@@ -259,14 +259,14 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// there is nothing left to compare against. A change to what PoryMCP dials
 	// or presents resets the recorded test result, because a green dot beside a
 	// connection nobody has tried is worse than no dot at all. name,
-	// description and enabled never reset it — they change no part of the
+	// description and enabled never reset it, they change no part of the
 	// connection.
 	//
-	// auth_config cannot be compared: Keyring.Seal draws a fresh nonce per
-	// call, so two ciphertexts of one credential never match. A present,
-	// non-null auth_config therefore always counts as a change — the same
-	// condition the assignment below uses. An edit dialog has to omit the field
-	// when the operator did not touch it (PORM-2), or every save resets the dot.
+	// auth_config cannot be compared: Keyring.Seal draws a fresh nonce per call,
+	// so two ciphertexts of one credential never match. A present, non-null
+	// auth_config therefore always counts as a change, the same condition the
+	// assignment below uses. An edit dialog has to omit the field when the
+	// operator did not touch it (PORM-2), or every save resets the dot.
 	resetTest := (in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL) ||
 		(in.Transport.Has() && in.Transport.Value != u.Transport) ||
 		(in.AuthType.Has() && in.AuthType.Value != u.AuthType) ||
@@ -274,8 +274,8 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// Every field is an Optional (see optional.go): a key the body did not carry
 	// leaves the stored value alone, a value sets it under the same checks as
 	// create, and null clears the fields that have a cleared state. A required
-	// field sent as null or blank has nothing to fall back to — on create the
-	// same key would take its default — so it is refused rather than ignored.
+	// field sent as null or blank has nothing to fall back to (on create the
+	// same key would take its default) so it is refused rather than ignored.
 	if in.Name.Set {
 		name := strings.TrimSpace(in.Name.Value)
 		if name == "" {
@@ -287,7 +287,7 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	if in.Slug.Set {
 		// A slug is fixed at create. Sending the current value is a no-op so a
 		// client can round-trip the object; any other value is rejected, blank,
-		// null and invalid ones included — there is nothing to validate against
+		// null and invalid ones included, there is nothing to validate against
 		// because there is no legal change. To move a slug, delete and recreate.
 		if models.NormalizeSlug(in.Slug.Value) != u.Slug {
 			writeError(w, http.StatusBadRequest, errSlugImmutable)
@@ -366,7 +366,7 @@ func (s *Server) deleteUpstream(w http.ResponseWriter, r *http.Request) {
 // usableUpstreamURL reports whether PoryMCP could connect to what is being
 // stored. The check is mcpclient's own, so the write path and the outbound
 // path give one answer instead of accepting a "url" here that discovery and
-// the proxy can only refuse later — a scheme-less "localhost:8080/mcp" parses
+// the proxy can only refuse later, a scheme-less "localhost:8080/mcp" parses
 // as scheme "localhost" and was stored happily before this.
 //
 // Syntax only, and deliberately so: whether a host is one PoryMCP should dial

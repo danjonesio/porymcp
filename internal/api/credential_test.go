@@ -16,7 +16,7 @@ import (
 )
 
 // overwriteAuth writes a raw auth_config through a second connection to the
-// same file — nothing exported can store ciphertext the server's key will
+// same file, nothing exported can store ciphertext the server's key will
 // not open, or a legacy value.
 func overwriteAuth(t *testing.T, path, id, value string) {
 	t.Helper()
@@ -201,8 +201,8 @@ func (c *listCounter) ListUpstreams(ctx context.Context) ([]models.Upstream, err
 }
 
 // TestHealthDoesNotListUpstreams pins security requirement 6: the
-// unauthenticated /health issues no store read beyond Ping — the verdict is a
-// boot fact — while the admin-authenticated /stats does the sweep.
+// unauthenticated /health issues no store read beyond Ping (the verdict is a
+// boot fact) while the admin-authenticated /stats does the sweep.
 func TestHealthDoesNotListUpstreams(t *testing.T) {
 	var c *listCounter
 	_, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store {

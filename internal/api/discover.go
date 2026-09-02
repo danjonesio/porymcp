@@ -19,15 +19,15 @@ import (
 // else here reads and writes PoryMCP's own database; these two routes open a
 // connection to a host an operator chose and present a real credential to it,
 // which is why they carry budgets of their own and why the handlers below say
-// nothing to the log — except when a result could not be recorded: one DEBUG
+// nothing to the log, except when a result could not be recorded: one DEBUG
 // (row changed or gone) or one WARN (store error), each naming the upstream id
 // and nothing else.
 //
 // The HTTP status describes the request and `ok` inside the body describes the
 // upstream: an unreachable host, a refused credential and an empty catalogue
 // are all 200s, because the request was answered exactly as asked. Only the
-// request being wrong — no admin key, an unknown id, a malformed payload, a
-// spent budget — changes the status.
+// request being wrong (no admin key, an unknown id, a malformed payload, a
+// spent budget) changes the status.
 
 // discoverUpstream discovers what a stored upstream advertises.
 func (s *Server) discoverUpstream(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +103,7 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// No slug is derived. createUpstream walks candidates and de-duplicates,
-	// so an upstream previewed as "github" may well be stored as "github-2" —
+	// so an upstream previewed as "github" may well be stored as "github-2",
 	// and an operator who copied "github__search" out of this panel into a
 	// deny rule would have written one that matches nothing and fails open.
 	// With no slug the response carries no scoped_name at all, which is the
@@ -115,13 +115,13 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 	}
 	// in.AuthConfig arrives as plaintext, exactly as it does on create. It is
 	// handed straight to the client: never encrypted, never stored, and never
-	// echoed back — Discovery has no field that could hold it. A null is
+	// echoed back, Discovery has no field that could hold it. A null is
 	// forwarded as no credential, not as the four bytes "null".
 	s.runDiscovery(w, r, u, in.AuthConfig.Value, unsavedPayload)
 }
 
 // savedUpstream and unsavedPayload say whether runDiscovery has a stored row to
-// stamp. The unsaved route has none and persists nothing — that is the whole
+// stamp. The unsaved route has none and persists nothing, that is the whole
 // difference between the two routes, and it reads better at the call site than
 // a bare bool.
 const (
@@ -136,10 +136,10 @@ const (
 // answer to one question. It also means an operator who closes the dialog
 // unwinds the outbound request rather than leaving it running. The server sets
 // no WriteTimeout (cmd/server/main.go), so a slow discovery is not cut off
-// mid-response — do not add one.
+// mid-response, do not add one.
 func (s *Server) runDiscovery(w http.ResponseWriter, r *http.Request, u *models.Upstream, plain json.RawMessage, stored bool) {
 	// Acquired here rather than at the top of each handler, so a 404 or an
-	// undecryptable credential — neither of which makes an outbound call —
+	// undecryptable credential (neither of which makes an outbound call)
 	// never holds a slot a real discovery could use.
 	select {
 	case s.discovering <- struct{}{}:
@@ -171,19 +171,19 @@ const recordTimeout = 2 * time.Second
 
 // recordTest stamps u's row with the outcome of d. A caller that has gone away
 // tested nothing: a reload or a closed tab cancels r.Context() mid-handshake,
-// and transportFailure has no branch for that — it comes back as "cannot reach
+// and transportFailure has no branch for that, it comes back as "cannot reach
 // <host>", which would put a red dot on an upstream nobody tested. Same reading
 // endSession makes of the same signal. The write itself is detached with a
 // short timeout: the handshake already happened, so its result is true, and a
 // cancel arriving between the check and the write must not lose it.
 //
-// A failed write is not a failed request — the operator asked what the upstream
-// offers and that answer is composed — so the Discovery goes out either way.
+// A failed write is not a failed request (the operator asked what the upstream
+// offers and that answer is composed) so the Discovery goes out either way.
 // ErrNotFound means the row was deleted or edited during the handshake (or, for
-// a hand-edited updated_at, can never match — see RecordUpstreamTest): one
-// DEBUG line with the id, nothing to say to the operator. Anything else is one
-// WARN naming the upstream id and the store's error — never the name, the url
-// or a credential.
+// a hand-edited updated_at, can never match, see RecordUpstreamTest): one DEBUG
+// line with the id, nothing to say to the operator. Anything else is one WARN
+// naming the upstream id and the store's error, never the name, the url or a
+// credential.
 func (s *Server) recordTest(r *http.Request, u *models.Upstream, d mcpclient.Discovery) {
 	if r.Context().Err() != nil {
 		return

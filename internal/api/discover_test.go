@@ -20,7 +20,7 @@ import (
 )
 
 // mcpStub is an MCP server as the reference implementations behave: it MINTS A
-// SESSION on initialize and refuses tools/list without one. Both matter — a
+// SESSION on initialize and refuses tools/list without one. Both matter, a
 // stub that answered any request in any order is how a discovery client comes
 // to work against tests and fail against every real server.
 //
@@ -191,7 +191,7 @@ func TestDiscoverUnsavedPayloadPersistsNothing(t *testing.T) {
 	_, h, _ := testAPI(t)
 	// A saved upstream at the very URL the payload names. Counting rows alone
 	// would miss the case this exists for: the unsaved route has no id, so
-	// there is nothing for it to stamp — by construction, not by care.
+	// there is nothing for it to stamp, by construction, not by care.
 	id, _ := mustUpstream(t, h, "GitHub", map[string]any{"url": stub.srv.URL})
 
 	count := func() int {
@@ -209,7 +209,7 @@ func TestDiscoverUnsavedPayloadPersistsNothing(t *testing.T) {
 	// Stamped first, so this assertion has something to lose. While both
 	// fields are null, a route that recorded nothing and a route that tried to
 	// record and missed leave the row looking identical; against a real result
-	// any write at all — a stamp, a reset, a cleared pair — shows up.
+	// any write at all (a stamp, a reset, a cleared pair) shows up.
 	recordTestOn(t, h, id)
 	wantAt, wantOK, wantUpdated := upstreamTest(t, h, id)
 
@@ -229,19 +229,19 @@ func TestDiscoverUnsavedPayloadPersistsNothing(t *testing.T) {
 		t.Fatalf("unsaved discovery must carry no scoped_name: %s", rr.Body.String())
 	}
 	if after := count(); after != before {
-		t.Fatalf("upstream count %d → %d; discovery must persist nothing", before, after)
+		t.Fatalf("upstream count %d to %d; discovery must persist nothing", before, after)
 	}
 	gotAt, gotOK, gotUpdated := upstreamTest(t, h, id)
 	if gotAt != wantAt || gotOK != wantOK || gotUpdated != wantUpdated {
-		t.Fatalf("the unsaved route touched the saved row at the same url: at %v → %v, ok %v → %v, updated_at %q → %q",
+		t.Fatalf("the unsaved route touched the saved row at the same url: at %v to %v, ok %v to %v, updated_at %q to %q",
 			wantAt, gotAt, wantOK, gotOK, wantUpdated, gotUpdated)
 	}
 }
 
 // upstreamTest reads an upstream's recorded test result through the API, the
-// way the dashboard does. Both keys are always present — the Status cell is
+// way the dashboard does. Both keys are always present (the Status cell is
 // three-state, so "never tested" has to arrive as an explicit null rather than
-// as a missing key — and that is asserted here rather than in one test.
+// as a missing key) and that is asserted here rather than in one test.
 func upstreamTest(t *testing.T, h http.Handler, id string) (at, ok any, updatedAt string) {
 	t.Helper()
 	rr := doJSON(t, h, http.MethodGet, "/upstreams/"+id, "test-admin", nil)
@@ -337,7 +337,7 @@ func TestDiscoverSavedUpstreamRecordsTheTest(t *testing.T) {
 	wantRecentTest(t, at)
 	// A test is not an edit.
 	if updatedAfter != updatedBefore {
-		t.Fatalf("updated_at moved %q → %q; recording a test must not bump it", updatedBefore, updatedAfter)
+		t.Fatalf("updated_at moved %q to %q; recording a test must not bump it", updatedBefore, updatedAfter)
 	}
 	// And the table sees it. The dashboard never reads the row route: it
 	// re-reads the list, so the same two values have to survive the list
@@ -368,8 +368,8 @@ func TestDiscoverRecordsAFailedTest(t *testing.T) {
 }
 
 // recordSpy is the Store the Server is given, with one method watched. Both
-// facts it exists to check — that the record is made BEFORE the response is
-// written, and that it is made on a context the caller's cancel cannot reach —
+// facts it exists to check (that the record is made BEFORE the response is
+// written, and that it is made on a context the caller's cancel cannot reach)
 // are true only for the instant the store is called, and no assertion made
 // after the handler returns can see either.
 type recordSpy struct {
@@ -394,7 +394,7 @@ func (s *recordSpy) RecordUpstreamTest(ctx context.Context, id string, at time.T
 // operator sees the previous result.
 //
 // Detachment: the gate on r.Context() has already been passed by the time the
-// store is called, so a cancel arriving in between — a reload, a closed tab —
+// store is called, so a cancel arriving in between (a reload, a closed tab)
 // must not lose a result whose handshake actually happened. That is what
 // context.WithoutCancel buys, and swapping it for r.Context() leaves every
 // other test in this file green.
@@ -441,7 +441,7 @@ func TestDiscoverRecordsBeforeRespondingOnADetachedContext(t *testing.T) {
 
 // TestDiscoverCancelledRequestRecordsNothing pins the gate in recordTest. A
 // reload or a closed tab cancels the request mid-handshake, and the client has
-// no branch for that — it comes back as "cannot reach <host>", which would put
+// no branch for that, it comes back as "cannot reach <host>", which would put
 // a red dot on an upstream nobody tested. The cancel has to land WHILE the
 // handshake is running: a request cancelled before it starts dies at
 // GetUpstream and never reaches the gate at all.
@@ -512,7 +512,7 @@ func TestDiscoverEditedDuringHandshakeRecordsNothing(t *testing.T) {
 	}
 	release()
 	if code := <-codes; code != http.StatusOK {
-		t.Fatalf("discovery: %d, want 200 — a dropped record is not a failed request", code)
+		t.Fatalf("discovery: %d, want 200: a dropped record is not a failed request", code)
 	}
 
 	if at, ok, _ := upstreamTest(t, h, id); at != nil || ok != nil {
@@ -549,7 +549,7 @@ func TestDiscoverRateLimitedRecordsNothing(t *testing.T) {
 
 // TestDiscoverRecordWarnsWithIdOnly pins the one line this package may write
 // when a result cannot be stored: an upstream id and the store's error, never
-// the name, the url or a credential. A failed write is not a failed request —
+// the name, the url or a credential. A failed write is not a failed request,
 // the operator asked what the upstream offers and that answer is composed.
 func TestDiscoverRecordWarnsWithIdOnly(t *testing.T) {
 	stub := newMCPStub(t, func(s *mcpStub) {
@@ -748,7 +748,7 @@ func TestDiscoverConcurrencyCapped(t *testing.T) {
 	}
 
 	// Nothing was recorded for the call that never ran. The refusal happens
-	// before the handshake, so there is no outcome to stamp — and the four that
+	// before the handshake, so there is no outcome to stamp, and the four that
 	// did run were unsaved payloads with no row of their own.
 	if at, ok, _ := upstreamTest(t, h, id); at != nil || ok != nil {
 		t.Fatalf("the refused call recorded at=%v ok=%v; no handshake ran", at, ok)
@@ -843,9 +843,9 @@ func TestDiscoverUndecryptableCredentialMakesNoRequest(t *testing.T) {
 }
 
 // TestDiscoverUnreadableCredentialMakesNoRequest is the sibling gate for a
-// blob that opens fine but holds nothing its auth type can send — the
-// dashboard stores {} for a blank token — which must not dial either, and must
-// not be reported as a key problem (PORM-52 security requirement 3).
+// blob that opens fine but holds nothing its auth type can send (the dashboard
+// stores {} for a blank token) which must not dial either, and must not be
+// reported as a key problem (PORM-52 security requirement 3).
 func TestDiscoverUnreadableCredentialMakesNoRequest(t *testing.T) {
 	stub := newMCPStub(t)
 	_, h, _ := testAPI(t)
@@ -884,7 +884,7 @@ func TestDiscoverNeverReturnsCredential(t *testing.T) {
 	if d := discovery(t, rr); d["ok"] != true {
 		t.Fatalf("discovery = %v", d)
 	}
-	// The credential really was presented — otherwise the rest proves nothing.
+	// The credential really was presented, otherwise the rest proves nothing.
 	if got := stub.requests()[0].Header.Get("Authorization"); got != "Bearer "+token {
 		t.Fatalf("upstream saw Authorization %q", got)
 	}
@@ -907,7 +907,7 @@ func TestDiscoverURLUserinfoRedacted(t *testing.T) {
 	_, h, _ := testAPI(t)
 	// A URL carrying a secret in three places, two of which Go's own redaction
 	// keeps. Port 1 refuses on this machine; a host that drops rather than
-	// refuses produces the timeout sentence instead, so BOTH are accepted —
+	// refuses produces the timeout sentence instead, so BOTH are accepted,
 	// what this test is about is which bytes come back, not which failure.
 	id, _ := mustUpstream(t, h, "Leaky", map[string]any{
 		"url": "https://user:secret@127.0.0.1:1/mcp?tok=QUERYSECRET",
@@ -1011,7 +1011,7 @@ func TestDiscoverZeroToolsIsArray(t *testing.T) {
 
 // TestDiscoverPathIsPostOnly pins how chi resolves the static "discover" child
 // against {id}. Every other verb backtracks into the upstream handlers and
-// produces the ordinary unknown-upstream 404 — measured, not assumed, and
+// produces the ordinary unknown-upstream 404, measured, not assumed, and
 // pinned here so a chi upgrade that changed it is caught.
 func TestDiscoverPathIsPostOnly(t *testing.T) {
 	_, h, _ := testAPI(t)
@@ -1035,13 +1035,13 @@ func TestDiscoverPathIsPostOnly(t *testing.T) {
 
 // TestDiscoverLogsNothing holds the handlers to silence. The access log line
 // in cmd/server carries the id and the status and is the trace; everything
-// this package could add — the URL, the host, the upstream's own words — is
+// this package could add (the URL, the host, the upstream's own words) is
 // text a third party chose, on the one management path that pulls bytes in
 // from one.
 //
 // The one exception is a result that could not be recorded: one DEBUG (row
 // changed or gone) or one WARN (store error), each naming the upstream id and
-// nothing else — see TestDiscoverRecordWarnsWithIdOnly. Neither happens on the
+// nothing else, see TestDiscoverRecordWarnsWithIdOnly. Neither happens on the
 // happy paths below, which is why this test stays at zero.
 func TestDiscoverLogsNothing(t *testing.T) {
 	stub := newMCPStub(t)
