@@ -147,7 +147,7 @@ func Send(hc *http.Client, req *http.Request, limit int64) ([]byte, int, http.He
 }
 
 // ErrBodyTooLarge is what an upstream answer past the caller's read cap
-// becomes. Its own text names the cap and nothing about the body, the proxy
+// becomes. Its own text names the cap and nothing about the body; the proxy
 // writes it into an audit row.
 var ErrBodyTooLarge = errors.New("upstream body exceeds the read limit")
 
@@ -195,7 +195,7 @@ func HostSafe(s string) bool {
 //
 // It carries the host as a field rather than only in its message because two
 // callers report it in two places: the proxy writes Error() into an audit row,
-// and Discover has to classify it like every other failure, a Discovery's
+// and Discover has to classify it like every other failure: a Discovery's
 // error is built from templates and never from an error's own text, because a
 // transport error quotes the whole request URL, query string and all. A typed
 // host is what lets a redirect obey that rule while both callers still say the

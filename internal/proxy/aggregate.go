@@ -32,7 +32,7 @@ type toolRoute struct {
 // The composition is injective, which is the property routing depends on: a
 // valid slug holds no "__" of its own and ends alphanumeric, so the first "__"
 // in the composed name sits at exactly len(slug) whatever the tool is called,
-// and ParseCanonical recovers the pair exactly, see ParseCanonical for the
+// and ParseCanonical recovers the pair exactly; see ParseCanonical for the
 // proof. One underscore had no such property. "gh" + "_" +
 // "enterprise_create_issue" and "gh_enterprise" + "_" + "create_issue" are one
 // string, two members could each produce it, and the loser of that silent

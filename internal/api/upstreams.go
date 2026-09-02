@@ -52,9 +52,9 @@ type upstreamPublic struct {
 	AuthConfigured bool `json:"auth_configured"`
 	// AuthStatus is credential.Status (PORM-52), always present: "none" iff
 	// auth_type is none (whatever the dashboard stored beside it); "ok";
-	// "undecryptable" (no configured key opens the blob, the key changed;
-	// "unreadable") nothing stored, or nothing the auth type can send, never
-	// a key problem. auth_hint appears only when ok. auth_configured false
+	// "undecryptable" (no configured key opens the blob, the key changed);
+	// "unreadable" (nothing stored, or nothing the auth type can send, never
+	// a key problem). auth_hint appears only when ok. auth_configured false
 	// and auth_status "unreadable" together mean a non-none type with no
 	// credential yet.
 	AuthStatus string            `json:"auth_status"`

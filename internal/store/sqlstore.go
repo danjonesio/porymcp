@@ -527,10 +527,10 @@ type RekeySummary struct {
 // concurrent edit lands on top of the re-wrapped value, under the current key,
 // and nothing is lost. On Postgres (READ COMMITTED) writers do not queue: a
 // credential edited between the read and the write makes the CAS match zero
-// rows, which aborts the whole run with the one operator-facing sentence, that
+// rows, which aborts the whole run with the one operator-facing sentence. That
 // zero-rows branch is Postgres's mechanism and is unreachable on SQLite by
 // construction. Keep it. There is deliberately no retry inside the
-// transaction, re-running the command is the retry; a retry here would write
+// transaction: re-running the command is the retry; a retry here would write
 // the re-wrapped OLD plaintext over a credential the operator had just
 // replaced, which is the lost update the CAS exists to prevent. The rewrite
 // callback runs while this transaction holds SQLite's only connection, so it
@@ -625,7 +625,7 @@ func (s *SQLStore) RekeyUpstreams(ctx context.Context, fingerprint string, rewri
 // the index: two or more pre-change rows share the empty-string default and
 // would fail it.
 //
-// The derivation itself cannot fail, SlugCandidatesN's walk is total (see
+// The derivation itself cannot fail: SlugCandidatesN's walk is total (see
 // models.SlugCandidatesN). The only data-dependent errors below come from a
 // database corrupted outside PoryMCP: an existing slug that is not ValidSlug, or
 // existing duplicate slugs, which surface from CREATE UNIQUE INDEX. Both must
