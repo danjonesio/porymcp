@@ -131,7 +131,7 @@ func TestWriteHealthUnhealthyFixedError(t *testing.T) {
 
 // TestLogPingFailureThrottles covers PORM-25 security requirement 8's second
 // half: the real store error is logged server-side at most once per throttle
-// window — /health is unauthenticated and fetched on every dashboard page
+// window, /health is unauthenticated and fetched on every dashboard page
 // load, so an unthrottled per-request line would hand anonymous callers a log
 // amplifier. Same-package on purpose: it resets the unexported throttle state
 // so test ordering cannot couple.
@@ -149,7 +149,7 @@ func TestLogPingFailureThrottles(t *testing.T) {
 	if !strings.Contains(buf.String(), "boom") {
 		t.Fatalf("the real error must reach the log line: %q", buf.String())
 	}
-	// Nil guards, each against a FRESH throttle window — asserted inside the
+	// Nil guards, each against a FRESH throttle window, asserted inside the
 	// window they would otherwise hide in, a deleted guard goes unnoticed
 	// (the nil-logger call would return at the throttle branch before ever
 	// dereferencing nil).

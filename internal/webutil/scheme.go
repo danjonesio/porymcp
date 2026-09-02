@@ -24,7 +24,7 @@ var (
 // cannot drift). Loopback is skipped so the container healthcheck
 // (http://127.0.0.1) keeps working when the process itself terminates TLS
 // or sits behind an edge. Rejection is 426 with a JSON body that names the
-// scheme only — never CIDRs or PUBLIC_URL.
+// scheme only, never CIDRs or PUBLIC_URL.
 func EnforceHTTPS(active bool, trusted []netip.Prefix, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,7 +7,7 @@ import (
 )
 
 // HostAllowed reports whether seen (already resolved via RequestHost) is
-// acceptable for publicURL. Empty publicURL allows everything — that is
+// acceptable for publicURL. Empty publicURL allows everything, that is
 // today's hostAllowed short-circuit, kept so an unset PUBLIC_URL does not
 // lock operators out. Comparison is case-insensitive and IPv6-safe
 // (net/url.Parse, not TrimPrefix).
