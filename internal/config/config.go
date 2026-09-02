@@ -26,7 +26,7 @@ type Config struct {
 	DataDir       string
 	// TrustedProxies are CIDRs whose socket address may present Forwarded /
 	// X-Forwarded-For, and whose forwarded host/scheme are trusted for
-	// request resolution (PORM-50). Empty means trust nobody — the default,
+	// request resolution (PORM-50). Empty means trust nobody, the default,
 	// and what the admin-auth limiter keys on until an operator opts in.
 	TrustedProxies []netip.Prefix
 	// TLSCertFile and TLSKeyFile enable built-in TLS when both are set.
@@ -41,7 +41,7 @@ type Config struct {
 	ExtraAllowedHosts []string
 	// EncryptionKeyPrevious holds ENCRYPTION_KEY_PREVIOUS, oldest last: keys a
 	// stored credential may still be sealed under during a rotation. Decrypt
-	// only — nothing is ever sealed under one. At most maxPreviousKeys, 64-hex
+	// only, nothing is ever sealed under one. At most maxPreviousKeys, 64-hex
 	// or base64 only (a raw 32-byte value cannot survive the comma split),
 	// de-duplicated, and never the current key. Remove after `porymcp rekey`.
 	EncryptionKeyPrevious [][]byte
@@ -157,7 +157,7 @@ func (c *Config) Keyring() crypto.Keyring {
 // unreadable, and the operator has to be told before the proxy starts calling
 // upstreams naked. storedCredentials is the count of rows that need a
 // credential and hold a blob (credential.Report.Credentials); an empty
-// database, or one of auth_type none upstreams, keeps the zero-config path.
+// database, or one of auth_type none upstreams, keeps the ephemeral-key path.
 func (c *Config) CheckEphemeralKey(storedCredentials int) error {
 	if !c.EphemeralEnc || storedCredentials <= 0 {
 		return nil
