@@ -120,7 +120,6 @@ var notYetRewritten = []string{
 	"docs/04-architecture.md",
 	"docs/05-mvp.md",
 	"docs/06-ui.md",
-	"docs/07-security.md",
 	"docs/08-docker.md",
 	"docs/09-clients.md",
 	"docs/11-deployment.md",
