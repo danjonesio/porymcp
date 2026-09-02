@@ -118,7 +118,6 @@ var wordCheckExempt = map[string]bool{
 // and notYetRewrittenPath, so the exemption cannot quietly regain an entry.
 var notYetRewritten = []string{
 	"CHANGELOG.md",
-	"NOTICE",
 	"openapi.yaml",
 	"web/src/",
 	"web/fs.go",
