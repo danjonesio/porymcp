@@ -14,7 +14,7 @@ import (
 )
 
 // openTemp opens a fresh SQLite store and hands back its path, so a test can
-// open a second, independent connection to the same file — a second process,
+// open a second, independent connection to the same file, a second process,
 // as far as SQLite is concerned.
 func openTemp(t *testing.T) (*SQLStore, string) {
 	t.Helper()
@@ -200,7 +200,7 @@ func TestRekeyUpstreams(t *testing.T) {
 
 // TestRekeyUpstreamsRollsBackOnRewriteError pins security requirement 7 and
 // acceptance criterion 8's failure clause: one row the keyring cannot open
-// aborts the run with nothing written — not the rows that would have worked,
+// aborts the run with nothing written, not the rows that would have worked,
 // not the fingerprint.
 func TestRekeyUpstreamsRollsBackOnRewriteError(t *testing.T) {
 	s, _ := openTemp(t)
@@ -233,10 +233,10 @@ func TestRekeyUpstreamsRollsBackOnRewriteError(t *testing.T) {
 // TestRekeyUpstreamsSerialisesWithConcurrentWrites pins the live-server
 // property on SQLite: the rekey transaction holds the write lock from BEGIN
 // (_txlock=immediate), so a credential edit started while the callback runs
-// queues behind busy_timeout, applies after the commit, and wins — the
+// queues behind busy_timeout, applies after the commit, and wins, the
 // operator's fresh, current-key value is the final state and nothing is lost.
 // (On Postgres, where writers do not queue, the same interleaving makes the
-// ciphertext CAS match zero rows and abort — that branch is unreachable on
+// ciphertext CAS match zero rows and abort, that branch is unreachable on
 // SQLite by construction and is asserted by review of the statement.)
 func TestRekeyUpstreamsSerialisesWithConcurrentWrites(t *testing.T) {
 	s, path := openTemp(t)
@@ -289,8 +289,8 @@ func TestRekeyUpstreamsSerialisesWithConcurrentWrites(t *testing.T) {
 }
 
 // TestRekeyProceedsPastUnrelatedCommits pins the fix for the WAL snapshot
-// hazard: an unrelated commit from another connection — one proxied call's
-// audit row — while the callback runs must queue, not abort the rotation
+// hazard: an unrelated commit from another connection (one proxied call's
+// audit row) while the callback runs must queue, not abort the rotation
 // blaming a credential nobody touched.
 func TestRekeyProceedsPastUnrelatedCommits(t *testing.T) {
 	s, path := openTemp(t)

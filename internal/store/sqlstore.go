@@ -27,26 +27,26 @@ type SQLStore struct {
 }
 
 // MigrationSummary reports what the last migrate() run changed, so the caller
-// can log it. Counts only — never names or URLs: `url` is stored in plaintext
+// can log it. Counts only, never names or URLs: `url` is stored in plaintext
 // and MCP endpoints commonly carry a key in the query string.
 //
 // SlugsDeduplicated counts rows whose assigned slug differs from the plain
-// derivation of their name — which includes a reserved-word skip (an upstream
+// derivation of their name, which includes a reserved-word skip (an upstream
 // named "MCP" becomes "mcp-2"), not only genuine duplicates.
 //
 // The tool-entry counts describe step 3, migrateToolIdentities. A rule entry is
 // operator-written text about somebody's tools, so it is held to the same rule
 // as a name or a url and never appears here: only how many there were.
 //
-//   - ToolEntriesRewritten — entries that gained at least one scoped
+//   - ToolEntriesRewritten: entries that gained at least one scoped
 //     {slug}__{tool} form. The entry they were written as is kept beside it, so
 //     this counts additions, never replacements.
-//   - ToolEntriesLeft — entries the step deliberately did not touch and an
+//   - ToolEntriesLeft: entries the step deliberately did not touch and an
 //     operator may want to look at: an entry no advertised tool name can ever
 //     equal, an allow-side entry that admits nothing as it stands, every entry
 //     on a key whose target row has gone, and one per virtual-key list column
 //     whose JSON does not decode (there are no entries to count in that one).
-//   - ToolFiltersLeftInvalid — group filters left exactly as stored because
+//   - ToolFiltersLeftInvalid: group filters left exactly as stored because
 //     validation refused them, on the way in or on the way out.
 //
 // Every field is an int, so MigrationSummary stays comparable: the tests assert
@@ -106,8 +106,8 @@ func parseDBURL(raw string) (driver, dsn string, err error) {
 	case strings.HasPrefix(raw, "postgres://"), strings.HasPrefix(raw, "postgresql://"):
 		return "pgx", raw, nil
 	case strings.HasPrefix(raw, "sqlite://"):
-		// sqlite:///abs/path → /abs/path
-		// sqlite://./rel/path or sqlite://rel/path → relative
+		// sqlite:///abs/path is /abs/path
+		// sqlite://./rel/path or sqlite://rel/path is relative
 		path := strings.TrimPrefix(raw, "sqlite://")
 		return sqliteFile(path)
 	case strings.HasPrefix(raw, "file:"):
@@ -117,7 +117,7 @@ func parseDBURL(raw string) (driver, dsn string, err error) {
 		// residual, parked with PORM-25). A DSN with no query is re-derived
 		// through fileDSN so one function owns the connection settings; one
 		// that carries the operator's own parameters keeps them and gains only
-		// what is missing — rewriting it wholesale would turn
+		// what is missing, rewriting it wholesale would turn
 		// file::memory:?cache=shared into an on-disk file called ":memory:".
 		if !strings.Contains(raw, "?") {
 			return sqliteFile(fileFromDSN(raw))
@@ -145,9 +145,9 @@ func sqliteFile(path string) (string, string, error) {
 	return "sqlite", fileDSN(path), nil
 }
 
-// fileDSN builds a modernc.org/sqlite URI.
-// Relative paths must be file:./data/x.db — file://./data/x.db is invalid
-// because SQLite treats "." as the URI authority.
+// fileDSN builds a modernc.org/sqlite URI. Relative paths must be
+// file:./data/x.db, file://./data/x.db is invalid because SQLite treats
+// "." as the URI authority.
 func fileDSN(path string) string {
 	path = filepath.ToSlash(path)
 	var dsn string
@@ -159,7 +159,7 @@ func fileDSN(path string) string {
 	// _txlock=immediate: every explicit transaction takes the write lock at
 	// BEGIN. All three transaction users here (migrateStep, the step-2 rename,
 	// RekeyUpstreams) write, and a deferred BEGIN in WAL mode takes a read
-	// snapshot instead — any other connection's commit (an audit row from one
+	// snapshot instead, any other connection's commit (an audit row from one
 	// proxied call, say) then fails the first write with SQLITE_BUSY_SNAPSHOT,
 	// which busy_timeout deliberately does not retry. Immediate makes an
 	// unrelated writer queue behind busy_timeout instead, which is what lets
@@ -217,7 +217,7 @@ const (
 	// EncryptionKeyFPKey is the schema_meta row holding the fingerprint of the
 	// ENCRYPTION_KEY that the stored credentials open under (PORM-52). It is
 	// data, not schema: written by the boot check once every row has been
-	// proved to open under the current key, and by RekeyUpstreams — never by a
+	// proved to open under the current key, and by RekeyUpstreams, never by a
 	// migration step, which runs with no key. The issue's draft called it
 	// enc_key_fp; this is the name used.
 	EncryptionKeyFPKey = "encryption_key_fp"
@@ -243,8 +243,8 @@ func (s *SQLStore) migrate() error {
 		return fmt.Errorf("migrate: read schema version: %w", err)
 	}
 	// Refuse a database written by a newer build. Without this the step loop
-	// simply does not run and an old binary serves traffic against a schema it
-	// does not understand — the same hazard migrateUpstreamSlugs already fails
+	// does not run and an old binary serves traffic against a schema it
+	// does not understand, the same hazard migrateUpstreamSlugs already fails
 	// closed on. A rolled-back deploy is an ordinary ops event.
 	if current > schemaVersion {
 		return fmt.Errorf("migrate: database is at schema version %d but this binary only knows %d; "+
@@ -404,7 +404,7 @@ func (s *SQLStore) migrateStep(v int) error {
 		// fails inside a poisoned transaction and Postgres then answers 25P02 to
 		// every following statement, hiding the real error. The waiter re-runs
 		// this step as a no-op, which is safe only because every step is written
-		// to be idempotent — keep it that way — and because READ COMMITTED (the
+		// to be idempotent (keep it that way) and because READ COMMITTED (the
 		// default) means its statements after the lock see the winner's commit.
 		// Released at COMMIT/ROLLBACK.
 		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, migrationLockID); err != nil {
@@ -439,8 +439,8 @@ func (s *SQLStore) migrateStep(v int) error {
 	case 5:
 		// Format stamp, no DDL, no data change (PORM-52): from this version
 		// upstreams.auth_config may hold "v1:"-prefixed ciphertexts, which a
-		// version-4 binary base64-decodes as garbage and then — because its
-		// decryptAuth returns nil for any failure — forwards as a request with
+		// version-4 binary base64-decodes as garbage and then (because its
+		// decryptAuth returns nil for any failure) forwards as a request with
 		// no credential. The stamp makes that binary refuse the database at
 		// Open instead. It lands on the FIRST boot of this build, before any
 		// v1 value exists: upgrading is one-way from that boot.
@@ -490,7 +490,7 @@ func (s *SQLStore) setMetaTx(tx *sql.Tx, key, value string) error {
 }
 
 // RekeyRow is one stored credential handed to RekeyUpstreams' callback: the
-// row's id and name (for the operator's report — never a value) and the
+// row's id and name (for the operator's report, never a value) and the
 // ciphertext as stored.
 type RekeyRow struct{ ID, Name, Stored string }
 
@@ -502,14 +502,14 @@ type RekeySummary struct {
 	PreviousFingerprint                     string
 }
 
-// RekeyUpstreams re-wraps every stored credential and stamps the fingerprint
-// in ONE transaction. The crypto does not belong in the store, which holds no
-// key: rewrite receives every row that needs a credential and holds a blob, in
-// id order, and returns one replacement per row — "" for a row already sealed
-// under the current key. Any error from rewrite returns before anything is
-// written, so the deferred Rollback undoes nothing; the callback is expected to
-// classify every row and name all the failures in one error, and no UPDATE
-// and no schema_meta write happens on a run that saw one.
+// RekeyUpstreams re-wraps every stored credential and stamps the fingerprint in
+// ONE transaction. The crypto does not belong in the store, which holds no key:
+// rewrite receives every row that needs a credential and holds a blob, in id
+// order, and returns one replacement per row, "" for a row already sealed under
+// the current key. Any error from rewrite returns before anything is written,
+// so the deferred Rollback undoes nothing; the callback is expected to classify
+// every row and name all the failures in one error, and no UPDATE and no
+// schema_meta write happens on a run that saw one.
 //
 // Cross-driver constraints, the ones every migration step works under: every
 // statement goes through tx, never s.db (SQLite runs with SetMaxOpenConns(1)
@@ -519,18 +519,18 @@ type RekeySummary struct {
 // pgx the migration advisory lock serialises this against a migration or a
 // second rekey. No DDL.
 //
-// Each write is a compare-and-swap on the ciphertext that was read:
-// `UPDATE … WHERE id = ? AND auth_config = ?`. On SQLite the transaction takes
-// the database write lock at BEGIN (fileDSN sets _txlock=immediate), so every
-// other writer — a credential edit and an unrelated audit insert alike —
-// queues behind busy_timeout and then applies AFTER the commit; the operator's
+// Each write is a compare-and-swap on the ciphertext that was read: `UPDATE …
+// WHERE id = ? AND auth_config = ?`. On SQLite the transaction takes the
+// database write lock at BEGIN (fileDSN sets _txlock=immediate), so every
+// other writer (a credential edit and an unrelated audit insert alike) queues
+// behind busy_timeout and then applies AFTER the commit; the operator's
 // concurrent edit lands on top of the re-wrapped value, under the current key,
 // and nothing is lost. On Postgres (READ COMMITTED) writers do not queue: a
 // credential edited between the read and the write makes the CAS match zero
-// rows, which aborts the whole run with the one operator-facing sentence —
-// that zero-rows branch is Postgres's mechanism and is unreachable on SQLite
-// by construction. Keep it. There is deliberately no retry inside the
-// transaction — re-running the command is the retry; a retry here would write
+// rows, which aborts the whole run with the one operator-facing sentence, that
+// zero-rows branch is Postgres's mechanism and is unreachable on SQLite by
+// construction. Keep it. There is deliberately no retry inside the
+// transaction, re-running the command is the retry; a retry here would write
 // the re-wrapped OLD plaintext over a credential the operator had just
 // replaced, which is the lost update the CAS exists to prevent. The rewrite
 // callback runs while this transaction holds SQLite's only connection, so it
@@ -625,7 +625,7 @@ func (s *SQLStore) RekeyUpstreams(ctx context.Context, fingerprint string, rewri
 // the index: two or more pre-change rows share the empty-string default and
 // would fail it.
 //
-// The derivation itself cannot fail — SlugCandidatesN's walk is total (see
+// The derivation itself cannot fail, SlugCandidatesN's walk is total (see
 // models.SlugCandidatesN). The only data-dependent errors below come from a
 // database corrupted outside PoryMCP: an existing slug that is not ValidSlug, or
 // existing duplicate slugs, which surface from CREATE UNIQUE INDEX. Both must
@@ -643,7 +643,7 @@ func (s *SQLStore) migrateUpstreamSlugs(tx *sql.Tx) error {
 
 	// Seed from rows that already carry a slug so a re-run cannot collide, and
 	// validate them: a hand-edited database must not carry an invalid slug into
-	// a public URL after PORM-14. Name the row id only — never name or url.
+	// a public URL after PORM-14. Name the row id only, never name or url.
 	taken := map[string]bool{}
 	rows, err := tx.Query(`SELECT id, slug FROM upstreams WHERE slug IS NOT NULL AND slug <> ''`)
 	if err != nil {
@@ -667,7 +667,7 @@ func (s *SQLStore) migrateUpstreamSlugs(tx *sql.Tx) error {
 	}
 
 	// Oldest first, so the upstream clients already know keeps the bare slug.
-	// NOTE: the opposite order to ListUpstreams — do not copy that one.
+	// NOTE: the opposite order to ListUpstreams, do not copy that one.
 	// Collect fully before updating: SQLite runs on one connection and cannot
 	// interleave an Exec with open Rows.
 	type pending struct{ id, name string }
@@ -732,7 +732,7 @@ func firstFreeSlug(candidates []string, taken map[string]bool) string {
 // (SQLITE_CONSTRAINT_PRIMARYKEY, 1555): every id is a fresh uuid.NewString(), so
 // a PK collision is a programming error and 500 is the honest answer, not a
 // "slug is already taken" 409. Postgres reports both as 23505 and cannot be
-// separated without inspecting ConstraintName — accepted imprecision, in favour
+// separated without inspecting ConstraintName, accepted imprecision, in favour
 // of cross-driver parity in the common (slug) case.
 //
 // Extended result codes, not the primary 19 masked with 0xff: masking would
@@ -799,7 +799,7 @@ func (s *SQLStore) rowCount(tx *sql.Tx, table string) (int, error) {
 // renameAgentsToVirtualKeys runs migration step 2 in its own transaction,
 // under the same advisory lock migrateStep takes, because it has to run
 // before migrateBase (see migrate). On a version-1 database this commits the
-// rename before the version stamp; a crash in between is safe — the next Open
+// rename before the version stamp; a crash in between is safe, the next Open
 // reads version 1, re-runs the gated rename as a no-op, and case 2 stamps 2.
 func (s *SQLStore) renameAgentsToVirtualKeys() error {
 	tx, err := s.db.Begin()
@@ -823,7 +823,7 @@ func (s *SQLStore) renameAgentsToVirtualKeys() error {
 // virtual_keys, audit_logs.agent_id and agent_name become virtual_key_id and
 // virtual_key_name, and the two indexes over them are recreated under their
 // new names. Every statement is gated on the catalog so the function is
-// idempotent — it runs once ahead of migrateBase and again as case 2 — and a
+// idempotent (it runs once ahead of migrateBase and again as case 2) and a
 // fresh database, where none of the old objects exist, passes straight
 // through. Data is untouched: both renames are metadata-only on SQLite and
 // PostgreSQL.
@@ -925,7 +925,7 @@ func (s *SQLStore) renameAgentsToVirtualKeysTx(tx *sql.Tx) error {
 //     than a breach.
 //   - An allow entry that gains a form widens an authorization list during an
 //     upgrade with nobody present. A prefixes entry "github_" would become
-//     "github__" — every tool on that member. So allow-side entries are left
+//     "github__", every tool on that member. So allow-side entries are left
 //     exactly as they are and counted: the group's tools go dark, the startup
 //     report names it, and an operator rewrites the entry knowingly.
 //   - Keeping the original entry keeps a key's lists matching prompts and
@@ -946,7 +946,7 @@ func (s *SQLStore) renameAgentsToVirtualKeysTx(tx *sql.Tx) error {
 // and an s.db call inside the transaction would deadlock on the connection it
 // holds); every row is collected before the first UPDATE, because SQLite cannot
 // interleave an Exec with open Rows; placeholders go through s.q(). Nothing
-// else here is dialect-specific — plain SELECT and UPDATE over columns both
+// else here is dialect-specific, plain SELECT and UPDATE over columns both
 // drivers already have, and no DDL at all, so the fresh-versus-migrated schema
 // comparison is untouched by it. NOTE: only SQLite is exercised by this
 // package's tests; there is no Postgres server in the build environment.
@@ -957,8 +957,8 @@ func (s *SQLStore) migrateToolIdentities(tx *sql.Tx) error {
 	// A stored slug stopped being only a URL segment at this step: it is now
 	// half of an authorization identity. Composing one from a hand-edited row
 	// would write rules naming a member that can never exist, so refuse the way
-	// step 1 does — naming the row id and nothing else, because the name and
-	// the url are operator data and this error is going to a log.
+	// step 1 does, naming the row id and nothing else, because the name and the
+	// url are operator data and this error is going to a log.
 	slugByID := map[string]string{}
 	rows, err := tx.Query(`SELECT id, slug FROM upstreams`)
 	if err != nil {
@@ -1040,7 +1040,7 @@ func (s *SQLStore) migrateToolIdentities(tx *sql.Tx) error {
 		// never marshal a filter the validator refused. A filter the proxy
 		// cannot read blocks every tool on its group, and re-emitting it
 		// through models.ToolFilter would silently drop the misspelt key that
-		// made it invalid — turning a group that fails closed into one that
+		// made it invalid, turning a group that fails closed into one that
 		// permits everything, in a migration, with nobody watching.
 		if err := models.ValidateToolFilter(json.RawMessage(raw)); err != nil {
 			s.lastMigration.ToolFiltersLeftInvalid++
@@ -1115,7 +1115,7 @@ func (s *SQLStore) migrateToolIdentities(tx *sql.Tx) error {
 // group's members, or the single upstream a virtual key points at.
 //
 // Disabled members are included. Disabling an upstream is reversible and a rule
-// has to survive the round trip — a filter that quietly lost its entries while a
+// has to survive the round trip, a filter that quietly lost its entries while a
 // member was switched off would come back permissive when the member came back.
 // Duplicate ids collapse, because a group may list the same upstream twice, and
 // an id with no row is skipped, so the slugs are a set in stored order.
@@ -1127,8 +1127,8 @@ func (s *SQLStore) migrateToolIdentities(tx *sql.Tx) error {
 // entries, so it leaves them all and counts them.
 //
 // group says the target is a group rather than a single upstream, which the
-// allow side needs. An unscoped allow entry admits nothing on a group — the
-// proxy skips it rather than read it as "this name on every member" — but on a
+// allow side needs. An unscoped allow entry admits nothing on a group (the
+// proxy skips it rather than read it as "this name on every member") but on a
 // single upstream every tool belongs to that upstream and a bare tool name is
 // exactly right, so there is nothing to report about it.
 type membership struct {
@@ -1174,7 +1174,7 @@ func (s *SQLStore) rewriteColumn(stored string, m membership, deny bool) (string
 // rewriteRule maps one stored rule list onto the identity grammar and reports
 // whether anything was added. prefixes says the list is a tool_filter's
 // prefixes, the one list where an entry ending at the separator means something
-// — "docs__" is every tool on docs — rather than naming a tool with no name.
+// ("docs__" is every tool on docs) rather than naming a tool with no name.
 //
 // The table, entry by entry. head and scoped come from models.SplitEntry, the
 // one definition of the split, so an entry beginning with the separator is an
@@ -1190,8 +1190,8 @@ func (s *SQLStore) rewriteColumn(stored string, m membership, deny bool) (string
 //	scoped, head is a member                   leave: already an identity.
 //	scoped, head is not a member               deny: keep it and add {s}__{e} for
 //	                                           every member s, because the entry
-//	                                           may simply be a tool whose own
-//	                                           name carries the separator — an
+//	                                           may be a tool whose own
+//	                                           name carries the separator, an
 //	                                           upstream that is itself a proxy
 //	                                           advertises "mcp__fetch".
 //	unscoped, equal to s+"_"+rest for member s deny: keep it and add {s}__{rest}
@@ -1243,7 +1243,7 @@ func (s *SQLStore) rewriteRule(entries []string, m membership, deny, prefixes bo
 			// The text rule only, not models.ValidateToolList: that validator
 			// judges an entry an operator is writing, and its errors name a
 			// field and an index there is neither of here. It also judges the
-			// shape, which this step must not — a prefixes entry ending at the
+			// shape, which this step must not, a prefixes entry ending at the
 			// separator is legal and has to be rewritten like any other.
 			s.lastMigration.ToolEntriesLeft++
 			continue
@@ -1284,7 +1284,7 @@ func (s *SQLStore) rewriteRule(entries []string, m membership, deny, prefixes bo
 }
 
 // migrateUpstreamTestColumns is migration step 4: two columns holding the
-// outcome of the last deliberate connection test — when it ran and whether it
+// outcome of the last deliberate connection test, when it ran and whether it
 // passed. Nullable with no default, because NULL means "never tested" and that
 // is what every existing row is. Nothing is backfilled and nothing is
 // contacted: a migration must not invent a result by dialling an upstream with
@@ -1294,7 +1294,7 @@ func (s *SQLStore) rewriteRule(entries []string, m membership, deny, prefixes bo
 // Idempotent, as migrateStep's advisory-lock comment requires: SQLite has no
 // ADD COLUMN IF NOT EXISTS, so each column is gated on the columnExists probe
 // step 1 uses; a fresh database already has both from migrateBase. The two
-// type strings must match migrateBase byte for byte — no NULL, no DEFAULT — or
+// type strings must match migrateBase byte for byte (no NULL, no DEFAULT) or
 // TestFreshAndMigratedSchemasMatch fails, which is the test that exists to
 // catch exactly this.
 //
@@ -1326,7 +1326,7 @@ func (s *SQLStore) migrateUpstreamTestColumns(tx *sql.Tx) error {
 // the two are dropped or kept independently at review.
 //
 // virtual_keys.key_lookup is declared NOT NULL UNIQUE, so the constraint's own
-// index already answers GetVirtualKeyByLookup — measured on modernc SQLite:
+// index already answers GetVirtualKeyByLookup, measured on modernc SQLite:
 // SEARCH virtual_keys USING INDEX sqlite_autoindex_virtual_keys_2
 // (key_lookup=?), before and after this drop. The explicit index was a second
 // index over the same single column: no read used it and every write to
@@ -1384,7 +1384,7 @@ func nullInt(p *int) sql.NullInt64 {
 }
 
 // nullBool writes a tri-state flag the way the schema holds it: NULL for no
-// answer yet, 1 or 0 for one that was recorded — an INTEGER on both drivers,
+// answer yet, 1 or 0 for one that was recorded, an INTEGER on both drivers,
 // see enabled.
 func nullBool(p *bool) sql.NullInt64 {
 	if p == nil {
@@ -1433,8 +1433,8 @@ func decodeStrings(raw string) []string {
 // decodeJSONStrings decodes a stored JSON array of strings and reports whether
 // it could be read at all. It sits beside decodeStrings because that one
 // answers nil for "", for "null" and for "this is not a list" alike, and a
-// caller that has to fail closed — step 3, which must never drop a rule it
-// could not read — needs the third case separated from the first two.
+// caller that has to fail closed (step 3, which must never drop a rule it
+// could not read) needs the third case separated from the first two.
 func decodeJSONStrings(raw string) ([]string, bool) {
 	if raw == "" {
 		return nil, true
@@ -1463,7 +1463,7 @@ const upstreamCols = `id, name, slug, description, url, transport, auth_type, au
 func (s *SQLStore) CreateUpstream(ctx context.Context, u *models.Upstream) error {
 	// The unique index permits exactly one slug-less row; this takes it to zero,
 	// so a slug-less upstream fails on the FIRST insert rather than the second.
-	// Unreachable over HTTP — the API always supplies or derives one — so it maps
+	// Unreachable over HTTP (the API always supplies or derives one) so it maps
 	// to a 500 via storeError's default: reaching it is a programming error.
 	if u.Slug == "" {
 		return errors.New("upstream slug is required")
@@ -1496,9 +1496,9 @@ func (s *SQLStore) GetUpstream(ctx context.Context, id string) (*models.Upstream
 // elsewhere in the deployment costs exactly as much as one that exists nowhere,
 // and an unknown slug, a slug outside this key's target, a disabled upstream and
 // a member removed from the group all fall out of one walk with one answer. The
-// requirement that route carries — an identical response in every one of those
+// requirement that route carries (an identical response in every one of those
 // cases, so that one valid virtual key cannot enumerate every slug in the
-// deployment — is therefore met structurally rather than by care at the call
+// deployment) is therefore met structurally rather than by care at the call
 // site, and a lookup through here would reintroduce it. Slugs are meaningful
 // strings and disclose what an organisation connects to.
 //
@@ -1548,20 +1548,20 @@ const (
 // even if a caller hands it a changed value) and, unless writeAuth, except
 // auth_config.
 //
-// The two flags are independent and both shape the one statement — there is
-// no second statement for a crash to land between (there is no transaction
-// here). resetTest appends `last_test_at=NULL, last_test_ok=NULL`: literal
-// NULLs and no argument, passed when url, transport, auth_type or auth_config
-// changed, so a dot never vouches for a configuration nobody tested. The test
-// columns are never written FROM the struct, which is what keeps a row read
-// before a concurrent RecordUpstreamTest from writing a stale result back.
-// writeAuth adds `auth_config=?` AND its argument, passed only when the
-// request carried a credential (PORM-52): a PATCH that did not is otherwise a
-// writer of the ciphertext it happened to read, and one that read before
-// `porymcp rekey` committed would put an old-key value back. The SET fragments
-// and the argument list are built together in one pass so a column and its
-// value cannot slip out of position; resetTest can be true while writeAuth is
-// false (only url, transport or auth_type changed).
+// The two flags are independent and both shape the one statement, there is no
+// second statement for a crash to land between (there is no transaction here).
+// resetTest appends `last_test_at=NULL, last_test_ok=NULL`: literal NULLs and
+// no argument, passed when url, transport, auth_type or auth_config changed,
+// so a dot never vouches for a configuration nobody tested. The test columns
+// are never written FROM the struct, which is what keeps a row read before a
+// concurrent RecordUpstreamTest from writing a stale result back. writeAuth
+// adds `auth_config=?` AND its argument, passed only when the request carried
+// a credential (PORM-52): a PATCH that did not is otherwise a writer of the
+// ciphertext it happened to read, and one that read before `porymcp rekey`
+// committed would put an old-key value back. The SET fragments and the
+// argument list are built together in one pass so a column and its value
+// cannot slip out of position; resetTest can be true while writeAuth is false
+// (only url, transport or auth_type changed).
 func (s *SQLStore) UpdateUpstream(ctx context.Context, u *models.Upstream, resetTest, writeAuth bool) error {
 	set := []string{"name=?", "description=?", "url=?", "transport=?", "auth_type=?", "enabled=?", "updated_at=?"}
 	args := []any{u.Name, u.Description, u.URL, u.Transport, u.AuthType, boolToInt(u.Enabled), fmtTime(u.UpdatedAt)}
@@ -1598,12 +1598,12 @@ func (s *SQLStore) UpdateUpstream(ctx context.Context, u *models.Upstream, reset
 // the canonical string fmtTime(seen): every writer of updated_at is fmtTime and
 // the column is TEXT on both drivers, so the reformat reproduces the stored
 // bytes exactly. A row whose updated_at came from outside PoryMCP (a +00:00
-// offset, trailing zeros in the fraction) can never match and records nothing —
+// offset, trailing zeros in the fraction) can never match and records nothing,
 // fail closed, the same way steps 1 and 3 treat hand-edited rows.
 //
 // updated_at is deliberately not bumped: a test is not an edit, and updated_at
-// answers "when did a person last edit this?" — the rule migrateToolIdentities
-// states. Returns ErrNotFound when no row matched — deleted, or edited since
+// answers "when did a person last edit this?", the rule migrateToolIdentities
+// states. Returns ErrNotFound when no row matched, deleted, or edited since
 // seen. Between two overlapping tests of one unchanged row the later write
 // wins, deliberately.
 func (s *SQLStore) RecordUpstreamTest(ctx context.Context, id string, at time.Time, ok bool, seen time.Time) error {
@@ -1854,8 +1854,8 @@ func (s *SQLStore) ListVirtualKeys(ctx context.Context) ([]models.VirtualKey, er
 // The reason is that scanVirtualKey answers nil for both lists alongside
 // ListsMalformed, because there is no list to answer: an unreadable column is
 // not a rule anyone can enforce. Writing those nils back would store "null" in
-// both columns — no allowlist and no denylist — and "null" decodes cleanly, so
-// the flag would be gone on the next read and the key would be fully permissive.
+// both columns (no allowlist and no denylist) and "null" decodes cleanly, so the
+// flag would be gone on the next read and the key would be fully permissive.
 // That would hand a rename, a rotation or a revocation the power to turn a key
 // the proxy blocks on every call into one with no policy at all, which is the
 // exact opposite of what an operator reaching for any of the three means. The
@@ -1931,7 +1931,7 @@ func scanVirtualKey(row rowScanner) (*models.VirtualKey, error) {
 	a.ToolAllowlist, a.ToolDenylist = allowList, denyList
 	// A column that does not decode is not "no list". The scan still succeeds,
 	// because the proxy needs the row to authenticate the request and to write
-	// an audit line about refusing it — but the key carries a flag that blocks
+	// an audit line about refusing it, but the key carries a flag that blocks
 	// every call on it. decodeStrings answers nil for "", for "null" and for
 	// "this is not a list" alike, which is what let an unreadable denylist read
 	// as no denylist and leave the key permissive.
