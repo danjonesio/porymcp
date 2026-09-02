@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,17 +31,8 @@ import (
 // copy; the case-sensitive ones (a commit trailer, a base64 key) against the
 // raw bytes, because lowercasing destroys base64.
 func TestNoInternalReferences(t *testing.T) {
-	root := filepath.Join("..", "..")
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("repo root not at ../.. from the test working directory: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-		t.Skip("not a git checkout; the guard scans tracked files")
-	}
-	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
-	if err != nil {
-		t.Fatalf("git ls-files (the guard scans tracked files only): %v", err)
-	}
+	root := repoRoot(t)
+	files := trackedFiles(t, root)
 	// The sample encryption key is the hex alphabet repeated to 32 bytes.
 	keyHex := strings.Repeat("0123456789abcdef", 4)
 	keyBytes, err := hex.DecodeString(keyHex)
@@ -52,20 +42,6 @@ func TestNoInternalReferences(t *testing.T) {
 	// The raw base64 form is a prefix of the padded one, so one needle covers both.
 	keyB64 := base64.RawStdEncoding.EncodeToString(keyBytes)
 	keyFP := strings.ToLower(crypto.Fingerprint(keyBytes))
-	// Local-only working files: git-ignored after the public cut, tracked
-	// before it. Never part of the published tree either way.
-	localOnly := func(file string) bool {
-		for _, prefix := range []string{"docs/plans/", ".agents/", ".claude/"} {
-			if strings.HasPrefix(file, prefix) {
-				return true
-			}
-		}
-		switch file {
-		case "AGENTS.md", "CLAUDE.md", "docs/10-linear-issues.md":
-			return true
-		}
-		return false
-	}
 	lowerNeedles := [][]byte{
 		[]byte("refresh" + "surplus"),
 		[]byte("dan" + "@"),
@@ -84,10 +60,7 @@ func TestNoInternalReferences(t *testing.T) {
 		[]byte("Co-Authored" + "-By"),
 		[]byte(keyB64),
 	}
-	for _, file := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
-		if file == "" || localOnly(file) {
-			continue
-		}
+	for _, file := range files {
 		b, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {
 			// An index entry whose working-tree file is gone (mid git-rm, a
