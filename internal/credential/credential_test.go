@@ -131,7 +131,7 @@ func TestReadUnreadablePlaintext(t *testing.T) {
 			}
 		})
 	}
-	// {} on a none row is fine — none consults nothing.
+	// {} on a none row is fine, none consults nothing.
 	if got := Status(k, models.AuthNone, seal(t, k, `{}`)); got != StatusNone {
 		t.Fatalf("none with {} = %q", got)
 	}
