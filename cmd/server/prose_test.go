@@ -117,7 +117,6 @@ var wordCheckExempt = map[string]bool{
 // Each rewrite commit deletes its entry; the last one deletes this variable
 // and notYetRewrittenPath, so the exemption cannot quietly regain an entry.
 var notYetRewritten = []string{
-	"docs/01-vision.md",
 	"docs/02-data-model.md",
 	"docs/03-api.md",
 	"docs/04-architecture.md",
