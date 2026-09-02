@@ -88,15 +88,15 @@ paths:
     post:
       summary: Discover the tools an unsaved upstream would offer
       description: >-
-        Runs the handshake a client would run — initialize,
+        Runs the handshake a client would run (initialize,
         notifications/initialized, tools/list followed to the end of its cursors,
-        then a DELETE of the session so none is left open on the upstream —
+        then a DELETE of the session so none is left open on the upstream)
         against the URL in the body, using the credential in the body, and
         persists nothing. It exists so the Add upstream dialog can check a URL
         and a token before writing a row that does not work. Takes the same body
         as POST /upstreams, of which only `url` is required; `transport` defaults
         to streamable-http and `auth_type` to none. POST rather than GET because
-        the call has an effect outside PoryMCP and must never be prefetched —
+        the call has an effect outside PoryMCP and must never be prefetched.
         GET /upstreams/discover is not a route at all, it falls through to
         GET /upstreams/{id} with `discover` as the id and answers the ordinary
         404. The response carries no `slug` and no `scoped_name`: see
@@ -130,7 +130,7 @@ paths:
       description: >-
         The same handshake as POST /upstreams/discover, made with the upstream's
         stored (encrypted) credential. The request body is ignored, as on rotate
-        and revoke. A disabled upstream is still discovered — an operator who has
+        and revoke. A disabled upstream is still discovered: an operator who has
         turned one off is usually the operator diagnosing it. A stored credential
         that is present but cannot be decrypted, after a rotated ENCRYPTION_KEY,
         answers 200 with ok false and makes no outbound request at all: sending
@@ -368,7 +368,7 @@ paths:
       summary: Revoke a virtual key
       responses:
         "200":
-          description: Revoked; endpoints are unchanged, they simply stop authenticating
+          description: Revoked. The key stops authenticating. The URLs stay the same.
           content:
             application/json:
               schema:
@@ -407,7 +407,7 @@ paths:
         - name: tool
           in: query
           description: >-
-            Exact match on the recorded `tool_name` — not a prefix or a
+            Exact match on the recorded `tool_name`, not a prefix or a
             substring. The recorded name is the one the client sent, so on the
             aggregate endpoint of a group it is the canonical
             `{upstream_slug}__{tool}` and on a per-member endpoint or a
@@ -420,10 +420,10 @@ paths:
             `success` and `error` describe a request that reached an upstream,
             with one exception: on the aggregate endpoint of a group, a
             `tools/call` naming a tool the endpoint never advertised is recorded
-            as `error` and reached no upstream at all — no rule fired, so it is
+            as `error` and reached no upstream at all: no rule fired, so it is
             not a policy decision. `blocked` is a request refused by tool policy
-            — the group `tool_filter` or the key's
-            `tool_denylist`/`tool_allowlist` — before any upstream was
+            (the group `tool_filter` or the key's
+            `tool_denylist`/`tool_allowlist`) before any upstream was
             contacted; `error_message` names the rule that rejected it.
             `GET /logs?status=blocked` is the list of policy rejections.
           schema:
@@ -496,7 +496,7 @@ components:
           description: >-
             `ok` when healthy; `degraded` (503) when the boot check found a
             stored credential no configured encryption key opens; `unhealthy`
-            (503) when the store ping failed — which outranks degraded.
+            (503) when the store ping failed, which outranks degraded.
         service:
           type: string
           description: Present unless unhealthy (`porymcp`).
@@ -515,9 +515,9 @@ components:
           enum: [ok, mismatch]
           description: >-
             The boot integrity check's verdict on whether every stored
-            credential opens under the configured key(s). A verdict only —
+            credential opens under the configured key(s). A verdict only,
             never a fingerprint, a count or a name on this unauthenticated
-            route — and a boot fact: the restart that ends a rotation
+            route, and a boot fact: the restart that ends a rotation
             refreshes it, while auth_status and /stats are live.
         error:
           type: string
@@ -528,8 +528,8 @@ components:
       type: object
       description: >-
         Dashboard overview counters. The three credential counts are computed
-        live from one pass over the upstreams — the same pass the boot check
-        makes — and never count auth_type none upstreams.
+        live from one pass over the upstreams (the same pass the boot check
+        makes), and never count auth_type none upstreams.
       required: [active_virtual_keys, total_virtual_keys, upstreams, groups,
         calls_today, errors_today, error_rate, calls_last_7_days, blocked_today,
         undecryptable_upstreams, unreadable_upstreams, upstreams_under_previous_key]
@@ -603,9 +603,9 @@ components:
           enum: [none, ok, undecryptable, unreadable]
           description: >-
             Whether PoryMCP can use the stored credential. `none` iff auth_type
-            is none, whatever is stored beside it; `undecryptable` — no
+            is none, whatever is stored beside it; `undecryptable`: no
             configured encryption key opens it (the key changed; the proxy and
-            discovery refuse this upstream); `unreadable` — nothing stored, or
+            discovery refuse this upstream); `unreadable`: nothing stored, or
             nothing the auth type can send, likewise refused; `ok`. Computed
             live on every read.
         auth_hint:
@@ -652,9 +652,9 @@ components:
             Stable URL- and tool-name-safe identifier. Optional on create: an
             omitted, empty or whitespace-only value is derived from the name and
             de-duplicated. Supplied, it must not contain a repeated separator
-            (`__`, `--`, `-_`, `_-`) — `__` in particular is what separates the
+            (`__`, `--`, `-_`, `_-`; `__` in particular is what separates the
             slug from the tool name in a tool identity, so a slug holding one
-            would make the split unrecoverable — must not be UUID-shaped, and
+            would make the split unrecoverable), must not be UUID-shaped, and
             must not be `mcp`, `api`, `health` or `metrics`. Never changes on
             rename. Immutable after create: PATCH with a different value returns
             400.
@@ -673,11 +673,11 @@ components:
             and an audit row reading `upstream redirected to <host>`) rather
             than a hop. Prefer `https://` and the exact path the server serves,
             trailing slash included. See `docs/07-security.md`. It must be an
-            absolute http or https URL with a host and no fragment — the same
+            absolute http or https URL with a host and no fragment, the same
             check discovery applies before it opens a socket, so a stored value
             is one PoryMCP can actually dial; anything else is `400`. Whether
             that host should be dialled at all (loopback, link-local, cloud
-            metadata) is not checked yet — see PORM-79.
+            metadata) is not checked yet (see PORM-79).
         transport:
           type: string
           enum: [streamable-http, sse]
@@ -714,7 +714,7 @@ components:
             Present only when `ok` is false, and drawn from a closed set of
             sentences whose only variables are a status code, the step that
             failed (initialize, notifications/initialized, tools/list) and a
-            host — `cannot resolve <host>`, `cannot connect to <host>`, `tls
+            host: `cannot resolve <host>`, `cannot connect to <host>`, `tls
             handshake with <host> failed`, `upstream did not answer within 10s`,
             `upstream redirected to <host>`, `upstream rejected the credential
             (401) at initialize`, `upstream's answer to <step> is larger than
@@ -722,7 +722,7 @@ components:
             refused rather than decoded from a document that stops mid-object),
             `stored credential cannot be decrypted`, `stored credential is not
             usable for this auth type` (it opens, but holds nothing the auth
-            type can send — a blank token stored as `{}`), `this auth type
+            type can send, such as a blank token stored as `{}`), `this auth type
             needs a credential; add one or choose None` (an unsaved draft),
             and the rest. A URL is never
             written into one: Go's own transport errors mask the password but
@@ -730,7 +730,7 @@ components:
         upstream_message:
           type: string
           description: >-
-            The upstream's own JSON-RPC error.message when it sent one — single
+            The upstream's own JSON-RPC error.message when it sent one: single
             line, visible characters, at most 200 bytes. It has a field of its
             own so that `error` stays a string PoryMCP wrote: "token lacks the
             repo scope" is the answer an operator came for, but it is the
@@ -738,7 +738,7 @@ components:
         latency_ms:
           type: integer
           description: >-
-            The whole handshake, rounded to 10 ms — enough to tell a slow server
+            The whole handshake, rounded to 10 ms: enough to tell a slow server
             from a fast one, blunt enough not to be a stopwatch on the network
             PoryMCP sits in.
         protocol_version:
@@ -753,13 +753,13 @@ components:
             Absent on POST /upstreams/discover, which has no row and therefore no
             slug: deriving a provisional one would be worse than showing none,
             because create de-duplicates and the `github` computed before saving
-            can be stored as `github-2` — and an operator who copied the identity
+            can be stored as `github-2`, and an operator who copied the identity
             built from it into a deny rule would have written an entry that
             matches nothing and fails open.
         tool_count:
           type: integer
           description: >-
-            The length of `tools` after drops — how many tools are shown, not how
+            The length of `tools` after drops: how many tools are shown, not how
             many the server has. At most 500; when `truncated` is true it is how
             many survived the cut, which the page cap or a repeated cursor can
             make fewer than 500.
@@ -772,7 +772,7 @@ components:
           type: integer
           description: >-
             How many tools were left out because the proxy could not hold a
-            caller to their names — empty, over 256 bytes, or carrying a control
+            caller to their names: empty, over 256 bytes, or carrying a control
             character or U+FFFD: the same rule that governs a tool identity
             everywhere else, plus a 256-byte cap on what discovery will show.
             Counted, never repeated back.
@@ -795,7 +795,7 @@ components:
       properties:
         name:
           type: string
-          description: The upstream's own name for the tool — what a per-member endpoint serves.
+          description: The upstream's own name for the tool, what a per-member endpoint serves.
         title:
           type: string
           description: Optional display title from the upstream. Clamped to 256 bytes.
@@ -808,7 +808,7 @@ components:
         scoped_name:
           type: string
           description: >-
-            The tool identity `{upstream_slug}__{tool}` — what a group
+            The tool identity `{upstream_slug}__{tool}`, what a group
             tool_filter entry and a virtual key's tool_allowlist/tool_denylist
             name, on every path. Present on POST /upstreams/{id}/discover only,
             for the reason given on `Discovery.slug`.
@@ -892,8 +892,8 @@ components:
             If non-empty, only these tool names may be listed or called.
             Applied after `tool_denylist` and before the group `tool_filter`, so
             it narrows and never widens: a name here is still subject to the
-            group filter. Matched byte-exactly — no wildcards, regular
-            expressions or case folding — against the tool identity
+            group filter. Matched byte-exactly (no wildcards, regular
+            expressions or case folding) against the tool identity
             `{upstream_slug}__{tool}`, which is the same on the aggregate
             endpoint, on a per-member endpoint and under a single-upstream key.
             Validated on write, with the same entry rules as
@@ -903,8 +903,8 @@ components:
             **upstream** target a bare tool name is exactly right and is
             accepted. Retargeting a key re-checks this list against the new
             target in both directions and answers 400 naming the entries that
-            would be stranded — unscoped ones when moving onto a group, ones
-            scoped to another slug when moving onto an upstream — unless the
+            would be stranded (unscoped ones when moving onto a group, ones
+            scoped to another slug when moving onto an upstream) unless the
             same request sends a rewritten list. `prompts/get` and the other
             `params.name` methods match the name whole, with no slug and no
             scoping. If either stored list cannot be decoded, every call on the
@@ -972,7 +972,7 @@ components:
         `{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp`; a disabled member, or one
         removed from the group, has no entry and its URL answers 404. A
         single-upstream target has exactly one entry whose `url` is `proxy_url`
-        itself — the aggregate endpoint is already 1:1 there, and the
+        itself: the aggregate endpoint is already 1:1 there, and the
         `/{slug}/mcp` form is a group-only route. `proxy_url` on a group key is
         the aggregate endpoint and is never an entry. The array is always
         present, and empty when nothing is reachable; revoking or expiring the
@@ -1000,7 +1000,7 @@ components:
         advertised nor callable, and a blocked call answers `200` with JSON-RPC
         `-32602 "tool blocked"` without contacting any upstream. Evaluated after
         the key's own `tool_denylist` and `tool_allowlist`, so it can only
-        narrow them. Matched byte-exactly — no wildcards, regular expressions or
+        narrow them. Matched byte-exactly: no wildcards, regular expressions or
         case folding. A `tools` entry names the tool identity
         `{upstream_slug}__{tool}`; a `prefixes` entry is matched against the
         upstream's own tool name. Both are the same on every path a key over
@@ -1009,9 +1009,9 @@ components:
         field (or send `null`) for no filter. Validated on write, and again when
         the proxy reads it: a stored filter that fails validation blocks every
         call on the group until it is fixed, and is reported once at startup.
-        The write side adds the identity rules — a scoped entry's head must be a
+        The write side adds the identity rules (a scoped entry's head must be a
         valid slug, a scoped `tools` entry must name a tool after the separator,
-        and every entry of an `allow` filter must be scoped — which the read
+        and every entry of an `allow` filter must be scoped), which the read
         side deliberately does not enforce, so that a filter stored before those
         rules existed is corrected by its author rather than taken offline.
       additionalProperties: false
@@ -1024,16 +1024,16 @@ components:
             byte-exactly (`Deny` and `DENY` are rejected). `deny` rejects a tool
             listed in `tools`, or whose own name starts with a `prefixes`
             entry's tool part; `allow` admits only those and rejects everything
-            else, so it needs at least one entry — and every one of them must
+            else, so it needs at least one entry, and every one of them must
             name a member (see `tools`). A group of one member is still a group:
             a bare entry is rejected there too.
         tools:
           type: array
           description: >-
             Exact tool identities, matched for equality. A *scoped* entry names
-            one tool on one member as `{upstream_slug}__{tool}` — two
+            one tool on one member as `{upstream_slug}__{tool}` (two
             underscores, the member's immutable slug and the upstream's own name
-            for the tool — and the same entry is enforced on the aggregate
+            for the tool), and the same entry is enforced on the aggregate
             endpoint (where it is also the name the client sees) and on every
             per-member endpoint. It is the same identity a virtual key's
             `tool_allowlist`/`tool_denylist` names, including under a
@@ -1051,13 +1051,13 @@ components:
           type: array
           description: >-
             Literal string prefixes, not globs or regular expressions, and
-            matched against the upstream's **own** tool name on every path —
+            matched against the upstream's **own** tool name on every path,
             never against the composed `{upstream_slug}__{tool}` string the
             aggregate endpoint advertises. Write `delete_`, or
             `github__delete_` to scope it to the `github` member.
             A scoped entry may end at the separator: `github__` is every tool on
             `github`, which is worth reading twice in an `allow` filter.
-            `github_`, with one underscore, is not a scope — it is a name shape,
+            `github_`, with one underscore, is not a scope: it is a name shape,
             and matches any tool whose own name starts `github_` on every member
             the rule covers. Under `allow` on a group an unscoped entry is
             rejected, exactly as in `tools`. No entry may be an empty string, or
