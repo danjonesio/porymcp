@@ -12,7 +12,7 @@ services:
       # with a colon-free message for the same reason as ENCRYPTION_KEY below.
       ADMIN_API_KEY: "${ADMIN_API_KEY:?set it in .env - copy .env.example to .env and generate a value with 'openssl rand -hex 32' - see docs/08-docker.md}"
       # Required: set it in .env (compose reads .env automatically). The value
-      # stays double-quoted with a colon-free message — unquoted, a ": " in
+      # stays double-quoted with a colon-free message. Unquoted, a ": " in
       # the message is a YAML scanner error, not the message.
       ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set it in .env - copy .env.example to .env and generate a key with 'openssl rand -hex 32' - see docs/08-docker.md}"
       # Rotation window only (docs/11-deployment.md section 12); empty means unset.
@@ -68,7 +68,7 @@ services:
     # is the defect PORM-25 exists to remove. Host-side access:
     # docker compose --profile postgres exec postgres psql -U porymcp -d porymcp
     healthcheck:
-      # -h 127.0.0.1: probe TCP, the thing porymcp actually connects to —
+      # -h 127.0.0.1: probe TCP, the thing porymcp connects to,
       # initdb's temporary server answers on the Unix socket only.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U porymcp -d porymcp"]
       interval: 5s

@@ -117,11 +117,6 @@ var wordCheckExempt = map[string]bool{
 // Each rewrite commit deletes its entry; the last one deletes this variable
 // and notYetRewrittenPath, so the exemption cannot quietly regain an entry.
 var notYetRewritten = []string{
-	"docker-compose.yml",
-	"docker-compose.tls.yml",
-	"Dockerfile",
-	"Makefile",
-	".env.example",
 }
 
 func notYetRewrittenPath(file string) bool {
