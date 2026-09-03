@@ -8,6 +8,7 @@ import { Heading } from '@/components/heading'
 import { Input } from '@/components/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { api, type Group, type Upstream } from '@/lib/api'
+import { ABSENT } from '@/lib/placeholder'
 import { useEffect, useState } from 'react'
 
 export default function GroupsPage() {
@@ -70,7 +71,7 @@ export default function GroupsPage() {
         </Button>
       </div>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
-        Bundle several upstreams into one shape that an agent can call through a single key.
+        A group combines several upstreams so one virtual key can reach all of them.
       </p>
       {error ? <p className="mt-4 text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400">{error}</p> : null}
 
@@ -90,7 +91,7 @@ export default function GroupsPage() {
               <TableRow key={g.id}>
                 <TableCell className="font-medium">{g.name}</TableCell>
                 <TableCell className="text-zinc-500">
-                  {g.upstream_ids.length === 0 ? 'None' : g.upstream_ids.map(nameFor).join(', ')}
+                  {g.upstream_ids.length === 0 ? ABSENT : g.upstream_ids.map(nameFor).join(', ')}
                 </TableCell>
                 <TableCell className="text-right">
                   <Button type="button" plain onClick={() => remove(g.id)}>

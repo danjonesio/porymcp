@@ -117,7 +117,7 @@ const groupSnippets: Record<ClientKind, string> = {
 
 // Pinned from the implementation that shipped before member endpoints existed:
 // every existing single-upstream user must keep the snippet they already have.
-// Codex is the one deliberate exception — its header no longer carries the
+// Codex is the one deliberate exception: its header no longer carries the
 // plaintext key, because that line named the file people paste into.
 const soloSnippets: Record<ClientKind, string> = {
   'claude-code':

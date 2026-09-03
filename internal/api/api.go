@@ -22,12 +22,12 @@ const adminAuthFailRPM = 10
 // bucket for the deployment and not one per client IP: there is a single admin
 // key, so per-IP keying would only let its holder rotate source addresses, and
 // what this bounds is authenticated outbound calls to an operator-supplied
-// host — a property of the deployment, not of the caller. 30/min is a burst of
+// host, a property of the deployment, not of the caller. 30/min is a burst of
 // 30 and then one every two seconds; the dashboard's heaviest real flow is one
 // discovery per dialog and one per Refresh click.
 const discoverRPM = 30
 
-// discoverBucket is that single key. The constant is the point — see
+// discoverBucket is that single key. The constant is the point, see
 // discoverRPM. One permanent bucket is never swept: auth.Limiter evicts only
 // when it admits a key it has not seen before.
 const discoverBucket = "discover"
@@ -45,7 +45,7 @@ const errNameEmpty = "name cannot be empty"
 
 type Server struct {
 	cfg *config.Config
-	// keys is the process keyring — ENCRYPTION_KEY plus any previous keys.
+	// keys is the process keyring, ENCRYPTION_KEY plus any previous keys.
 	// Every credential this package writes is sealed with it, and every one
 	// it reads is opened through internal/credential (PORM-52).
 	keys crypto.Keyring
@@ -86,9 +86,9 @@ func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	// An unknown path under /api/v1 must be a JSON 404, not the dashboard.
 	// chi hands a mounted sub-router the parent's NotFound handler unless the
-	// sub-router sets its own (Mux.NotFound → updateSubRoutes, and again at
+	// sub-router sets its own (Mux.NotFound to updateSubRoutes, and again at
 	// Mount time), and cmd/server/main.go makes the dashboard SPA that parent
-	// handler — which answers 200 with index.html. This runs before
+	// handler, which answers 200 with index.html. This runs before
 	// requireAdmin, as an unknown path never reaches the group below.
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -105,7 +105,7 @@ func (s *Server) Routes() http.Handler {
 		// third party with a real credential. chi prefers the static
 		// "discover" child for POST and backtracks into {id} for every other
 		// verb, so GET /upstreams/discover is the ordinary unknown-upstream
-		// 404 rather than a 405 — pinned in discover_test.go.
+		// 404 rather than a 405, pinned in discover_test.go.
 		r.Post("/upstreams/discover", s.discoverUnsaved)
 		r.Post("/upstreams/{id}/discover", s.discoverUpstream)
 		r.Get("/upstreams/{id}", s.getUpstream)

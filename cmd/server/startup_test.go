@@ -22,7 +22,7 @@ import (
 // would say so. Groups the proxy can enforce must stay silent, or the report
 // is noise the operator learns to skip.
 //
-// The groups are written straight through the store, which does not validate —
+// The groups are written straight through the store, which does not validate,
 // that is exactly how a filter written before PORM-19 (or by hand in the
 // database) arrives at startup.
 func TestReportToolPolicyProblemsNamesOnlyBrokenGroups(t *testing.T) {
@@ -41,7 +41,7 @@ func TestReportToolPolicyProblemsNamesOnlyBrokenGroups(t *testing.T) {
 		// the key is served through, it names no member so it cannot name one
 		// the group has not got, and deny entries are never skipped. So it
 		// draws neither the invalid-filter error nor either warning, which is
-		// what this test is about — the report staying quiet when the
+		// what this test is about, the report staying quiet when the
 		// configuration works.
 		{ID: "g-good", Name: "enforceable", UpstreamIDs: []string{},
 			ToolFilter: json.RawMessage(`{"mode":"deny","tools":["delete_repo"]}`)},
@@ -187,7 +187,7 @@ func corruptDenylist(t *testing.T, path, keyID string) {
 // TestReportToolPolicyProblems is the whole report read as the operator reads
 // it: which configurations draw a line, which draw nothing, and what the line
 // says. Every case is written straight through the store, bypassing the
-// management API's validation — which is exactly how the rules this report
+// management API's validation, which is exactly how the rules this report
 // exists for got into a database in the first place.
 //
 // The cases that draw nothing carry as much weight as the ones that do. A rule
@@ -197,7 +197,7 @@ func TestReportToolPolicyProblems(t *testing.T) {
 	type wantRec struct {
 		level  string
 		msgHas string
-		// id is the group_id or virtual_key_id the record names — one record
+		// id is the group_id or virtual_key_id the record names, one record
 		// per entity, so it identifies the record as well.
 		id string
 		// counts says the record carries the two entry counts. The
@@ -300,12 +300,12 @@ func TestReportToolPolicyProblems(t *testing.T) {
 		},
 		{
 			// The exact output of the store's schema-3 rewrite for a pre-v0.1
-			// deny entry "mcp__fetch": the scoped form for every member is
-			// added and the original is kept, because dropping an entry from a
-			// deny rule widens it. mcp is a reserved word no upstream can hold,
-			// so the kept entry looks scoped to a stranger for ever — and a
-			// report that fires on its own migration's output, on every
-			// restart, is a report the operator learns to filter out.
+			// deny entry "mcp__fetch": the scoped form for every member is added
+			// and the original is kept, because dropping an entry from a deny
+			// rule widens it. mcp is a reserved word no upstream can hold, so
+			// the kept entry looks scoped to a stranger for ever, and a report
+			// that fires on its own migration's output, on every restart, is a
+			// report the operator learns to filter out.
 			name: "the entries the migration itself writes",
 			groups: []models.Group{
 				{ID: "g-migrated", Name: "one", UpstreamIDs: []string{upGH, upDocs},
@@ -346,9 +346,9 @@ func TestReportToolPolicyProblems(t *testing.T) {
 		},
 		{
 			// The carve-out is the deny side's alone. No migration has ever
-			// written an allow rule — widening one is not a migration's
-			// decision to make — so a scope no member holds is exactly the
-			// silently dead allowlist this report exists to name.
+			// written an allow rule (widening one is not a migration's decision
+			// to make) so a scope no member holds is exactly the silently dead
+			// allowlist this report exists to name.
 			name: "the same entries in an allow rule are still counted",
 			groups: []models.Group{
 				{ID: "g-allow", Name: "one", UpstreamIDs: []string{upGH, upDocs},
@@ -378,11 +378,11 @@ func TestReportToolPolicyProblems(t *testing.T) {
 		{
 			name: "an invalid filter is the whole report for its group",
 			groups: []models.Group{
-				// The entries would draw a warning of their own —
-				// nope__delete_repo names no member, "search" is unscoped in an
-				// allow rule — and they draw nothing, because the proxy blocks
-				// every tool on this group until the mode is fixed and which
-				// member an entry would have named is not the question yet.
+				// The entries would draw a warning of their own (nope__delete_repo
+				// names no member, "search" is unscoped in an allow rule) and they
+				// draw nothing, because the proxy blocks every tool on this group
+				// until the mode is fixed and which member an entry would have
+				// named is not the question yet.
 				{ID: "g-invalid", Name: "one", UpstreamIDs: []string{upGH},
 					ToolFilter: json.RawMessage(`{"mode":"Allow","tools":["nope__delete_repo","search"]}`)},
 			},
@@ -438,9 +438,9 @@ func TestReportToolPolicyProblems(t *testing.T) {
 				if rec["unscoped_allow_entries"] != w.unscopedAllow {
 					t.Errorf("%s unscoped_allow_entries=%v, want %v", w.id, rec["unscoped_allow_entries"], w.unscopedAllow)
 				}
-				// The counts say how many; the hint says how to spell the rule
-				// so it means something. It is attached only to the mistake it
-				// explains — a hint about an allow rule on a filter that has no
+				// The counts say how many; the hint says how to spell the rule so
+				// it means something. It is attached only to the mistake it
+				// explains, a hint about an allow rule on a filter that has no
 				// allow rule is how a report becomes noise.
 				hint, hasHint := rec["hint"].(string)
 				if hasHint != w.hint {
@@ -451,9 +451,9 @@ func TestReportToolPolicyProblems(t *testing.T) {
 				}
 			}
 
-			// The entries themselves never reach the log — ids, names and
-			// counts are the whole report. A tool name is operator-written text
-			// about someone's private deployment.
+			// The entries themselves never reach the log, ids, names and counts
+			// are the whole report. A tool name is operator-written text about
+			// someone's private deployment.
 			for _, entry := range toolEntryTexts {
 				if strings.Contains(buf.String(), entry) {
 					t.Errorf("the log repeats rule contents (%q):\n%s", entry, buf.String())
@@ -465,7 +465,7 @@ func TestReportToolPolicyProblems(t *testing.T) {
 
 // TestReportToolPolicyProblemsSurvivesStoreFailure: a closed store stands in
 // for any database trouble at startup. The report must log and return, never
-// panic or take the server down with it — the proxy and the dashboard do not
+// panic or take the server down with it, the proxy and the dashboard do not
 // depend on this check having run.
 //
 // All three reads are named, because the report needs all three tables and one
@@ -502,7 +502,7 @@ func TestReportToolPolicyProblemsSurvivesStoreFailure(t *testing.T) {
 // The store validates every stored slug once, at the migration step that
 // introduced the {slug}__{tool} identity, and never again. A slug edited by hand
 // in the database afterwards is composed into a group's catalogue unconditionally
-// — the aggregate advertises "Bad Slug__search" — while the proxy parses the name
+// (the aggregate advertises "Bad Slug__search") while the proxy parses the name
 // it is called with and refuses anything whose head is not a slug. So every tool
 // this upstream advertises there is listed under a name no call can use, and
 // nothing in the request path says why: the catalogue is served, the call comes

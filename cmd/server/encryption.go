@@ -12,8 +12,8 @@ import (
 )
 
 // checkEncryption is the boot integrity pass (PORM-52). It reads every stored
-// credential once — through credential.Sweep, which keeps no plaintext and
-// reports counts, ids and names only — and decides three things in this order:
+// credential once (through credential.Sweep, which keeps no plaintext and
+// reports counts, ids and names only) and decides three things in this order:
 //
 //  1. The ephemeral-key guard. ENCRYPTION_KEY unset against a database that
 //     holds stored credentials is the one refusal to start: every one of them
@@ -24,17 +24,17 @@ import (
 //     start" is not "touched nothing".
 //  2. Rows decide. One or more rows that no configured key opens is the
 //     mismatch verdict: one Error record carrying the stored and current
-//     fingerprints, the counts, the affected ids and names and a hint — never
-//     a value — and /health degrades. The fingerprint comparison explains,
+//     fingerprints, the counts, the affected ids and names and a hint, never
+//     a value, and /health degrades. The fingerprint comparison explains,
 //     it never triggers: a fingerprint that differs while every credential
 //     opens (a rotation window, a key replaced on an empty install, a
 //     restored backup) is not an outage. A mismatch never stamps.
 //  3. Otherwise ok. Unusable-but-decryptable rows (a blank token stored as {})
-//     get a Warn naming them — the fix is the credential, never the key, and
+//     get a Warn naming them, the fix is the credential, never the key, and
 //     /health is not touched. Rows that opened only under a previous key get
 //     the "rotation pending" Warn and no stamp: only `porymcp rekey` moves an
 //     existing fingerprint. The current fingerprint is recorded iff the sweep
-//     proved it — no row under a previous key, the stored value differs, and
+//     proved it, no row under a previous key, the stored value differs, and
 //     either nothing was stored or at least one credential opened under it
 //     (never on the vacuous evidence of an empty table over an existing
 //     fingerprint). Every start logs one Info line with the fingerprint, so a

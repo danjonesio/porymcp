@@ -79,7 +79,7 @@ func parseXForwardedFor(v string) []netip.Addr {
 
 // parseHop turns one forwarded address token into an IP. It accepts a bare
 // address, host:port, or bracketed IPv6 with an optional port, and treats
-// "unknown" as absent — those tokens are not client IPs.
+// "unknown" as absent, those tokens are not client IPs.
 func parseHop(s string) (netip.Addr, bool) {
 	s = strings.TrimSpace(s)
 	s = strings.Trim(s, `"`)
@@ -119,7 +119,7 @@ func rightmostToken(header string) string {
 }
 
 // socketTrusted reports whether r.RemoteAddr parses as an IP inside trusted.
-// An empty trusted list means trust nobody — forwarding headers stay ignored.
+// An empty trusted list means trust nobody, forwarding headers stay ignored.
 func socketTrusted(r *http.Request, trusted []netip.Prefix) bool {
 	if r == nil || len(trusted) == 0 {
 		return false

@@ -8,7 +8,7 @@ import (
 // TestUsableToolName pins the predicate three packages now share: the call
 // gate, the aggregate catalogue and discovery. The cases that matter are the
 // ones where the string a gate reads and the string an upstream executes could
-// differ — U+FFFD is what Go's JSON decoder leaves behind for a lone surrogate
+// differ, U+FFFD is what Go's JSON decoder leaves behind for a lone surrogate
 // or an invalid byte, where a JavaScript or Python client keeps the original
 // bytes and the proxy forwards the body verbatim.
 func TestUsableToolName(t *testing.T) {
@@ -44,7 +44,7 @@ func TestUsableToolName(t *testing.T) {
 	}
 	for name, why := range unusable {
 		if UsableToolName(name) {
-			t.Errorf("UsableToolName(%q) = true, want false — %s", name, why)
+			t.Errorf("UsableToolName(%q) = true, want false: %s", name, why)
 		}
 	}
 }

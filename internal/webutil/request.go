@@ -27,7 +27,7 @@ func RequestScheme(r *http.Request, trusted []netip.Prefix) string {
 // RequestHost is the Host the caller presented. Forwarded host= and
 // X-Forwarded-Host are honoured only from a trusted socket, so a rewritten
 // container Host (the usual reverse-proxy default) can still match PUBLIC_URL.
-// The value is returned as sent — port and IPv6 brackets are left intact.
+// The value is returned as sent, port and IPv6 brackets are left intact.
 func RequestHost(r *http.Request, trusted []netip.Prefix) string {
 	if r == nil {
 		return ""

@@ -25,7 +25,7 @@ import (
 
 // A proxy test almost always has the same two questions: what did the client
 // get back, and what did the upstream see. The fixture below answers the
-// second one — every stub counts the requests it received per (method, tool),
+// second one, every stub counts the requests it received per (method, tool),
 // so "zero upstream requests" is an assertion rather than an inference. The
 // existing tests in proxy_test.go build their own servers by hand and are left
 // exactly as they are.
@@ -59,8 +59,8 @@ type upstreamSpec struct {
 	// RedirectStatus, RedirectTo and RedirectOn make the stub answer with a
 	// redirect instead of a result. RedirectOn names the JSON-RPC method that
 	// is redirected; "" redirects everything. Location is set only when
-	// RedirectTo is non-empty, so a 3xx carrying no Location — which Go never
-	// follows, and which the proxy used to relay to the client as a success —
+	// RedirectTo is non-empty, so a 3xx carrying no Location (which Go never
+	// follows, and which the proxy used to relay to the client as a success)
 	// is expressible too.
 	RedirectStatus int
 	RedirectTo     string
@@ -184,7 +184,7 @@ type fixture struct {
 	Stubs  map[string]*stub // upstream slug -> stub
 	// Router is the real chi router with all three proxy patterns on it. A
 	// hand-built RouteContext would prove the handler reads a parameter, not
-	// that the registered pattern produces one — which is exactly the drift
+	// that the registered pattern produces one, which is exactly the drift
 	// the constants in proxy.go exist to prevent. Tests that care which door
 	// was knocked on go through here; do and post do not, so the aggregate
 	// tests keep testing the aggregate path.
@@ -366,7 +366,7 @@ func (f *fixture) postTo(path, rpc string) *httptest.ResponseRecorder {
 }
 
 // memberURL is the endpoint of one member of the fixture's key. The key id is
-// always "a1" (newFixture) — a test names only the slug.
+// always "a1" (newFixture), a test names only the slug.
 func (f *fixture) memberURL(slug string) string {
 	return "http://localhost:8080/a1/" + slug + "/mcp"
 }
@@ -377,7 +377,7 @@ func (f *fixture) postMember(slug, rpc string) *httptest.ResponseRecorder {
 	return f.postTo(f.memberURL(slug), rpc)
 }
 
-// postMemberWith is postMember with extra client headers — the session id a
+// postMemberWith is postMember with extra client headers, the session id a
 // client sends back on the request after initialize, above all.
 func (f *fixture) postMemberWith(slug, rpc string, hdr map[string]string) *httptest.ResponseRecorder {
 	f.t.Helper()
@@ -409,7 +409,7 @@ func (f *fixture) totalReqs(slug string) int {
 	return s.total
 }
 
-// upstreamsIdle asserts no stub was contacted at all — the property a rejected
+// upstreamsIdle asserts no stub was contacted at all, the property a rejected
 // request has to hold, since the whole point is that the credential is never
 // presented.
 func (f *fixture) upstreamsIdle() bool {

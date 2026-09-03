@@ -31,7 +31,7 @@ func testAPI(t *testing.T) (*Server, http.Handler, *store.SQLStore) {
 }
 
 // testAPIPublicURL is testAPI with a chosen PUBLIC_URL, for the tests that pin
-// how endpoint URLs are joined. Note that it builds a config.Config directly
+// how endpoint URLs are joined. It builds a config.Config directly
 // and so bypasses config.Load, which is the only place PUBLIC_URL is
 // trailing-slash-trimmed: the value here is used verbatim, so callers pass one
 // that is already trimmed.
@@ -51,7 +51,7 @@ func testAPIStoreFile(t *testing.T, publicURL string) (*Server, http.Handler, *s
 
 // testAPIWrappedStore is testAPIStoreFile with the Store the Server is handed
 // passed through wrap first, for the tests that have to watch a store call the
-// handlers make from inside it — when it happens and on what context, which no
+// handlers make from inside it, when it happens and on what context, which no
 // assertion made after the response can see. wrap may be nil. The *SQLStore
 // returned is always the real one underneath, so a test can still read and
 // write rows directly.
@@ -350,7 +350,7 @@ func TestGroupRequiresKnownUpstreams(t *testing.T) {
 // on top of it: because the proxy blocks every tool call on a group whose
 // filter it cannot enforce, a filter that would be unenforceable must never
 // reach the database in the first place. Every rejected case here decodes into
-// a ToolFilter without error and then matches nothing — they would all be
+// a ToolFilter without error and then matches nothing, they would all be
 // stored and silently ignored.
 func TestGroupToolFilterValidation(t *testing.T) {
 	_, h, _ := testAPI(t)
@@ -398,7 +398,7 @@ func TestGroupToolFilterValidation(t *testing.T) {
 	}
 
 	// The other half of the same rules: what an operator is still allowed to
-	// write. Membership is deliberately not checked — the group here has one
+	// write. Membership is deliberately not checked, the group here has one
 	// member, github, and a filter may name docs or a member added tomorrow.
 	for _, tc := range []struct{ name, filter string }{
 		{"a scoped entry over a name that itself holds the separator", `{"mode":"allow","tools":["github__mcp__fetch"]}`},
@@ -600,8 +600,8 @@ func TestCreateUpstreamUnslugifiableName(t *testing.T) {
 
 // TestCreateUpstreamSlugRace covers the branch createUpstreamDerivedSlug exists
 // for. SetMaxOpenConns(1) (sqlstore.go) largely serialises SQLite writes, so this
-// is a regression guard on the retry path rather than a tight-window race prover
-// — it would still catch a version that surfaced a lost race as a 500.
+// is a regression guard on the retry path rather than a tight-window race prover,
+// it would still catch a version that surfaced a lost race as a 500.
 func TestCreateUpstreamSlugRace(t *testing.T) {
 	const n = 8
 
@@ -670,7 +670,7 @@ func TestCreateUpstreamSlugRace(t *testing.T) {
 
 // nonHTTPURLs are the shapes an upstream URL must not take. Every one of them
 // was stored happily before this check landed, and not one is a URL PoryMCP
-// could ever connect to — an operator found that out when a call failed with a
+// could ever connect to, an operator found that out when a call failed with a
 // message about the upstream rather than about what they typed.
 var nonHTTPURLs = []string{
 	"file:///etc/passwd",
@@ -767,7 +767,7 @@ func TestPatchUpstreamSlugIsImmutable(t *testing.T) {
 	}
 	id := up["id"].(string)
 
-	// Any differing value is refused with one message — valid, blank or invalid
+	// Any differing value is refused with one message, valid, blank or invalid
 	// alike, because no slug change is legal.
 	for _, bad := range []string{"other", "", "Bad!"} {
 		rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"slug": bad})
@@ -890,7 +890,7 @@ func TestPatchUpstreamNameKeepsTestResult(t *testing.T) {
 }
 
 // TestPatchUpstreamSameURLKeepsTestResult: a client that round-trips the whole
-// object back — sending the stored url, transport and auth_type verbatim —
+// object back (sending the stored url, transport and auth_type verbatim)
 // changes nothing, so it resets nothing.
 func TestPatchUpstreamSameURLKeepsTestResult(t *testing.T) {
 	stub := newMCPStub(t)
@@ -915,7 +915,7 @@ func TestPatchUpstreamSameURLKeepsTestResult(t *testing.T) {
 // TestPatchUpstreamURLResetsTestResult is the security requirement: a dot must
 // never vouch for a configuration nobody tested. Every field that changes what
 // PoryMCP dials or presents resets both columns, in the same statement as the
-// edit — and the PATCH response says so, which is what the dashboard renders
+// edit, and the PATCH response says so, which is what the dashboard renders
 // before any re-read.
 func TestPatchUpstreamURLResetsTestResult(t *testing.T) {
 	for _, tc := range []struct {
@@ -925,8 +925,8 @@ func TestPatchUpstreamURLResetsTestResult(t *testing.T) {
 		{"url", map[string]any{"url": "https://new.example.com/mcp/"}},
 		{"transport", map[string]any{"transport": "sse"}},
 		{"auth_type", map[string]any{"auth_type": "bearer"}},
-		// Ciphertext cannot be compared — Keyring.Seal draws a fresh nonce
-		// per call — so a present, non-null auth_config always counts.
+		// Ciphertext cannot be compared (Keyring.Seal draws a fresh nonce per
+		// call) so a present, non-null auth_config always counts.
 		{"auth_config", map[string]any{"auth_config": map[string]string{"token": "sk-new"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1142,7 +1142,7 @@ func TestVirtualKeyEndpointsForGroup(t *testing.T) {
 	if strings.Contains(raw, "archive") || strings.Contains(raw, "Archive") {
 		t.Fatalf("disabled member present in the body: %s", raw)
 	}
-	// proxy_url is the aggregate endpoint: unchanged, and never an entry —
+	// proxy_url is the aggregate endpoint: unchanged, and never an entry,
 	// listing it beside the members would advertise the merged view as if it
 	// were one more server.
 	wantProxy := "http://localhost:8080/" + id + "/mcp"
@@ -1213,7 +1213,7 @@ func TestVirtualKeyEndpointsForGroup(t *testing.T) {
 			t.Fatalf("status = %v", revoked["status"])
 		}
 		// Endpoints are a property of the target, not of the key's status, so
-		// they stay exactly as proxy_url does; the URLs simply stop
+		// they stay exactly as proxy_url does; the URLs stop
 		// authenticating.
 		eps := endpointsOf(t, revoked)
 		if len(eps) != 1 {
@@ -1320,7 +1320,7 @@ func TestVirtualKeyEndpointsOnCreateAndRotate(t *testing.T) {
 }
 
 // TestVirtualKeyEndpointsAlwaysAnArray is the nil-slice guard: a group whose
-// only member is disabled has nothing reachable, and that is [] and a 200 —
+// only member is disabled has nothing reachable, and that is [] and a 200,
 // not null, and not an error.
 func TestVirtualKeyEndpointsAlwaysAnArray(t *testing.T) {
 	_, h, _ := testAPI(t)
@@ -1524,7 +1524,7 @@ func TestVirtualKeyToolListValidation(t *testing.T) {
 	t.Run("a rejected create mints no key", func(t *testing.T) {
 		// auth.GenerateKey draws from the CSPRNG and the plaintext lives only
 		// in the 201 body, so a key minted for a request that then 400s is a
-		// row nobody could ever authenticate with — which is why the lists are
+		// row nobody could ever authenticate with, which is why the lists are
 		// checked before it is called rather than after.
 		before := countVirtualKeys(t, h)
 		rr := create("stillborn", "group", gid, map[string]any{"tool_allowlist": []string{"delete_repo"}})
@@ -1608,7 +1608,7 @@ func TestVirtualKeyToolListValidation(t *testing.T) {
 		// A group key whose allowlist is bare. The API refuses to write one
 		// now, so it is seeded the only way it can exist in the wild: straight
 		// through the store, as a key written before the rule existed. Renaming
-		// it must still work — a validation rule that locks an operator out of
+		// it must still work, a validation rule that locks an operator out of
 		// their own key is worse than the entry it objects to.
 		const id = "legacy-bare-allowlist"
 		if err := st.CreateVirtualKey(context.Background(), &models.VirtualKey{
@@ -1633,8 +1633,8 @@ func TestVirtualKeyToolListValidation(t *testing.T) {
 	})
 
 	t.Run("a move onto a group refuses an unscoped allowlist", func(t *testing.T) {
-		// Legal where it was written — one upstream, one thing the bare name
-		// can mean — and after the move it would admit nothing at all, with
+		// Legal where it was written (one upstream, one thing the bare name
+		// can mean) and after the move it would admit nothing at all, with
 		// nothing in the request that said so.
 		rr := create("moving up", "upstream", ghID, map[string]any{"tool_allowlist": []string{"read_issue"}})
 		if rr.Code != http.StatusCreated {
@@ -1665,7 +1665,7 @@ func TestVirtualKeyToolListValidation(t *testing.T) {
 	t.Run("a move onto an upstream refuses a foreign-headed allowlist", func(t *testing.T) {
 		// Perfectly good on the group, where docs is a member. On github it can
 		// never match, because a single-upstream key only ever sees github's
-		// own tools — and membership is not something the models validators can
+		// own tools, and membership is not something the models validators can
 		// check, since they read no store.
 		rr := create("moving down", "group", gid, map[string]any{"tool_allowlist": []string{docsSlug + "__search"}})
 		if rr.Code != http.StatusCreated {
@@ -1697,7 +1697,7 @@ func TestVirtualKeyToolListValidation(t *testing.T) {
 //
 // A key whose tool_allowlist or tool_denylist did not decode is blocked on
 // every call, and the operator meets that fact as a WARN at startup telling
-// them to fix the key. The two obvious moves — rotate it, revoke it — read the
+// them to fix the key. The two obvious moves (rotate it, revoke it) read the
 // key and write it straight back, so before the store started preserving the
 // columns they replaced the unreadable rule with "null": no allowlist, no
 // denylist, no warning any more, and a key the proxy blocked on every call now
@@ -1895,8 +1895,8 @@ func TestPatchUpstreamClearsDescription(t *testing.T) {
 }
 
 // TestPatchUpstreamNullAuthConfigKeepsCredential is PORM-21 security
-// requirement 2: on PATCH a null auth_config means "unchanged" — the credential
-// stays and the test result stays — while on create it means "no credential".
+// requirement 2: on PATCH a null auth_config means "unchanged" (the credential
+// stays and the test result stays) while on create it means "no credential".
 func TestPatchUpstreamNullAuthConfigKeepsCredential(t *testing.T) {
 	stub := newMCPStub(t)
 	_, h, _ := testAPI(t)
@@ -1919,7 +1919,7 @@ func TestPatchUpstreamNullAuthConfigKeepsCredential(t *testing.T) {
 		t.Fatal("the response echoed auth_config")
 	}
 
-	// Create: null is no credential, and says so — not ciphertext of the four
+	// Create: null is no credential, and says so, not ciphertext of the four
 	// bytes "null" reported as configured.
 	rr, created := newUpstream(t, h, upstreamBody("Bare", map[string]any{"auth_config": nil}))
 	if created == nil {
@@ -1932,7 +1932,7 @@ func TestPatchUpstreamNullAuthConfigKeepsCredential(t *testing.T) {
 
 // TestPatchUpstreamCaseVariantKey is PORM-21 security requirement 5: presence
 // follows encoding/json's own field matching, which is case-insensitive, so a
-// key spelled "Description" clears exactly as "description" does — there is no
+// key spelled "Description" clears exactly as "description" does, there is no
 // second, case-sensitive notion of presence to disagree with.
 func TestPatchUpstreamCaseVariantKey(t *testing.T) {
 	_, h, _ := testAPI(t)
@@ -2022,9 +2022,9 @@ func TestPatchGroupClearsDescription(t *testing.T) {
 	}
 }
 
-// TestPatchGroupClearsToolFilter: null clears the filter — the column is ”
-// and the key is absent, not the text "null" echoed as "tool_filter": null —
-// while {} is a valid filter that filters nothing and is stored as sent, and a
+// TestPatchGroupClearsToolFilter: null clears the filter (the column is ” and
+// the key is absent, not the text "null" echoed as "tool_filter": null) while
+// {} is a valid filter that filters nothing and is stored as sent, and a
 // rejected filter leaves the stored one intact (PORM-21 behaviour change 2).
 func TestPatchGroupClearsToolFilter(t *testing.T) {
 	_, h, st, path := testAPIStoreFile(t, "http://localhost:8080")
@@ -2069,9 +2069,9 @@ func TestPatchGroupClearsToolFilter(t *testing.T) {
 }
 
 // TestPatchGroupClearsUpstreamIDs: null empties the member list exactly as []
-// does — the response and the column both say [], never null — and a key
-// targeting the group then reaches no endpoints (PORM-21 security
-// requirement 7).
+// does (the response and the column both say [], never null) and a key
+// targeting the group then reaches no endpoints (PORM-21 security requirement
+// 7).
 func TestPatchGroupClearsUpstreamIDs(t *testing.T) {
 	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
 	ghID, _ := mustUpstream(t, h, "GitHub", nil)
@@ -2127,9 +2127,9 @@ func newVirtualKey(t *testing.T, h http.Handler, targetType, targetID string, ex
 	return vk
 }
 
-// TestPatchVirtualKeyClearsRateLimit is PORM-21 AC 4: null removes the limit —
-// the key is absent from the response, the model holds nil, the column is
-// NULL — and a value still sets it.
+// TestPatchVirtualKeyClearsRateLimit is PORM-21 AC 4: null removes the limit
+// (the key is absent from the response, the model holds nil, the column is
+// NULL) and a value still sets it.
 func TestPatchVirtualKeyClearsRateLimit(t *testing.T) {
 	_, h, st, path := testAPIStoreFile(t, "http://localhost:8080")
 	ghID, _ := mustUpstream(t, h, "GitHub", nil)
@@ -2186,7 +2186,7 @@ func TestPatchVirtualKeyClearsExpiresAt(t *testing.T) {
 
 // TestPatchVirtualKeyClearsLists is PORM-21 security requirement 3. On a
 // healthy key null clears a list exactly as [] does. On a key whose stored
-// lists cannot be decoded, one side alone — null included — is refused, {}
+// lists cannot be decoded, one side alone (null included) is refused, {}
 // leaves both columns and the block alone, and both sides together (as null)
 // replace both columns and lift the block.
 func TestPatchVirtualKeyClearsLists(t *testing.T) {
@@ -2252,7 +2252,7 @@ func TestPatchVirtualKeyClearsLists(t *testing.T) {
 }
 
 // TestPatchVirtualKeyClearsMetadata: null clears metadata (column ” and key
-// absent), and {} is stored as sent — PoryMCP does not interpret metadata.
+// absent), and {} is stored as sent, PoryMCP does not interpret metadata.
 func TestPatchVirtualKeyClearsMetadata(t *testing.T) {
 	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
 	ghID, _ := mustUpstream(t, h, "GitHub", nil)
@@ -2279,7 +2279,7 @@ func TestPatchVirtualKeyClearsMetadata(t *testing.T) {
 
 // TestPatchVirtualKeyIgnoresServerFields is PORM-21 security requirement 4:
 // revoked_at, last_used_at, key_prefix and created_at are on no write struct,
-// so a body carrying them — null included — changes nothing.
+// so a body carrying them (null included) changes nothing.
 func TestPatchVirtualKeyIgnoresServerFields(t *testing.T) {
 	_, h, _ := testAPI(t)
 	ghID, _ := mustUpstream(t, h, "GitHub", nil)
@@ -2295,7 +2295,7 @@ func TestPatchVirtualKeyIgnoresServerFields(t *testing.T) {
 		t.Fatalf("status=%v after a body carrying revoked_at null, want revoked", got["status"])
 	}
 	if got["key_prefix"] != vk["key_prefix"] || got["created_at"] != vk["created_at"] {
-		t.Fatalf("server fields moved: prefix %v→%v created_at %v→%v", vk["key_prefix"], got["key_prefix"], vk["created_at"], got["created_at"])
+		t.Fatalf("server fields moved: prefix %v to %v created_at %v to %v", vk["key_prefix"], got["key_prefix"], vk["created_at"], got["created_at"])
 	}
 }
 
@@ -2352,7 +2352,7 @@ func TestPatchRejectsBlankRequiredFields(t *testing.T) {
 }
 
 // TestPatchEmptyObjectIsANoOp: {} changes no field on any of the three
-// resources, and on the two that carry updated_at it still moves it — the
+// resources, and on the two that carry updated_at it still moves it, the
 // compare-and-set in RecordUpstreamTest keys on that. Timestamps are parsed,
 // not compared as strings: RFC3339Nano strips trailing zeros.
 func TestPatchEmptyObjectIsANoOp(t *testing.T) {
@@ -2397,9 +2397,9 @@ func TestPatchEmptyObjectIsANoOp(t *testing.T) {
 }
 
 // TestCreateNullMeansDefault is PORM-21 security requirement 6 and behaviour
-// changes 5-6: on create the same keys PATCH refuses take their defaults —
-// enabled null is enabled, transport "" and auth_type null are the defaults, a
-// key made without rate_limit or expires_at is born active with neither — and
+// changes 5-6: on create the same keys PATCH refuses take their defaults
+// (enabled null is enabled, transport "" and auth_type null are the defaults,
+// a key made without rate_limit or expires_at is born active with neither) and
 // a null tool_filter stores ” rather than the text "null".
 func TestCreateNullMeansDefault(t *testing.T) {
 	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
@@ -2437,7 +2437,7 @@ func TestCreateNullMeansDefault(t *testing.T) {
 
 // TestPatchVirtualKeyClearLogsFields is PORM-21 security requirement 8: a
 // PATCH that clears a policy-bearing field leaves one structured log line
-// naming the resource, its id and the fields — never a value, never the key —
+// naming the resource, its id and the fields (never a value, never the key)
 // and a PATCH that clears nothing logs nothing. Same log-capture idiom as
 // TestDiscoverLogsNothing.
 func TestPatchVirtualKeyClearLogsFields(t *testing.T) {

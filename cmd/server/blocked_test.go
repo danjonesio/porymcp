@@ -25,7 +25,7 @@ import (
 // The tool policy itself is tested against the proxy handler in
 // internal/proxy. What these tests are for is the sentence the acceptance
 // criterion actually asks for: a blocked call must be "verifiable via GET
-// /api/v1/logs?status=blocked". That is not the store — it is api.listLogs
+// /api/v1/logs?status=blocked". That is not the store, it is api.listLogs
 // reading the status query parameter into models.LogFilter, the store turning
 // it into `status = ?`, and the whole thing sitting behind admin auth on the
 // router main mounts. Asserting the row with st.ListAuditLogs would exercise
@@ -35,7 +35,7 @@ import (
 // Every case also asserts that the stub upstream saw zero requests. A refusal
 // that still contacted the upstream would have presented the real credential
 // and may already have run the tool, so "blocked" in the log would be a claim
-// the traffic contradicts — the hit counter is what makes the row mean what it
+// the traffic contradicts, the hit counter is what makes the row mean what it
 // says. Not even a tools/list is allowed out: the gate decides before any
 // routing happens, which is also what keeps a denied name and an unknown name
 // from being distinguishable by how long the answer took.
@@ -82,10 +82,10 @@ type blockFixture struct {
 
 // denyDeleteRepo is the group tool_filter the aggregate-endpoint tests use. The
 // entry is unscoped, and one unscoped deny entry is now the whole rule: it is
-// matched against the tool's own name, so it bites on /{keyID}/mcp — where the
-// client writes gh__delete_repo — and on /{keyID}/gh/mcp — where it writes
-// delete_repo — alike. The filter stays a parameter of the fixture so a test
-// can hand it the scoped spelling instead and show the two forms agree.
+// matched against the tool's own name, so it bites on /{keyID}/mcp (where the
+// client writes gh__delete_repo) and on /{keyID}/gh/mcp (where it writes
+// delete_repo) alike. The filter stays a parameter of the fixture so a test can
+// hand it the scoped spelling instead and show the two forms agree.
 const denyDeleteRepo = `{"mode":"deny","tools":["delete_repo"]}`
 
 // newBlockFixture seeds one upstream (id u1, slug gh) and one virtual key
@@ -97,7 +97,7 @@ const denyDeleteRepo = `{"mode":"deny","tools":["delete_repo"]}`
 //
 // The key's denylist is deliberately the bare name. A key bound to a single
 // upstream serves that upstream's own tool names, so an unscoped entry names
-// the tool exactly — the identity grammar asks nothing more of it, and the
+// the tool exactly, the identity grammar asks nothing more of it, and the
 // scoped spelling gh__delete_repo would work just as well.
 func newBlockFixture(t *testing.T, targetType, toolFilter string) *blockFixture {
 	t.Helper()
@@ -180,7 +180,7 @@ func (f *blockFixture) callMember(t *testing.T, slug, body string) *httptest.Res
 
 // post is the one place a client request is built, so the aggregate and the
 // member endpoint are exercised by requests that differ in nothing but the
-// path — which is the whole claim the member tests make.
+// path, which is the whole claim the member tests make.
 func (f *blockFixture) post(t *testing.T, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "http://localhost:8080"+path, strings.NewReader(body))
@@ -221,9 +221,9 @@ func decodeLogs(t *testing.T, rr *httptest.ResponseRecorder) []models.AuditLog {
 }
 
 // waitBlocked polls GET /api/v1/logs?status=blocked until it returns want rows
-// or two seconds pass. The audit logger writes on its own goroutine —
-// audit.Logger.Record is non-blocking and Close gives the caller no way to
-// wait for the drain (PORM-36) — so the row a request just produced is not
+// or two seconds pass. The audit logger writes on its own goroutine
+// (audit.Logger.Record is non-blocking and Close gives the caller no way to
+// wait for the drain (PORM-36)) so the row a request just produced is not
 // readable the instant its response comes back.
 func (f *blockFixture) waitBlocked(t *testing.T, want int) []models.AuditLog {
 	t.Helper()
@@ -266,7 +266,7 @@ func assertBlockedRow(t *testing.T, row models.AuditLog, wantTool, wantReason, w
 		t.Errorf("status=%q want %q", row.Status, models.StatusBlocked)
 	}
 	if row.Method != "tools/call" {
-		t.Errorf("method=%q want tools/call — the JSON-RPC method, not the HTTP verb", row.Method)
+		t.Errorf("method=%q want tools/call: the JSON-RPC method, not the HTTP verb", row.Method)
 	}
 	if row.ToolName != wantTool {
 		t.Errorf("tool_name=%q want %q", row.ToolName, wantTool)
@@ -323,7 +323,7 @@ func TestBlockedCallIsQueryableViaLogsAPI(t *testing.T) {
 
 // The same read path for a key bound straight to an upstream, where the key's
 // own denylist does the refusing. Here the upstream is known without contacting
-// anything, so the row names it — which is what lets an operator filter blocks
+// anything, so the row names it, which is what lets an operator filter blocks
 // per upstream.
 func TestBlockedSingleUpstreamCallRecordsUpstreamID(t *testing.T) {
 	// No group is created for an upstream target, so there is no tool_filter
@@ -356,7 +356,7 @@ func TestBlockedSingleUpstreamCallRecordsUpstreamID(t *testing.T) {
 // scoped spelling of the rule as the contrast to denyDeleteRepo's unscoped one:
 // gh__delete_repo names one tool on one member, and the client here writes the
 // bare delete_repo the member endpoint advertises. Both spellings reach the same
-// verdict on this call, which is the point — the entry is matched against the
+// verdict on this call, which is the point, the entry is matched against the
 // identity, not against the string the client happened to type.
 //
 // The row is what separates this from the aggregate case: it names the
@@ -393,7 +393,7 @@ func TestBlockedMemberCallRecordsUpstreamID(t *testing.T) {
 }
 
 // A slug this key's group does not carry is a 404, and it is audited as
-// blocked like every other refusal on the route — one status, so an operator
+// blocked like every other refusal on the route, one status, so an operator
 // reading ?status=blocked sees the policy blocks and the calls aimed at
 // endpoints that are not there in the same place. The split is deliberate: the
 // client is told only "unknown endpoint" and never which of the misses it was,

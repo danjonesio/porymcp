@@ -20,7 +20,8 @@ const (
 var nonSlugRun = regexp.MustCompile(`[^a-z0-9]+`)
 
 var (
-	// Starts and ends alphanumeric, 1–40 chars, "_" and "-" allowed inside.
+	// Starts and ends alphanumeric, 1 to 40 chars, "_" and "-" allowed
+	// inside.
 	slugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]{0,38}[a-z0-9])?$`)
 	// A run of two separators would be ambiguous next to the "{slug}__{tool}"
 	// tool identity. Forbidding it is the precondition for the split back to
@@ -60,13 +61,13 @@ func NormalizeSlug(s string) string { return strings.ToLower(strings.TrimSpace(s
 // This is load-bearing for STORED data, not only for input: migrateUpstreamSlugs
 // validates the slugs it finds already in the database and refuses to start if
 // one fails, and the tool identity migration re-validates them with this same
-// rule before it rewrites a single rule entry — a stored slug carrying a
+// rule before it rewrites a single rule entry, a stored slug carrying a
 // separator run would make every composed name on that member ambiguous, and an
 // entry rewritten against it would name the wrong tool. Tightening this rule in
 // a later release would therefore turn previously-valid stored slugs into a
-// startup refusal — treat any narrowing as an upgrade-breaking change needing
-// its own migration. (Widening is safe, and the reserved list is deliberately
-// decoupled — see ReservedSlug.)
+// startup refusal, treat any narrowing as an upgrade-breaking change needing its
+// own migration. (Widening is safe, and the reserved list is deliberately
+// decoupled, see ReservedSlug.)
 func ValidSlug(s string) bool {
 	return slugPattern.MatchString(s) && !slugSepRun.MatchString(s) && !uuidLike.MatchString(s)
 }

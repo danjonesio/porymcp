@@ -13,14 +13,14 @@ import (
 // send: the value is empty, is not an auth_config, or carries no field its
 // auth type writes. ApplyAuth writes no credential in that case, and a caller
 // that dialled anyway would hand the upstream an unauthenticated request and
-// read its 401 as a bad token — the silent failure PORM-52 removes. The proxy
+// read its 401 as a bad token, the silent failure PORM-52 removes. The proxy
 // and the discover gate refuse before the request is built; this error is how
 // they know to.
 var ErrNoCredential = errors.New("credential is empty or not valid for its auth type")
 
 // ApplyAuth writes real credentials onto the outbound request and strips the
 // inbound virtual-key Authorization so it never leaks upstream. It returns
-// ErrNoCredential — and writes nothing — when authType needs a credential and
+// ErrNoCredential (and writes nothing) when authType needs a credential and
 // raw does not supply one; auth_type none always succeeds and writes nothing.
 func ApplyAuth(req *http.Request, authType string, raw json.RawMessage) error {
 	req.Header.Del("Authorization")
@@ -46,14 +46,14 @@ func CheckCredential(authType string, raw json.RawMessage) error {
 }
 
 // headersFor is the one place that decides what a credential writes. It builds
-// an http.Header — whose Set canonicalises names — in the same order ApplyAuth
+// an http.Header (whose Set canonicalises names) in the same order ApplyAuth
 // always wrote them, so a custom auth_config whose "header" repeats a key in
 // "headers" still resolves to the later Set, deterministically, rather than to
 // whichever of two map keys iterated last.
 //
 // ErrNoCredential iff authType is not none and: raw is empty, raw does not
 // unmarshal (a partially decodable value counts as not decoded), or the
-// branch for authType would write no header — bearer with no token; header or
+// branch for authType would write no header: bearer with no token; header or
 // api_key with no value; custom with no headers and no header/value pair. An
 // empty value inside custom "headers" still counts as written, as it always
 // has. An unknown auth type writes nothing and is ErrNoCredential.

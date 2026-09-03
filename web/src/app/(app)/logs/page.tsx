@@ -9,6 +9,7 @@ import { Input } from '@/components/input'
 import { Select } from '@/components/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { api, type AuditLog, type VirtualKey } from '@/lib/api'
+import { ABSENT } from '@/lib/placeholder'
 import { useEffect, useState } from 'react'
 
 export default function LogsPage() {
@@ -103,7 +104,7 @@ export default function LogsPage() {
                 <TableCell className="tabular-nums text-zinc-500">{new Date(log.timestamp).toLocaleString()}</TableCell>
                 <TableCell>{log.virtual_key_name}</TableCell>
                 <TableCell>{log.method}</TableCell>
-                <TableCell>{log.tool_name || '—'}</TableCell>
+                <TableCell>{log.tool_name || ABSENT}</TableCell>
                 <TableCell>
                   <Badge color={log.status === 'success' ? 'lime' : log.status === 'blocked' ? 'amber' : 'pink'}>
                     {log.status}
@@ -127,7 +128,7 @@ export default function LogsPage() {
               </div>
               <div>
                 <dt className="text-base/7 font-medium sm:text-sm/6">Upstream</dt>
-                <dd className="mt-1 text-base/7 sm:text-sm/6">{selected.upstream_id || '—'}</dd>
+                <dd className="mt-1 text-base/7 sm:text-sm/6">{selected.upstream_id || ABSENT}</dd>
               </div>
               {selected.error_message ? (
                 <div className="sm:col-span-2">

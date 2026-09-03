@@ -1,8 +1,8 @@
 import clsx from 'clsx'
 
 /**
- * The recipes every PoryMCP component shares — the keyboard focus ring, the
- * chrome of a text control, and the touch target — defined once so each is one
+ * The recipes every PoryMCP component shares (the keyboard focus ring, the
+ * chrome of a text control, and the touch target), defined once so each is one
  * decision rather than a copy per file. Components compose these by name.
  * Nothing else is added here without a reason in the build record.
  */
@@ -12,7 +12,7 @@ import clsx from 'clsx'
  * so it clears the control. Headless UI sets `data-focus` only for
  * focus-visible, so a mouse click never paints it. `focus:outline-hidden`
  * suppresses the browser's own ring while focused (its forced-colors branch
- * keeps a transparent outline there, so high-contrast mode still shows one —
+ * keeps a transparent outline there, so high-contrast mode still shows one:
  * and only on the focused element, which is why it is gated on `focus:`).
  * In Tailwind v4 it also sets the outline style variable to `none`, which is
  * why the focused state must name `outline-solid` explicitly.

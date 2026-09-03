@@ -30,7 +30,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // tooManyRequests answers a caller a limiter turned away, carrying the wait the
 // limiter itself computed. Retry-After is whole seconds and never zero, because
-// a client that honours a "0" backs off for no time at all — which is the one
+// a client that honours a "0" backs off for no time at all, which is the one
 // thing a budget exists to prevent. There is more than one budget on this
 // server now, so the header and the shape of the body are written in one place
 // rather than at each of them.

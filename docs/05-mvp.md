@@ -3,7 +3,7 @@
 ## Must have
 - [x] Register / list / update / delete Upstreams
 - [x] Create / list / delete Groups of Upstreams
-- [x] Create Virtual Key → returns plaintext key + proxy_url once
+- [x] Create Virtual Key, which returns the plaintext key + proxy_url once
 - [x] Rotate / revoke virtual keys
 - [x] Proxy traffic (Streamable HTTP primary) with credential injection
 - [x] Support single Upstream or Group targets
@@ -28,4 +28,4 @@
 - Prometheus metrics
 - Key expiry enforcement
 - Basic light/dark mode
-- Skills catalog + sync (see `01-vision.md` → Post-MVP directions)
+- Skills catalog + sync (see `01-vision.md`, Post-MVP directions)

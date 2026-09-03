@@ -10,7 +10,7 @@ import (
 
 // The two values /health reports for the encryption key. A closed set of
 // constant strings on purpose: /health is unauthenticated on both routes, so
-// it carries a verdict and never a fingerprint, a count or a name — a
+// it carries a verdict and never a fingerprint, a count or a name, a
 // fingerprint would let an unauthenticated caller test whether a particular
 // key is in use.
 const (
@@ -19,7 +19,7 @@ const (
 )
 
 // HealthBody is the shared /health JSON. Trusted-proxy policy is reported as
-// a count only — the CIDR strings must never appear in the payload — and the
+// a count only (the CIDR strings must never appear in the payload) and the
 // encryption key as a verdict only.
 type HealthBody struct {
 	Status         string `json:"status"`
@@ -29,14 +29,14 @@ type HealthBody struct {
 	TrustedProxies int    `json:"trusted_proxies"`
 	// Encryption is EncryptionOK or EncryptionMismatch: the boot integrity
 	// check's verdict on whether every stored credential opens under the
-	// configured key(s). Present on every body. It is a boot fact — the
+	// configured key(s). Present on every body. It is a boot fact, the
 	// restart that ends a rotation refreshes it.
 	Encryption string `json:"encryption"`
 	Error      string `json:"error,omitempty"`
 }
 
 // WriteHealth writes the JSON health payload. Precedence: pingErr != nil is
-// "unhealthy" (503, today's shape — no service/time) and outranks the
+// "unhealthy" (503, today's shape, no service/time) and outranks the
 // encryption verdict, which is still reported; else encryption ==
 // EncryptionMismatch is "degraded" (503, with service/time: the process is
 // serving and the dashboard is reachable, but stored credentials cannot be
@@ -52,9 +52,9 @@ func WriteHealth(w http.ResponseWriter, pingErr error, schemeEnforced bool, trus
 	switch {
 	case pingErr != nil:
 		body.Status = "unhealthy"
-		// Never pingErr.Error(): it can quote DSN detail — an SQLite file
-		// path, or pgx's `user=… database=…` plus host:port — and /health
-		// is anonymous on both routes (the internal/crypto/aes.go doctrine:
+		// Never pingErr.Error(): it can quote DSN detail (an SQLite file
+		// path, or pgx's `user=… database=…` plus host:port) and /health is
+		// anonymous on both routes (the internal/crypto/aes.go doctrine:
 		// never return an error that could quote input). LogPingFailure
 		// carries the real error to the server log.
 		body.Error = dbUnavailableMsg
@@ -83,7 +83,7 @@ const dbUnavailableMsg = "database unavailable"
 // Error line would let any anonymous caller amplify a down database into
 // unbounded log volume. One line per minute is the diagnostic that survives
 // LOG_LEVEL=error (requestLogger's per-request Info line is filtered there).
-// The throttle is deliberate — do not "fix" it back to per-request logging.
+// The throttle is deliberate, do not "fix" it back to per-request logging.
 const pingLogEvery = time.Minute
 
 var (
@@ -93,7 +93,7 @@ var (
 
 // LogPingFailure records a store ping failure server-side, at most once per
 // pingLogEvery, mirroring logInsecureOnce. The error text never reaches the
-// response body — see dbUnavailableMsg.
+// response body, see dbUnavailableMsg.
 func LogPingFailure(log *slog.Logger, pingErr error) {
 	if pingErr == nil || log == nil {
 		return

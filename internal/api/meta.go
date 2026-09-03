@@ -15,8 +15,8 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 // statsPublic is models.Stats plus the three credential counts (PORM-52),
-// computed live from one credential.Sweep — the same definition the boot
-// report uses — so the Overview banner, the Upstreams badges and the boot
+// computed live from one credential.Sweep (the same definition the boot
+// report uses) so the Overview banner, the Upstreams badges and the boot
 // line cannot disagree. Admin-authenticated, on page load: the same work the
 // unauthenticated /health deliberately does not do per hit.
 type statsPublic struct {

@@ -25,7 +25,7 @@ export function CheckboxField({ className, ...props }: { className?: string } & 
 }
 
 /**
- * Headless UI's checkbox — a `role="checkbox"` element, not a native input —
+ * Headless UI's checkbox (a `role="checkbox"` element, not a native input)
  * drawn as an 18px box (16px from `sm:`) that fills near-black when checked.
  * The tick and the indeterminate dash are Heroicons, cross-faded by state.
  */

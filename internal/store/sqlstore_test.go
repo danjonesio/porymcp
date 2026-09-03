@@ -508,10 +508,10 @@ func tableColumns(t *testing.T, s *SQLStore, table string) []string {
 	return out
 }
 
-// indexColumns lists an index's key columns in order, each as name or
-// "name DESC", from pragma_index_xinfo (which, unlike pragma_index_info,
-// carries the sort direction). The trailing rowid entry (cid = -1) is skipped.
-// A missing index yields nil, not an error — callers assert on presence too.
+// indexColumns lists an index's key columns in order, each as name or "name
+// DESC", from pragma_index_xinfo (which, unlike pragma_index_info, carries the
+// sort direction). The trailing rowid entry (cid = -1) is skipped. A missing
+// index yields nil, not an error, callers assert on presence too.
 func indexColumns(t *testing.T, s *SQLStore, name string) []string {
 	t.Helper()
 	rows, err := s.db.Query(`SELECT name, "desc" FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno`, name)
@@ -556,7 +556,7 @@ func TestFreshAndMigratedSchemasMatch(t *testing.T) {
 
 	// Opening the v1 fixture runs every step, step 3 included, over rows written
 	// long before the tool identity existed. Step 3 adds no DDL, so it cannot
-	// move the comparison below — but it does run here, and "it tolerates the
+	// move the comparison below, but it does run here, and "it tolerates the
 	// oldest fixture in the file" is worth pinning where that fixture lives.
 	// Nothing is rewritten: key a2 points at a group row v1Fixture never
 	// creates, so its two entries are left alone and counted.
@@ -578,7 +578,7 @@ func TestFreshAndMigratedSchemasMatch(t *testing.T) {
 		t.Errorf("index names differ:\nfresh:    %v\nmigrated: %v", a, b)
 	}
 	// PORM-68: neither path carries a second index over key_lookup. Removed
-	// from migrateBase and from step 2's rename together with step 4's drop —
+	// from migrateBase and from step 2's rename together with step 4's drop,
 	// leave one CREATE behind and the next boot puts it back on one side only,
 	// which is exactly what this comparison would then report.
 	if slices.Contains(a, "virtual_keys_lookup") || slices.Contains(b, "virtual_keys_lookup") {
@@ -812,7 +812,7 @@ func assertRenamed(t *testing.T, s *SQLStore) {
 	}
 	// The named index is gone and does not come back (PORM-68): key_lookup is
 	// NOT NULL UNIQUE, so the constraint's own index is the one that serves the
-	// proxy's authentication lookup — pinned here, because a future schema
+	// proxy's authentication lookup, pinned here, because a future schema
 	// change that dropped the UNIQUE would turn that lookup into a table scan
 	// and nothing else in this file would notice.
 	if n := indexCount(t, s, "virtual_keys_lookup"); n != 0 {
@@ -1045,7 +1045,7 @@ func TestRecordUpstreamTest(t *testing.T) {
 	// The invariant the WHERE clause rests on, asserted before anything relies
 	// on it: fmtTime reproduces the bytes the column already holds, so a
 	// reformat of a value read out through the store matches it exactly. Three
-	// shapes, because RFC3339Nano strips trailing zeros — a whole second, a
+	// shapes, because RFC3339Nano strips trailing zeros, a whole second, a
 	// half second, and an untruncated wall-clock reading.
 	for i, when := range []time.Time{
 		time.Date(2026, 8, 29, 14, 3, 11, 0, time.UTC),
@@ -1113,7 +1113,7 @@ func TestRecordUpstreamTest(t *testing.T) {
 		t.Fatalf("unknown id: got %v, want ErrNotFound", err)
 	}
 
-	// An ordinary edit leaves the result alone — and cannot write one from the
+	// An ordinary edit leaves the result alone, and cannot write one from the
 	// struct, however wrong the struct's own copy has become.
 	edited := *got
 	edited.Name = "Renamed"
@@ -1195,7 +1195,7 @@ func TestCreateUpstreamRequiresSlug(t *testing.T) {
 
 // TestRefusesNewerSchema pins the downgrade guard: a binary must not serve
 // traffic against a database written by a newer build. Without the guard
-// migrate()'s step loop simply does not run and Open succeeds silently.
+// migrate()'s step loop does not run and Open succeeds silently.
 func TestRefusesNewerSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "newer.db")
 	s, err := Open(path)
@@ -1236,7 +1236,7 @@ const v2GroupsDDL = `CREATE TABLE groups (
 )`
 
 // virtual_keys at version 2 is the version-1 agents table under its new name,
-// which is exactly what step 2's ALTER TABLE … RENAME TO leaves behind — so the
+// which is exactly what step 2's ALTER TABLE … RENAME TO leaves behind, so the
 // frozen v1 DDL is the frozen v2 DDL, and there is only one copy to keep.
 var v2VirtualKeysDDL = strings.Replace(v1AgentsDDL, "CREATE TABLE agents", "CREATE TABLE virtual_keys", 1)
 
@@ -1447,7 +1447,7 @@ func TestMigrateRewritesToolIdentities(t *testing.T) {
 	})
 
 	t.Run("a bare allow entry on a single upstream is not a leftover", func(t *testing.T) {
-		// Both keys are left alone — the allow side is never expanded — but only
+		// Both keys are left alone (the allow side is never expanded) but only
 		// one of them is worth an operator's attention. k6's "search" still
 		// admits search on github, exactly as it did before the upgrade; k7's
 		// "other__search" names a member this key does not have, so it admits
@@ -1635,8 +1635,8 @@ func TestMigrateRefusesInvalidStoredSlug(t *testing.T) {
 
 // TestCorruptKeyListFailsClosed is the read side of the same argument the
 // migration makes: a list column that does not decode is not an empty list. The
-// scan still succeeds — the proxy needs the row to authenticate the request and
-// to record refusing it — but the key is marked, and the proxy blocks every call
+// scan still succeeds (the proxy needs the row to authenticate the request and
+// to record refusing it) but the key is marked, and the proxy blocks every call
 // on a marked key. The three spellings that legitimately mean "no list" must
 // never set the mark, or every key in the database would be dead.
 func TestCorruptKeyListFailsClosed(t *testing.T) {
@@ -1681,7 +1681,7 @@ func TestCorruptKeyListFailsClosed(t *testing.T) {
 
 // TestCorruptKeyListSurvivesAnUpdate is the write side of the same argument.
 // The scan answers nil for both lists on a key it has marked, so an update that
-// wrote them back would store "null" in both columns — which decodes cleanly,
+// wrote them back would store "null" in both columns, which decodes cleanly,
 // clears the mark on the next read, and leaves the key with no policy at all.
 // Every mutating handler in the management API reads a key and writes it
 // straight back, so that would make a rename, a rotation or a revocation the
@@ -1775,7 +1775,7 @@ func TestCorruptKeyListSurvivesAnUpdate(t *testing.T) {
 // database in this file. The second, direct call of migrateUpstreamTestColumns
 // is the only test of its columnExists gate: once the stamp reads 4 a re-open
 // never enters the switch again, so the idempotence migrateStep's advisory-lock
-// comment promises can only be proved by calling the step by name — the shape
+// comment promises can only be proved by calling the step by name, the shape
 // TestMigrateIsAFixedPoint uses for step 3.
 func TestMigrateAddsUpstreamTestColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v1.db")
@@ -1874,7 +1874,7 @@ func countColumns(t *testing.T, s *SQLStore, table, want string) int {
 
 // TestParseDBURLFileFormKeepsTxlock pins the PORM-25 fix for the parked
 // PORM-52 residual: a file: DATABASE_URL used to reach the driver verbatim and
-// so missed _txlock=immediate — the one connection setting Open's imperative
+// so missed _txlock=immediate, the one connection setting Open's imperative
 // PRAGMAs cannot supply, and what lets `porymcp rekey` run against a live
 // server. Operator-supplied parameters are kept; an explicit _txlock is never
 // overridden.
@@ -1912,7 +1912,7 @@ func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
 		})
 	}
 	// The bare form is re-derived through fileDSN, so it carries the PRAGMA
-	// set too — the same DSN a sqlite:// URL would get.
+	// set too, the same DSN a sqlite:// URL would get.
 	_, bare, err := parseDBURL("file:./x.db")
 	if err != nil {
 		t.Fatal(err)

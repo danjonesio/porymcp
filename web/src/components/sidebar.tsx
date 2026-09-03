@@ -36,7 +36,7 @@ export function SidebarFooter({ className, ...props }: React.ComponentPropsWitho
  * A group of items. The `LayoutGroup` keyed on `useId()` matters: below `lg`
  * the same sidebar node is mounted twice at once (the hidden desktop rail and
  * the drawer), and both render the current-page indicator with one
- * `layoutId` — the group keeps the two animations in separate scopes so the
+ * `layoutId`: the group keeps the two animations in separate scopes so the
  * indicator never flies between the two trees when the drawer opens.
  */
 export function SidebarSection({ className, ...props }: React.ComponentPropsWithoutRef<'div'>) {
@@ -72,7 +72,7 @@ type SidebarItemProps = {
 
 /**
  * One row of the sidebar. With `href` it is a Headless CloseButton rendered as
- * a Link — that is what dismisses the mobile drawer when a nav item is tapped
+ * a Link: that is what dismisses the mobile drawer when a nav item is tapped
  * (on the desktop rail, outside any Dialog, CloseButton is a no-op). Without
  * `href` it is a Headless button, which is how the account menu mounts its
  * trigger (`DropdownButton as={SidebarItem}`); the ref and the injected props

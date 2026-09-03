@@ -130,7 +130,7 @@ func TestDiscoverNeverEchoesUpstreamBytes(t *testing.T) {
 	}
 }
 
-// The issue's own version of this test used https://user:secret@host/mcp — and
+// The issue's own version of this test used https://user:secret@host/mcp, and
 // Go already masks the PASSWORD, so a leaky implementation passes it. What Go
 // keeps is the username, the path and the whole query string, so those are
 // what this asserts on.
@@ -148,7 +148,7 @@ func TestDiscoverRedactsURLCredentials(t *testing.T) {
 		t.Fatal("ok=true against a host that does not resolve")
 	}
 	if !strings.Contains(got.Error, host) {
-		t.Errorf("error=%q, want the host named — it is the one thing an operator can act on", got.Error)
+		t.Errorf("error=%q, want the host named: it is the one thing an operator can act on", got.Error)
 	}
 	absent(t, marshal(t, got), "leakpassword", "QUERY-SECRET", "leakuser", "/mcp-endpoint")
 }
@@ -399,8 +399,8 @@ func TestDiscoverRejectsBadAuthHeaderName(t *testing.T) {
 		// partially decodable config still leaves a bad name behind.
 		// authHeadersSendable runs first so that name gets its own specific
 		// sentence; ApplyAuth itself now refuses a value that does not decode
-		// (ErrNoCredential), so it would never reach net/http either way —
-		// the ordering is what keeps the better sentence (PORM-52).
+		// (ErrNoCredential), so it would never reach net/http either way, the
+		// ordering is what keeps the better sentence (PORM-52).
 		"partially decodable config": {models.AuthHeader, `{"header":"X-Bad\r\nInject","value":"v","headers":123}`},
 		// The rest of the hop-by-hop set, which the transport owns.
 		"upgrade":             {models.AuthCustom, `{"headers":{"Upgrade":"websocket"}}`},
@@ -426,7 +426,7 @@ func TestDiscoverRejectsBadAuthHeaderName(t *testing.T) {
 }
 
 // The refusals above are not a ban on custom headers: a name of an upstream's
-// own is sent on every request, alongside — never instead of — the three
+// own is sent on every request, alongside (never instead of) the three
 // PoryMCP writes for itself.
 func TestDiscoverSendsCustomHeaders(t *testing.T) {
 	f := newFixture(t)

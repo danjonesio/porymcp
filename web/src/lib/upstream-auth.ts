@@ -9,7 +9,7 @@ export type AuthState = { tone: AuthTone; label: string }
 
 /**
  * The one rule behind the Auth cell (PORM-52). `auth_status` is the server's
- * verdict on the stored credential — see `Upstream` in api.ts. Two values are
+ * verdict on the stored credential (see `Upstream` in api.ts). Two values are
  * broken and get a badge: `undecryptable` (ENCRYPTION_KEY changed; the fix is a
  * key) reads "Unreadable", `unreadable` (nothing stored, or nothing the auth
  * type can send; the fix is the credential) reads "Incomplete". Anything this

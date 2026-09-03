@@ -20,8 +20,8 @@ import (
 	"github.com/netcasklabs/porymcp/internal/models"
 )
 
-// The four values auth_status can take. none is decided by auth_type alone —
-// whatever blob the dashboard happened to store beside it — so the API's
+// The four values auth_status can take. none is decided by auth_type alone
+// (whatever blob the dashboard happened to store beside it) so the API's
 // "none" means exactly "this upstream sends no credential".
 const (
 	StatusNone          = "none"
@@ -31,7 +31,7 @@ const (
 )
 
 var (
-	// ErrUndecryptable: no configured key opens the stored bytes — the key
+	// ErrUndecryptable: no configured key opens the stored bytes, the key
 	// changed, or the bytes are corrupt. The operator's fix is a key.
 	ErrUndecryptable = errors.New("credential undecryptable")
 	// ErrUnreadable: nothing is stored, or the bytes open but hold nothing the
@@ -83,7 +83,7 @@ func Status(k crypto.Keyring, authType string, stored []byte) string {
 // StatusFor maps Read's outcome to the auth_status value. It is the one
 // mapping: presentUpstream calls it beside its own Read (which it keeps for
 // auth_hint's plaintext), so the API's answer and Status's cannot drift. An
-// error Read never returns classifies as undecryptable rather than ok — a
+// error Read never returns classifies as undecryptable rather than ok, a
 // future error value must fail visible, not green.
 func StatusFor(err error) string {
 	switch {
@@ -100,12 +100,12 @@ func StatusFor(err error) string {
 // stays one line on a large deployment; NotListed says how many were cut.
 const maxListed = 20
 
-// Report is what Sweep learned about every upstream, as counts and names —
+// Report is what Sweep learned about every upstream, as counts and names,
 // never a value. Rows with auth_type none are skipped entirely: they need no
 // credential, so they are never counted and never degrade anything.
 type Report struct {
 	// Credentials is the number of rows that need a credential and hold a
-	// stored blob — the rows an ephemeral key would make unreadable.
+	// stored blob, the rows an ephemeral key would make unreadable.
 	Credentials int
 	// Undecryptable is the number of rows no configured key opens. Only this
 	// count drives the mismatch verdict.
@@ -114,7 +114,7 @@ type Report struct {
 	// nothing or hold bytes their auth type cannot send. Never a key problem.
 	Unreadable int
 	// UnderPrevious is the number of rows that opened only under a previous
-	// key — a rotation that has not been finished with `porymcp rekey`.
+	// key, a rotation that has not been finished with `porymcp rekey`.
 	UnderPrevious int
 	// IDs and Names list the undecryptable rows, in ListUpstreams order.
 	IDs, Names []string

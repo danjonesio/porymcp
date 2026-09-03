@@ -3,7 +3,7 @@ import clsx from 'clsx'
 /**
  * The status language of the dashboard: lime is good or enabled, amber is held
  * or expired, pink is broken or revoked, zinc is neutral or disabled. The four
- * pairs are exact — a badge is how an operator reads a row at a glance.
+ * pairs are exact: a badge is how an operator reads a row at a glance.
  */
 const tones = {
   lime: ['bg-lime-400/20 text-lime-700', 'dark:bg-lime-400/10 dark:text-lime-300'],

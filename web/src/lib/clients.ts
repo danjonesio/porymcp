@@ -23,7 +23,7 @@ export function slugName(name: string) {
 /**
  * TOML table keys for the Codex snippet. A `-` is rewritten to `_` to match
  * `docs/09-clients.md`, but `github-mcp` and `github_mcp` are both legal
- * upstream slugs and would collide into one `[mcp_servers.github_mcp]` table —
+ * upstream slugs and would collide into one `[mcp_servers.github_mcp]` table,
  * a duplicate-key error that fails the whole config.toml. Suffix the
  * collisions so every table header stays distinct. The suffix is bumped until
  * the key is one nothing has already taken, rather than counted per base: a
@@ -46,7 +46,7 @@ function tomlKeys(servers: SnippetServer[]): string[] {
  * Install snippet for one client over N servers. A virtual key with a group
  * target has one server per enabled member; every other case is a single
  * server, whose output is byte-identical to the one-server snippet we have
- * always emitted. Names are used verbatim — the caller decides whether a
+ * always emitted. Names are used verbatim: the caller decides whether a
  * server is named after its upstream slug or after the virtual key.
  */
 export function clientSnippet(kind: ClientKind, servers: SnippetServer[], apiKey: string): string {

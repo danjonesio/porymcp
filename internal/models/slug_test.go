@@ -77,7 +77,7 @@ func TestValidSlug(t *testing.T) {
 		"a__b", "a--b", "a-_b", "a_-b",
 		"a/b", "a.b", "a%20b", "..", "../etc",
 		strings.Repeat("a", 41),
-		"gіthub",     // Cyrillic і (U+0456) — [a-z0-9] is the ASCII range over runes
+		"gіthub",     // Cyrillic і (U+0456): [a-z0-9] is the ASCII range over runes
 		"ｇithub",     // fullwidth ｇ
 		"git\x00hub", // NUL
 		"github\n",   // RE2 "$" is end-of-TEXT, not end-of-line

@@ -12,13 +12,13 @@ The dashboard admin key and every virtual key travel as `Authorization: Bearer`
 tokens. Tool arguments and upstream responses travel in the same bodies. A
 clear-text hop on a shared network is a credential leak.
 
-Put TLS in front — Caddy is the recommended edge — or terminate it on the
+Put TLS in front (Caddy is the recommended edge) or terminate it on the
 process with `TLS_CERT_FILE` / `TLS_KEY_FILE`. Then set `PUBLIC_URL` to the
 `https://` URL clients actually use.
 
 TLS on the *outbound* side is separate and is not configured here. An upstream's
-`url` is used exactly as registered — PoryMCP forwards to that URL and never to
-a host the upstream names in a redirect — so an `http://` upstream URL a vendor
+`url` is used exactly as registered: PoryMCP forwards to that URL and never to
+a host the upstream names in a redirect, so an `http://` upstream URL a vendor
 `301`s to `https://` fails rather than upgrading. Register the `https://` URL.
 
 ## 2. What PoryMCP reads, and when
@@ -38,7 +38,7 @@ attribute uses the rightmost hop or token.
 | Client IP | `Forwarded` `for=` (preferred), else `X-Forwarded-For`; rightmost hop that is not itself trusted | Socket address only |
 
 `TRUSTED_PROXIES` is a comma-separated list of CIDRs or bare IPs (a bare IPv4
-becomes `/32`). A malformed value refuses to start — and under compose
+becomes `/32`). A malformed value refuses to start, and under compose
 restarts in a loop until it is fixed.
 
 Host comparison against `PUBLIC_URL` / `EXTRA_ALLOWED_HOSTS` runs on the
@@ -173,8 +173,8 @@ TLS_KEY_FILE=/certs/privkey.pem
 PUBLIC_URL=https://porymcp.example.com
 ```
 
-Both paths must be set, or both left empty. A half-set pair — or a path not
-actually mounted into the container — refuses to start, and under compose
+Both paths must be set, or both left empty. A half-set pair (or a path not
+mounted into the container) refuses to start, and under compose
 restarts in a loop until it is fixed.
 ACME is out of scope; use Caddy for automatic certificates.
 
@@ -186,12 +186,12 @@ HSTS is still the edge's job; built-in TLS does not emit it.
 
 ## 8. Compose overlay
 
-The overlay adds Caddy. It does **not** unpublish `8080:8080` — Compose
+The overlay adds Caddy. It does **not** unpublish `8080:8080`: Compose
 merges ports additively, and a direct hit on the container port is how you
 confirm scheme enforcement.
 
 ```bash
-# .env must hold ADMIN_API_KEY and ENCRYPTION_KEY — every compose command needs both
+# .env must hold ADMIN_API_KEY and ENCRYPTION_KEY: every compose command needs both
 docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build
 ```
 
@@ -200,7 +200,7 @@ What the overlay pins:
 | Setting | Value | Why |
 | --- | --- | --- |
 | Default network subnet | `172.28.0.0/16` | Stable addressing so the trusted CIDR does not drift |
-| IPv6 on that network | off | Caddy→app must not arrive as an untrusted v6 address |
+| IPv6 on that network | off | Caddy to app must not arrive as an untrusted v6 address |
 | Caddy IPv4 | `172.28.0.4` | The only socket PoryMCP should trust |
 | `TRUSTED_PROXIES` | `172.28.0.4/32` | That Caddy address, nothing else |
 | `PUBLIC_URL` | `https://localhost` | Scheme enforcement on; host matches the Caddyfile |
@@ -264,12 +264,12 @@ A healthy body looks like:
 | --- | --- |
 | `scheme_enforced` | `true` when `PUBLIC_URL` is https and `ALLOW_INSECURE_HTTP` is unset |
 | `trusted_proxies` | Count of configured CIDRs. It is not the CIDR list; the prefixes never appear in the payload |
-| `encryption` | `ok`, or `mismatch` when the boot check found a stored credential no configured key opens — a verdict only, never a fingerprint |
+| `encryption` | `ok`, or `mismatch` when the boot check found a stored credential no configured key opens. A verdict only, never a fingerprint |
 
-The same fields are on `GET /api/v1/health`. A `503` response — `unhealthy`
-(store ping failed) or `degraded` (encryption mismatch, see §12) — still
+The same fields are on `GET /api/v1/health`. A `503` response, `unhealthy`
+(store ping failed) or `degraded` (encryption mismatch, see §12), still
 includes `scheme_enforced`, `trusted_proxies` and `encryption`. On `unhealthy` the
-`error` field is the fixed string `database unavailable` — the cause is in the
+`error` field is the fixed string `database unavailable`. The cause is in the
 server log. `/health` (root) is unauthenticated. A degraded body:
 
 ```json
@@ -291,19 +291,19 @@ With the default `PUBLIC_URL=http://localhost:8080` and empty
 `ENCRYPTION_KEY` seals every stored upstream credential; losing it makes them
 unrecoverable, so back it up separately from the data volume and rotate it
 deliberately. (Upgrading to the build that introduced this is itself one-way:
-the first boot stamps schema version 5, which earlier builds refuse — take the
+the first boot stamps schema version 5, which earlier builds refuse, so take the
 pre-upgrade backup before deploying it. See `CHANGELOG.md` and
 `docs/02-data-model.md`.) The policy is in `docs/07-security.md`; these are the commands
 against the shipped compose file. Only step 1 has downtime. The image has no
 shell: `docker compose exec porymcp /porymcp rekey` execs the binary directly,
 inherits the container's environment as created (so edit `.env` and recreate
 before running it), and prints its result to **your terminal, not to
-`docker compose logs`** — keep it.
+`docker compose logs`**: keep it.
 
 Precondition: these commands assume `.env` exists and holds the deployment's
-current `ADMIN_API_KEY` and `ENCRYPTION_KEY` — compose refuses every
+current `ADMIN_API_KEY` and `ENCRYPTION_KEY`: compose refuses every
 subcommand without both. A throwaway value in the shell satisfies compose but
-not step 4's `curl` checks, and it overrides `.env` — never run `up` with a throwaway
+not step 4's `curl` checks, and it overrides `.env`, so never run `up` with a throwaway
 set; step 4 reads the real key straight out of `.env`. If the encryption key has been
 lost but the container that was created with it is still present, recover it
 before doing anything else:
@@ -316,7 +316,7 @@ for good, the stored credentials cannot be recovered: re-enter each one.
 # 0. a new key, on the host (the image has no openssl)
 openssl rand -hex 32
 
-# 1. consistent backup — the only step with downtime. The database and the
+# 1. consistent backup: the only step with downtime. The database and the
 #    key it was taken under go together; label the archive with the key.
 docker compose stop porymcp
 docker run --rm -v porymcp_porymcp-data:/data -v "$PWD:/backup" \
@@ -328,7 +328,7 @@ docker compose up -d porymcp
 # the boot log reads "encryption key rotation pending"; GET /health is 200
 # "encryption":"ok"; the proxy keeps working on the previous key throughout
 
-# 3. rewrite every stored credential under the new key — once, by hand
+# 3. rewrite every stored credential under the new key, once, by hand
 docker compose exec porymcp /porymcp rekey
 # {"level":"INFO","msg":"rekey complete","rewritten":…,"already_current":…,
 #  "no_credential":…,"previous_fingerprint":"…","fingerprint":"…"}   exit 0
@@ -352,12 +352,12 @@ docker compose up -d porymcp
 ```
 
 Behind the TLS overlay, the curls in step 4 go through Caddy
-(`curl -sk https://localhost/…`) — a direct `:8080` hit is `426` once
-`PUBLIC_URL` is https — and every `up -d` keeps the same `-f` flags, or compose
+(`curl -sk https://localhost/…`, since a direct `:8080` hit is `426` once
+`PUBLIC_URL` is https), and every `up -d` keeps the same `-f` flags, or compose
 treats `caddy` as an orphan.
 
 **More than one replica** (Postgres): deploy the new binary everywhere first
-with the key unchanged — `rekey` opens the database, which runs the schema-5
+with the key unchanged: `rekey` opens the database, which runs the schema-5
 migration, so a `rekey` ahead of the rollout locks every replica still on the
 old binary out at `Open`. Then set both keys on **all** replicas and wait for
 the rollout to settle; then run `rekey` **once**, from one process; then remove
@@ -368,7 +368,7 @@ If `rekey` exits `1` naming rows no configured key opens, nothing was changed:
 re-enter those credentials (`PATCH /api/v1/upstreams/{id}` with a fresh
 `auth_config`) or delete those upstreams, then re-run. If it reports a row
 "changed during rekey", a concurrent credential edit raced it (a Postgres
-deployment — on SQLite, writers queue behind the rotation's transaction
+deployment: on SQLite, writers queue behind the rotation's transaction
 instead); re-run.
 
 **What to point probes at.** A key mismatch is a `503 degraded` on

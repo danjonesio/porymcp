@@ -1,7 +1,7 @@
 # docker-compose.tls.yml
 # Usage: docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build
 #
-# Adds Caddy in front of PoryMCP. Does not unpublish 8080:8080 — Compose
+# Adds Caddy in front of PoryMCP. Does not unpublish 8080:8080, since Compose
 # merges ports additively, and the direct-hit acceptance check needs the
 # published container port.
 #

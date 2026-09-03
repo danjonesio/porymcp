@@ -7,6 +7,7 @@ import { Link } from '@/components/link'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { Text } from '@/components/text'
 import { api, type AuditLog, type Stats } from '@/lib/api'
+import { LOADING } from '@/lib/placeholder'
 import { useEffect, useState } from 'react'
 
 function formatRate(n: number) {
@@ -15,8 +16,8 @@ function formatRate(n: number) {
 
 /**
  * The one notice the Overview shows about stored credentials (PORM-52). Driven
- * by the live counts on /stats — the same sweep the boot line and the Upstreams
- * badges use — never by /health: this notice tracks live credential state,
+ * by the live counts on /stats (the same sweep the boot line and the Upstreams
+ * badges use), never by /health: this notice tracks live credential state,
  * and /health's verdict is a boot fact. Two variants,
  * the worse one first: credentials the current key cannot read (the proxy
  * refuses those upstreams until the key or the credential is fixed), else a
@@ -25,7 +26,7 @@ function formatRate(n: number) {
  * banner's. The copy is written here: no server string is rendered.
  *
  * The caller mounts the live region itself, always, so a screen reader is
- * already observing it when content arrives — a region inserted together with
+ * already observing it when content arrives: a region inserted together with
  * its content is announced inconsistently (discovery-panel.tsx does the same).
  * The guards are written as !(n > 0) so an absent count renders nothing.
  */
@@ -42,7 +43,7 @@ function CredentialNotice({ stats }: { stats: Stats }) {
             <span className="font-mono">ENCRYPTION_KEY</span>.
           </p>
           <p className="mt-1 max-w-[72ch] text-base/7 text-pretty text-zinc-600 sm:text-sm/6 dark:text-zinc-400">
-            PoryMCP refuses to call {bad === 1 ? 'that upstream' : 'those upstreams'}. Restore the previous key — or set{' '}
+            PoryMCP refuses to call {bad === 1 ? 'that upstream' : 'those upstreams'}. Restore the previous key, or set{' '}
             <span className="font-mono">ENCRYPTION_KEY_PREVIOUS</span> to it, restart, run{' '}
             <span className="font-mono">porymcp rekey</span>, then restart without it. If the key is gone for good, re-enter
             each credential. See docs/07-security.md.
@@ -90,7 +91,7 @@ export default function OverviewPage() {
     <>
       <Heading>Overview</Heading>
       <Text className="mt-2 max-w-[56ch] text-pretty">
-        One clean form that can take whatever shape your agents need.
+        This page summarises your virtual keys, upstream connections and recent proxy activity.
       </Text>
       {error ? <Text className="mt-4 text-pink-600 dark:text-pink-400">{error}</Text> : null}
       <div role="status" aria-live="polite">
@@ -99,12 +100,12 @@ export default function OverviewPage() {
 
       <div className="@container mt-8">
         <div className="grid gap-8 sm:grid-cols-2 xl:grid-cols-4">
-          <Stat title="Active virtual keys" value={stats ? String(stats.active_virtual_keys) : '—'} hint="Not revoked or expired" />
-          <Stat title="Calls today" value={stats ? String(stats.calls_today) : '—'} hint="Last 24 hours" />
-          <Stat title="Upstreams" value={stats ? String(stats.upstreams) : '—'} hint="Registered MCP servers" />
+          <Stat title="Active virtual keys" value={stats ? String(stats.active_virtual_keys) : LOADING} hint="Not revoked or expired" />
+          <Stat title="Calls today" value={stats ? String(stats.calls_today) : LOADING} hint="Last 24 hours" />
+          <Stat title="Upstreams" value={stats ? String(stats.upstreams) : LOADING} hint="Registered MCP servers" />
           <Stat
             title="Error rate"
-            value={stats ? formatRate(stats.error_rate) : '—'}
+            value={stats ? formatRate(stats.error_rate) : LOADING}
             hint={stats ? `${stats.errors_today} errors today` : undefined}
           />
         </div>

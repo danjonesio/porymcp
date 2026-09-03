@@ -34,19 +34,19 @@ type Upstream struct {
 	AuthType    string          `json:"auth_type"`
 	AuthConfig  json.RawMessage `json:"-"` // encrypted at rest; never serialised raw
 	Enabled     bool            `json:"enabled"`
-	// LastTestAt and LastTestOK record the last deliberate connection test — a
-	// press of Tools or Refresh in the dashboard, which is
-	// POST /upstreams/{id}/discover. Both are nil until the first one; they are
+	// LastTestAt and LastTestOK record the last deliberate connection test, a
+	// press of Tools or Refresh in the dashboard, which is POST
+	// /upstreams/{id}/discover. Both are nil until the first one; they are
 	// written together or not at all. PATCH cannot set them: upsertUpstream has
 	// no such fields, and UpdateUpstream only ever NULLs them (when url,
-	// transport, auth_type or auth_config changed) or leaves them alone — never
+	// transport, auth_type or auth_config changed) or leaves them alone, never
 	// writes them from the struct. CreateUpstream does write the struct's values,
 	// which the API always leaves nil.
 	//
 	// No omitempty, unlike ExpiresAt and LastUsedAt on VirtualKey: the dashboard
 	// renders a three-state cell, so "never tested" must arrive as an explicit
-	// null rather than as a missing key. LastTestOK mirrors Discovery.OK — the
-	// whole handshake AND the catalogue — so a run that passed initialize and
+	// null rather than as a missing key. LastTestOK mirrors Discovery.OK (the
+	// whole handshake AND the catalogue) so a run that passed initialize and
 	// failed tools/list records false, and so does a refused transport or an
 	// undecryptable stored credential: PoryMCP could not use the upstream, which
 	// is what the dot answers. Nothing the upstream said is kept: no catalogue
@@ -106,7 +106,7 @@ type VirtualKey struct {
 	//
 	// It is not stored and not serialised: it describes one read of one row,
 	// and there is nothing a client could do with it. The proxy reads it as
-	// "refuse everything on this key" — an unreadable denylist that decoded to
+	// "refuse everything on this key", an unreadable denylist that decoded to
 	// no denylist at all would otherwise permit exactly what it was written to
 	// refuse, and it would look identical to a key that never had one.
 	//

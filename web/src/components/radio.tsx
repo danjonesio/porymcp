@@ -16,7 +16,7 @@ export function RadioGroup<TType>({
   )
 }
 
-/** One radio beside its label, with an optional description under the label — the same grid as CheckboxField. */
+/** One radio beside its label, with an optional description under the label, the same grid as CheckboxField. */
 export function RadioField({ className, ...props }: { className?: string } & Omit<Headless.FieldProps, 'as' | 'className'>) {
   return <Headless.Field data-slot="field" className={clsx(className, optionField)} {...props} />
 }

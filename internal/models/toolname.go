@@ -11,7 +11,7 @@ import "unicode/utf8"
 //
 // One test, asked from three ends. A name the gate cannot pin down is refused
 // on the way in, the same name is dropped from a group's catalogue on the way
-// out, and discovery drops it from the list it shows an operator — so no two
+// out, and discovery drops it from the list it shows an operator, so no two
 // of them can disagree about which tools exist. It lives in the vocabulary
 // package rather than in either caller because that argument now spans
 // internal/proxy and internal/mcpclient, and neither may import the other.

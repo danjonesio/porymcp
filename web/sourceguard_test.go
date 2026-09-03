@@ -65,7 +65,7 @@ func forEachSource(t *testing.T, root string, exts []string, skip []string, fn f
 // TestNoKitReferences is the standing guard behind PORM-61: no file in the
 // repository may name the commercial UI kit the dashboard was once built on,
 // in a comment, a doc or a copied file. The needles are assembled at runtime
-// so that neither this file nor the tree carries the literal — the repo-wide
+// so that neither this file nor the tree carries the literal, the repo-wide
 // grep in the verification must find nothing, and this guard must not trip on
 // itself.
 func TestNoKitReferences(t *testing.T) {
@@ -103,7 +103,7 @@ var remoteMarkup = regexp.MustCompile(`(?i)(rel\s*=\s*["'{]?\s*["']?stylesheet|<
 // script or font from another origin. Markup files are checked for stylesheet
 // and script tags; stylesheets for remote @import and src: url(...) lines. The
 // one allowed line is the Inter import in tailwind.css, which PORM-43 removes
-// when it vendors the font — a second remote import fails the suite.
+// when it vendors the font, a second remote import fails the suite.
 func TestNoRemoteResources(t *testing.T) {
 	allowCSS := map[string]string{
 		"src/styles/tailwind.css": "@import url('https://rsms.me/inter/inter.css');", // TODO(PORM-43)

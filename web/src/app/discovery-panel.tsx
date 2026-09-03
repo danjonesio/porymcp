@@ -33,7 +33,7 @@ export function DiscoverySummary({ result }: { result: Discovery }) {
         <dt className="text-base/7 font-medium sm:text-sm/6">Server</dt>
         {/* Upstream-controlled text: React children, left-to-right, and it wraps. */}
         <dd dir="ltr" className="mt-1 text-base/7 wrap-break-word text-zinc-500 sm:text-sm/6 dark:text-zinc-400">
-          {server || '—'}
+          {server || 'Not reported'}
         </dd>
       </div>
       <div>
@@ -114,8 +114,8 @@ export function ToolRow({
  * The result of one discovery request, rendered the same way in the Add upstream
  * dialog and in a saved upstream's Tools dialog.
  *
- * Everything an upstream sends — tool names, descriptions, server name, the
- * message behind a JSON-RPC error — is a React text child and nothing else: no
+ * Everything an upstream sends (tool names, descriptions, server name, the
+ * message behind a JSON-RPC error) is a React text child and nothing else: no
  * markdown, no title attribute, no link built from it. Long descriptions are
  * clamped with CSS rather than cut with slice(), so the whole string is one
  * press away and nothing is hidden from a reader who is looking for it.
@@ -157,7 +157,7 @@ export function DiscoveryPanel({
 
   const host = hostOf(url)
   // A request that never produced a Discovery, or one that did and says the
-  // upstream refused. The server's sentence is printed verbatim — the dashboard
+  // upstream refused. The server's sentence is printed verbatim: the dashboard
   // never pattern-matches it.
   const failure = error || (result && !result.ok ? result.error || 'That server could not be reached.' : '')
   const unnameable = result?.unnameable_tools ?? 0
@@ -206,13 +206,13 @@ export function DiscoveryPanel({
         </div>
       ) : null}
 
-      {/* What PoryMCP keeps, said once a run has answered — pass or fail, and
+      {/* What PoryMCP keeps, said once a run has answered, pass or fail, and
           never under an idle, pending or errored panel, where there is nothing
           to have kept. */}
       {result ? (
         <Text className="mt-3">
           {surface === 'saved'
-            ? 'PoryMCP records when this upstream was last tested and whether it passed — the Status column shows it. The tool list itself is not stored; this is what the server said just now.'
+            ? 'PoryMCP records when this upstream was last tested and whether it passed. The Status column shows it. The tool list itself is not stored; this is what the server said just now.'
             : 'Discovered just now from the server; PoryMCP does not store this list.'}
         </Text>
       ) : null}
@@ -243,7 +243,7 @@ export function DiscoveryPanel({
               ) : null}
 
               {/* The dialog itself scrolls, so the list only gets its own scroller
-                  from sm: up — a nested touch scroller on a phone is a trap. */}
+                  from sm: up, since a nested touch scroller on a phone is a trap. */}
               <div className="mt-2 rounded-lg bg-zinc-50 p-3 ring-1 ring-zinc-950/5 dark:bg-zinc-900 dark:shadow-none dark:inset-ring dark:inset-ring-white/5">
                 <ul
                   role="list"
@@ -272,7 +272,7 @@ export function DiscoveryPanel({
                   count it actually has rather than a number it may not. */}
               {result.truncated ? (
                 <Text className="mt-3">
-                  {`Not every tool is listed — ${result.tool_count} shown. This server offers more.`}
+                  {`Not every tool is listed. ${result.tool_count} shown. This server offers more.`}
                 </Text>
               ) : null}
               {unnameable > 0 ? (

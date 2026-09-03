@@ -100,7 +100,7 @@ func TestValidateToolFilter(t *testing.T) {
 // assertEnforceableMode pins the contract ValidateToolFilter exists to keep:
 // every accepted filter decodes to a mode proxy.toolPolicy.blockedBy compares
 // equal to, or to no mode at all (no filter). The proxy package cannot be
-// imported here — it depends on models — so the invariant is asserted against
+// imported here (it depends on models) so the invariant is asserted against
 // the same literals blockedBy uses.
 func assertEnforceableMode(t *testing.T, raw string) {
 	t.Helper()
@@ -131,7 +131,7 @@ func TestValidateToolFilterWrite(t *testing.T) {
 
 		// Valid: a deny rule may name a tool either way. An unscoped entry is
 		// the tool's own name on every member, which is a rule an operator can
-		// mean, so it stays legal — only allow rules have to name a member.
+		// mean, so it stays legal, only allow rules have to name a member.
 		{"bare deny tools", `{"mode":"deny","tools":["delete_repo"]}`, ""},
 		{"scoped deny tools", `{"mode":"deny","tools":["gh__delete_repo"]}`, ""},
 		{"deny a name that leads with the separator", `{"mode":"deny","tools":["__x"]}`, ""},
@@ -160,7 +160,7 @@ func TestValidateToolFilterWrite(t *testing.T) {
 		{"head is UUID-shaped", `{"mode":"deny","tools":["550e8400-e29b-41d4-a716-446655440000__x"]}`, "must be an upstream slug"},
 		{"prefixes head is not a slug", `{"mode":"deny","prefixes":["Bad__"]}`, "must be an upstream slug"},
 		// The whitespace check comes first, so this one never reaches the slug
-		// rule — it is still rejected, and still names the entry.
+		// rule, it is still rejected, and still names the entry.
 		{"head with a space", `{"mode":"deny","tools":["Bad Slug__x"]}`, "tools[0]"},
 
 		// Invalid: a tools entry is compared for equality, so one ending at the
@@ -269,7 +269,7 @@ func TestValidateToolList(t *testing.T) {
 		{"the offending denylist entry is named", FieldToolDenylist, []string{"ok", "bad entry"}, false, "tool_denylist[1]"},
 
 		// Invalid: the {slug}__{tool} shape rules, on both fields and both
-		// targets — a list is compared for equality wherever it is used.
+		// targets, a list is compared for equality wherever it is used.
 		{"head is not a slug", FieldToolDenylist, []string{"BadSlug__x"}, false, "must be an upstream slug"},
 		{"head holds a separator run", FieldToolAllowlist, []string{"a--b__x"}, true, "must be an upstream slug"},
 		{"entry ending at the separator", FieldToolDenylist, []string{"docs__"}, false, "names no tool"},
@@ -296,7 +296,7 @@ func TestValidateToolList(t *testing.T) {
 
 	// The "must name a member" rule keys off the exact field name, which is
 	// why the two are constants. A caller that spells the allow side something
-	// else still gets the text and shape checks — it just does not get this
+	// else still gets the text and shape checks, it just does not get this
 	// rule, and would be widening a group key without noticing.
 	if err := ValidateToolList("allowlist", []string{"read"}, true); err != nil {
 		t.Errorf("ValidateToolList with an unrecognised field = %v, want the shape checks only", err)
@@ -312,8 +312,8 @@ func TestValidateToolList(t *testing.T) {
 // API, and a tightening of either would have left the two holding different
 // opinions about which stored entries are clean: exactly the drift SplitEntry
 // was centralised to prevent. They now answer as one, and this says so for the
-// shapes that separate them, in both directions — an entry is clean exactly
-// when no error names it, and the corpus below pins which entries those are.
+// shapes that separate them, in both directions, an entry is clean exactly when
+// no error names it, and the corpus below pins which entries those are.
 func TestCleanToolEntryIsTheValidatorsVerdict(t *testing.T) {
 	for _, tc := range []struct {
 		clean   bool

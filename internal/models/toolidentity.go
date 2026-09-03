@@ -5,7 +5,7 @@ import "strings"
 // ToolSeparator joins an upstream's slug to a tool's own name. It is two
 // underscores rather than one because ValidSlug forbids a run of two
 // separators inside a slug, and that is exactly what makes the join
-// reversible — ParseCanonical carries the argument and the counter-example.
+// reversible, ParseCanonical carries the argument and the counter-example.
 const ToolSeparator = "__"
 
 // ToolIdentity is what a tool rule is really written against: a tool's own
@@ -14,13 +14,13 @@ const ToolSeparator = "__"
 // and they are different tools with different credentials behind them.
 //
 // A client sees the identity spelled differently depending on where it is
-// looking — Canonical on a group's aggregate endpoint, the bare Name on a
-// member endpoint or a single-upstream key — but a rule naming the pair means
+// looking (Canonical on a group's aggregate endpoint, the bare Name on a
+// member endpoint or a single-upstream key) but a rule naming the pair means
 // the same thing on all of them.
 type ToolIdentity struct {
 	// Slug is the persisted slug of the upstream advertising the tool. It is
 	// always a stored slug, never anything derived from the tool name, and it
-	// therefore satisfies ValidSlug — which ParseCanonical depends on.
+	// therefore satisfies ValidSlug, which ParseCanonical depends on.
 	Slug string
 	// Name is the tool's name exactly as its upstream advertises it, including
 	// any ToolSeparator of its own: an upstream that is itself a proxy will
@@ -36,8 +36,8 @@ func (t ToolIdentity) Canonical() string { return t.Slug + ToolSeparator + t.Nam
 // the FIRST ToolSeparator. It reports false when the string is not one: no
 // separator, nothing before it, or nothing after it.
 //
-// The split is exact — ParseCanonical(id.Canonical()) returns id for every tool
-// name an upstream can advertise — and that is a property of ValidSlug rather
+// The split is exact (ParseCanonical(id.Canonical()) returns id for every tool
+// name an upstream can advertise) and that is a property of ValidSlug rather
 // than a convention:
 //
 //   - a valid slug contains no run of two separators, so it holds no "__" for
@@ -52,11 +52,11 @@ func (t ToolIdentity) Canonical() string { return t.Slug + ToolSeparator + t.Nam
 // have distinct canonical strings, which is what lets the aggregate endpoint
 // route a call by the name the client sent back.
 //
-// One underscore has no such property, and the difference is not cosmetic:
-// "gh" + "_" + "enterprise_create_issue" and "gh_enterprise" + "_" +
-// "create_issue" are the same string. Two members can each produce it, only one
-// can own it in the merged catalogue, and the loser's tool then resolves to the
-// winner's upstream — a call executed against the wrong credential.
+// One underscore has no such property, and the difference is not cosmetic: "gh"
+// + "_" + "enterprise_create_issue" and "gh_enterprise" + "_" + "create_issue"
+// are the same string. Two members can each produce it, only one can own it in
+// the merged catalogue, and the loser's tool then resolves to the winner's
+// upstream, a call executed against the wrong credential.
 func ParseCanonical(s string) (ToolIdentity, bool) {
 	i := strings.Index(s, ToolSeparator)
 	if i <= 0 { // no separator, or nothing before it
@@ -77,7 +77,7 @@ func ParseCanonical(s string) (ToolIdentity, bool) {
 // identify a tool anywhere without the refusal depending on what the caller's
 // key can reach: a member's slug and a stranger's slug cost the same and get
 // the same answer, so the check can never be used to enumerate the upstreams
-// behind a group. Membership belongs to the policy and the router, not here —
+// behind a group. Membership belongs to the policy and the router, not here,
 // ValidToolIdentity("mcp__server__tool") is true even though no upstream may
 // hold the reserved slug "mcp", and true for any well-formed slug the caller
 // invents.
@@ -86,16 +86,16 @@ func ValidToolIdentity(s string) bool {
 	return ok && ValidSlug(id.Slug)
 }
 
-// SplitEntry classifies one rule entry — an entry of a group's tool_filter
+// SplitEntry classifies one rule entry (an entry of a group's tool_filter
 // tools or prefixes list, or of a virtual key's tool_allowlist or
-// tool_denylist — as scoped or unscoped. It is the ONE definition of that
+// tool_denylist) as scoped or unscoped. It is the ONE definition of that
 // split, shared by the proxy, the management API, the store's migration and
 // the startup report, so an entry cannot mean one thing where it is written
 // and another where it is enforced.
 //
 // An entry is scoped when it holds the separator with something before it:
 // "docs__search" names one tool on the member "docs". Everything else is
-// unscoped and names a tool by its own name on every member — including
+// unscoped and names a tool by its own name on every member, including
 // "__search", where nothing precedes the separator, because an upstream is
 // free to advertise a tool actually called "__search" and an operator has to
 // be able to write that down.
@@ -116,15 +116,15 @@ func SplitEntry(e string) (head, rest string, scoped bool) {
 // match used by a tools entry and by a key's lists.
 //
 // A scoped entry matches only on its own member and matches its rest against
-// the tool's OWN name — the slug is consumed by the head — so "docs__delete_"
-// as a prefixes entry means "everything starting delete_ on docs", and
-// "docs__" means every tool on docs. An unscoped entry is matched against the
-// own name on every member, so one entry covers a group's aggregate endpoint
-// and each member endpoint alike: the client sees different strings there, but
-// the identity is the same one.
+// the tool's OWN name (the slug is consumed by the head) so "docs__delete_" as
+// a prefixes entry means "everything starting delete_ on docs", and "docs__"
+// means every tool on docs. An unscoped entry is matched against the own name
+// on every member, so one entry covers a group's aggregate endpoint and each
+// member endpoint alike: the client sees different strings there, but the
+// identity is the same one.
 //
-// Two consequences worth naming. A ToolIdentity with an empty Slug — the zero
-// value, or a policy that never learned which member it stands on — matches no
+// Two consequences worth naming. A ToolIdentity with an empty Slug (the zero
+// value, or a policy that never learned which member it stands on) matches no
 // scoped entry at all, because a scoped entry's head is non-empty by
 // construction. And an empty entry matches nothing: writes reject it, but a
 // list stored before that check existed may still hold one, and matching
