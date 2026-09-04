@@ -1,6 +1,7 @@
 'use client'
 
 import { ApplicationLayout } from '@/app/application-layout'
+import { getAdminKey } from '@/lib/api'
 import { useAdminKey } from '@/lib/use-admin-key'
 import { useRouter } from 'next/navigation'
 import { useEffect } from 'react'
@@ -10,7 +11,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const hasKey = useAdminKey() !== null
 
   useEffect(() => {
-    if (!hasKey) {
+    // Read the key at effect time rather than trusting hasKey: on the
+    // hydration render the snapshot is still the server's null, and the
+    // re-render that corrects it is scheduled after this effect has run.
+    if (!getAdminKey()) {
       router.replace('/login/')
     }
   }, [hasKey, router])
