@@ -52,7 +52,7 @@ docker run -d \
   -e ADMIN_API_KEY="$(cat ~/porymcp.admin)" \
   -e ENCRYPTION_KEY="$(cat ~/porymcp.key)" \
   -v porymcp-data:/data \
-  ghcr.io/netcasklabs/porymcp:latest
+  ghcr.io/danjonesio/porymcp:latest
 ```
 
 Back `ENCRYPTION_KEY` up separately from the data volume. Without it the

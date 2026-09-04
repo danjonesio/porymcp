@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // A group's aggregate endpoint advertises one name per tool per member, and

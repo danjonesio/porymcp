@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/crypto"
 )
 
 // TestNoInternalReferences is the standing guard behind PORM-122 (plan security

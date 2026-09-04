@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/google/uuid"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/store"
 )
 
 // Logger writes audit entries asynchronously so proxy latency stays low.

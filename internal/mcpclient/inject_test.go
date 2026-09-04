@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // TestApplyAuthReportsEmptyCredential pins PORM-52 security requirement 3:

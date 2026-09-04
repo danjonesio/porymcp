@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // The fixture is a real MCP server as the reference implementations behave,

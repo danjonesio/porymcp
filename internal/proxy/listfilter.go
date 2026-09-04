@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/netcasklabs/porymcp/internal/mcpclient"
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // Why a tools/list response went out whole. Neither error reaches the client,

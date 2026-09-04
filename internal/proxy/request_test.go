@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // The requests below all used to fall through peekRPC as ("", ""), which every

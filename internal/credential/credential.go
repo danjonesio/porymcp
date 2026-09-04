@@ -15,9 +15,9 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/netcasklabs/porymcp/internal/crypto"
-	"github.com/netcasklabs/porymcp/internal/mcpclient"
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // The four values auth_status can take. none is decided by auth_type alone

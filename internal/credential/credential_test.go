@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/crypto"
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 func keyring(t *testing.T, previous int) (crypto.Keyring, [][]byte) {

@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/go-chi/chi/v5"
-	"github.com/netcasklabs/porymcp/internal/models"
 )
 
 func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/credential"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/go-chi/chi/v5"
-	"github.com/netcasklabs/porymcp/internal/credential"
-	"github.com/netcasklabs/porymcp/internal/mcpclient"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/store"
 )
 
 // Discovery is the one management call that leaves the process. Everything

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/config"
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/config"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // A redirect is the one upstream answer that asks the proxy to do something

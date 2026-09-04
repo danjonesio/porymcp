@@ -4,11 +4,11 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/netcasklabs/porymcp/internal/config"
-	"github.com/netcasklabs/porymcp/internal/credential"
-	"github.com/netcasklabs/porymcp/internal/crypto"
-	"github.com/netcasklabs/porymcp/internal/store"
-	"github.com/netcasklabs/porymcp/internal/webutil"
+	"github.com/danjonesio/porymcp/internal/config"
+	"github.com/danjonesio/porymcp/internal/credential"
+	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/webutil"
 )
 
 // checkEncryption is the boot integrity pass (PORM-52). It reads every stored

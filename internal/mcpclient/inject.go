@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // ErrNoCredential reports that an auth type other than none has nothing to

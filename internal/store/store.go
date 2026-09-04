@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 var (

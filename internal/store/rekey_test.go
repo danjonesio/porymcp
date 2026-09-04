@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/netcasklabs/porymcp/internal/crypto"
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // openTemp opens a fresh SQLite store and hands back its path, so a test can

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/store"
 )
 
 // upsertGroup is the write shape for create and patch. Every field is an

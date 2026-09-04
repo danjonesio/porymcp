@@ -3,9 +3,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/netcasklabs/porymcp/internal/credential"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/webutil"
+	"github.com/danjonesio/porymcp/internal/credential"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/webutil"
 )
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
