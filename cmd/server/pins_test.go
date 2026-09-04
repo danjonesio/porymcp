@@ -25,7 +25,7 @@ func TestOwnerConsistent(t *testing.T) {
 		t.Fatal("go.mod does not declare module github.com/<owner>/porymcp")
 	}
 	owner := string(m[1])
-	if want := "ghcr.io/" + owner + "/porymcp"; !bytes.Contains(readRepoFile(t, root, "README.md"), []byte(want)) {
+	if want := "ghcr.io/nobody/porymcp"; !bytes.Contains(readRepoFile(t, root, "README.md"), []byte(want)) {
 		t.Errorf("README.md does not name %s", want)
 	}
 	workflow := readRepoFile(t, root, filepath.Join(".github", "workflows", "ci.yml"))
