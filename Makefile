@@ -1,4 +1,4 @@
-.PHONY: dev test test-race vet vuln web web-dev web-test web-lint web-typecheck build tidy
+.PHONY: dev test test-race vet vuln web web-dev web-test web-lint web-typecheck web-audit build tidy
 
 dev:
 	go run ./cmd/server
@@ -30,6 +30,9 @@ web-lint:
 
 web-typecheck:
 	cd web && npx tsc --noEmit
+
+web-audit:
+	cd web && npm audit --audit-level=high
 
 web:
 	cd web && npm run build
