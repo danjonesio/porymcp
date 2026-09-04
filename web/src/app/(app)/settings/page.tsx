@@ -5,14 +5,15 @@ import { Field, FieldGroup, Label } from '@/components/fieldset'
 import { Heading, Subheading } from '@/components/heading'
 import { Input } from '@/components/input'
 import { Text } from '@/components/text'
-import { clearAdminKey, getAdminKey, setAdminKey } from '@/lib/api'
+import { clearAdminKey, setAdminKey } from '@/lib/api'
+import { useAdminKey } from '@/lib/use-admin-key'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
 export default function SettingsPage() {
   const router = useRouter()
   const [key, setKey] = useState('')
-  const current = typeof window !== 'undefined' ? getAdminKey() : null
+  const current = useAdminKey()
   const prefix = current ? current.slice(0, 12) + '…' : 'Not set'
 
   function save(e: React.FormEvent) {
