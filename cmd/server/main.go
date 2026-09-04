@@ -17,17 +17,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/api"
+	"github.com/danjonesio/porymcp/internal/audit"
+	"github.com/danjonesio/porymcp/internal/config"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/proxy"
+	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/webutil"
+	"github.com/danjonesio/porymcp/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/netcasklabs/porymcp/internal/api"
-	"github.com/netcasklabs/porymcp/internal/audit"
-	"github.com/netcasklabs/porymcp/internal/config"
-	"github.com/netcasklabs/porymcp/internal/mcpclient"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/proxy"
-	"github.com/netcasklabs/porymcp/internal/store"
-	"github.com/netcasklabs/porymcp/internal/webutil"
-	"github.com/netcasklabs/porymcp/web"
 )
 
 func main() {

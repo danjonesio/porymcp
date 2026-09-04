@@ -10,13 +10,26 @@ Copy `.env.example` to `.env` and set both `ADMIN_API_KEY` and `ENCRYPTION_KEY` 
 
 | Stage | Base image | What it does |
 | --- | --- | --- |
-| `web` | `node:22-alpine` | `npm install`, then `npm run build`: the Next.js static export lands in `/web/out`. |
-| `build` | `golang:1.26-alpine`, pinned by digest | Copies `cmd/`, `internal/`, `web/fs.go` and the export from the `web` stage, then `go build`. `web/fs.go` declares `//go:embed all:out`, so the export is compiled into the binary. |
-| runtime | `gcr.io/distroless/static-debian12:nonroot` | The `/porymcp` binary and `openapi.yaml`. No shell, no dashboard files on disk. |
+| `web` | `node:22-alpine`, pinned by digest | `npm ci --no-audit --no-fund`, then `npm run build`: the Next.js static export lands in `/web/out`. Runs on the builder's own architecture. |
+| `build` | `golang:1.26-alpine`, pinned by digest | Copies `cmd/`, `internal/`, `web/fs.go` and the export from the `web` stage, then `go build` with `GOOS` and `GOARCH` taken from the target platform. `web/fs.go` declares `//go:embed all:out`, so the export is compiled into the binary. |
+| runtime | `gcr.io/distroless/static-debian12:nonroot`, pinned by digest | The `/porymcp` binary and `openapi.yaml`. No shell, no dashboard files on disk. |
 
-The embed directive is a compile-time error when `web/out` is missing, so the `COPY --from=web` in the `build` stage has to come before `go build`. `.dockerignore` excludes the tracked `web/out`, so the image always embeds what the `web` stage just built, never what happens to be checked in.
+The embed directive is a compile-time error when `web/out` is missing, so the `COPY --from=web` in the `build` stage has to come before `go build`. `.dockerignore` excludes the tracked `web/out`, so the image always embeds what the `web` stage just built, never what happens to be checked in. Both build stages carry `--platform=$BUILDPLATFORM`, so a multi-arch build (`--platform linux/amd64,linux/arm64`) runs the export once and cross-compiles the binary per target; nothing runs under emulation, and only the runtime stage resolves per platform.
 
-The Go base image is pinned by digest (PORM-40), so rebuilds are reproducible and do not silently pick up base-image changes; bumping the digest is a deliberate edit (the build-reproducibility issue's Dependabot config is the counterweight). `go.mod` pins `toolchain go1.26.7`, which makes `go build`/`go test` download that exact toolchain when the local one differs. Offline or air-gapped builders can set `GOTOOLCHAIN=local` to insist on the installed Go (1.26.x or later required).
+All three base images are pinned by index digest (the Go image since PORM-40, the Node and runtime images since PORM-10), so rebuilds are reproducible and do not silently pick up base-image changes; bumping a digest is a deliberate edit (the build-reproducibility issue's Dependabot config is the counterweight). An index digest, which resolves per platform, comes from `docker buildx imagetools inspect <ref> --format '{{.Manifest.Digest}}'`; the digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned. `go.mod` pins `toolchain go1.26.7`, which makes `go build`/`go test` download that exact toolchain when the local one differs. Offline or air-gapped builders can set `GOTOOLCHAIN=local` to insist on the installed Go (1.26.x or later required).
+
+## Images and tags
+
+The `publish` job in `.github/workflows/ci.yml` pushes to `ghcr.io/danjonesio/porymcp` after the `go`, `web` and `docker` checks pass on a push to `main`, on a `v*` tag, or on a manual run. It authenticates with the job's own `GITHUB_TOKEN` (`packages: write`); the repository holds no secret for it.
+
+| Tag | Built from |
+| --- | --- |
+| `edge` | every push to `main` |
+| `sha-<short sha>` | the same push, by commit |
+| `vX.Y.Z` (the git tag) | a `v*` tag |
+| `latest` | a `v*` tag with no `-` suffix; a release candidate such as `v0.2.0-rc1` leaves it alone |
+
+Each tag is one index carrying `linux/amd64` and `linux/arm64`. `docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:edge` lists those two platforms and two `unknown/unknown` rows, which are the provenance attestation the build attaches, not a broken index. `edge` and `latest` move, so a production deployment pins the digest printed in the publish run's summary: `ghcr.io/danjonesio/porymcp@sha256:...`. A tag is never moved; a bad release is followed by the next patch tag. The package is public.
 
 ## Runtime
 

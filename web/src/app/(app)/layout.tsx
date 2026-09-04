@@ -1,23 +1,21 @@
 'use client'
 
 import { ApplicationLayout } from '@/app/application-layout'
-import { getAdminKey } from '@/lib/api'
+import { useAdminKey } from '@/lib/use-admin-key'
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
-  const [ready, setReady] = useState(false)
+  const hasKey = useAdminKey() !== null
 
   useEffect(() => {
-    if (!getAdminKey()) {
+    if (!hasKey) {
       router.replace('/login/')
-      return
     }
-    setReady(true)
-  }, [router])
+  }, [hasKey, router])
 
-  if (!ready) {
+  if (!hasKey) {
     return <div className="min-h-dvh bg-white dark:bg-zinc-950" />
   }
 

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/google/uuid"
-	"github.com/netcasklabs/porymcp/internal/store"
 )
 
 // mcpStub is an MCP server as the reference implementations behave: it MINTS A

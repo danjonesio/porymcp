@@ -9,7 +9,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/netcasklabs/porymcp/web"
+	"github.com/danjonesio/porymcp/web"
 )
 
 func TestInlineScriptHashes(t *testing.T) {

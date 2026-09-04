@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/netcasklabs/porymcp/internal/config"
-	"github.com/netcasklabs/porymcp/internal/crypto"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/store"
-	"github.com/netcasklabs/porymcp/internal/webutil"
+	"github.com/danjonesio/porymcp/internal/config"
+	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/webutil"
 )
 
 const bootSecret = "sk-BOOT-PLAINTEXT-MARKER"

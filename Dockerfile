@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS web
+# Both build stages run on the builder's own architecture: the export is the
+# same for every target, and the Go compiler cross-compiles by argument. Only
+# the runtime stage below resolves per target platform. Pinned by index digest
+# for the same reason as the Go base image.
+FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -8,7 +12,7 @@ COPY web/ ./
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM golang:1.26-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -18,11 +22,14 @@ COPY internal ./internal
 # so the Go build needs the export from the web stage before it can compile.
 COPY web/fs.go ./web/fs.go
 COPY --from=web /web/out ./web/out
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /porymcp ./cmd/server
+# BuildKit sets these per target platform. A plain docker build gets the host's.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /porymcp ./cmd/server
 # Empty /data for the runtime stage below (distroless has no shell or mkdir).
 RUN mkdir -p /data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 WORKDIR /
 COPY --from=build /porymcp /porymcp
 COPY openapi.yaml /openapi.yaml

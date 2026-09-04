@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/config"
-	"github.com/netcasklabs/porymcp/internal/crypto"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/config"
+	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 )
 
 // setStoredAuth overwrites one upstream's stored credential with a value no

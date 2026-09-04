@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 )
 
 // A member endpoint is the aggregate endpoint's opposite: nothing is merged,

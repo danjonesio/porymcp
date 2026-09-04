@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 func TestFileDSNRelativeHasNoAuthority(t *testing.T) {

@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/netcasklabs/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/crypto"
 )
 
 func TestLoadTrustedProxies(t *testing.T) {

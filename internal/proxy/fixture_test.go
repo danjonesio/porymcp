@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/audit"
+	"github.com/danjonesio/porymcp/internal/auth"
+	"github.com/danjonesio/porymcp/internal/config"
+	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/go-chi/chi/v5"
-	"github.com/netcasklabs/porymcp/internal/audit"
-	"github.com/netcasklabs/porymcp/internal/auth"
-	"github.com/netcasklabs/porymcp/internal/config"
-	"github.com/netcasklabs/porymcp/internal/crypto"
-	"github.com/netcasklabs/porymcp/internal/models"
-	"github.com/netcasklabs/porymcp/internal/store"
 )
 
 // A proxy test almost always has the same two questions: what did the client

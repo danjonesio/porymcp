@@ -1,4 +1,4 @@
-module github.com/netcasklabs/porymcp
+module github.com/danjonesio/porymcp
 
 go 1.26
 

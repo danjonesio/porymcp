@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/netcasklabs/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // The catalogue and the gate are one policy asked twice, so every test here

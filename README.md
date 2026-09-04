@@ -40,7 +40,7 @@ grep '^ADMIN_API_KEY=' .env | cut -d= -f2-
 
 Put the process behind TLS for anything other than localhost. See [TLS and reverse-proxy deployment](docs/11-deployment.md).
 
-Once images are published (PORM-10), the same deployment runs from the image:
+The same deployment runs from the published image:
 
 ```bash
 # Generate each key once and keep it (0600): a second inline $(openssl …) would
@@ -52,8 +52,10 @@ docker run -d \
   -e ADMIN_API_KEY="$(cat ~/porymcp.admin)" \
   -e ENCRYPTION_KEY="$(cat ~/porymcp.key)" \
   -v porymcp-data:/data \
-  ghcr.io/netcasklabs/porymcp:latest
+  ghcr.io/danjonesio/porymcp:latest
 ```
+
+`latest` and `vX.Y.Z` are releases; `edge` and `sha-<short sha>` are the current `main`. Both move, so a production deployment pins the digest the publish run prints in its summary: `ghcr.io/danjonesio/porymcp@sha256:...`. See [docs/08-docker.md](docs/08-docker.md) for how images are built and tagged.
 
 Back `ENCRYPTION_KEY` up separately from the data volume. Without it the
 stored upstream credentials are unrecoverable, and restarting the same volume
@@ -79,11 +81,11 @@ holds one.
 To change the UI:
 
 ```bash
-cd web && npm install && npm run build
+cd web && npm ci && npm run build
 # then restart the Go server (or `npm run dev` on :3000 while the API stays on :8080)
 ```
 
-`go test ./...` (or `make test`) covers auth, key hashing, store CRUD, management API, and proxy credential injection. `make web-test` (`cd web && npm test`) covers the dashboard's client-snippet generation.
+`make test` covers auth, key hashing, store CRUD, management API, proxy credential injection and the tracked-file guards. Use the target rather than `go test ./...`: once `npm ci` has run, `./...` also reaches a Go file shipped inside `web/node_modules`. `make web-test` (`cd web && npm test`) covers the dashboard's client-snippet generation. [CONTRIBUTING.md](CONTRIBUTING.md) lists every check CI runs and the order to run them in.
 
 ## Core concepts
 
