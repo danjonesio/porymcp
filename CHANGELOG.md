@@ -4,6 +4,15 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Published image path (PORM-10)
+
+- Images are published at `ghcr.io/danjonesio/porymcp` for linux/amd64 and
+  linux/arm64: `edge` and `sha-<short sha>` from every push to `main`, the
+  git tag and `latest` from a release tag. Nothing was ever published under
+  the path an earlier README named, so no running deployment changes; a
+  `docker run` line copied from that README never pulled, and needs the new
+  owner now.
+
 ### Both keys are now required (PORM-122)
 
 - **Compose now requires `ADMIN_API_KEY` as well as `ENCRYPTION_KEY`.** A

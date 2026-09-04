@@ -133,11 +133,12 @@ argon2id or bcrypt. Secrets are encrypted at rest with AES-256-GCM.
 Observability is structured JSON logs plus optional Prometheus.
 
 Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
-(`toolchain go1.26.7`) so local builds, the Docker stage and any future CI
-compile with the same release.
+(`toolchain go1.26.7`) so local builds, the Docker stage and the `go` job in
+`.github/workflows/ci.yml` compile with the same release.
 
 ## Project structure (Go example)
 /
+├── .github/workflows/ci.yml   # go, web and docker checks on every pull request; publish to GHCR
 ├── cmd/server/main.go
 ├── internal/
 │   ├── api/          # Management REST handlers
@@ -158,4 +159,5 @@ compile with the same release.
 ├── docker-compose.yml
 ├── docker-compose.tls.yml
 ├── openapi.yaml
+├── CONTRIBUTING.md   # what CI runs and how to run it locally
 └── README.md

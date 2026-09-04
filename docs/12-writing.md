@@ -6,7 +6,7 @@ Text in this repository is read by people: the README on GitHub, the docs, the O
 
 ## Rules the test enforces
 
-`TestProseStyle` runs under `make test` and `go test ./...`. It scans every tracked `.md`, `.yaml`, `.yml`, `.go`, `.ts`, `.tsx`, `.css` and `.mjs` file, plus `NOTICE`, `Dockerfile`, `Makefile` and `.env.example`, and fails naming `file:line:col` for each of the following.
+`TestProseStyle` runs under `make test`. It scans every tracked `.md`, `.yaml`, `.yml`, `.go`, `.ts`, `.tsx`, `.css` and `.mjs` file, plus `NOTICE`, `Dockerfile`, `Makefile` and `.env.example`, and fails naming `file:line:col` for each of the following.
 
 1. **An em-dash (U+2014) or an en-dash (U+2013).** Use a comma, a full stop, a colon or brackets. In a range write "lines 30 to 109", or "30-109" with a hyphen.
 
