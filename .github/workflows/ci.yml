@@ -75,6 +75,9 @@ jobs:
       - run: make web-typecheck
       - run: make web-lint
       - run: make web-test
+      # npm ci above runs with --no-audit; this step is the gate. It runs last
+      # so a new advisory cannot hide a build, type check, lint or test result.
+      - run: make web-audit
 
   docker:
     runs-on: ubuntu-latest
