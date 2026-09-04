@@ -29,7 +29,7 @@ The `publish` job in `.github/workflows/ci.yml` pushes to `ghcr.io/danjonesio/po
 | `vX.Y.Z` (the git tag) | a `v*` tag |
 | `latest` | a `v*` tag with no `-` suffix; a release candidate such as `v0.2.0-rc1` leaves it alone |
 
-Each tag is one index carrying `linux/amd64` and `linux/arm64`. `docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:edge` lists those two platforms and two `unknown/unknown` rows, which are the provenance attestation the build attaches, not a broken index. `edge` and `latest` move, so a production deployment pins the digest printed in the publish run's summary: `ghcr.io/danjonesio/porymcp@sha256:...`. A tag is never moved; a bad release is followed by the next patch tag. The package is public.
+Each tag is one index carrying `linux/amd64` and `linux/arm64`. `docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:edge` lists those two platforms and two `unknown/unknown` rows, which are the provenance attestation the build attaches, not a broken index. `edge` and `latest` move, so a production deployment pins the digest printed in the publish run's summary: `ghcr.io/danjonesio/porymcp@sha256:...`. A tag is never moved; a bad release is followed by the next patch tag. The first push creates the package private; it is switched to public once, in the package settings, after which every tag pulls without a login.
 
 ## Runtime
 
