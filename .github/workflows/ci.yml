@@ -1,0 +1,207 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  # A manual run from main re-publishes edge without a new commit; from a tag
+  # it re-publishes that tag. Only users with write access can trigger it.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # setup-go restores GOCACHE, which holds test results; a cached result
+      # prints no PASS line and would fail the guard step below. Go ignores
+      # the flag for vet, build and run.
+      GOFLAGS: -count=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # This prints the launcher setup-go installed. The toolchain line in
+      # go.mod decides what compiles, and the first go command fetches it,
+      # checksum-verified, when the two differ.
+      - run: go version
+      - run: make vet
+      - run: make test
+      # The two tracked-file guards skip themselves when .git is absent, so a
+      # green suite is not proof they ran. Assert the PASS lines.
+      - name: Tracked-file guards ran and passed
+        shell: bash
+        run: |
+          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle' -v | tee "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestNoInternalReferences' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestProseStyle' "$RUNNER_TEMP/guards.log"
+      - run: make vuln
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci --no-audit --no-fund
+      # next-env.d.ts is git-ignored and is the only file that pulls in Next's
+      # ambient module declarations, so the type check runs after the build
+      # that writes it. The build also rewrites web/out; no step diffs it.
+      - run: make web
+      - run: make web-typecheck
+      - run: make web-lint
+      - run: make web-test
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      # One cache scope per platform, so the publish job below reads both
+      # instead of the last writer's.
+      - name: Build the amd64 image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: porymcp:ci
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,scope=amd64,mode=max
+      # Both keys are set, so the server never logs a generated admin key.
+      # They are minted here, live for this one container, and are not
+      # secrets. Nothing in this step echoes them, and set -x is never used.
+      - name: The image starts, answers /health and serves the dashboard
+        shell: bash
+        run: |
+          ADMIN_API_KEY="$(openssl rand -hex 32)"
+          ENCRYPTION_KEY="$(openssl rand -hex 32)"
+          [ -n "$ADMIN_API_KEY" ] && [ -n "$ENCRYPTION_KEY" ]
+          export ADMIN_API_KEY ENCRYPTION_KEY
+          docker run -d --name porymcp-ci -p 8080:8080 -e ADMIN_API_KEY -e ENCRYPTION_KEY porymcp:ci
+          for _ in $(seq 1 30); do
+            if curl -fs http://localhost:8080/health 2>/dev/null | grep -q '"status":"ok"'; then
+              ok=yes
+              break
+            fi
+            sleep 1
+          done
+          [ "${ok:-}" = yes ]
+          curl -fsS -o "$RUNNER_TEMP/index.html" -w '%{http_code} %{content_type}\n' http://localhost:8080/ | grep -q '^200 text/html'
+          grep -q '<title>PoryMCP</title>' "$RUNNER_TEMP/index.html"
+          if docker logs porymcp-ci 2>&1 | grep -q admin_api_key; then
+            echo 'the container log carries an admin key field'
+            exit 1
+          fi
+          if docker logs porymcp-ci 2>&1 | grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY"; then
+            echo 'the container log carries a key value'
+            exit 1
+          fi
+      - name: Container log
+        if: failure()
+        run: docker logs porymcp-ci 2>&1 | grep -v admin_api_key || true
+      - name: Remove the container
+        if: always()
+        run: docker rm -f porymcp-ci || true
+      # The build stage cross-compiles by argument. Extract the arm64 image and
+      # check the binary really is arm64, which a manifest cannot show: buildx
+      # stamps the platform from the request, not from the artefact.
+      - name: Build the arm64 image to a directory
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          outputs: type=local,dest=${{ runner.temp }}/arm64
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,scope=arm64,mode=max
+      - name: The arm64 binary is arm64
+        shell: bash
+        run: file "$RUNNER_TEMP/arm64/porymcp" | grep -q 'ARM aarch64'
+
+  publish:
+    needs: [go, web, docker]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          # The default annotates per-platform manifests only. The registry
+          # reads the index for a multi-platform image, so annotate both.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          # Derived from the repository, so the published path cannot drift
+          # from the owner named in go.mod and the README. A tag with a hyphen
+          # (a release candidate) is published under its own name only.
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Provenance stays at mode=min. mode=max would publish the whole build
+      # definition, build arguments included, so no build argument may ever
+      # carry a secret.
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=min
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64
+      # This proves the index shape. The docker job's file check, which this
+      # job needs, proved the arm64 binary.
+      - name: The published index lists both platforms
+        shell: bash
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee "$RUNNER_TEMP/index.txt"
+          grep -q 'linux/amd64' "$RUNNER_TEMP/index.txt"
+          grep -q 'linux/arm64' "$RUNNER_TEMP/index.txt"
+          echo "Published \`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"

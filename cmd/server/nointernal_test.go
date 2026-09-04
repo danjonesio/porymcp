@@ -17,11 +17,12 @@ import (
 // session or key material. No tracked file may name the private workspace's
 // URLs or identities, an agent session link, a workstation path, or a sample
 // admin key or encryption key in any spelling crypto.ParseKey accepts (hex,
-// base64, and the fingerprint the key ring derives). There is no CI yet
-// (PORM-10), so this test is the only guard; PORM-10's CI runs it on every
-// push. It scans exactly the files git tracks, so untracked local state (a
-// developer's .env, a scratch file) cannot fail a clean checkout, and it skips
-// itself on a source tree that is not a git checkout (a downloaded archive).
+// base64, and the fingerprint the key ring derives). The go job in
+// .github/workflows/ci.yml runs it on every pull request and push and asserts
+// that it passed rather than skipped. It scans exactly the files git tracks,
+// so untracked local state (a developer's .env, a scratch file) cannot fail a
+// clean checkout, and it skips itself on a source tree that is not a git
+// checkout (a downloaded archive).
 // The local-only working files (the agent workflow and the plan records,
 // git-ignored on the public tree) are excluded by path: they are tracked on a
 // pre-cut branch and absent from a public clone. String needles are assembled
