@@ -6,7 +6,8 @@ on:
     tags: ['v*']
   pull_request:
   # A manual run from main re-publishes edge without a new commit; from a tag
-  # it re-publishes that tag. Only users with write access can trigger it.
+  # it re-publishes that tag; from any other ref the checks run and publish
+  # is skipped. Only users with write access can trigger it.
   workflow_dispatch:
 
 permissions:
@@ -35,20 +36,23 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      # This prints the launcher setup-go installed. The toolchain line in
-      # go.mod decides what compiles, and the first go command fetches it,
-      # checksum-verified, when the two differ.
+      # setup-go reads the toolchain line in go.mod, installs that release and
+      # sets GOTOOLCHAIN=local for the job, so this is the compiler and a
+      # mismatch would fail rather than download.
       - run: go version
       - run: make vet
       - run: make test
-      # The two tracked-file guards skip themselves when .git is absent, so a
-      # green suite is not proof they ran. Assert the PASS lines.
+      # The two tracked-file guards skip themselves when .git is absent, and
+      # the owner guard's repository check needs GITHUB_ACTIONS, so a green
+      # suite is not proof they ran. Assert the PASS lines.
       - name: Tracked-file guards ran and passed
         shell: bash
         run: |
-          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle' -v | tee "$RUNNER_TEMP/guards.log"
+          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent' -v | tee "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNoInternalReferences' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestProseStyle' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestOwnerConsistent' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestNodeMajorConsistent' "$RUNNER_TEMP/guards.log"
       - run: make vuln
 
   web:
@@ -129,12 +133,15 @@ jobs:
       # The build stage cross-compiles by argument. Extract the arm64 image and
       # check the binary really is arm64, which a manifest cannot show: buildx
       # stamps the platform from the request, not from the artefact.
+      # Nothing from this build is pushed. Without provenance: false the action
+      # would attach a mode=max attestation computed over the event payload.
       - name: Build the arm64 image to a directory
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/arm64
           push: false
+          provenance: false
           outputs: type=local,dest=${{ runner.temp }}/arm64
           cache-from: type=gha,scope=arm64
           cache-to: type=gha,scope=arm64,mode=max
@@ -144,7 +151,7 @@ jobs:
 
   publish:
     needs: [go, web, docker]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

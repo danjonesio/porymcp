@@ -55,7 +55,7 @@ docker run -d \
   ghcr.io/danjonesio/porymcp:latest
 ```
 
-`latest` and `vX.Y.Z` are releases; `edge` and `sha-<short sha>` are the current `main`. Both move, so a production deployment pins the digest the publish run prints in its summary: `ghcr.io/danjonesio/porymcp@sha256:...`. See [docs/08-docker.md](docs/08-docker.md) for how images are built and tagged.
+`latest` and `vX.Y.Z` are releases; `edge` and `sha-<short sha>` are the current `main`. `edge` and `latest` move, so a production deployment pins the digest the publish run prints in its summary: `ghcr.io/danjonesio/porymcp@sha256:...`. `latest` appears with the first release tag; until then, pull `edge`. See [docs/08-docker.md](docs/08-docker.md) for how images are built and tagged.
 
 Back `ENCRYPTION_KEY` up separately from the data volume. Without it the
 stored upstream credentials are unrecoverable, and restarting the same volume
