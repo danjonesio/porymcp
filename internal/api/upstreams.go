@@ -41,6 +41,11 @@ const errURLRule = "url must be an absolute http or https URL"
 // null as "enabled", PATCH refuses it rather than guessing.
 const errEnabledRule = "enabled must be true or false"
 
+// errAuthNoneCredential is the single source of the 400 for a credential sent
+// beside auth_type none, shared by create and patch (PORM-120). It names what
+// the caller must change and never repeats what was sent.
+const errAuthNoneCredential = "auth_config cannot be set when auth_type is none"
+
 // errSlugsExhausted means every derived candidate was taken. Kept distinct from
 // store.ErrConflict so the caller gets an actionable message about a slug it
 // never supplied, rather than "slug is already taken".
@@ -149,6 +154,16 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validTransport(transport) || !validAuthType(authType) {
 		writeError(w, http.StatusBadRequest, "invalid transport or auth_type")
+		return
+	}
+	// A credential cannot ride along with auth_type none: the row would hold a
+	// secret the proxy never sends and report auth_configured true for it
+	// (PORM-120). An omitted auth_type took the default above, so the same
+	// refusal covers a create that sends only a credential. The unsaved
+	// POST /upstreams/discover route is not guarded: it persists nothing and
+	// headersFor ignores the credential for none.
+	if authType == models.AuthNone && in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value) {
+		writeError(w, http.StatusBadRequest, errAuthNoneCredential)
 		return
 	}
 	var slug string
@@ -327,6 +342,16 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.AuthType = in.AuthType.Value
+	}
+	// The same refusal as create, keyed on what this request named: auth_type
+	// none and a credential in one body. It sits after the auth_type block, so
+	// a null auth_type still answers "invalid auth_type", and before the
+	// auth_config branch, so nothing is sealed first. A credential sent alone
+	// to a row stored as none is still stored, as before; the next request
+	// that names none removes it.
+	if in.AuthType.Has() && in.AuthType.Value == models.AuthNone && in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value) {
+		writeError(w, http.StatusBadRequest, errAuthNoneCredential)
+		return
 	}
 	if in.AuthConfig.Has() {
 		// null keeps the stored credential. The value is write-only, so an

@@ -2521,3 +2521,62 @@ func TestPatchVirtualKeyClearLogsFields(t *testing.T) {
 		t.Fatalf("fields=%v, want [tool_filter upstream_ids]", line["fields"])
 	}
 }
+
+// TestCreateUpstreamNoneWithCredentialIsRejected pins PORM-120 security
+// requirement 3: a create that names auth_type none, or omits it and takes the
+// default, cannot carry a credential. The 400 is a fixed sentence that never
+// repeats what was sent.
+func TestCreateUpstreamNoneWithCredentialIsRejected(t *testing.T) {
+	_, h, _ := testAPI(t)
+	for name, extra := range map[string]map[string]any{
+		"explicit none": {"auth_type": "none", "auth_config": map[string]string{"token": "sk-secret"}},
+		"omitted type":  {"auth_config": map[string]string{"token": "sk-secret"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("Docs", extra))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400: %s", rr.Code, rr.Body.String())
+			}
+			wantsBody(t, rr, errAuthNoneCredential)
+			if strings.Contains(rr.Body.String(), "sk-secret") {
+				t.Fatalf("the 400 repeated the submitted credential: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestPatchUpstreamNoneWithCredentialIsRejected pins the same rule on PATCH
+// (PORM-120 security requirements 3 and 6): auth_type none and a credential in
+// one request is refused before anything is written, whether the row held a
+// bearer credential or was already none with a stored blob. An empty object
+// beside none is accepted, because it carries no credential.
+func TestPatchUpstreamNoneWithCredentialIsRejected(t *testing.T) {
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	bearer, _ := mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})
+	legacy, _ := mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none"})
+	overwriteAuth(t, path, legacy, foreignSeal(t, `{"token":"old"}`))
+	for name, id := range map[string]string{"bearer row": bearer, "none row with a blob": legacy} {
+		t.Run(name, func(t *testing.T) {
+			before := rawAuth(t, path, id)
+			rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin",
+				map[string]any{"auth_type": "none", "auth_config": map[string]string{"token": "sk-secret"}})
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400: %s", rr.Code, rr.Body.String())
+			}
+			wantsBody(t, rr, errAuthNoneCredential)
+			if strings.Contains(rr.Body.String(), "sk-secret") {
+				t.Fatalf("the 400 repeated the submitted credential: %s", rr.Body.String())
+			}
+			if rawAuth(t, path, id) != before {
+				t.Fatal("a refused PATCH changed the stored column")
+			}
+		})
+	}
+	t.Run("empty object beside none is accepted", func(t *testing.T) {
+		rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+bearer, "test-admin",
+			map[string]any{"auth_type": "none", "auth_config": map[string]string{}})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
