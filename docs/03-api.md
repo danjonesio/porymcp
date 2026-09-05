@@ -271,8 +271,8 @@ decrypted, after a rotated `ENCRYPTION_KEY`, answers
 `stored credential cannot be decrypted` and makes **no** outbound request at
 all: sending an unauthenticated one instead would come back as a `401` that
 looks exactly like a bad token; `auth_status` on the row says which it is. A
-stored credential that decrypts but holds nothing its auth type can send (a
-blank token stored as `{}`, a `bearer` row switched to `custom`) answers
+row with nothing stored, or a stored credential that decrypts but holds nothing
+its auth type can send (a `bearer` row switched to `custom`), answers
 `stored credential is not usable for this auth type`, likewise with no request.
 On the unsaved route a draft whose auth type needs a credential it does not
 have answers `this auth type needs a credential; add one or choose None`. An

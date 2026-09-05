@@ -779,8 +779,8 @@ components:
             discovery will read` (the 2 MiB read cap: an answer over it is
             refused rather than decoded from a document that stops mid-object),
             `stored credential cannot be decrypted`, `stored credential is not
-            usable for this auth type` (it opens, but holds nothing the auth
-            type can send, such as a blank token stored as `{}`), `this auth type
+            usable for this auth type` (nothing stored, or a value that opens
+            but holds nothing the auth type can send), `this auth type
             needs a credential; add one or choose None` (an unsaved draft),
             and the rest. A URL is never
             written into one: Go's own transport errors mask the password but
