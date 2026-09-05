@@ -85,6 +85,15 @@ export type Upstream = {
    * table shows, and renders nothing for a value it does not know.
    */
   auth_status: string
+  /**
+   * The header name the stored credential sends, and only the name
+   * (internal/api/upstreams.go presentUpstream). Present only when the blob
+   * decrypts and the auth type carries a header, so absent for bearer, for
+   * none, and for every undecryptable or unreadable row. Typed as this one
+   * key so nothing widens the one field that carries decrypted material to
+   * the browser.
+   */
+  auth_hint?: { header?: string }
   // Required and nullable, not the `field?: string` this file uses elsewhere: the
   // Status cell is three-state, so "never tested" has to arrive as an explicit
   // null rather than as a missing key, and an Upstream is only ever produced by
