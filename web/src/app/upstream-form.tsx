@@ -167,11 +167,13 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
         <>
           <Field>
             <Label>Header name</Label>
+            {/* `required` accepts a lone space; the pattern wants one visible character. */}
             <Input
               name="header"
               value={form.header}
               autoComplete="off"
               required={hdrRequired}
+              pattern=".*\S.*"
               onChange={(e) => onChange({ header: e.target.value })}
             />
           </Field>

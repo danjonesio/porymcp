@@ -70,6 +70,17 @@ test('upstreamPatchBody: includes auth_config when a header value is typed', () 
   })
 })
 
+// Security requirement 12: a header name of spaces satisfies `required` but not the proxy.
+test('upstreamPatchBody: trims the header name and never emits an auth_config whose header is blank after trimming', () => {
+  const before = up({ auth_type: 'header', auth_status: 'unreadable' })
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { header: ' X-Api-Key ', value: 'v' })), {
+    auth_config: { header: 'X-Api-Key', value: 'v' },
+  })
+  const body = upstreamPatchBody(before, edit(before, { header: '   ', value: 'v', name: 'Renamed' }))
+  assert.equal('auth_config' in body, false)
+  assert.deepEqual(body, { name: 'Renamed' })
+})
+
 test('upstreamPatchBody: never emits slug, even when the form slug differs from the row', () => {
   const before = up()
   const body = upstreamPatchBody(before, edit(before, { slug: 'something-else', name: 'Renamed' }))

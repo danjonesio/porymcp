@@ -151,7 +151,21 @@ export function upstreamPatchBody(before: Upstream, f: UpstreamForm): Record<str
   if (f.transport !== before.transport) body.transport = f.transport
   if (f.auth_type !== before.auth_type) body.auth_type = f.auth_type
   if (f.enabled !== before.enabled) body.enabled = f.enabled
-  if (credentialTyped(f)) body.auth_config = authConfigFrom(f)
+  if (credentialTyped(f)) {
+    // The header name is trimmed here and not in authConfigFrom, which the
+    // create body reproduces byte for byte. A name that is blank after the trim
+    // never goes: the proxy would accept it (headersFor gates on != "") and then
+    // fail every call on a field name of spaces, with the old ciphertext gone.
+    // The input's `pattern` refuses it first; this is the guarantee the test
+    // pins if that ever changes.
+    const auth_config = authConfigFrom(f)
+    if ('header' in auth_config) {
+      const header = auth_config.header.trim()
+      if (header === '') return body
+      auth_config.header = header
+    }
+    body.auth_config = auth_config
+  }
   return body
 }
 
