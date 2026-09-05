@@ -243,8 +243,8 @@
   said. That record is the route's only write: no `audit_logs` row, since the
   call is made on an operator's behalf rather than a virtual key's, no
   `admin_events` row, since a test result is an observation of the upstream
-  rather than a change to the configuration (recording it is a filed
-  follow-up), and no log line
+  rather than a change to the configuration (recording it is PORM-132), and
+  no log line
   either, except when the record itself does not land (one `DEBUG` when the row
   was edited or deleted while the handshake ran, one `WARN` when the store
   failed, each naming the upstream id) and, on the `WARN`, the store's own

@@ -553,7 +553,7 @@ func TestAdminEventNoOpPatchStillRecords(t *testing.T) {
 // written decision, not a way to quiet the test.
 var skipRoutes = map[string]string{
 	"POST /upstreams/discover":      "changes no state: the unsaved probe persists nothing (discover.go)",
-	"POST /upstreams/{id}/discover": "stamps last_test_at and last_test_ok, an observation of an upstream rather than a change an operator made to the configuration; it can be pressed repeatedly from one dialog and skips its own write when the caller goes away, so a row would sometimes claim a test that was never stored (plan open question 1, follow-up filed)",
+	"POST /upstreams/{id}/discover": "stamps last_test_at and last_test_ok, an observation of an upstream rather than a change an operator made to the configuration; it can be pressed repeatedly from one dialog and skips its own write when the caller goes away, so a row would sometimes claim a test that was never stored (plan open question 1; PORM-132 records it)",
 }
 
 // TestAdminEventEveryMutatingRouteIsCovered is security requirement 12: a

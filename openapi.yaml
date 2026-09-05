@@ -491,6 +491,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AdminEventPage"
+        "400":
+          description: Invalid resource_type, limit, since or cursor
 components:
   securitySchemes:
     adminKey:

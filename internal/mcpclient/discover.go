@@ -310,8 +310,8 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	if json.Unmarshal(res.result, &initResult) != nil || initResult.ProtocolVersion == "" {
 		return out.fail("upstream did not complete the MCP handshake")
 	}
-	// scrub before clamp on every one of these: the cap bounds the size, and
-	// the scrub is what keeps an upstream's control characters out of an
+	// Scrub before Clamp on every one of these: the cap bounds the size, and
+	// the Scrub is what keeps an upstream's control characters out of an
 	// operator's terminal.
 	out.ProtocolVersion, _ = Clamp(Scrub(initResult.ProtocolVersion), maxProtocolVersionBytes)
 	if initResult.ServerInfo != nil {

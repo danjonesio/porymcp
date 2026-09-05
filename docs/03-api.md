@@ -490,8 +490,8 @@ a group, and create, update, rotate, revoke and delete of a virtual key
 dashboard users land), `action`, `resource_type`, `resource_id`,
 `resource_name`, `details`, `request_id` and `remote_addr`: the client address
 after the trusted-proxy rule, so a deployment behind a reverse proxy records
-the client rather than the proxy, or the literal `unknown` when the socket
-address does not parse. The response is
+the client rather than the proxy, or the literal `unknown` when there is no
+socket address. The response is
 `{"admin_events": [...], "next_cursor": "..."}`, newest first; `next_cursor`
 is empty on the last page and `admin_events` is `[]`, never null.
 
@@ -542,7 +542,8 @@ status line in the server log. The two discovery routes
 (`POST /upstreams/discover` and `POST /upstreams/{id}/discover`) are not
 recorded: the unsaved probe changes no state, and the saved one stamps a test
 result, an observation of the upstream rather than a change to the
-configuration. `resource_name` and `request_id` are cleaned (a newline or tab
+configuration; recording them is PORM-132. `resource_name` and `request_id`
+are cleaned (a newline or tab
 becomes a space, other control characters are dropped) and cut at 256 bytes on
 the row; the resource keeps its own name.
 
