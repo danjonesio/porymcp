@@ -4,11 +4,13 @@ import type { Upstream } from './api.ts'
 import {
   DEFAULT_HEADER,
   blankUpstreamForm,
+  clearStoredDescription,
   credentialHelp,
   credentialRequired,
   editCredentialDescription,
   formFromUpstream,
   headerRequired,
+  removeCredentialDescription,
   upstreamCreateBody,
   upstreamPatchBody,
   type UpstreamForm,
@@ -148,6 +150,7 @@ test('blankUpstreamForm: equals the initial state the Add dialog has always had,
     header: DEFAULT_HEADER,
     value: '',
     enabled: true,
+    clear_stored: false,
   })
   assert.equal(DEFAULT_HEADER, 'Authorization')
 })
@@ -282,4 +285,74 @@ test('editCredentialDescription: with nothing forcing a re-entry it is the blank
 test('credentialHelp: an unknown auth_status reads as the ok sentence, as the table badge does', () => {
   const before = up({ auth_status: 'quarantined' })
   assert.equal(credentialHelp(before, edit(before)), 'Leave blank to keep the stored credential. A value here replaces it.')
+})
+
+// PORM-120 security requirement 10: removal from the dialog is explicit. The
+// iteration above pins that an untouched none row sends nothing; these pin the
+// one exception and its boundaries.
+test('formFromUpstream: clear_stored is seeded false, so the flag is only ever true for the row the form was seeded from', () => {
+  assert.equal(formFromUpstream(up()).clear_stored, false)
+  assert.equal(formFromUpstream(up({ auth_type: 'none', auth_status: 'none' })).clear_stored, false)
+})
+
+test('upstreamPatchBody: sends auth_type none for a none row when clear_stored is ticked', () => {
+  const before = up({ auth_type: 'none', auth_status: 'none', auth_configured: true })
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { clear_stored: true })), { auth_type: 'none' })
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { clear_stored: true, name: 'Renamed' })), {
+    name: 'Renamed',
+    auth_type: 'none',
+  })
+})
+
+test('upstreamPatchBody: omits auth_type for a none row when clear_stored is not ticked', () => {
+  const before = up({ auth_type: 'none', auth_status: 'none', auth_configured: true })
+  assert.deepEqual(upstreamPatchBody(before, edit(before)), {})
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { name: 'Renamed' })), { name: 'Renamed' })
+})
+
+test('upstreamPatchBody: ignores clear_stored when the type changed', () => {
+  const before = up({ auth_type: 'none', auth_status: 'none', auth_configured: true })
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { clear_stored: true, auth_type: 'bearer', token: 't' })), {
+    auth_type: 'bearer',
+    auth_config: { token: 't' },
+  })
+})
+
+test('removeCredentialDescription: the sentence when None is chosen on a row that holds a credential', () => {
+  const before = up()
+  assert.equal(
+    removeCredentialDescription(before, edit(before, { auth_type: 'none' })),
+    'Saving removes the stored credential. It cannot be recovered. Switching back later means entering it again.'
+  )
+})
+
+test('removeCredentialDescription: null when the row holds nothing, when None is not chosen, on a none row, and on Add', () => {
+  const empty = up({ auth_configured: false, auth_status: 'unreadable' })
+  assert.equal(removeCredentialDescription(empty, edit(empty, { auth_type: 'none' })), null)
+  const bearer = up()
+  assert.equal(removeCredentialDescription(bearer, edit(bearer)), null)
+  assert.equal(removeCredentialDescription(bearer, edit(bearer, { auth_type: 'header' })), null)
+  const none = up({ auth_type: 'none', auth_status: 'none', auth_configured: true })
+  assert.equal(removeCredentialDescription(none, edit(none)), null)
+  assert.equal(removeCredentialDescription(none, edit(none, { auth_type: 'bearer' })), null)
+  assert.equal(removeCredentialDescription(undefined, blankUpstreamForm()), null)
+})
+
+test('clearStoredDescription: the checkbox sentence on a none row that still holds stored bytes with None selected', () => {
+  const none = up({ auth_type: 'none', auth_status: 'none', auth_configured: true })
+  assert.equal(
+    clearStoredDescription(none, edit(none)),
+    'A value is still stored for this upstream and is not sent, because the auth type is None. Saving with this ticked removes it.'
+  )
+  assert.equal(clearStoredDescription(none, edit(none, { name: 'Renamed', clear_stored: true })), clearStoredDescription(none, edit(none)))
+})
+
+test('clearStoredDescription: null once the select leaves None, on a none row with nothing stored, on a credential row, and on Add', () => {
+  const none = up({ auth_type: 'none', auth_status: 'none', auth_configured: true })
+  assert.equal(clearStoredDescription(none, edit(none, { auth_type: 'bearer' })), null)
+  const clean = up({ auth_type: 'none', auth_status: 'none', auth_configured: false })
+  assert.equal(clearStoredDescription(clean, edit(clean)), null)
+  const bearer = up()
+  assert.equal(clearStoredDescription(bearer, edit(bearer, { auth_type: 'none' })), null)
+  assert.equal(clearStoredDescription(undefined, blankUpstreamForm()), null)
 })

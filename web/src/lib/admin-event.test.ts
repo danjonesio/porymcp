@@ -82,6 +82,16 @@ test('changedText: a cleared field reads as cleared, with or without a matching 
   assert.equal(changedText(ev('virtual_key.update', { fields: ['rate_limit'], cleared: ['rate_limit'] })), 'rate limit, rate limit cleared')
 })
 
+// PORM-120: a removed credential is the word "credential" in cleared, which
+// the raw-name fallback renders with no label entry.
+test('changedText: a cleared credential reads as credential cleared, on a type change and on a none row', () => {
+  assert.equal(
+    changedText(ev('upstream.update', { fields: ['auth_type'], cleared: ['credential'], auth_type: 'none' })),
+    'auth type none, credential cleared'
+  )
+  assert.equal(changedText(ev('upstream.update', { cleared: ['credential'] })), 'credential cleared')
+})
+
 test('changedText: a membership change carries the new count', () => {
   assert.equal(changedText(ev('group.update', { fields: ['upstream_ids'], upstream_count: 3 })), 'upstreams (3)')
 })
