@@ -37,6 +37,10 @@ export default function GroupsPage() {
   // Mirrors `open` for a save whose dialog was closed while it was in flight:
   // its failure belongs on the page, not in a dialog nobody is looking at.
   const openRef = useRef(false)
+  // One dialog serves every row, so "open" is not enough: a request that
+  // started on row A must not write its failure into a dialog since reopened
+  // on row B. Every open counts, and a request remembers the count it saw.
+  const dialogSeq = useRef(0)
   const formErrorRef = useRef<HTMLParagraphElement>(null)
 
   const mode: 'create' | 'edit' = editing ? 'edit' : 'create'
@@ -70,15 +74,23 @@ export default function GroupsPage() {
     setEditing(null)
     setFormError('')
     setForm(blankGroupForm())
-    openRef.current = true
-    setOpen(true)
+    opened()
   }
 
   function openEdit(g: Group) {
     setEditing(g)
     setFormError('')
     setForm(formFromGroup(g))
+    opened()
+  }
+
+  /** The part of every open that the in-flight bookkeeping depends on. */
+  function opened() {
+    dialogSeq.current++
     openRef.current = true
+    // A request from the previous open may still be running; its finally must
+    // not touch this dialog's button, and this dialog starts idle.
+    setSaving(false)
     setOpen(true)
   }
 
@@ -94,12 +106,13 @@ export default function GroupsPage() {
     setConfirmEmpty(false)
   }
 
-  function failed(err: unknown) {
+  /** Report a failed request. `mine` is the dialog count the request started under. */
+  function failed(err: unknown, mine: number) {
     const message = editErrorMessage(err, 'group', 'save')
     // The row went away under the dialog: reload so "the current list" is true
     // when the operator closes it.
     if (err instanceof ApiError && err.status === 404) void load()
-    if (openRef.current) {
+    if (openRef.current && dialogSeq.current === mine) {
       setFormError(message)
       setFormErrorSeq((n) => n + 1)
     } else {
@@ -108,6 +121,7 @@ export default function GroupsPage() {
   }
 
   async function create() {
+    const mine = dialogSeq.current
     setSaving(true)
     try {
       await api('/groups', { method: 'POST', body: JSON.stringify(groupCreateBody(form)) })
@@ -115,9 +129,9 @@ export default function GroupsPage() {
       setForm(blankGroupForm())
       load()
     } catch (err) {
-      failed(err)
+      failed(err, mine)
     } finally {
-      setSaving(false)
+      if (dialogSeq.current === mine) setSaving(false)
     }
   }
 
@@ -140,15 +154,16 @@ export default function GroupsPage() {
       setConfirmEmpty(true)
       return
     }
+    const mine = dialogSeq.current
     setSaving(true)
     try {
       const saved = await api<Group>(`/groups/${row.id}`, { method: 'PATCH', body: JSON.stringify(body) })
       setGroups((list) => list.map((x) => (x.id === saved.id ? saved : x)))
       close()
     } catch (err) {
-      failed(err)
+      failed(err, mine)
     } finally {
-      setSaving(false)
+      if (dialogSeq.current === mine) setSaving(false)
     }
   }
 

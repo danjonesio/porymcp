@@ -105,6 +105,10 @@ export default function UpstreamsPage() {
   // Mirrors `open` for a save whose dialog was closed while it was in flight:
   // its failure belongs on the page, not in a dialog nobody is looking at.
   const openRef = useRef(false)
+  // One dialog serves every row, so "open" is not enough: a request that
+  // started on row A must not write its failure into a dialog since reopened
+  // on row B. Every open counts, and a request remembers the count it saw.
+  const dialogSeq = useRef(0)
   const formErrorRef = useRef<HTMLParagraphElement>(null)
 
   const mode: 'create' | 'edit' = editing ? 'edit' : 'create'
@@ -252,8 +256,7 @@ export default function UpstreamsPage() {
     setSlugTouched(false)
     setForm((f) => ({ ...f, name: '', slug: '', description: '', url: '', token: '', value: '' }))
     resetFormDiscovery()
-    openRef.current = true
-    setOpen(true)
+    opened()
   }
 
   /** Open the dialog on a row. The credential boxes start empty; blank means keep. */
@@ -262,7 +265,16 @@ export default function UpstreamsPage() {
     setFormError('')
     setForm(formFromUpstream(u))
     resetFormDiscovery()
+    opened()
+  }
+
+  /** The part of every open that the in-flight bookkeeping depends on. */
+  function opened() {
+    dialogSeq.current++
     openRef.current = true
+    // A request from the previous open may still be running; its finally must
+    // not touch this dialog's button, and this dialog starts idle.
+    setSaving(false)
     setOpen(true)
   }
 
@@ -281,12 +293,13 @@ export default function UpstreamsPage() {
     resetFormDiscovery()
   }
 
-  function failed(err: unknown) {
+  /** Report a failed request. `mine` is the dialog count the request started under. */
+  function failed(err: unknown, mine: number) {
     const message = editErrorMessage(err, 'upstream', 'save')
     // The row went away under the dialog: reload so "the current list" is true
     // when the operator closes it.
     if (err instanceof ApiError && err.status === 404) void load()
-    if (openRef.current) {
+    if (openRef.current && dialogSeq.current === mine) {
       setFormError(message)
       setFormErrorSeq((n) => n + 1)
     } else {
@@ -295,6 +308,7 @@ export default function UpstreamsPage() {
   }
 
   async function create() {
+    const mine = dialogSeq.current
     setSaving(true)
     try {
       await api('/upstreams', { method: 'POST', body: JSON.stringify(upstreamCreateBody(form, slugTouched)) })
@@ -302,9 +316,9 @@ export default function UpstreamsPage() {
       setSlugTouched(false)
       load()
     } catch (err) {
-      failed(err)
+      failed(err, mine)
     } finally {
-      setSaving(false)
+      if (dialogSeq.current === mine) setSaving(false)
     }
   }
 
@@ -323,15 +337,16 @@ export default function UpstreamsPage() {
       close()
       return
     }
+    const mine = dialogSeq.current
     setSaving(true)
     try {
       const saved = await api<Upstream>(`/upstreams/${row.id}`, { method: 'PATCH', body: JSON.stringify(body) })
       setItems((list) => list.map((x) => (x.id === saved.id ? saved : x)))
       close()
     } catch (err) {
-      failed(err)
+      failed(err, mine)
     } finally {
-      setSaving(false)
+      if (dialogSeq.current === mine) setSaving(false)
     }
   }
 
