@@ -446,6 +446,15 @@ func TestAdminEventFieldsAreADiff(t *testing.T) {
 			t.Fatalf("filter nulled details = %+v", got)
 		}
 	})
+	t.Run("group created with an empty filter records no filter", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		if rr := doJSON(t, h, http.MethodPost, "/groups", "test-admin", map[string]any{"name": "Research", "tool_filter": map[string]any{}}); rr.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+		}
+		if d := detailsOf(t, st, models.ActionGroupCreate); d != `{"upstream_count":0}` {
+			t.Fatalf("create with {} filter details = %s, want upstream_count only", d)
+		}
+	})
 	t.Run("group already-empty filter nulled is a clear with no field", func(t *testing.T) {
 		_, h, st := testAPI(t)
 		id := mustGroup(t, h, "Research", nil)

@@ -96,11 +96,14 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The member list itself is never recorded (caller-supplied, unbounded);
-	// the count is, and so is whether a filter was set, never its text.
+	// the count is, and so is whether a filter was set, never its text. {} is
+	// a filter that filters nothing, so it does not count as set, the same
+	// judgement patchGroup makes when it treats {} as a clear.
 	n := len(g.UpstreamIDs)
+	tf := strings.TrimSpace(string(in.ToolFilter.Value))
 	s.recordAdmin(r, models.ActionGroupCreate, g.ID, g.Name, adminDetails{
 		UpstreamCount: &n,
-		ToolFilterSet: in.ToolFilter.Has(),
+		ToolFilterSet: in.ToolFilter.Has() && tf != "{}",
 	})
 	writeJSON(w, http.StatusCreated, g)
 }
