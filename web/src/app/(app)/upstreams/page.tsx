@@ -17,23 +17,10 @@ import { api, discoverUpstream, discoverUpstreamPayload, type Discovery, type Up
 import { discoverable, discoveryErrorMessage } from '@/lib/discovery'
 import { deriveSlug } from '@/lib/slug'
 import { authState } from '@/lib/upstream-auth'
+import { authConfigFrom } from '@/lib/upstream-form'
 import { testState } from '@/lib/upstream-test'
 import clsx from 'clsx'
 import { useEffect, useRef, useState } from 'react'
-
-/** The form's credential fields, in the shape the API stores them. */
-function authConfigFrom(form: { auth_type: string; token: string; header: string; value: string }): Record<
-  string,
-  string
-> {
-  const auth_config: Record<string, string> = {}
-  if (form.auth_type === 'bearer' && form.token) auth_config.token = form.token
-  if ((form.auth_type === 'header' || form.auth_type === 'api_key' || form.auth_type === 'custom') && form.value) {
-    auth_config.header = form.header
-    auth_config.value = form.value
-  }
-  return auth_config
-}
 
 /**
  * The second line of the Status cell: whether the last deliberate connection
