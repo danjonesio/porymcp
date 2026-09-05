@@ -5,7 +5,7 @@ import { HelpDisclosure } from '@/components/help-disclosure'
 import { Code, Text } from '@/components/text'
 import type { DiscoveredTool, Discovery } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
-import { hostOf, plainHTTPCredential, scopedToolName } from '@/lib/discovery'
+import { PLAIN_HTTP_NOTE, hostOf, plainHTTPCredential, scopedToolName } from '@/lib/discovery'
 import clsx from 'clsx'
 import { useEffect, useRef, useState } from 'react'
 
@@ -197,7 +197,7 @@ export function DiscoveryPanel({
         </Text>
       ) : null}
       {result && plainHTTPCredential(url, authType) ? (
-        <Text className="mt-2">This upstream uses plain http, so the credential travels unencrypted.</Text>
+        <Text className="mt-2">{PLAIN_HTTP_NOTE}</Text>
       ) : null}
 
       {learned && result ? (
