@@ -1,0 +1,165 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
+)
+
+// adminEvents reads every admin_events row the test's own calls have written,
+// newest first, straight from the store rather than through the endpoint, so
+// a bug in the read path cannot make a write test pass.
+func adminEvents(t *testing.T, st *store.SQLStore) []models.AdminEvent {
+	t.Helper()
+	out, _, err := st.ListAdminEvents(context.Background(), models.AdminEventFilter{Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// eventsFor keeps the events with one action. Fixture rows a case creates on
+// the way to its own call write their own events, so assertions count the
+// case's action rather than the table.
+func eventsFor(events []models.AdminEvent, action string) []models.AdminEvent {
+	var out []models.AdminEvent
+	for _, e := range events {
+		if e.Action == action {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// detailKeys returns the sorted keys of an event's details object.
+func detailKeys(t *testing.T, raw json.RawMessage) []string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("details %s is not an object: %v", raw, err)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// mutationCase is one row of the table TestAdminEventPerMutation walks: one
+// mutating route, what it answers, and the one event it must leave behind.
+type mutationCase struct {
+	name       string
+	method     string
+	action     string
+	wantStatus int
+	// wantName is the resource_name the event must carry; wantKeys the sorted
+	// details keys. wantID is the resource_id, or "" for a create, whose id the
+	// server mints (then the assertion is only that it is non-empty).
+	wantName string
+	wantKeys []string
+	// prepare creates whatever rows the call needs on a fresh server and
+	// returns the request path, its body and the resource id the event must
+	// name.
+	prepare func(t *testing.T, h http.Handler) (path string, body any, wantID string)
+}
+
+// mutationCases is every mutating route, one case each. The three slices are
+// filled in as the handlers are wired (plan steps 6 to 8), and
+// TestAdminEventEveryMutatingRouteIsCovered pins that none is missing.
+func mutationCases() []mutationCase {
+	return slices.Concat(upstreamMutationCases(), groupMutationCases(), virtualKeyMutationCases())
+}
+
+// upstreamMutationCases is filled in by step 6.
+func upstreamMutationCases() []mutationCase { return nil }
+
+// groupMutationCases is filled in by step 7.
+func groupMutationCases() []mutationCase { return nil }
+
+// virtualKeyMutationCases is filled in by step 8.
+func virtualKeyMutationCases() []mutationCase { return nil }
+
+// TestAdminEventPerMutation is acceptance criterion 1: each mutating route
+// writes exactly one admin_events row with the right action, resource_type,
+// resource_id, resource_name and details keys. Each case runs on a fresh
+// store.
+func TestAdminEventPerMutation(t *testing.T) {
+	for _, c := range mutationCases() {
+		t.Run(c.name, func(t *testing.T) {
+			_, h, st := testAPI(t)
+			path, body, wantID := c.prepare(t, h)
+			rr := doJSON(t, h, c.method, path, "test-admin", body)
+			if rr.Code != c.wantStatus {
+				t.Fatalf("%s %s: %d %s, want %d", c.method, path, rr.Code, rr.Body.String(), c.wantStatus)
+			}
+			got := eventsFor(adminEvents(t, st), c.action)
+			if len(got) != 1 {
+				t.Fatalf("%d events for %s, want exactly 1: %+v", len(got), c.action, got)
+			}
+			e := got[0]
+			resourceType, _, _ := strings.Cut(c.action, ".")
+			if e.ResourceType != resourceType {
+				t.Errorf("resource_type = %q, want %q", e.ResourceType, resourceType)
+			}
+			if e.Actor != models.ActorAdmin {
+				t.Errorf("actor = %q, want %q", e.Actor, models.ActorAdmin)
+			}
+			if e.ResourceID == "" || (wantID != "" && e.ResourceID != wantID) {
+				t.Errorf("resource_id = %q, want %q", e.ResourceID, wantID)
+			}
+			if e.ResourceName != c.wantName {
+				t.Errorf("resource_name = %q, want %q", e.ResourceName, c.wantName)
+			}
+			if keys := detailKeys(t, e.Details); !slices.Equal(keys, c.wantKeys) {
+				t.Errorf("details keys = %v, want %v (details %s)", keys, c.wantKeys, e.Details)
+			}
+			if e.Timestamp.IsZero() || e.ID == "" {
+				t.Errorf("id %q or timestamp %v not set server-side", e.ID, e.Timestamp)
+			}
+		})
+	}
+}
+
+// TestAdminActionsWellFormed covers security requirement 13: every action is
+// "{resource_type}.{verb}" with exactly one dot and a known prefix, which is
+// what makes recordAdmin's strings.Cut derivation of resource_type safe, and
+// the list carries all eleven constants.
+func TestAdminActionsWellFormed(t *testing.T) {
+	if len(models.AdminActions) != 11 {
+		t.Fatalf("AdminActions has %d entries, want 11", len(models.AdminActions))
+	}
+	seen := map[string]bool{}
+	for _, a := range models.AdminActions {
+		if strings.Count(a, ".") != 1 {
+			t.Errorf("%q must have exactly one dot", a)
+		}
+		prefix, verb, _ := strings.Cut(a, ".")
+		if !validResourceType(prefix) {
+			t.Errorf("%q has an unknown resource_type prefix", a)
+		}
+		if verb == "" {
+			t.Errorf("%q has no verb", a)
+		}
+		if seen[a] {
+			t.Errorf("%q listed twice", a)
+		}
+		seen[a] = true
+	}
+	for _, want := range []string{
+		models.ActionUpstreamCreate, models.ActionUpstreamUpdate, models.ActionUpstreamDelete,
+		models.ActionGroupCreate, models.ActionGroupUpdate, models.ActionGroupDelete,
+		models.ActionVirtualKeyCreate, models.ActionVirtualKeyUpdate, models.ActionVirtualKeyRotate,
+		models.ActionVirtualKeyRevoke, models.ActionVirtualKeyDelete,
+	} {
+		if !seen[want] {
+			t.Errorf("%q missing from AdminActions", want)
+		}
+	}
+}
