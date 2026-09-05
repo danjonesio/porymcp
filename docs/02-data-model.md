@@ -55,9 +55,10 @@ builds before PORM-52 are bare base64 with no AAD and are read for ever;
 out of its statement, so an edit that raced a rekey cannot put an old-key value
 back), by a `PATCH` naming `auth_type: none` over a stored value, which empties
 it, and by `rekey`, and by nothing else. An object with no members (`{}`, what
-the dashboard sends for a blank box) stores nothing. `auth_type: none` rows
-written by builds before PORM-120 may still hold a value: nothing reads it,
-`rekey` does not re-wrap it, and a `PATCH` naming `auth_type: none` removes it.
+the dashboard sends for a blank box) stores nothing. An `auth_type: none` row
+may still hold a value, whether an earlier build wrote it or a `PATCH` carried
+`auth_config` alone to a `none` row: nothing reads it, `rekey` does not re-wrap
+it, and a `PATCH` naming `auth_type: none` removes it.
 
 ## Group
 A named collection of Upstreams (for multi-MCP agents).  

@@ -284,8 +284,9 @@ export function removeCredentialDescription(before: Upstream | undefined, f: Ups
 /**
  * The description of the "Remove the stored value" checkbox, and the test for
  * rendering it: the row is already none and still holds stored bytes (a
- * credential switched to None by an earlier build, or the sealed `{}` earlier
- * builds wrote for a blank box; the server cannot tell which), and None is
+ * credential switched to None by an earlier build, the sealed `{}` earlier
+ * builds wrote for a blank box, or a credential a client sent alone to a none
+ * row; the server cannot tell which), and None is
  * still selected. The checkbox renders on the same `f.auth_type === 'none'`
  * test upstreamPatchBody reads for clear_stored, so a ticked box is on screen
  * whenever it can change the request; if the two ever diverge, a ticked box

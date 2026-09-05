@@ -59,8 +59,9 @@
   removes the credential from the row and from what PoryMCP sends; it is not a
   secure erase of the database file, its write-ahead log or backups, and
   revoking the credential at the provider is the step that ends its
-  usefulness. `auth_type: none` rows written by earlier builds may still hold
-  a value: `porymcp rekey` does not re-wrap it and no count reports it, so a
+  usefulness. An `auth_type: none` row may still hold a value, whether an
+  earlier build wrote it or a client sent `auth_config` alone to a `none` row:
+  `porymcp rekey` does not re-wrap it and no count reports it, so a
   retired key plus the database file opens it until a request naming
   `auth_type: none` clears the row, and a bare `PATCH {"auth_type":"bearer"}`
   from the API re-arms it without a credential being re-entered ("not sent"

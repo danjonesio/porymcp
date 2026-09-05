@@ -343,9 +343,10 @@ whatever the dashboard stored; `auth_hint` is present only when `ok`;
 `auth_configured` keeps its meaning (a blob is stored) and is independent: a
 `bearer` upstream with no credential yet reads `auth_configured: false,
 auth_status: "unreadable"`, and `auth_configured: true` with
-`auth_type: "none"` means a value written by an earlier build is still stored
-and not sent, which a `PATCH` naming `auth_type: "none"` removes (see Removing
-a credential). It is computed live on every read, so it clears the
+`auth_type: "none"` means a value is still stored and not sent, whether an
+earlier build wrote it or a client sent `auth_config` alone to a `none` row,
+which a `PATCH` naming `auth_type: "none"` removes (see Removing a
+credential). It is computed live on every read, so it clears the
 moment a credential is re-entered or `porymcp rekey` finishes; `GET /health`'s
 `encryption` is the boot verdict and clears at the next restart.
 

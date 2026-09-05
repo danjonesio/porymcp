@@ -21,7 +21,8 @@ Behaviour changes that affect a running deployment. Newest first.
 - `auth_type: "none"` with a credential in the same request answers
   `400 auth_config cannot be set when auth_type is none`, on create (an
   omitted `auth_type` defaults to `none`) and on patch.
-- None rows written by earlier builds keep their stored value until a request
+- A None row that holds a stored value (written by an earlier build, or sent
+  alone by a client to a None row, which stays legal) keeps it until a request
   names `auth_type: "none"`. The edit dialog shows a "Remove the stored value"
   checkbox on every None row that holds one, including the empty objects the
   Add dialog used to write, so on most rows it removes nothing of value; the
