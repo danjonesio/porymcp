@@ -107,6 +107,28 @@ func doJSONAddr(t *testing.T, h http.Handler, method, path, admin, addr string, 
 	return rr
 }
 
+// doJSONCtx is doJSON with a caller-supplied request context, for the tests
+// that cancel it from inside a store call to stand in for a client that went
+// away after its mutation committed.
+func doJSONCtx(t *testing.T, h http.Handler, ctx context.Context, method, path, admin string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr *bytes.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	} else {
+		rdr = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, rdr).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	if admin != "" {
+		req.Header.Set("Authorization", "Bearer "+admin)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
 // wantsBody asserts that every fragment appears in the response body. Rejection
 // tests use it because an operator has to be able to fix the request from the
 // response alone: the reason has to survive to the body, and so does the field
