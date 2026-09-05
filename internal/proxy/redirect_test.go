@@ -372,7 +372,9 @@ func TestUpstreamRedirectAuditRowIsBounded(t *testing.T) {
 
 // Everything a Location can carry beyond the host (userinfo, a path, a query
 // string) stops at the proxy, and the Location itself never reaches the
-// client, because the 502 mapping returns before the header copy-back loop.
+// client, because the 502 mapping returns before the copy site
+// (copyResponseHeaders). An allowed name on the stub is what proves that, and
+// the 502 carries the proxy's own Cache-Control like every other response.
 func TestUpstreamRedirectLocationNeverReachesTheClient(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{
 		Tools:          []string{"ping_tool"},
