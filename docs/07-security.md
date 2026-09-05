@@ -16,8 +16,9 @@
   restorable only with the key that was current when it was taken. Losing the
   key makes every stored credential unrecoverable; PoryMCP cannot get them
   back. Recovery when the key is gone: `PATCH /api/v1/upstreams/{id}` with a
-  fresh `auth_config` for every upstream the boot line named (or delete the
-  upstream), then **restart**: the boot check records the current fingerprint
+  fresh `auth_config` for every upstream the boot line named, or with
+  `{"auth_type":"none"}` to remove the stored credential without the key, or
+  delete the upstream; then **restart**: the boot check records the current fingerprint
   once every credential opens under it and `/health` returns to `ok`;
   `porymcp rekey` is not needed on that path.
 - The key must be 32 random bytes (`openssl rand -hex 32`). The parser also

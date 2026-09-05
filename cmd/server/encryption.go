@@ -78,7 +78,7 @@ func checkEncryption(ctx context.Context, st *store.SQLStore, cfg *config.Config
 			"stored_fingerprint", storedField, "current_fingerprint", current,
 			"credentials", rep.Credentials, "undecryptable", rep.Undecryptable, "under_previous", rep.UnderPrevious,
 			"upstream_ids", rep.IDs, "upstream_names", rep.Names, "not_listed", rep.NotListed,
-			"hint", "restore the previous key, or set ENCRYPTION_KEY_PREVIOUS to it, restart, and run: porymcp rekey; a row whose key is gone can be switched to auth_type none, which removes the stored credential without it: re-run porymcp rekey, then restart so /health reports encryption: ok")
+			"hint", "restore the previous key, or set ENCRYPTION_KEY_PREVIOUS to it, restart, and run porymcp rekey. A row whose key is gone can instead be switched to auth_type none (PATCH /api/v1/upstreams/{id}), which removes the stored credential without it; restart afterwards so /health reports encryption: ok")
 		return webutil.EncryptionMismatch, nil
 	}
 
