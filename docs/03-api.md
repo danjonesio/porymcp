@@ -30,7 +30,7 @@ response, the same as one that was never set.
 | upstream / group `description` | set | **cleared** | **cleared** |
 | upstream `url` | set; `400 url must be an absolute http or https URL` if not; resets the last test when it differs | that `400` | that `400` |
 | upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value; resets the last test when it differs | that `400` | that `400` |
-| upstream `auth_config` | replaces the stored credential; resets the last test | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged | `{}` replaces with `{}` |
+| upstream `auth_config` | replaces the stored credential; resets the last test | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged | `{}` replaces with `{}`: an empty credential is sealed over the stored one, the row reads `unreadable` and the proxy stops authenticating, so a client that did not change the credential omits the key (the dashboard's edit dialog does) |
 | upstream `enabled` | set | `400 enabled must be true or false` | n/a |
 | group `upstream_ids` | validated and replaced | **cleared** to `[]`: the group has no members, and every key targeting it loses its endpoints | `[]` clears |
 | group `tool_filter` | validated and replaced | **cleared** | `{}` is a valid filter that filters nothing; stored as sent |

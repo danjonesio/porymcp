@@ -49,6 +49,13 @@ export function hostOf(url: string): string {
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]'])
 
 /**
+ * The one sentence shown when plainHTTPCredential is true: under a discovery
+ * result in the Add dialog, and under the URL field in the Edit dialog, where
+ * no discovery runs.
+ */
+export const PLAIN_HTTP_NOTE = 'This upstream uses plain http, so the credential travels unencrypted.'
+
+/**
  * True when discovering this upstream puts a real credential on the wire in the
  * clear. Loopback is exempt: the request never leaves the machine, and PoryMCP is
  * routinely run at http://localhost:8080.

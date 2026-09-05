@@ -1,39 +1,32 @@
 'use client'
 
 import { DiscoveryPanel, IDLE, type DiscoveryState } from '@/app/discovery-panel'
+import { UpstreamFields } from '@/app/upstream-form'
+import { Alert, AlertActions, AlertDescription, AlertTitle } from '@/components/alert'
 import { Badge } from '@/components/badge'
 import { Button } from '@/components/button'
-import { Checkbox, CheckboxField } from '@/components/checkbox'
 import { Dialog, DialogActions, DialogBody, DialogDescription, DialogTitle } from '@/components/dialog'
 import { Divider } from '@/components/divider'
-import { Description, Field, FieldGroup, Label } from '@/components/fieldset'
 import { Heading } from '@/components/heading'
-import { HelpDisclosure } from '@/components/help-disclosure'
-import { Input } from '@/components/input'
-import { Select } from '@/components/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
-import { Strong, Text } from '@/components/text'
-import { api, discoverUpstream, discoverUpstreamPayload, type Discovery, type Upstream } from '@/lib/api'
+import { Text } from '@/components/text'
+import { ApiError, api, discoverUpstream, discoverUpstreamPayload, type Discovery, type Upstream } from '@/lib/api'
 import { discoverable, discoveryErrorMessage } from '@/lib/discovery'
+import { editErrorMessage } from '@/lib/edit-error'
 import { deriveSlug } from '@/lib/slug'
 import { authState } from '@/lib/upstream-auth'
+import {
+  CONNECTION_FIELDS,
+  authConfigFrom,
+  blankUpstreamForm,
+  formFromUpstream,
+  upstreamCreateBody,
+  upstreamPatchBody,
+  type UpstreamForm,
+} from '@/lib/upstream-form'
 import { testState } from '@/lib/upstream-test'
 import clsx from 'clsx'
 import { useEffect, useRef, useState } from 'react'
-
-/** The form's credential fields, in the shape the API stores them. */
-function authConfigFrom(form: { auth_type: string; token: string; header: string; value: string }): Record<
-  string,
-  string
-> {
-  const auth_config: Record<string, string> = {}
-  if (form.auth_type === 'bearer' && form.token) auth_config.token = form.token
-  if ((form.auth_type === 'header' || form.auth_type === 'api_key' || form.auth_type === 'custom') && form.value) {
-    auth_config.header = form.header
-    auth_config.value = form.value
-  }
-  return auth_config
-}
 
 /**
  * The second line of the Status cell: whether the last deliberate connection
@@ -79,35 +72,52 @@ const DOT = {
   failed: 'bg-pink-500 dark:bg-pink-400',
 }
 
+const errorLine = 'text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400'
+
 export default function UpstreamsPage() {
   const [items, setItems] = useState<Upstream[]>([])
   /** When the list on screen arrived: the clock the Status cell's "3m ago" counts from. */
   const [loadedAt, setLoadedAt] = useState(0)
   const [open, setOpen] = useState(false)
+  /** The row the dialog is editing; null while it is adding. Decides the mode, the title and the submit. */
+  const [editing, setEditing] = useState<Upstream | null>(null)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [formError, setFormError] = useState('')
+  // Counts failures, not messages: two saves rejected with the same sentence
+  // leave formError unchanged, and the scroll below has to run for the second.
+  const [formErrorSeq, setFormErrorSeq] = useState(0)
   const [slugTouched, setSlugTouched] = useState(false)
-  const [form, setForm] = useState({
-    name: '',
-    slug: '',
-    description: '',
-    url: '',
-    transport: 'streamable-http',
-    auth_type: 'none',
-    token: '',
-    header: 'Authorization',
-    value: '',
-    enabled: true,
-  })
+  const [form, setForm] = useState<UpstreamForm>(blankUpstreamForm)
   const [formDiscovery, setFormDiscovery] = useState<DiscoveryState>(IDLE)
   /** The row whose Tools dialog is open, and that dialog's own discovery. */
   const [tools, setTools] = useState<Upstream | null>(null)
   const [rowDiscovery, setRowDiscovery] = useState<DiscoveryState>(IDLE)
+  /** The row the delete Alert is asking about, and the Alert's own error line. */
+  const [pendingDelete, setPendingDelete] = useState<Upstream | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   // Discovery has a ten-second budget, so a second press can easily land while
   // the first is in flight. Each surface counts its own requests and paints only
   // the newest one.
   const formSeq = useRef(0)
   const rowSeq = useRef(0)
+  // Mirrors `open` for a save whose dialog was closed while it was in flight:
+  // its failure belongs on the page, not in a dialog nobody is looking at.
+  const openRef = useRef(false)
+  // One dialog serves every row, so "open" is not enough: a request that
+  // started on row A must not write its failure into a dialog since reopened
+  // on row B. Every open counts, and a request remembers the count it saw.
+  const dialogSeq = useRef(0)
+  const formErrorRef = useRef<HTMLParagraphElement>(null)
+
+  const mode: 'create' | 'edit' = editing ? 'edit' : 'create'
+
+  useEffect(() => {
+    // The dialog body is long and the panel is a bottom sheet on a phone, so a
+    // failed submit's message would otherwise sit off-screen above the operator.
+    formErrorRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [formErrorSeq])
 
   /**
    * Run one discovery request into one surface's state. Every setState below
@@ -143,15 +153,28 @@ export default function UpstreamsPage() {
   }
 
   /**
-   * Edit one of the fields discovery actually used. The panel below describes
-   * the URL, transport and credential (header name included) as they were
-   * when it ran, so it is a lie the moment one of them changes. Name, slug and
-   * description are not here: they only change the previewed tool names, which
-   * recompute from props on every render.
+   * One field changed in the dialog. In edit mode the patch is the whole story.
+   * In create mode three reactions ride along: the Slug input marks itself
+   * touched, the Name input derives the slug until then (reading slugTouched
+   * from render scope is correct: only the Slug input sets it, and the two
+   * inputs cannot fire in one React batch), and a change to a field discovery
+   * used throws the panel away, because it described the URL, transport and
+   * credential (header name included) as they were when it ran. Name, slug and
+   * description are not connection fields: they only change the previewed tool
+   * names, which recompute from props on every render.
    */
-  function editConnection(patch: Partial<typeof form>) {
-    setForm((f) => ({ ...f, ...patch }))
-    resetFormDiscovery()
+  function onFieldChange(patch: Partial<UpstreamForm>) {
+    if (mode === 'edit') {
+      setForm((f) => ({ ...f, ...patch }))
+      return
+    }
+    if ('slug' in patch) setSlugTouched(true)
+    setForm((f) => {
+      const next = { ...f, ...patch }
+      if ('name' in patch && !('slug' in patch) && !slugTouched) next.slug = deriveSlug(next.name)
+      return next
+    })
+    if (CONNECTION_FIELDS.some((k) => k in patch)) resetFormDiscovery()
   }
 
   function discoverForm() {
@@ -219,41 +242,145 @@ export default function UpstreamsPage() {
 
   useEffect(load, [])
 
-  async function create(e: React.FormEvent) {
-    e.preventDefault()
+  /**
+   * Open the dialog to add. The reset is the one this button has always done:
+   * the form is otherwise only cleared on a successful create, so a cancelled
+   * dialog would reopen with the old values and a stale slugTouched that
+   * silently disables auto-fill. Transport, auth type, header name and enabled
+   * persist across opens on purpose, for the operator adding three upstreams
+   * behind the same scheme.
+   */
+  function openAdd() {
+    setEditing(null)
     setFormError('')
-    const auth_config = authConfigFrom(form)
-    try {
-      await api('/upstreams', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: form.name,
-          slug: slugTouched ? form.slug : '',
-          description: form.description,
-          url: form.url,
-          transport: form.transport,
-          auth_type: form.auth_type,
-          auth_config,
-          enabled: form.enabled,
-        }),
-      })
-      setOpen(false)
-      setForm({ ...form, name: '', slug: '', description: '', url: '', token: '', value: '' })
-      setSlugTouched(false)
-      resetFormDiscovery()
-      load()
-    } catch (err) {
-      setFormError((err as Error).message)
+    setSlugTouched(false)
+    setForm((f) => ({ ...f, name: '', slug: '', description: '', url: '', token: '', value: '' }))
+    resetFormDiscovery()
+    opened()
+  }
+
+  /** Open the dialog on a row. The credential boxes start empty; blank means keep. */
+  function openEdit(u: Upstream) {
+    setEditing(u)
+    setFormError('')
+    setForm(formFromUpstream(u))
+    resetFormDiscovery()
+    opened()
+  }
+
+  /** The part of every open that the in-flight bookkeeping depends on. */
+  function opened() {
+    dialogSeq.current++
+    openRef.current = true
+    // A request from the previous open may still be running; its finally must
+    // not touch this dialog's button, and this dialog starts idle.
+    setSaving(false)
+    setOpen(true)
+  }
+
+  /**
+   * Every way out: Cancel, Escape, the backdrop, a successful submit. `editing`
+   * is left alone: the panel stays mounted for its leave transition, and
+   * clearing it here would re-render that closing panel as the Add form
+   * (title, Slug input, Discover block) while it slides away. The next open
+   * sets it.
+   */
+  function close() {
+    openRef.current = false
+    setOpen(false)
+    // A typed credential never survives into the next dialog, whichever row it opens on.
+    setForm((f) => ({ ...f, token: '', value: '' }))
+    resetFormDiscovery()
+  }
+
+  /** Report a failed request. `mine` is the dialog count the request started under. */
+  function failed(err: unknown, mine: number) {
+    const message = editErrorMessage(err, 'upstream', 'save')
+    // The row went away under the dialog: reload so "the current list" is true
+    // when the operator closes it.
+    if (err instanceof ApiError && err.status === 404) void load()
+    if (openRef.current && dialogSeq.current === mine) {
+      setFormError(message)
+      setFormErrorSeq((n) => n + 1)
+    } else {
+      setError(message)
     }
   }
 
-  async function remove(id: string) {
-    if (!confirm('Delete this upstream?')) return
+  async function create() {
+    const mine = dialogSeq.current
+    setSaving(true)
     try {
-      await api(`/upstreams/${id}`, { method: 'DELETE' })
+      await api('/upstreams', { method: 'POST', body: JSON.stringify(upstreamCreateBody(form, slugTouched)) })
+      // The table is updated whatever happened to the dialog meanwhile; the
+      // dialog is closed only if it is still the one this request came from.
+      if (dialogSeq.current === mine) {
+        close()
+        setSlugTouched(false)
+      }
       load()
     } catch (err) {
-      setError((err as Error).message)
+      failed(err, mine)
+    } finally {
+      if (dialogSeq.current === mine) setSaving(false)
+    }
+  }
+
+  /**
+   * Send only what changed. The body carries the keys whose value differs from
+   * the row the dialog opened on, and never `auth_config` for a blank credential
+   * box or `slug` at all (see upstreamPatchBody). The 200 is the row itself,
+   * with the last test already reset when the connection changed, so the table
+   * takes it in place of the old row and no second request is needed.
+   */
+  async function save() {
+    const row = editing
+    if (!row) return
+    const body = upstreamPatchBody(row, form)
+    if (Object.keys(body).length === 0) {
+      close()
+      return
+    }
+    const mine = dialogSeq.current
+    setSaving(true)
+    try {
+      const saved = await api<Upstream>(`/upstreams/${row.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      setItems((list) => list.map((x) => (x.id === saved.id ? saved : x)))
+      if (dialogSeq.current === mine) close()
+    } catch (err) {
+      failed(err, mine)
+    } finally {
+      if (dialogSeq.current === mine) setSaving(false)
+    }
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setFormError('')
+    if (mode === 'edit') void save()
+    else void create()
+  }
+
+  function closeDelete() {
+    setPendingDelete(null)
+    setDeleteError('')
+  }
+
+  /** Delete the row the Alert is asking about. A failure keeps the Alert open with its reason. */
+  async function remove() {
+    const row = pendingDelete
+    if (!row) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await api(`/upstreams/${row.id}`, { method: 'DELETE' })
+      setItems((list) => list.filter((x) => x.id !== row.id))
+      closeDelete()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) void load()
+      setDeleteError(editErrorMessage(err, 'upstream', 'delete'))
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -261,27 +388,14 @@ export default function UpstreamsPage() {
     <>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <Heading>Upstreams</Heading>
-        <Button
-          type="button"
-          color="cyan"
-          onClick={() => {
-            // Reset everything on open: the form is otherwise only cleared on a
-            // successful create, so a cancelled dialog would reopen with the old
-            // values and a stale slugTouched that silently disables auto-fill.
-            setFormError('')
-            setSlugTouched(false)
-            setForm((f) => ({ ...f, name: '', slug: '', description: '', url: '', token: '', value: '' }))
-            resetFormDiscovery()
-            setOpen(true)
-          }}
-        >
+        <Button type="button" color="cyan" onClick={openAdd}>
           Add upstream
         </Button>
       </div>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
         Real MCP servers. Credentials are encrypted at rest and never shown again.
       </p>
-      {error ? <p className="mt-4 text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400">{error}</p> : null}
+      {error ? <p className={clsx('mt-4', errorLine)}>{error}</p> : null}
 
       {items.length === 0 ? (
         <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">No upstreams yet. Add the first real MCP server.</p>
@@ -326,7 +440,10 @@ export default function UpstreamsPage() {
                     <Button type="button" plain onClick={() => openTools(u)}>
                       Tools
                     </Button>
-                    <Button type="button" plain onClick={() => remove(u.id)}>
+                    <Button type="button" plain onClick={() => openEdit(u)}>
+                      Edit
+                    </Button>
+                    <Button type="button" plain onClick={() => setPendingDelete(u)}>
                       Delete
                     </Button>
                   </span>
@@ -337,200 +454,70 @@ export default function UpstreamsPage() {
         </Table>
       )}
 
-      <Dialog open={open} onClose={setOpen}>
-        <form onSubmit={create}>
-          <DialogTitle>Add upstream</DialogTitle>
+      <Dialog open={open} onClose={close}>
+        <form onSubmit={submit}>
+          <DialogTitle>{editing ? 'Edit upstream' : 'Add upstream'}</DialogTitle>
+          {editing ? (
+            // The slug is fixed once created and has no input here, so it has
+            // no path into the body; this line is where the operator reads it.
+            <DialogDescription>Slug: {editing.slug}. It is fixed once the upstream is created.</DialogDescription>
+          ) : null}
           <DialogBody>
             {formError ? (
-              <p className="mb-4 text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400">{formError}</p>
+              // role="alert" because this answers a submit the operator just
+              // made; the page-level error line above the table describes a
+              // background load and stays a plain paragraph.
+              <p ref={formErrorRef} role="alert" className={clsx('mb-4', errorLine)}>
+                {formError}
+              </p>
             ) : null}
-            <FieldGroup>
-              <Field>
-                <Label>Name</Label>
-                <Input
-                  name="name"
-                  value={form.name}
-                  onChange={(e) => {
-                    const name = e.target.value
-                    // Reading slugTouched from render scope is correct: only the Slug
-                    // input sets it, and the two inputs cannot fire in one React batch.
-                    setForm((f) => ({ ...f, name, slug: slugTouched ? f.slug : deriveSlug(name) }))
-                  }}
-                  required
-                />
-              </Field>
-              <Field>
-                <Label>Slug</Label>
-                <Input
-                  name="slug"
-                  value={form.slug}
-                  placeholder="up"
-                  maxLength={40}
-                  onChange={(e) => {
-                    setSlugTouched(true)
-                    setForm((f) => ({ ...f, slug: e.target.value }))
-                  }}
-                />
-                <Description>
-                  Used in URLs and in tool names on the group endpoint. Fixed once the upstream is created.
-                </Description>
-              </Field>
-              {/* The disclosure rides with the field rather than as its own
-                  FieldGroup child, so it sits under the input instead of a full
-                  field's gap below it. */}
-              <div>
-                <Field>
-                  <Label>URL</Label>
-                  <Input
-                    type="url"
-                    name="url"
-                    value={form.url}
-                    onChange={(e) => editConnection({ url: e.target.value })}
-                    required
-                  />
-                </Field>
-                <div className="mt-3">
-                  <HelpDisclosure label="What URL should I use?">
-                    <p>
-                      <Strong>
-                        The MCP endpoint, not the home page.
-                      </Strong>{' '}
-                      Usually the address ends in <span className="font-mono wrap-break-word">/mcp</span>. Copy it from
-                      the server’s documentation or from a working Claude Code or Cursor config.
-                    </p>
-                    <p>
-                      <Strong>The final address.</Strong> PoryMCP
-                      sends this upstream’s credential to exactly the URL you enter and never follows a redirect. An{' '}
-                      <span className="font-mono wrap-break-word">http://</span> address that redirects to{' '}
-                      <span className="font-mono wrap-break-word">https://</span>, or a path missing its trailing
-                      slash, fails with <span className="font-mono">502</span> and a log entry reading{' '}
-                      <span className="font-mono wrap-break-word">upstream redirected to …</span>. Use{' '}
-                      <span className="font-mono wrap-break-word">https://</span> and the exact path the server serves.
-                    </p>
-                    <p>
-                      <Strong>Check it before you save.</Strong>{' '}
-                      Discover tools connects with these settings and lists what the server offers.
-                    </p>
-                  </HelpDisclosure>
-                </div>
-              </div>
-              <Field>
-                <Label>Description</Label>
-                <Input
-                  name="description"
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                />
-              </Field>
-              <Field>
-                <Label>Transport</Label>
-                <Select
-                  name="transport"
-                  value={form.transport}
-                  onChange={(e) => editConnection({ transport: e.target.value })}
-                >
-                  <option value="streamable-http">Streamable HTTP</option>
-                  <option value="sse">SSE</option>
-                </Select>
-              </Field>
-              <Field>
-                <Label>Auth type</Label>
-                <Select
-                  name="auth_type"
-                  value={form.auth_type}
-                  onChange={(e) => editConnection({ auth_type: e.target.value })}
-                >
-                  <option value="none">None</option>
-                  <option value="bearer">Bearer</option>
-                  <option value="header">Header</option>
-                  <option value="api_key">API key</option>
-                  <option value="custom">Custom</option>
-                </Select>
-              </Field>
-              {form.auth_type === 'bearer' ? (
-                <Field>
-                  <Label>Bearer token</Label>
-                  <Input
-                    type="password"
-                    name="token"
-                    value={form.token}
-                    onChange={(e) => editConnection({ token: e.target.value })}
-                  />
-                  <Description>Stored encrypted. It will not be shown after save.</Description>
-                </Field>
-              ) : null}
-              {form.auth_type === 'header' || form.auth_type === 'api_key' || form.auth_type === 'custom' ? (
-                <>
-                  <Field>
-                    <Label>Header name</Label>
-                    <Input
-                      name="header"
-                      value={form.header}
-                      onChange={(e) => editConnection({ header: e.target.value })}
-                    />
-                  </Field>
-                  <Field>
-                    <Label>Header value</Label>
-                    <Input
-                      type="password"
-                      name="value"
-                      value={form.value}
-                      onChange={(e) => editConnection({ value: e.target.value })}
-                    />
-                  </Field>
-                </>
-              ) : null}
-              <CheckboxField>
-                <Checkbox
-                  name="enabled"
-                  checked={form.enabled}
-                  onChange={(checked) => setForm({ ...form, enabled: checked })}
-                />
-                <Label>Enabled</Label>
-              </CheckboxField>
-            </FieldGroup>
+            <UpstreamFields mode={mode} form={form} onChange={onFieldChange} before={editing ?? undefined} />
 
-            {/* Discover sits at the foot of the body, not in DialogActions: that
-                row stacks in reverse below sm:, which would bury an exploratory
-                action between Create and Cancel, and Create stays the dialog's
-                one primary button. */}
-            <Divider soft className="my-8" />
-            <div>
-              <Button
-                type="button"
-                outline
-                disabled={!discoverable(form.url) || formDiscovery.pending}
-                onClick={discoverForm}
-              >
-                {formDiscovery.pending ? 'Discovering…' : 'Discover tools'}
-              </Button>
-              <Text className="mt-2">
-                Connects to the URL above using these credentials and lists the tools that server offers. Nothing is
-                saved, and this check is not recorded as a test.
-              </Text>
-            </div>
-            <DiscoveryPanel
-              {...formDiscovery}
-              className="mt-8"
-              url={form.url}
-              authType={form.auth_type}
-              slug={form.slug.trim()}
-              surface="draft"
-            />
+            {mode === 'create' ? (
+              <>
+                {/* Discover sits at the foot of the body, not in DialogActions: that
+                    row stacks in reverse below sm:, which would bury an exploratory
+                    action between Create and Cancel, and Create stays the dialog's
+                    one primary button. It is a create-only affordance: from an edit
+                    dialog the payload route would probe with whatever credential
+                    the operator typed, which for a blank box is none, and blame a
+                    working token for the 401. Tools on the row tests the saved
+                    upstream with its stored credential. */}
+                <Divider soft className="my-8" />
+                <div>
+                  <Button
+                    type="button"
+                    outline
+                    disabled={!discoverable(form.url) || formDiscovery.pending}
+                    onClick={discoverForm}
+                  >
+                    {formDiscovery.pending ? 'Discovering…' : 'Discover tools'}
+                  </Button>
+                  <Text className="mt-2">
+                    Connects to the URL above using these credentials and lists the tools that server offers. Nothing
+                    is saved, and this check is not recorded as a test.
+                  </Text>
+                </div>
+                <DiscoveryPanel
+                  {...formDiscovery}
+                  className="mt-8"
+                  url={form.url}
+                  authType={form.auth_type}
+                  slug={form.slug.trim()}
+                  surface="draft"
+                />
+              </>
+            ) : null}
           </DialogBody>
           <DialogActions>
-            <Button
-              type="button"
-              plain
-              onClick={() => {
-                resetFormDiscovery()
-                setOpen(false)
-              }}
-            >
+            {/* Cancel stays enabled while a save is in flight: Escape and the
+                backdrop would close the dialog anyway, and a failure that lands
+                after a close goes to the page-level line (see failed). */}
+            <Button type="button" plain onClick={close}>
               Cancel
             </Button>
-            <Button type="submit" color="cyan">
-              Create
+            <Button type="submit" color="cyan" disabled={saving}>
+              {saving ? 'Saving…' : editing ? 'Save changes' : 'Create'}
             </Button>
           </DialogActions>
         </form>
@@ -564,6 +551,28 @@ export default function UpstreamsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Alert open={!!pendingDelete} onClose={closeDelete}>
+        <AlertTitle>Delete this upstream?</AlertTitle>
+        <AlertDescription>
+          {pendingDelete
+            ? `${pendingDelete.name} will be removed. Its stored credential is deleted with it. This cannot be undone.`
+            : ''}
+        </AlertDescription>
+        {deleteError ? (
+          <p role="alert" className="mt-2 text-center text-base/7 text-pink-600 sm:text-left sm:text-sm/6 dark:text-pink-400">
+            {deleteError}
+          </p>
+        ) : null}
+        <AlertActions>
+          <Button type="button" plain onClick={closeDelete}>
+            Cancel
+          </Button>
+          <Button type="button" color="red" disabled={deleting} onClick={remove}>
+            {deleting ? 'Deleting…' : 'Delete'}
+          </Button>
+        </AlertActions>
+      </Alert>
     </>
   )
 }
