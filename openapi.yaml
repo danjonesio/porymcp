@@ -746,8 +746,8 @@ components:
           description: >-
             Write-only. A value replaces the stored credential; an object with
             no members stores nothing; `null` leaves it unchanged, on PATCH and
-            on POST alike (on POST that means no credential). Refused with 400
-            beside `auth_type` `none`.
+            on POST alike (on POST that means no credential). A credential sent
+            beside `auth_type` `none` is refused with 400.
         enabled:
           type: boolean
     Discovery:
