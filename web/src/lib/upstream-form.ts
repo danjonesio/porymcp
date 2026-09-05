@@ -211,6 +211,8 @@ const HEADER_SUFFIX = ' The header name is stored with it, so enter that too.'
  * forces a re-entry. Branches on authState so this sentence and the table's
  * Auth badge cannot disagree: the two broken tones split by status, and an
  * `auth_status` neither knows reads as ok, the same default authState takes.
+ * A stored `none` never arrives here: with the type unchanged no credential
+ * box renders, and with it changed editCredentialDescription answers first.
  */
 export function credentialHelp(before: Upstream, f: UpstreamForm): string {
   const suffix = headerShaped(f.auth_type) ? HEADER_SUFFIX : ''
@@ -224,8 +226,30 @@ export function credentialHelp(before: Upstream, f: UpstreamForm): string {
     }
     return 'No usable credential is stored for this auth type. Enter one, or this upstream cannot authenticate.' + suffix
   }
-  if (state.tone === 'none') return `Enter the credential for ${authTypeLabel(f.auth_type)}.`
   const header = before.auth_hint?.header
   if (header) return `Leave blank to keep the stored credential. It currently sends the ${header} header. A value here replaces it.`
   return 'Leave blank to keep the stored credential. A value here replaces it.'
+}
+
+/**
+ * Everything the credential box says in the Edit dialog, in priority order.
+ * A row that was sending nothing and now has a credential type asks for that
+ * credential plainly ("changing the auth type changes what PoryMCP sends"
+ * would be misleading there). Any other type change says re-entry is needed
+ * and names the new type. A changed header name on a header-shaped type says
+ * why the value is needed again. Otherwise blank means keep, per
+ * credentialHelp. The first three are exactly the cases credentialRequired
+ * marks the box required for.
+ */
+export function editCredentialDescription(before: Upstream, f: UpstreamForm): string {
+  if (credentialRequired(before, f)) {
+    if (f.auth_type !== before.auth_type) {
+      const label = authTypeLabel(f.auth_type)
+      return before.auth_type === 'none'
+        ? `Enter the credential for ${label}.`
+        : `Changing the auth type changes what PoryMCP sends. Enter the credential for ${label} to save.`
+    }
+    return 'The header name is stored inside the credential. Enter the value again to change the name.'
+  }
+  return credentialHelp(before, f)
 }

@@ -6,6 +6,7 @@ import {
   blankUpstreamForm,
   credentialHelp,
   credentialRequired,
+  editCredentialDescription,
   formFromUpstream,
   headerRequired,
   upstreamCreateBody,
@@ -248,9 +249,34 @@ test('credentialHelp: undecryptable and unreadable sentences, with the header su
   )
 })
 
-test('credentialHelp: a stored none with a credential type chosen asks for that credential by its label', () => {
+// The copy the box actually shows, in the order the component resolves it.
+test('editCredentialDescription: a stored none with a credential type chosen asks for that credential by its label', () => {
   const before = up({ auth_type: 'none', auth_status: 'none' })
-  assert.equal(credentialHelp(before, edit(before, { auth_type: 'api_key' })), 'Enter the credential for API key.')
+  assert.equal(editCredentialDescription(before, edit(before, { auth_type: 'api_key' })), 'Enter the credential for API key.')
+})
+
+test('editCredentialDescription: an auth type change away from a credential says what changes and names the new type', () => {
+  const before = up()
+  assert.equal(
+    editCredentialDescription(before, edit(before, { auth_type: 'header' })),
+    'Changing the auth type changes what PoryMCP sends. Enter the credential for Header to save.'
+  )
+})
+
+test('editCredentialDescription: a header-name change says why the value is needed again', () => {
+  const before = headerUp()
+  assert.equal(
+    editCredentialDescription(before, edit(before, { header: 'X-Other' })),
+    'The header name is stored inside the credential. Enter the value again to change the name.'
+  )
+})
+
+test('editCredentialDescription: with nothing forcing a re-entry it is the blank-means-keep help', () => {
+  const before = headerUp()
+  assert.equal(
+    editCredentialDescription(before, edit(before)),
+    'Leave blank to keep the stored credential. It currently sends the X-Api-Key header. A value here replaces it.'
+  )
 })
 
 test('credentialHelp: an unknown auth_status reads as the ok sentence, as the table badge does', () => {

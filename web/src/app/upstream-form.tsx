@@ -10,9 +10,8 @@ import type { Upstream } from '@/lib/api'
 import { PLAIN_HTTP_NOTE, plainHTTPCredential } from '@/lib/discovery'
 import {
   AUTH_TYPE_LABELS,
-  authTypeLabel,
-  credentialHelp,
   credentialRequired,
+  editCredentialDescription,
   headerRequired,
   headerShaped,
   type UpstreamForm,
@@ -45,12 +44,7 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
 
   function credentialDescription(): string | null {
     if (!row) return form.auth_type === 'bearer' ? 'Stored encrypted. It will not be shown after save.' : null
-    if (credRequired) {
-      return form.auth_type !== row.auth_type
-        ? `Changing the auth type changes what PoryMCP sends. Enter the credential for ${authTypeLabel(form.auth_type)} to save.`
-        : 'The header name is stored inside the credential. Enter the value again to change the name.'
-    }
-    return credentialHelp(row, form)
+    return editCredentialDescription(row, form)
   }
 
   const credentialNote = credentialDescription()
