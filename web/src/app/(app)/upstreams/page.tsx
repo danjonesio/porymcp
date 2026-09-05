@@ -266,11 +266,16 @@ export default function UpstreamsPage() {
     setOpen(true)
   }
 
-  /** Every way out: Cancel, Escape, the backdrop, a successful submit. */
+  /**
+   * Every way out: Cancel, Escape, the backdrop, a successful submit. `editing`
+   * is left alone: the panel stays mounted for its leave transition, and
+   * clearing it here would re-render that closing panel as the Add form
+   * (title, Slug input, Discover block) while it slides away. The next open
+   * sets it.
+   */
   function close() {
     openRef.current = false
     setOpen(false)
-    setEditing(null)
     // A typed credential never survives into the next dialog, whichever row it opens on.
     setForm((f) => ({ ...f, token: '', value: '' }))
     resetFormDiscovery()

@@ -82,11 +82,15 @@ export default function GroupsPage() {
     setOpen(true)
   }
 
-  /** Every way out: Cancel, Escape, the backdrop, a successful submit. */
+  /**
+   * Every way out: Cancel, Escape, the backdrop, a successful submit. `editing`
+   * is left alone: the panel stays mounted for its leave transition, and
+   * clearing it here would re-render that closing panel as the Create form
+   * while it slides away. The next open sets it.
+   */
   function close() {
     openRef.current = false
     setOpen(false)
-    setEditing(null)
     setConfirmEmpty(false)
   }
 
