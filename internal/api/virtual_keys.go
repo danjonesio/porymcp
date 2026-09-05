@@ -355,6 +355,13 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// The plaintext in plain goes nowhere near the event: key_prefix is the
+	// public handle for a key and the only key material a row ever holds.
+	s.recordAdmin(r, models.ActionVirtualKeyCreate, a.ID, a.Name, adminDetails{
+		TargetType: a.TargetType,
+		TargetID:   a.TargetID,
+		KeyPrefix:  a.KeyPrefix,
+	})
 	writeJSON(w, http.StatusCreated, s.presentVirtualKeyWithEndpoints(a, plain, eps))
 }
 
@@ -364,6 +371,10 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// Snapshot for the admin event's field diff, before any assignment. A
+	// shallow copy is enough because every assignment below replaces a whole
+	// value and never appends to or mutates one in place.
+	before := *a
 	var in upsertVirtualKey
 	if err := decodeBody(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -514,6 +525,12 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 	if len(cleared) > 0 {
 		s.log.Info("virtual key policy fields cleared", "virtual_key_id", a.ID, "fields", cleared)
 	}
+	// Recorded before the presenter: the write has landed, so a presenter
+	// failure below answers 500 for a patch that happened and is recorded. The
+	// same cleared slice feeds the event, so the log line and the row can never
+	// disagree; the metadata value is never recorded, only its name when it
+	// changed.
+	s.recordAdmin(r, models.ActionVirtualKeyUpdate, a.ID, a.Name, virtualKeyPatchDetails(before, *a, cleared))
 	// After the write: a patch can change target_type/target_id, so the
 	// endpoints must be resolved from the updated key. A presenter failure
 	// here therefore reports 500 for a patch that has already been applied;
@@ -556,6 +573,9 @@ func (s *Server) rotateVirtualKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// The new prefix and nothing else: it is what lets an operator tie a key
+	// seen in the wild to the moment it was issued. plain never reaches here.
+	s.recordAdmin(r, models.ActionVirtualKeyRotate, a.ID, a.Name, adminDetails{KeyPrefix: a.KeyPrefix})
 	writeJSON(w, http.StatusOK, s.presentVirtualKeyWithEndpoints(a, plain, eps))
 }
 
@@ -571,6 +591,7 @@ func (s *Server) revokeVirtualKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	s.recordAdmin(r, models.ActionVirtualKeyRevoke, a.ID, a.Name, adminDetails{})
 	// A revoked key keeps its endpoints: they are a property of the target, not
 	// of the key's status, exactly as proxy_url is. The URLs stop
 	// authenticating. Presented after the write, so a presenter failure reports
@@ -585,10 +606,20 @@ func (s *Server) revokeVirtualKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteVirtualKey(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteVirtualKey(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	// Read before the delete: the event names what was removed, and after
+	// DeleteVirtualKey there is nothing left to read the name from. A missing
+	// id now 404s from this Get rather than from the delete.
+	a, err := s.store.GetVirtualKey(r.Context(), id)
+	if err != nil {
 		storeError(w, err)
 		return
 	}
+	if err := s.store.DeleteVirtualKey(r.Context(), id); err != nil {
+		storeError(w, err)
+		return
+	}
+	s.recordAdmin(r, models.ActionVirtualKeyDelete, a.ID, a.Name, adminDetails{})
 	w.WriteHeader(http.StatusNoContent)
 }
 

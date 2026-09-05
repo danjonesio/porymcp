@@ -214,6 +214,35 @@ On creation/rotation the plaintext key is returned **once**.
   text, and is rendered as text, never HTML (`docs/06-ui.md`)
 - `request_id` (for correlation)
 
+## AdminEvent
+One row per successful state-changing management API call (PORM-54): the
+management-plane half of the audit trail, beside `AuditLog`, the proxy half.
+- `id`
+- `timestamp`
+- `actor`: the literal `admin` until dashboard users land (PORM-127)
+- `action`: `{resource_type}.{verb}`, one of `upstream.create|update|delete`,
+  `group.create|update|delete`,
+  `virtual_key.create|update|rotate|revoke|delete`
+- `resource_type`: `upstream` | `group` | `virtual_key`
+- `resource_id`
+- `resource_name`: the name as it stood when the change landed, read before a
+  delete; cleaned of control characters and cut at 256 bytes on the row
+- `details` (JSON, always an object, `{}` when empty): a closed set of keys
+  the server composes, `fields`, `cleared`, `slug`, `auth_type`,
+  `auth_changed`, `upstream_count`, `tool_filter_set`, `target_type`,
+  `target_id`, `key_prefix`; never the request body, a credential, a
+  ciphertext, a plaintext key, metadata, a tool filter, a tool list or a
+  member id list (`docs/03-api.md`, Admin events)
+- `request_id` (for correlation with the server log; cut at 256 bytes)
+- `remote_addr`: the client address after the trusted-proxy rule, or the
+  literal `unknown`
+
+Indexed on `timestamp DESC`. Written from the API handlers after the store
+write returns, as a separate statement (no transaction spans the two, so a
+crash between them loses the event and keeps the change), and listed newest
+first through `GET /admin-events`. Nothing purges it yet; PORM-13 owns
+retention for both audit tables, with a longer window for this one.
+
 ## Schema versioning
 
 `schema_meta(key, value)` records the applied schema version under
@@ -236,6 +265,11 @@ de-duplicated), then creates the `upstreams_slug` unique index. Step 2 renames
 `audit_logs_virtual_key`. `agents_lookup` is dropped and not recreated:
 `key_lookup` is `NOT NULL UNIQUE`, so the constraint's own index already serves
 the lookup.
+
+`admin_events` (PORM-54) is created by the base `CREATE TABLE IF NOT EXISTS`
+set rather than by a numbered step: an existing database gains it on its next
+start, and the version stays 5, so a rolled-back binary can still open a
+database that has it.
 
 Step 3 rewrites tool rules onto the `{upstream_slug}__{tool}` identity, so that
 a rule written before the identity existed still means what its author meant. It
@@ -335,7 +369,8 @@ Concurrent starts never leave a half-applied schema, though the protection
 differs by driver. On Postgres, `pg_advisory_xact_lock` covers the versioned
 steps: replicas queue, and the waiter re-runs the step as a no-op. The base
 `CREATE TABLE IF NOT EXISTS` statements run before that lock is taken, so two
-replicas starting against a virgin Postgres can still race there; the loser
+replicas starting against a virgin Postgres, or first booting a build that adds
+a base table (as PORM-54's `admin_events` did), can still race there; the loser
 exits, and a restart succeeds because the tables then exist. On SQLite there is
 no such lock: a second process starting against the same file while a migration
 is pending blocks on the 5 s `busy_timeout`, then either proceeds normally

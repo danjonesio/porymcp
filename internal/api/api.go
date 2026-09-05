@@ -128,6 +128,9 @@ func (s *Server) Routes() http.Handler {
 
 		r.Get("/logs", s.listLogs)
 		r.Get("/logs/{id}", s.getLog)
+		// Admin events are the management-plane half of the audit trail
+		// (PORM-54): insert from the handlers above, list here, nothing else.
+		r.Get("/admin-events", s.listAdminEvents)
 	})
 	return r
 }

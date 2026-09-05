@@ -95,6 +95,22 @@
 - Virtual keys: high-entropy, shown only once on create/rotate. Store only hash (argon2id preferred).
 - Proxy never logs or returns real upstream secrets.
 - Optional redaction of sensitive fields in AuditLog params.
+- Management changes are recorded in `admin_events` (PORM-54): one row per
+  successful create, update, delete, rotate or revoke, with actor, action,
+  resource, request id and client address, written after the store write
+  returns and before the response. `details` is a closed object of field
+  names, an auth type, a changed flag, a key prefix, a target and a member
+  count. No credential, ciphertext, plaintext key, key hash or key lookup can
+  reach a row, and `TestAdminEventNeverStoresSecrets` serialises every column
+  of every row to prove it. A failed audit write is logged at `ERROR` and never
+  fails or hides the change; a crash between the mutation and the insert loses
+  the event, never the change. Stored names and request ids are cleaned and cut
+  at 256 bytes on the row only; the `X-Request-Id` header itself stays
+  unbounded in `audit_logs` and the access log. The table records completed
+  changes, so a refused or unauthorised attempt is visible only as a status
+  line in the server log. It is operational recall and attribution, not tamper
+  evidence or non-repudiation: the admin key holder is also the principal with
+  database access, and every row says `admin` until PORM-127 adds named users.
 - Upstream slugs are public, non-secret identifiers: they appear in per-member
   proxy URLs (`/{virtual_key_id}/{upstream_slug}/mcp`) and in every tool name
   the aggregate endpoint advertises, are never an authorization token (virtual
@@ -224,8 +240,11 @@
   `DELETE`, and left a row every other admin-key holder could see; it is now one
   request that stores no catalogue: the saved route records only when it last
   ran and whether it passed, a timestamp and a flag, never anything the upstream
-  said. That record is the route's only write: no audit row, since the call is
-  made on an operator's behalf rather than a virtual key's, and no log line
+  said. That record is the route's only write: no `audit_logs` row, since the
+  call is made on an operator's behalf rather than a virtual key's, no
+  `admin_events` row, since a test result is an observation of the upstream
+  rather than a change to the configuration (recording it is PORM-132), and
+  no log line
   either, except when the record itself does not land (one `DEBUG` when the row
   was edited or deleted while the handshake ran, one `WARN` when the store
   failed, each naming the upstream id) and, on the `WARN`, the store's own

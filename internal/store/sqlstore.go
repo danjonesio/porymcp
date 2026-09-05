@@ -294,8 +294,9 @@ func (s *SQLStore) ensureSchemaMeta() error {
 // migrateBase creates the tables every version shares.
 //
 // Not covered by migrateStep's advisory lock: two replicas starting against a
-// virgin Postgres can still race here on CREATE TABLE IF NOT EXISTS. The loser
-// exits and a restart succeeds, because the tables then exist.
+// virgin Postgres, or first booting a build that adds a base table (as PORM-54
+// did with admin_events), can still race here on CREATE TABLE IF NOT EXISTS.
+// The loser exits and a restart succeeds, because the tables then exist.
 func (s *SQLStore) migrateBase() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS upstreams (
@@ -361,6 +362,27 @@ func (s *SQLStore) migrateBase() error {
 		// GetVirtualKeyByLookup. A second index over the same single column
 		// served no read and cost every write (PORM-68); step 4 drops it from
 		// databases that already have it.
+		//
+		// admin_events is additive and lives here rather than in a numbered
+		// step: migrateBase runs on every open ahead of the step loop, so an
+		// existing database gains the table on its next start, and
+		// schemaVersion stays 5 so a rolled-back binary can still open a
+		// database that has it. Every insert names the details column, so its
+		// default is documentation. One index: the shipped reads order by
+		// timestamp with an optional resource_type equality (PORM-54).
+		`CREATE TABLE IF NOT EXISTS admin_events (
+			id TEXT PRIMARY KEY,
+			timestamp TEXT NOT NULL,
+			actor TEXT NOT NULL,
+			action TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			resource_id TEXT NOT NULL,
+			resource_name TEXT NOT NULL DEFAULT '',
+			details TEXT NOT NULL DEFAULT '{}',
+			request_id TEXT NOT NULL DEFAULT '',
+			remote_addr TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS admin_events_ts ON admin_events (timestamp DESC)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -2068,6 +2090,120 @@ func decodeCursor(cur string) (time.Time, string, error) {
 	}
 	ts, err := parseTime(parts[0])
 	return ts, parts[1], err
+}
+
+// --- Admin events ---
+
+const adminEventCols = `id, timestamp, actor, action, resource_type, resource_id, resource_name, details, request_id, remote_addr`
+
+// sinceBound formats a lower bound for a TEXT timestamp column, compared in
+// byte order. fmtTime writes RFC3339Nano, which strips trailing zeros, so
+// "...00Z" sorts after "...00.5Z" and a bound written the same way would drop
+// rows inside its own second. A fixed-width bound is exact for a whole-second
+// since and never worse than fmtTime; a since that itself carries a fraction
+// can still include a stored whole-second row from the same second, because
+// that row has no separator to compare against. Only the bound is formatted
+// this way; stored values and cursors keep fmtTime.
+func sinceBound(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+}
+
+// InsertAdminEvent writes one management-plane event. Details is stored as
+// JSON text, {} when empty, so a row never reads back as null.
+func (s *SQLStore) InsertAdminEvent(ctx context.Context, e *models.AdminEvent) error {
+	details := string(e.Details)
+	if details == "" {
+		details = "{}"
+	}
+	_, err := s.db.ExecContext(ctx, s.q(`
+		INSERT INTO admin_events (
+			id, timestamp, actor, action, resource_type, resource_id, resource_name, details, request_id, remote_addr
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		e.ID, fmtTime(e.Timestamp), e.Actor, e.Action, e.ResourceType, e.ResourceID, e.ResourceName,
+		details, e.RequestID, e.RemoteAddr,
+	)
+	return err
+}
+
+// ListAdminEvents returns the newest page first, with the cursor for the next
+// page or "" on the last one. It is ListAuditLogs with two filters.
+func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilter) ([]models.AdminEvent, string, error) {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+	var conds []string
+	var args []any
+	if f.ResourceType != "" {
+		conds = append(conds, "resource_type = ?")
+		args = append(args, f.ResourceType)
+	}
+	if f.Since != nil {
+		conds = append(conds, "timestamp >= ?")
+		args = append(args, sinceBound(*f.Since))
+	}
+	if f.Cursor != "" {
+		ts, id, err := decodeCursor(f.Cursor)
+		// A cursor whose timestamp half is empty decodes to the zero time
+		// without an error (parseTime accepts ""), and a zero bound would
+		// answer an empty page. On an audit endpoint an empty answer reads as
+		// "nothing happened", so it is refused like any other malformed cursor.
+		if err != nil || ts.IsZero() {
+			return nil, "", ErrInvalidCursor
+		}
+		conds = append(conds, "(timestamp < ? OR (timestamp = ? AND id < ?))")
+		args = append(args, fmtTime(ts), fmtTime(ts), id)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	args = append(args, f.Limit+1)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT `+adminEventCols+` FROM admin_events `+where+` ORDER BY timestamp DESC, id DESC LIMIT ?`), args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var out []models.AdminEvent
+	for rows.Next() {
+		e, err := scanAdminEvent(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, *e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(out) > f.Limit {
+		last := out[f.Limit-1]
+		next = encodeCursor(last.Timestamp, last.ID)
+		out = out[:f.Limit]
+	}
+	if out == nil {
+		out = []models.AdminEvent{}
+	}
+	return out, next, nil
+}
+
+func scanAdminEvent(row rowScanner) (*models.AdminEvent, error) {
+	var e models.AdminEvent
+	var ts, details string
+	if err := row.Scan(
+		&e.ID, &ts, &e.Actor, &e.Action, &e.ResourceType, &e.ResourceID, &e.ResourceName,
+		&details, &e.RequestID, &e.RemoteAddr,
+	); err != nil {
+		return nil, err
+	}
+	var err error
+	e.Timestamp, err = parseTime(ts)
+	e.Details = rawOrNil(details)
+	if e.Details == nil {
+		// A row written outside the API (an export, a hand edit) may hold ''.
+		// The API promises details is always an object, never null.
+		e.Details = json.RawMessage("{}")
+	}
+	return &e, err
 }
 
 func (s *SQLStore) Stats(ctx context.Context) (*models.Stats, error) {

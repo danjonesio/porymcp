@@ -210,6 +210,11 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.recordAdmin(r, models.ActionUpstreamCreate, u.ID, u.Name, adminDetails{
+		Slug:        u.Slug,
+		AuthType:    u.AuthType,
+		AuthChanged: in.AuthConfig.Has(),
+	})
 	writeJSON(w, http.StatusCreated, s.presentUpstream(u))
 }
 
@@ -250,6 +255,10 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// Snapshot for the admin event's field diff, before any assignment. A
+	// shallow copy is enough because every assignment below replaces a whole
+	// value and never appends to or mutates one in place.
+	before := *u
 	var in upsertUpstream
 	if err := decodeBody(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -352,14 +361,29 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// A PATCH that changed nothing still records: the row was written (and
+	// updated_at moved), and an event with empty details says so honestly.
+	s.recordAdmin(r, models.ActionUpstreamUpdate, u.ID, u.Name, upstreamPatchDetails(before, *u, in.AuthConfig.Has()))
 	writeJSON(w, http.StatusOK, s.presentUpstream(u))
 }
 
 func (s *Server) deleteUpstream(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteUpstream(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	// Read before the delete: the event names what was removed, and after
+	// DeleteUpstream there is nothing left to read the name from. A missing id
+	// now 404s from this Get rather than from the delete. An upstream a group
+	// or a key still references 409s from the delete below, so nothing is
+	// recorded.
+	u, err := s.store.GetUpstream(r.Context(), id)
+	if err != nil {
 		storeError(w, err)
 		return
 	}
+	if err := s.store.DeleteUpstream(r.Context(), id); err != nil {
+		storeError(w, err)
+		return
+	}
+	s.recordAdmin(r, models.ActionUpstreamDelete, u.ID, u.Name, adminDetails{})
 	w.WriteHeader(http.StatusNoContent)
 }
 

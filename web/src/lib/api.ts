@@ -217,6 +217,40 @@ export type AuditLog = {
   request_id: string
 }
 
+/**
+ * The closed detail object of an admin event. A fixed set of keys, not open
+ * JSON, so the server decides what arrives here: field names, an auth type, a
+ * changed flag, a key prefix, a target and a member count. Never a credential,
+ * a ciphertext or a plaintext key. Read field by field; the one place that
+ * iterates it is changedText in admin-event.ts.
+ */
+export type AdminEventDetails = {
+  fields?: string[]
+  cleared?: string[]
+  slug?: string
+  auth_type?: string
+  auth_changed?: boolean
+  upstream_count?: number
+  tool_filter_set?: boolean
+  target_type?: string
+  target_id?: string
+  key_prefix?: string
+}
+
+/** One successful management-plane change, as GET /api/v1/admin-events returns it. Every key is always present. */
+export type AdminEvent = {
+  id: string
+  timestamp: string
+  actor: string
+  action: string
+  resource_type: string
+  resource_id: string
+  resource_name: string
+  details: AdminEventDetails
+  request_id: string
+  remote_addr: string
+}
+
 export type Stats = {
   active_virtual_keys: number
   total_virtual_keys: number

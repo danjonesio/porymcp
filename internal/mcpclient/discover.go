@@ -310,13 +310,13 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	if json.Unmarshal(res.result, &initResult) != nil || initResult.ProtocolVersion == "" {
 		return out.fail("upstream did not complete the MCP handshake")
 	}
-	// scrub before clamp on every one of these: the cap bounds the size, and
-	// the scrub is what keeps an upstream's control characters out of an
+	// Scrub before Clamp on every one of these: the cap bounds the size, and
+	// the Scrub is what keeps an upstream's control characters out of an
 	// operator's terminal.
-	out.ProtocolVersion, _ = clamp(scrub(initResult.ProtocolVersion), maxProtocolVersionBytes)
+	out.ProtocolVersion, _ = Clamp(Scrub(initResult.ProtocolVersion), maxProtocolVersionBytes)
 	if initResult.ServerInfo != nil {
-		name, _ := clamp(scrub(initResult.ServerInfo.Name), maxServerNameBytes)
-		version, _ := clamp(scrub(initResult.ServerInfo.Version), maxServerVersionBytes)
+		name, _ := Clamp(Scrub(initResult.ServerInfo.Name), maxServerNameBytes)
+		version, _ := Clamp(Scrub(initResult.ServerInfo.Version), maxServerVersionBytes)
 		if name != "" || version != "" {
 			out.ServerInfo = &Info{Name: name, Version: version}
 		}
@@ -420,11 +420,11 @@ type upstreamTool struct {
 // discovered clamps one upstream entry into the shape that is returned.
 func (t upstreamTool) discovered(slug string) Tool {
 	out := Tool{Name: t.Name}
-	out.Title, _ = clamp(scrub(t.Title), maxTitleBytes)
-	out.Description, out.DescriptionTruncated = clamp(scrub(t.Description), maxDescriptionBytes)
+	out.Title, _ = Clamp(Scrub(t.Title), maxTitleBytes)
+	out.Description, out.DescriptionTruncated = Clamp(Scrub(t.Description), maxDescriptionBytes)
 	if t.Annotations != nil {
 		a := *t.Annotations
-		a.Title, _ = clamp(scrub(a.Title), maxTitleBytes)
+		a.Title, _ = Clamp(Scrub(a.Title), maxTitleBytes)
 		out.Annotations = &a
 	}
 	if slug != "" {
@@ -843,26 +843,30 @@ func readCursor(raw json.RawMessage) (string, bool) {
 	return cursor, true
 }
 
-// scrub cleans an upstream string that PoryMCP will show to an operator: a
-// newline, carriage return or tab becomes one space, every other control
-// character and DEL is dropped, U+FFFD is dropped (the string already lost
-// information there, and invalid UTF-8 arrives as one), and the ends are
-// trimmed. One line out, always.
+// Scrub cleans a string PoryMCP will show to an operator so that it is one
+// line of printable text: a newline, carriage return or tab becomes one space,
+// every other control character and DEL is dropped, U+FFFD is dropped (the
+// string already lost information there, and invalid UTF-8 arrives as one),
+// and the ends are trimmed.
 //
-// It is applied to every upstream string that reaches a response (a tool's
-// description and title, the annotations' title, the server's name and
-// version, the protocol version, and the upstream's own error message) because
-// an operator reading the API with `curl | jq -r` gets those bytes raw, and
-// \x1b[31m from a server nobody at PoryMCP controls is somebody else's escape
-// sequence in an operator's terminal. A tool's NAME needs none of this:
-// models.UsableToolName already refuses every one of these characters
-// outright, because a name is an identity a rule is written against.
+// It has two callers. Discovery applies it to every upstream string that
+// reaches a response (a tool's description and title, the annotations' title,
+// the server's name and version, the protocol version, and the upstream's own
+// error message), because an operator reading the API with `curl | jq -r` gets
+// those bytes raw, and \x1b[31m from a server nobody at PoryMCP controls is
+// somebody else's escape sequence in an operator's terminal. The admin audit
+// trail (internal/api) applies it to the resource name and request id it
+// stores on an admin_events row, which an operator reads back the same way. A
+// tool's NAME needs none of this: models.UsableToolName already refuses every
+// one of these characters outright, because a name is an identity a rule is
+// written against. A resource's own name stays as the operator typed it; only
+// the audit row's copy is cleaned.
 //
 // It deliberately does NOT touch the invisible and bidi class, U+202E, U+200B,
 // U+FEFF, U+2066 and the rest. Those cannot escape the element they are
 // rendered in (every one carries dir="ltr") and flagging them is PORM-83's
 // job, which needs the whole run to say anything useful about it.
-func scrub(s string) string {
+func Scrub(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -883,7 +887,7 @@ func scrub(s string) string {
 // a rune boundary. It is rendered as text by the dashboard and labelled as the
 // server's words, never PoryMCP's.
 func sanitiseMessage(s string) string {
-	out, _ := clamp(scrub(s), maxUpstreamMessageBytes)
+	out, _ := Clamp(Scrub(s), maxUpstreamMessageBytes)
 	return out
 }
 
@@ -902,9 +906,9 @@ func visibleASCII(s string, max int) bool {
 	return true
 }
 
-// clamp cuts s to max bytes, dropping the partial rune the cut may leave, and
+// Clamp cuts s to max bytes, dropping the partial rune the cut may leave, and
 // reports whether it cut anything.
-func clamp(s string, max int) (string, bool) {
+func Clamp(s string, max int) (string, bool) {
 	if len(s) <= max {
 		return s, false
 	}
