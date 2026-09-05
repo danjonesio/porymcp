@@ -57,8 +57,9 @@ const adminTextBytes = 256
 // adminAuditTimeout bounds the detached write. It matches SQLite's
 // busy_timeout (5000 ms, internal/store) and the proxy-side audit write
 // (internal/audit), so lock contention cannot expire the write before the
-// database would have retried. It is reached only when the lock is held, and
-// the response has already been written by then.
+// database would have retried. The write is synchronous and runs before the
+// response, so when the database lock is held it can add up to this much to
+// a mutating response; it is reached only in that case.
 const adminAuditTimeout = 5 * time.Second
 
 // auditText cleans and bounds a caller-controlled string for storage: control
