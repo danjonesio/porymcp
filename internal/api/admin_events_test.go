@@ -77,8 +77,36 @@ func mutationCases() []mutationCase {
 	return slices.Concat(upstreamMutationCases(), groupMutationCases(), virtualKeyMutationCases())
 }
 
-// upstreamMutationCases is filled in by step 6.
-func upstreamMutationCases() []mutationCase { return nil }
+func upstreamMutationCases() []mutationCase {
+	return []mutationCase{
+		{
+			name: "upstream.create", method: http.MethodPost, action: models.ActionUpstreamCreate,
+			wantStatus: http.StatusCreated, wantName: "GitHub",
+			wantKeys: []string{"auth_changed", "auth_type", "slug"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				return "/upstreams", upstreamBody("GitHub", map[string]any{
+					"auth_type": "bearer", "auth_config": map[string]any{"token": "secret-token-value"},
+				}), ""
+			},
+		},
+		{
+			name: "upstream.update", method: http.MethodPatch, action: models.ActionUpstreamUpdate,
+			wantStatus: http.StatusOK, wantName: "GitHub", wantKeys: []string{"fields"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id, _ := mustUpstream(t, h, "GitHub", nil)
+				return "/upstreams/" + id, map[string]any{"enabled": false, "description": "billing"}, id
+			},
+		},
+		{
+			name: "upstream.delete", method: http.MethodDelete, action: models.ActionUpstreamDelete,
+			wantStatus: http.StatusNoContent, wantName: "GitHub", wantKeys: nil,
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id, _ := mustUpstream(t, h, "GitHub", nil)
+				return "/upstreams/" + id, nil, id
+			},
+		},
+	}
+}
 
 // groupMutationCases is filled in by step 7.
 func groupMutationCases() []mutationCase { return nil }
@@ -162,4 +190,112 @@ func TestAdminActionsWellFormed(t *testing.T) {
 			t.Errorf("%q missing from AdminActions", want)
 		}
 	}
+}
+
+// detailsOf returns the one event for action as its details text, failing the
+// test when there is not exactly one.
+func detailsOf(t *testing.T, st *store.SQLStore, action string) string {
+	t.Helper()
+	got := eventsFor(adminEvents(t, st), action)
+	if len(got) != 1 {
+		t.Fatalf("%d events for %s, want exactly 1", len(got), action)
+	}
+	return string(got[0].Details)
+}
+
+// TestAdminEventDeleteCapturesName covers security requirement 5 on the
+// delete path: the event names the resource that was removed, an unknown id
+// records nothing, and a delete the store refuses as in use records nothing.
+func TestAdminEventDeleteCapturesName(t *testing.T) {
+	t.Run("upstream", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "Doomed", nil)
+		if rr := doJSON(t, h, http.MethodDelete, "/upstreams/"+id, "test-admin", nil); rr.Code != http.StatusNoContent {
+			t.Fatalf("delete: %d %s", rr.Code, rr.Body.String())
+		}
+		got := eventsFor(adminEvents(t, st), models.ActionUpstreamDelete)
+		if len(got) != 1 || got[0].ResourceName != "Doomed" || got[0].ResourceID != id {
+			t.Fatalf("delete event = %+v, want one naming Doomed/%s", got, id)
+		}
+	})
+	t.Run("upstream unknown id", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		if rr := doJSON(t, h, http.MethodDelete, "/upstreams/nope", "test-admin", nil); rr.Code != http.StatusNotFound {
+			t.Fatalf("delete unknown: %d, want 404", rr.Code)
+		}
+		if got := eventsFor(adminEvents(t, st), models.ActionUpstreamDelete); len(got) != 0 {
+			t.Fatalf("unknown id recorded %+v", got)
+		}
+	})
+	t.Run("upstream in use", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "Held", nil)
+		mustGroup(t, h, "Holder", []string{id})
+		if rr := doJSON(t, h, http.MethodDelete, "/upstreams/"+id, "test-admin", nil); rr.Code != http.StatusConflict {
+			t.Fatalf("delete in use: %d, want 409", rr.Code)
+		}
+		if got := eventsFor(adminEvents(t, st), models.ActionUpstreamDelete); len(got) != 0 {
+			t.Fatalf("in-use delete recorded %+v", got)
+		}
+	})
+}
+
+// TestAdminEventFieldsAreADiff pins that details.fields names the fields whose
+// stored value differs after the request, never the keys the body carried: a
+// round-trip of the current values records nothing, a single changed field
+// records that field, a credential is reported by auth_changed and never by a
+// field, and the current slug sent back is not a change.
+func TestAdminEventFieldsAreADiff(t *testing.T) {
+	t.Run("upstream round-trip records nothing", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "GitHub", nil)
+		cur := getJSON(t, h, "/upstreams/"+id)
+		body := map[string]any{}
+		for _, k := range []string{"name", "slug", "description", "url", "transport", "auth_type", "enabled"} {
+			body[k] = cur[k]
+		}
+		patchUpstreamJSON(t, h, id, body)
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != "{}" {
+			t.Fatalf("round-trip details = %s, want {}", d)
+		}
+	})
+	t.Run("upstream url only", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "GitHub", nil)
+		patchUpstreamJSON(t, h, id, map[string]any{"url": "https://example.org/mcp"})
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != `{"fields":["url"]}` {
+			t.Fatalf("url-only details = %s", d)
+		}
+	})
+	t.Run("upstream credential with auth_type", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "GitHub", nil)
+		patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": "t"}})
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != `{"fields":["auth_type"],"auth_type":"bearer","auth_changed":true}` {
+			t.Fatalf("credential details = %s", d)
+		}
+	})
+	t.Run("upstream credential re-sent", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": "t"}})
+		patchUpstreamJSON(t, h, id, map[string]any{"auth_config": map[string]any{"token": "t"}})
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != `{"auth_type":"bearer","auth_changed":true}` {
+			t.Fatalf("re-sent credential details = %s", d)
+		}
+	})
+}
+
+// TestAdminEventNoOpPatchStillRecords pins the decision that PATCH {} answers
+// 200 and writes one event with empty details, for every resource.
+func TestAdminEventNoOpPatchStillRecords(t *testing.T) {
+	t.Run("upstream", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "GitHub", nil)
+		if rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{}); rr.Code != http.StatusOK {
+			t.Fatalf("PATCH {}: %d %s", rr.Code, rr.Body.String())
+		}
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != "{}" {
+			t.Fatalf("no-op details = %s, want {}", d)
+		}
+	})
 }
