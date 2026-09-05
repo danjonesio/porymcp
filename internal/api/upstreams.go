@@ -225,10 +225,12 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// AuthChanged reports a credential that was stored, so an Add that sent
+	// {} for an untouched box does not read "credential set" (PORM-120).
 	s.recordAdmin(r, models.ActionUpstreamCreate, u.ID, u.Name, adminDetails{
 		Slug:        u.Slug,
 		AuthType:    u.AuthType,
-		AuthChanged: in.AuthConfig.Has(),
+		AuthChanged: len(u.AuthConfig) > 0,
 	})
 	writeJSON(w, http.StatusCreated, s.presentUpstream(u))
 }
@@ -398,13 +400,21 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// the statement, so an edit that raced a `porymcp rekey` cannot put an
 	// old-key value back (PORM-52).
 	writeAuth := in.AuthConfig.Has() || cleared
+	// authChanged means a credential was stored: a request that carried {}
+	// stored nothing and is not reported as one.
+	authChanged := in.AuthConfig.Has() && len(u.AuthConfig) > 0
 	if err := s.store.UpdateUpstream(r.Context(), u, resetTest, writeAuth); err != nil {
 		storeError(w, err)
 		return
 	}
+	if cleared {
+		// After the write returned nil, like patchGroup's line: the id and what
+		// was cleared, never the name or a value.
+		s.log.Info("upstream credential cleared", "upstream_id", u.ID, "cleared", []string{"credential"})
+	}
 	// A PATCH that changed nothing still records: the row was written (and
 	// updated_at moved), and an event with empty details says so honestly.
-	s.recordAdmin(r, models.ActionUpstreamUpdate, u.ID, u.Name, upstreamPatchDetails(before, *u, in.AuthConfig.Has()))
+	s.recordAdmin(r, models.ActionUpstreamUpdate, u.ID, u.Name, upstreamPatchDetails(before, *u, authChanged))
 	writeJSON(w, http.StatusOK, s.presentUpstream(u))
 }
 

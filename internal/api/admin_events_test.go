@@ -1102,3 +1102,64 @@ func TestListAdminEvents(t *testing.T) {
 		t.Errorf("no admin key: %d, want 401", rr.Code)
 	}
 }
+
+// TestUpstreamClearRecordsCleared pins PORM-120 security requirement 7: a
+// removed credential is the word "credential" in details.cleared, in struct
+// order, and never the field's name. A resent none on an empty row removes
+// nothing and records nothing; {} on a bearer row records the removal and no
+// auth_changed, because nothing was stored.
+func TestUpstreamClearRecordsCleared(t *testing.T) {
+	t.Run("bearer to none", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": "t"}})
+		patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "none"})
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != `{"fields":["auth_type"],"cleared":["credential"],"auth_type":"none"}` {
+			t.Fatalf("clear details = %s", d)
+		}
+	})
+	t.Run("none row that still holds a blob", func(t *testing.T) {
+		_, h, st, path := testAPIStoreFile(t, "http://localhost:8080")
+		id, _ := mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none"})
+		overwriteAuth(t, path, id, foreignSeal(t, `{"token":"old"}`))
+		patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "none"})
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != `{"cleared":["credential"]}` {
+			t.Fatalf("legacy clear details = %s", d)
+		}
+	})
+	t.Run("resent none on an empty row", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none"})
+		patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "none"})
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != "{}" {
+			t.Fatalf("no-op details = %s, want {}", d)
+		}
+	})
+	t.Run("empty object on a bearer row", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id, _ := mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": "t"}})
+		patchUpstreamJSON(t, h, id, map[string]any{"auth_config": map[string]any{}})
+		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != `{"cleared":["credential"]}` {
+			t.Fatalf("{} details = %s", d)
+		}
+	})
+}
+
+// TestCreateUpstreamWithEmptyAuthConfigRecordsNoCredential: the create event's
+// auth_changed means a credential was stored, so the {} the Add dialog sends
+// for an untouched box no longer reads "credential set" (PORM-120).
+func TestCreateUpstreamWithEmptyAuthConfigRecordsNoCredential(t *testing.T) {
+	t.Run("empty object records no credential", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none", "auth_config": map[string]any{}})
+		if d := detailsOf(t, st, models.ActionUpstreamCreate); strings.Contains(d, "auth_changed") {
+			t.Fatalf("an Add with {} recorded a credential: %s", d)
+		}
+	})
+	t.Run("a credential still records", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": "t"}})
+		if d := detailsOf(t, st, models.ActionUpstreamCreate); !strings.Contains(d, `"auth_changed":true`) {
+			t.Fatalf("an Add with a credential did not record it: %s", d)
+		}
+	})
+}
