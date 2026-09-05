@@ -108,8 +108,34 @@ func upstreamMutationCases() []mutationCase {
 	}
 }
 
-// groupMutationCases is filled in by step 7.
-func groupMutationCases() []mutationCase { return nil }
+func groupMutationCases() []mutationCase {
+	return []mutationCase{
+		{
+			name: "group.create", method: http.MethodPost, action: models.ActionGroupCreate,
+			wantStatus: http.StatusCreated, wantName: "Research", wantKeys: []string{"upstream_count"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id, _ := mustUpstream(t, h, "GitHub", nil)
+				return "/groups", map[string]any{"name": "Research", "upstream_ids": []string{id}}, ""
+			},
+		},
+		{
+			name: "group.update", method: http.MethodPatch, action: models.ActionGroupUpdate,
+			wantStatus: http.StatusOK, wantName: "Research", wantKeys: []string{"fields"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id := mustGroup(t, h, "Research", nil)
+				return "/groups/" + id, map[string]any{"description": "the research team"}, id
+			},
+		},
+		{
+			name: "group.delete", method: http.MethodDelete, action: models.ActionGroupDelete,
+			wantStatus: http.StatusNoContent, wantName: "Research", wantKeys: nil,
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id := mustGroup(t, h, "Research", nil)
+				return "/groups/" + id, nil, id
+			},
+		},
+	}
+}
 
 // virtualKeyMutationCases is filled in by step 8.
 func virtualKeyMutationCases() []mutationCase { return nil }
@@ -238,6 +264,37 @@ func TestAdminEventDeleteCapturesName(t *testing.T) {
 			t.Fatalf("in-use delete recorded %+v", got)
 		}
 	})
+	t.Run("group", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id := mustGroup(t, h, "Doomed", nil)
+		if rr := doJSON(t, h, http.MethodDelete, "/groups/"+id, "test-admin", nil); rr.Code != http.StatusNoContent {
+			t.Fatalf("delete: %d %s", rr.Code, rr.Body.String())
+		}
+		got := eventsFor(adminEvents(t, st), models.ActionGroupDelete)
+		if len(got) != 1 || got[0].ResourceName != "Doomed" || got[0].ResourceID != id {
+			t.Fatalf("delete event = %+v, want one naming Doomed/%s", got, id)
+		}
+	})
+	t.Run("group unknown id", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		if rr := doJSON(t, h, http.MethodDelete, "/groups/nope", "test-admin", nil); rr.Code != http.StatusNotFound {
+			t.Fatalf("delete unknown: %d, want 404", rr.Code)
+		}
+		if got := eventsFor(adminEvents(t, st), models.ActionGroupDelete); len(got) != 0 {
+			t.Fatalf("unknown id recorded %+v", got)
+		}
+	})
+	t.Run("group in use", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id := mustGroup(t, h, "Held", nil)
+		mustVirtualKey(t, h, "holder", "group", id)
+		if rr := doJSON(t, h, http.MethodDelete, "/groups/"+id, "test-admin", nil); rr.Code != http.StatusConflict {
+			t.Fatalf("delete in use: %d, want 409", rr.Code)
+		}
+		if got := eventsFor(adminEvents(t, st), models.ActionGroupDelete); len(got) != 0 {
+			t.Fatalf("in-use delete recorded %+v", got)
+		}
+	})
 }
 
 // TestAdminEventFieldsAreADiff pins that details.fields names the fields whose
@@ -283,6 +340,38 @@ func TestAdminEventFieldsAreADiff(t *testing.T) {
 			t.Fatalf("re-sent credential details = %s", d)
 		}
 	})
+	t.Run("group members changed carries the count", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		ghID, _ := mustUpstream(t, h, "GitHub", nil)
+		id := mustGroup(t, h, "Research", nil)
+		patchGroupJSON(t, h, id, map[string]any{"upstream_ids": []string{ghID}})
+		if d := detailsOf(t, st, models.ActionGroupUpdate); d != `{"fields":["upstream_ids"],"upstream_count":1}` {
+			t.Fatalf("members details = %s", d)
+		}
+	})
+	t.Run("group filter set then nulled is both a field and a clear", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		ghID, ghSlug := mustUpstream(t, h, "GitHub", nil)
+		id := mustGroup(t, h, "Research", []string{ghID})
+		good := `{"mode":"deny","tools":["` + ghSlug + `__delete_repo"]}`
+		patchGroupJSON(t, h, id, map[string]any{"tool_filter": json.RawMessage(good)})
+		if d := detailsOf(t, st, models.ActionGroupUpdate); d != `{"fields":["tool_filter"]}` {
+			t.Fatalf("filter set details = %s", d)
+		}
+		patchGroupJSON(t, h, id, map[string]any{"tool_filter": nil})
+		got := eventsFor(adminEvents(t, st), models.ActionGroupUpdate)
+		if len(got) != 2 || string(got[0].Details) != `{"fields":["tool_filter"],"cleared":["tool_filter"]}` {
+			t.Fatalf("filter nulled details = %+v", got)
+		}
+	})
+	t.Run("group already-empty filter nulled is a clear with no field", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id := mustGroup(t, h, "Research", nil)
+		patchGroupJSON(t, h, id, map[string]any{"tool_filter": nil})
+		if d := detailsOf(t, st, models.ActionGroupUpdate); d != `{"cleared":["tool_filter"]}` {
+			t.Fatalf("already-empty clear details = %s", d)
+		}
+	})
 }
 
 // TestAdminEventNoOpPatchStillRecords pins the decision that PATCH {} answers
@@ -295,6 +384,16 @@ func TestAdminEventNoOpPatchStillRecords(t *testing.T) {
 			t.Fatalf("PATCH {}: %d %s", rr.Code, rr.Body.String())
 		}
 		if d := detailsOf(t, st, models.ActionUpstreamUpdate); d != "{}" {
+			t.Fatalf("no-op details = %s, want {}", d)
+		}
+	})
+	t.Run("group", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		id := mustGroup(t, h, "Research", nil)
+		if rr := doJSON(t, h, http.MethodPatch, "/groups/"+id, "test-admin", map[string]any{}); rr.Code != http.StatusOK {
+			t.Fatalf("PATCH {}: %d %s", rr.Code, rr.Body.String())
+		}
+		if d := detailsOf(t, st, models.ActionGroupUpdate); d != "{}" {
 			t.Fatalf("no-op details = %s, want {}", d)
 		}
 	})

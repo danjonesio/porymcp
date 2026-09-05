@@ -95,6 +95,13 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// The member list itself is never recorded (caller-supplied, unbounded);
+	// the count is, and so is whether a filter was set, never its text.
+	n := len(g.UpstreamIDs)
+	s.recordAdmin(r, models.ActionGroupCreate, g.ID, g.Name, adminDetails{
+		UpstreamCount: &n,
+		ToolFilterSet: in.ToolFilter.Has(),
+	})
 	writeJSON(w, http.StatusCreated, g)
 }
 
@@ -104,6 +111,10 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// Snapshot for the admin event's field diff, before any assignment. A
+	// shallow copy is enough because every assignment below replaces a whole
+	// value and never appends to or mutates one in place.
+	before := *g
 	var in upsertGroup
 	if err := decodeBody(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -168,14 +179,29 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 	if len(cleared) > 0 {
 		s.log.Info("group policy fields cleared", "group_id", g.ID, "fields", cleared)
 	}
+	// The same cleared slice feeds the event, so the log line and the row can
+	// never disagree. A PATCH that changed nothing still records, with empty
+	// details.
+	s.recordAdmin(r, models.ActionGroupUpdate, g.ID, g.Name, groupPatchDetails(before, *g, cleared))
 	writeJSON(w, http.StatusOK, g)
 }
 
 func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteGroup(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	// Read before the delete: the event names what was removed, and after
+	// DeleteGroup there is nothing left to read the name from. A missing id
+	// now 404s from this Get rather than from the delete. A group a virtual
+	// key still targets 409s from the delete below, so nothing is recorded.
+	g, err := s.store.GetGroup(r.Context(), id)
+	if err != nil {
 		storeError(w, err)
 		return
 	}
+	if err := s.store.DeleteGroup(r.Context(), id); err != nil {
+		storeError(w, err)
+		return
+	}
+	s.recordAdmin(r, models.ActionGroupDelete, g.ID, g.Name, adminDetails{})
 	w.WriteHeader(http.StatusNoContent)
 }
 
