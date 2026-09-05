@@ -477,6 +477,31 @@ func TestFilterToolsListSSE(t *testing.T) {
 			t.Errorf("got  %q\nwant %q", got, want)
 		}
 	})
+
+	// Deleting the body-integrity headers is the filter's own contract over
+	// the clone it returns. The response allowlist (PORM-98) drops those
+	// names too, so nothing observable at the client tells the two apart;
+	// this is what keeps the deletion honest.
+	t.Run("a rewrite drops the integrity headers from the clone", func(t *testing.T) {
+		var h Handler
+		hdr := http.Header{}
+		hdr.Set("Content-Type", "application/json")
+		for _, k := range []string{"ETag", "Content-Digest", "Repr-Digest", "Digest"} {
+			hdr.Set(k, "x")
+		}
+		got, out := h.filterListResponse([]byte(sseFull), http.StatusOK, hdr, allowSafe, nil, nil)
+		if string(got) == sseFull {
+			t.Fatal("the body was not rewritten, so this test proves nothing")
+		}
+		for _, k := range []string{"ETag", "Content-Digest", "Repr-Digest", "Digest"} {
+			if v := out.Get(k); v != "" {
+				t.Errorf("%s=%q survived a rewrite on the returned header", k, v)
+			}
+		}
+		if ct := out.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type=%q; the filter must delete only the integrity headers", ct)
+		}
+	})
 }
 
 // The same catalogue as AC2, delivered the way the reference SDKs deliver it.
