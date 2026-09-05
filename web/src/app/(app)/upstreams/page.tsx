@@ -536,7 +536,7 @@ export default function UpstreamsPage() {
             : ''}
         </AlertDescription>
         {deleteError ? (
-          <p role="alert" className={clsx('mt-2 text-center sm:text-left', errorLine)}>
+          <p role="alert" className="mt-2 text-center text-base/7 text-pink-600 sm:text-left sm:text-sm/6 dark:text-pink-400">
             {deleteError}
           </p>
         ) : null}
