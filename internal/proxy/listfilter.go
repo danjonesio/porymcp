@@ -99,10 +99,12 @@ func (h *Handler) warnListPassThrough(vk *models.VirtualKey, up *models.Upstream
 	if h.log == nil {
 		return
 	}
+	// media_type is the one upstream header string a log line carries, so it
+	// is bounded the way the audit row's fields are.
 	h.log.Warn("tools/list passed through unfiltered",
 		"virtual_key_id", vk.ID,
 		"upstream_id", up.ID,
-		"media_type", mt,
+		"media_type", truncate(mt, auditFieldBytes),
 		"bytes", size,
 	)
 }

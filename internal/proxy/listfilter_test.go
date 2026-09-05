@@ -304,6 +304,27 @@ func TestListPassThroughWarns(t *testing.T) {
 	}
 }
 
+// The media type on that record is the upstream's own string, so it is cut at
+// auditFieldBytes like every other upstream string a row or a log line
+// carries (PORM-98, security requirement 6). mcpclient.MediaType only splits
+// at a semicolon, so a long bare type reaches the line whole.
+func TestListPassThroughWarnsBoundsMediaType(t *testing.T) {
+	long := "text/" + strings.Repeat("x", 1024)
+	f := newSingleFixture(t, upstreamSpec{RawList: `<html></html>`, ListCT: long}, []string{"safe_tool"}, nil)
+	logs := captureLogs(f)
+
+	f.post(listRequest)
+
+	recs := logRecords(t, logs)
+	if len(recs) != 1 {
+		t.Fatalf("got %d log records, want exactly 1: %s", len(recs), logs.String())
+	}
+	mt, _ := recs[0]["media_type"].(string)
+	if mt == "" || len(mt) > auditFieldBytes {
+		t.Errorf("media_type is %d bytes, want non-empty and at most %d", len(mt), auditFieldBytes)
+	}
+}
+
 // A rewritten body is not the body the upstream computed its digests over, so
 // anything claiming to describe those bytes has to go. The response allowlist
 // (copyResponseHeaders, PORM-98) drops the integrity headers whether or not
