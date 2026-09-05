@@ -78,12 +78,12 @@ func checkEncryption(ctx context.Context, st *store.SQLStore, cfg *config.Config
 			"stored_fingerprint", storedField, "current_fingerprint", current,
 			"credentials", rep.Credentials, "undecryptable", rep.Undecryptable, "under_previous", rep.UnderPrevious,
 			"upstream_ids", rep.IDs, "upstream_names", rep.Names, "not_listed", rep.NotListed,
-			"hint", "restore the previous key, or set ENCRYPTION_KEY_PREVIOUS to it, restart, and run: porymcp rekey")
+			"hint", "restore the previous key, or set ENCRYPTION_KEY_PREVIOUS to it, restart, and run: porymcp rekey; a row whose key is gone can be switched to auth_type none, which removes the stored credential without it: re-run porymcp rekey, then restart so /health reports encryption: ok")
 		return webutil.EncryptionMismatch, nil
 	}
 
 	if rep.Unreadable >= 1 {
-		log.Warn("stored credentials are not usable for their auth type; re-enter them",
+		log.Warn("stored credentials are not usable for their auth type; re-enter them, or switch the upstream to auth_type none",
 			"unreadable", rep.Unreadable, "upstream_ids", rep.UnreadableIDs, "upstream_names", rep.UnreadableNames,
 			"not_listed", rep.UnreadableNotListed)
 	}
