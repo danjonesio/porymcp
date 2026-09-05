@@ -16,8 +16,9 @@
   restorable only with the key that was current when it was taken. Losing the
   key makes every stored credential unrecoverable; PoryMCP cannot get them
   back. Recovery when the key is gone: `PATCH /api/v1/upstreams/{id}` with a
-  fresh `auth_config` for every upstream the boot line named (or delete the
-  upstream), then **restart**: the boot check records the current fingerprint
+  fresh `auth_config` for every upstream the boot line named, or with
+  `{"auth_type":"none"}` to remove the stored credential without the key, or
+  delete the upstream; then **restart**: the boot check records the current fingerprint
   once every credential opens under it and `/health` returns to `ok`;
   `porymcp rekey` is not needed on that path.
 - The key must be 32 random bytes (`openssl rand -hex 32`). The parser also
@@ -51,14 +52,32 @@
   `ENCRYPTION_KEY_PREVIOUS` is a rotation window measured in minutes (decrypt
   only, at most five keys, 64-hex or base64), and not a way to keep a
   compromised key alive.
+- A stored credential is removed by `PATCH /api/v1/upstreams/{id}` with
+  `{"auth_type": "none"}` (PORM-120): the column is emptied, the row reads
+  `auth_configured: false`, the proxy sends nothing, and the admin event
+  records `cleared: ["credential"]`. The clear decrypts nothing and needs no
+  key, so a row sealed under a key that is gone can be cleared without it. It
+  removes the credential from the row and from what PoryMCP sends; it is not a
+  secure erase of the database file, its write-ahead log or backups, and
+  revoking the credential at the provider is the step that ends its
+  usefulness. An `auth_type: none` row may still hold a value, whether an
+  earlier build wrote it or a client sent `auth_config` alone to a `none` row:
+  `porymcp rekey` does not re-wrap it and no count reports it, so a
+  retired key plus the database file opens it until a request naming
+  `auth_type: none` clears the row, and a bare `PATCH {"auth_type":"bearer"}`
+  from the API re-arms it without a credential being re-entered ("not sent"
+  is not "not usable"; the dashboard requires a credential on that change).
+  `GET /api/v1/upstreams` filtered on `auth_type == "none"` and
+  `auth_configured == true` lists those rows and over-reports, because rows
+  the Add dialog created before PORM-120 hold a sealed empty object. A blank
+  credential box now stores nothing, on create and on patch.
 - When a stored credential cannot be used the proxy fails closed: no request
   is built, the client gets the same `502 -32000 "upstream request failed"` as
   for any upstream failure (a key holder is not told that the operator's
   encryption key is wrong), and the audit row's `error_message` reads
   `credential undecryptable` (no configured key opens it: the key changed) or
-  `credential unreadable` (nothing stored, or nothing the auth type can send,
-  such as a blank token stored as `{}`; the fix is the credential, never the
-  key). Discovery refuses the same rows with `stored credential cannot be
+  `credential unreadable` (nothing stored, or nothing the auth type can send;
+  the fix is the credential, never the key). Discovery refuses the same rows with `stored credential cannot be
   decrypted` / `stored credential is not usable for this auth type`, and a
   draft form whose auth type has no credential with `this auth type needs a
   credential; add one or choose None`. An upstream with `auth_type: none`

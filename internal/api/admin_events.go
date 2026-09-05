@@ -25,15 +25,18 @@ import (
 // prefix, a target, a member count. Names, descriptions, URLs, metadata, tool
 // filters, tool lists and member id lists appear only as field names in
 // Fields or Cleared. No credential, ciphertext or plaintext key can be
-// expressed here, and the string "auth_config" never enters a row: a
-// credential change is AuthChanged. Every field is omitempty, so a key is
-// present only when it carries information; UpstreamCount is a pointer so a
-// count of zero survives.
+// expressed here, and the string "auth_config" never enters a row: a stored
+// credential is AuthChanged, and a removed one is the word "credential" in
+// Cleared, the one Cleared entry that is not a request field name
+// (PORM-120). Every field is omitempty, so a key is present only when it
+// carries information; UpstreamCount is a pointer so a count of zero
+// survives.
 //
 // Fields lists the field names whose stored value differs between the row the
-// handler read and the row it wrote. Cleared is the intent the two PATCH
-// handlers already compute (the request nulled or emptied a field) and can
-// appear without a matching Fields entry when the field was already empty.
+// handler read and the row it wrote. Cleared is the intent the PATCH handlers
+// already compute (the request nulled or emptied a field, or removed the
+// stored credential) and can appear without a matching Fields entry when the
+// field was already empty.
 type adminDetails struct {
 	Fields        []string `json:"fields,omitempty"`
 	Cleared       []string `json:"cleared,omitempty"`
@@ -148,11 +151,14 @@ func timePtrEqual(a, b *time.Time) bool {
 }
 
 // upstreamPatchDetails describes a PATCH /upstreams/{id} that landed. It never
-// looks at AuthConfig: ciphertexts cannot be compared (Keyring.Seal draws a
-// fresh nonce per call), so the credential is reported by authChanged, which
-// the handler takes from in.AuthConfig.Has(). The string "auth_config" must
-// never enter a row, and the field list below is the reason it cannot. slug is
-// absent because the handler refuses any slug change.
+// compares AuthConfig values: ciphertexts cannot be compared (Keyring.Seal
+// draws a fresh nonce per call), so a stored credential is reported by
+// authChanged, which the handler passes when the request carried a credential
+// that was stored. The one thing it reads from AuthConfig is its length: a
+// column that held bytes and holds none afterwards records "credential" in
+// Cleared (PORM-120). The string "auth_config" must never enter a row, and
+// the field list below is the reason it cannot. slug is absent because the
+// handler refuses any slug change.
 func upstreamPatchDetails(before, after models.Upstream, authChanged bool) adminDetails {
 	var d adminDetails
 	changed(&d.Fields, "name", before.Name != after.Name)
@@ -161,6 +167,9 @@ func upstreamPatchDetails(before, after models.Upstream, authChanged bool) admin
 	changed(&d.Fields, "transport", before.Transport != after.Transport)
 	changed(&d.Fields, "auth_type", before.AuthType != after.AuthType)
 	changed(&d.Fields, "enabled", before.Enabled != after.Enabled)
+	if len(before.AuthConfig) > 0 && len(after.AuthConfig) == 0 {
+		d.Cleared = append(d.Cleared, "credential")
+	}
 	d.AuthChanged = authChanged
 	if authChanged || before.AuthType != after.AuthType {
 		d.AuthType = after.AuthType

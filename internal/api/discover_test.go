@@ -843,9 +843,9 @@ func TestDiscoverUndecryptableCredentialMakesNoRequest(t *testing.T) {
 }
 
 // TestDiscoverUnreadableCredentialMakesNoRequest is the sibling gate for a
-// blob that opens fine but holds nothing its auth type can send (the dashboard
-// stores {} for a blank token) which must not dial either, and must not be
-// reported as a key problem (PORM-52 security requirement 3).
+// row with nothing stored, or a value the auth type cannot send (a blank
+// token box stores nothing since PORM-120), which must not dial either, and
+// must not be reported as a key problem (PORM-52 security requirement 3).
 func TestDiscoverUnreadableCredentialMakesNoRequest(t *testing.T) {
 	stub := newMCPStub(t)
 	_, h, _ := testAPI(t)
@@ -959,6 +959,47 @@ func TestDiscoverAuthTypeNoneSendsNoHeader(t *testing.T) {
 		// with no credential is sent none of anybody's.
 		if rq.Header.Get("Authorization") != "" || rq.Header.Get("X-API-Key") != "" {
 			t.Fatalf("%s %s carried a credential: %v", rq.Method, rq.RPC, rq.Header)
+		}
+	}
+}
+
+// TestDiscoverAfterCredentialClearSendsNoHeader is PORM-120 acceptance
+// criterion 2. The first discovery proves the stub saw the credential, so its
+// absence after the clear means something. The column assertion is the
+// load-bearing half: a none row never sends a header whether or not its blob
+// was cleared, because credential.read returns before looking at it.
+func TestDiscoverAfterCredentialClearSendsNoHeader(t *testing.T) {
+	const token = "sk-live-cleared"
+	stub := newMCPStub(t)
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	id, _ := mustUpstream(t, h, "GitHub", map[string]any{
+		"url":         stub.srv.URL,
+		"auth_type":   "bearer",
+		"auth_config": map[string]string{"token": token},
+	})
+	if d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil)); d["ok"] != true {
+		t.Fatalf("discovery before the clear = %v", d)
+	}
+	before := stub.requests()
+	if len(before) == 0 || before[0].Header.Get("Authorization") != "Bearer "+token {
+		t.Fatalf("the credential was not presented before the clear: %v", before)
+	}
+
+	patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "none"})
+	if v := rawAuth(t, path, id); v != "" {
+		t.Fatalf("auth_config column = %q after the clear, want empty", v)
+	}
+
+	if d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil)); d["ok"] != true {
+		t.Fatalf("discovery after the clear = %v", d)
+	}
+	after := stub.requests()[len(before):]
+	if len(after) == 0 {
+		t.Fatal("the second discovery made no request")
+	}
+	for _, rq := range after {
+		if rq.Header.Get("Authorization") != "" || rq.Header.Get("X-API-Key") != "" {
+			t.Fatalf("%s %s carried a credential after the clear: %v", rq.Method, rq.RPC, rq.Header)
 		}
 	}
 }

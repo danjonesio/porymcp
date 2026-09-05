@@ -57,7 +57,7 @@ func rekey(out io.Writer) int {
 		if errors.As(err, &dead) {
 			log.Error("rekey failed: a stored credential cannot be decrypted with any configured key; no credentials were changed",
 				"undecryptable", len(dead.ids), "upstream_ids", dead.ids, "upstream_names", dead.names,
-				"hint", "re-enter the credential (PATCH /api/v1/upstreams/{id}) or delete the upstream, then re-run")
+				"hint", "re-enter the credential (PATCH /api/v1/upstreams/{id}), switch the upstream to auth_type none (which removes the stored credential without the old key), or delete the upstream; then re-run porymcp rekey and restart the server so /health reports encryption: ok")
 			return 1
 		}
 		log.Error("rekey failed; no credentials were changed", "err", err)

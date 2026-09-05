@@ -254,7 +254,7 @@ export default function UpstreamsPage() {
     setEditing(null)
     setFormError('')
     setSlugTouched(false)
-    setForm((f) => ({ ...f, name: '', slug: '', description: '', url: '', token: '', value: '' }))
+    setForm((f) => ({ ...f, name: '', slug: '', description: '', url: '', token: '', value: '', clear_stored: false }))
     resetFormDiscovery()
     opened()
   }

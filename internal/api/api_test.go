@@ -2521,3 +2521,131 @@ func TestPatchVirtualKeyClearLogsFields(t *testing.T) {
 		t.Fatalf("fields=%v, want [tool_filter upstream_ids]", line["fields"])
 	}
 }
+
+// TestCreateUpstreamNoneWithCredentialIsRejected pins PORM-120 security
+// requirement 3: a create that names auth_type none, or omits it and takes the
+// default, cannot carry a credential. The 400 is a fixed sentence that never
+// repeats what was sent.
+func TestCreateUpstreamNoneWithCredentialIsRejected(t *testing.T) {
+	_, h, _ := testAPI(t)
+	for name, extra := range map[string]map[string]any{
+		"explicit none": {"auth_type": "none", "auth_config": map[string]string{"token": "sk-secret"}},
+		"omitted type":  {"auth_config": map[string]string{"token": "sk-secret"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("Docs", extra))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400: %s", rr.Code, rr.Body.String())
+			}
+			wantsBody(t, rr, errAuthNoneCredential)
+			if strings.Contains(rr.Body.String(), "sk-secret") {
+				t.Fatalf("the 400 repeated the submitted credential: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestPatchUpstreamNoneWithCredentialIsRejected pins the same rule on PATCH
+// (PORM-120 security requirements 3 and 6): auth_type none and a credential in
+// one request is refused before anything is written, whether the row held a
+// bearer credential or was already none with a stored blob. An empty object
+// beside none is accepted, because it carries no credential.
+func TestPatchUpstreamNoneWithCredentialIsRejected(t *testing.T) {
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	bearer, _ := mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})
+	legacy, _ := mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none"})
+	overwriteAuth(t, path, legacy, foreignSeal(t, `{"token":"old"}`))
+	for name, id := range map[string]string{"bearer row": bearer, "none row with a blob": legacy} {
+		t.Run(name, func(t *testing.T) {
+			before := rawAuth(t, path, id)
+			rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin",
+				map[string]any{"auth_type": "none", "auth_config": map[string]string{"token": "sk-secret"}})
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400: %s", rr.Code, rr.Body.String())
+			}
+			wantsBody(t, rr, errAuthNoneCredential)
+			if strings.Contains(rr.Body.String(), "sk-secret") {
+				t.Fatalf("the 400 repeated the submitted credential: %s", rr.Body.String())
+			}
+			if rawAuth(t, path, id) != before {
+				t.Fatal("a refused PATCH changed the stored column")
+			}
+		})
+	}
+	t.Run("empty object beside none is accepted", func(t *testing.T) {
+		rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+bearer, "test-admin",
+			map[string]any{"auth_type": "none", "auth_config": map[string]string{}})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestPatchUpstreamClearLogsCredential pins the server log half of PORM-120
+// security requirement 7, in the shape of TestPatchVirtualKeyClearLogsFields:
+// one Info line per removal, on both paths that empty the column, carrying the
+// id and the word credential and never a value; nothing for a request that
+// removed nothing.
+func TestPatchUpstreamClearLogsCredential(t *testing.T) {
+	s, h, _ := testAPI(t)
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	const token = "sk-live-DO-NOT-LOG"
+
+	clearLines := func(t *testing.T) []map[string]any {
+		t.Helper()
+		var out []map[string]any
+		for _, l := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			if l == "" {
+				continue
+			}
+			var line map[string]any
+			if err := json.Unmarshal([]byte(l), &line); err != nil {
+				t.Fatalf("log line is not JSON: %v: %s", err, l)
+			}
+			if line["msg"] == "upstream credential cleared" {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+	wantOne := func(t *testing.T, id string) {
+		t.Helper()
+		got := clearLines(t)
+		if len(got) != 1 {
+			t.Fatalf("want exactly one clear line, got %d:\n%s", len(got), logs.String())
+		}
+		line := got[0]
+		if line["upstream_id"] != id {
+			t.Fatalf("line: %v", line)
+		}
+		if c, _ := line["cleared"].([]any); len(c) != 1 || c[0] != "credential" {
+			t.Fatalf("cleared = %v", line["cleared"])
+		}
+		for _, k := range []string{"name", "upstream_name", "auth_config"} {
+			if _, has := line[k]; has {
+				t.Fatalf("the clear line carries %s: %v", k, line)
+			}
+		}
+		if strings.Contains(logs.String(), token) {
+			t.Fatalf("the credential reached the log: %s", logs.String())
+		}
+	}
+
+	viaNone, _ := mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": token}})
+	logs.Reset()
+	patchUpstreamJSON(t, h, viaNone, map[string]any{"auth_type": "none"})
+	wantOne(t, viaNone)
+
+	viaEmpty, _ := mustUpstream(t, h, "Linear", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": token}})
+	logs.Reset()
+	patchUpstreamJSON(t, h, viaEmpty, map[string]any{"auth_config": map[string]any{}})
+	wantOne(t, viaEmpty)
+
+	logs.Reset()
+	patchUpstreamJSON(t, h, viaNone, map[string]any{"auth_type": "none"})
+	patchUpstreamJSON(t, h, viaEmpty, map[string]any{"name": "Renamed"})
+	if got := clearLines(t); len(got) != 0 {
+		t.Fatalf("a request that removed nothing logged a clear: %v", got)
+	}
+}

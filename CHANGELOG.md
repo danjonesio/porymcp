@@ -4,6 +4,37 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Clearing an upstream's credential (PORM-120)
+
+- **Choosing None now removes the stored credential, and the removal cannot
+  be undone.** `PATCH /api/v1/upstreams/{id}` with `{"auth_type":"none"}`
+  empties the `auth_config` column, resets the last test result and records
+  `cleared: ["credential"]` on the admin event. Before this change the
+  credential stayed in the row and the edit dialog said so; switching back
+  later now means entering it again. The dialog says this under the Auth type
+  select before the save.
+- `auth_config: {}` now stores nothing, on create and on patch, instead of
+  sealing an empty credential. A blank credential box in the Add dialog no
+  longer leaves a row reading `auth_configured: true`. Rows this build writes
+  that way no longer count as stored credentials, so an install whose only
+  stored values are empty objects written after the upgrade starts under an
+  ephemeral key where it previously refused; rows an earlier build sealed as
+  `{}` keep their bytes and keep counting until a request sends
+  `auth_config: {}` to the row or switches it to `auth_type: "none"`, since an
+  ordinary save sends nothing about the credential.
+- `auth_type: "none"` with a credential in the same request answers
+  `400 auth_config cannot be set when auth_type is none`, on create (an
+  omitted `auth_type` defaults to `none`) and on patch.
+- A None row that holds a stored value (written by an earlier build, or sent
+  alone by a client to a None row, which stays legal) keeps it until a request
+  names `auth_type: "none"`. The edit dialog shows a "Remove the stored value"
+  checkbox on every None row that holds one, including the empty objects the
+  Add dialog used to write, so on most rows it removes nothing of value; the
+  same over-reporting applies to `GET /api/v1/upstreams` filtered on
+  `auth_type == "none"` and `auth_configured == true`. Rolling back to
+  `ghcr.io/danjonesio/porymcp:sha-<short sha>` restores the binary, not a
+  cleared credential.
+
 ### Published image path (PORM-10)
 
 - Images are published at `ghcr.io/danjonesio/porymcp` for linux/amd64 and

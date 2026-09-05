@@ -53,8 +53,12 @@ builds before PORM-52 are bare base64 with no AAD and are read for ever;
 `porymcp rekey` rewrites them. The column is written by `POST /upstreams`, by a
 `PATCH` that carries `auth_config` (a `PATCH` that does not leaves the column
 out of its statement, so an edit that raced a rekey cannot put an old-key value
-back), and by `rekey`, and by nothing else. `auth_type: none` rows may hold a blob too
-(the dashboard sends `{}` on create); nothing reads it.
+back), by a `PATCH` naming `auth_type: none` over a stored value, which empties
+it, and by `rekey`, and by nothing else. An object with no members (`{}`, what
+the dashboard sends for a blank box) stores nothing. An `auth_type: none` row
+may still hold a value, whether an earlier build wrote it or a `PATCH` carried
+`auth_config` alone to a `none` row: nothing reads it, `rekey` does not re-wrap
+it, and a `PATCH` naming `auth_type: none` removes it.
 
 ## Group
 A named collection of Upstreams (for multi-MCP agents).  
@@ -228,7 +232,8 @@ management-plane half of the audit trail, beside `AuditLog`, the proxy half.
 - `resource_name`: the name as it stood when the change landed, read before a
   delete; cleaned of control characters and cut at 256 bytes on the row
 - `details` (JSON, always an object, `{}` when empty): a closed set of keys
-  the server composes, `fields`, `cleared`, `slug`, `auth_type`,
+  the server composes, `fields`, `cleared` (field names, plus `credential`
+  when an upstream's stored credential was removed), `slug`, `auth_type`,
   `auth_changed`, `upstream_count`, `tool_filter_set`, `target_type`,
   `target_id`, `key_prefix`; never the request body, a credential, a
   ciphertext, a plaintext key, metadata, a tool filter, a tool list or a

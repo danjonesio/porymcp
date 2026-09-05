@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 
@@ -155,10 +156,28 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	})
 }
 
-// encryptAuth seals a credential under the current key; every write is the
-// v1 form. An empty value stores nothing.
-func (s *Server) encryptAuth(raw []byte) ([]byte, error) {
+// emptyAuthConfig reports a value that carries no credential: absent, JSON
+// null, or an object with no members, which is what the Add dialog sends for
+// an untouched credential box. Emptiness here is structural. Whether a
+// non-empty value is usable stays mcpclient.CheckCredential's question, so
+// {"token":""} is still stored and still reads unreadable, and a non-object
+// value is treated as a credential and sealed as before (PORM-120).
+func emptyAuthConfig(raw json.RawMessage) bool {
 	if len(raw) == 0 {
+		return true
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false
+	}
+	return len(fields) == 0
+}
+
+// encryptAuth seals a credential under the current key; every write is the
+// v1 form. A value with no credential in it (see emptyAuthConfig) stores
+// nothing, so a row without a credential holds no secret-shaped bytes.
+func (s *Server) encryptAuth(raw []byte) ([]byte, error) {
+	if emptyAuthConfig(raw) {
 		return nil, nil
 	}
 	enc, err := s.keys.Seal(raw)

@@ -41,6 +41,11 @@ const errURLRule = "url must be an absolute http or https URL"
 // null as "enabled", PATCH refuses it rather than guessing.
 const errEnabledRule = "enabled must be true or false"
 
+// errAuthNoneCredential is the single source of the 400 for a credential sent
+// beside auth_type none, shared by create and patch (PORM-120). It names what
+// the caller must change and never repeats what was sent.
+const errAuthNoneCredential = "auth_config cannot be set when auth_type is none"
+
 // errSlugsExhausted means every derived candidate was taken. Kept distinct from
 // store.ErrConflict so the caller gets an actionable message about a slug it
 // never supplied, rather than "slug is already taken".
@@ -151,6 +156,16 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid transport or auth_type")
 		return
 	}
+	// A credential cannot ride along with auth_type none: the row would hold a
+	// secret the proxy never sends and report auth_configured true for it
+	// (PORM-120). An omitted auth_type took the default above, so the same
+	// refusal covers a create that sends only a credential. The unsaved
+	// POST /upstreams/discover route is not guarded: it persists nothing and
+	// headersFor ignores the credential for none.
+	if authType == models.AuthNone && in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value) {
+		writeError(w, http.StatusBadRequest, errAuthNoneCredential)
+		return
+	}
 	var slug string
 	if in.Slug.Has() {
 		slug = models.NormalizeSlug(in.Slug.Value)
@@ -210,10 +225,12 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// AuthChanged reports a credential that was stored, so an Add that sent
+	// {} for an untouched box does not read "credential set" (PORM-120).
 	s.recordAdmin(r, models.ActionUpstreamCreate, u.ID, u.Name, adminDetails{
 		Slug:        u.Slug,
 		AuthType:    u.AuthType,
-		AuthChanged: in.AuthConfig.Has(),
+		AuthChanged: len(u.AuthConfig) > 0,
 	})
 	writeJSON(w, http.StatusCreated, s.presentUpstream(u))
 }
@@ -276,10 +293,20 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// auth_config therefore always counts as a change, the same condition the
 	// assignment below uses. An edit dialog has to omit the field when the
 	// operator did not touch it (PORM-2), or every save resets the dot.
+	//
+	// Choosing None removes the stored credential as well as stopping PoryMCP
+	// sending it. It keys off the value the request named rather than a change
+	// of type, so one request also empties a row that was already none and
+	// still holds a blob sealed by an earlier build (PORM-120). It counts as a
+	// change only when it removes bytes, so a resent none on an empty row
+	// stays a no-op and keeps its recorded test.
+	clearAuth := in.AuthType.Has() && in.AuthType.Value == models.AuthNone
+	cleared := clearAuth && len(u.AuthConfig) > 0
 	resetTest := (in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL) ||
 		(in.Transport.Has() && in.Transport.Value != u.Transport) ||
 		(in.AuthType.Has() && in.AuthType.Value != u.AuthType) ||
-		in.AuthConfig.Has()
+		in.AuthConfig.Has() ||
+		cleared
 	// Every field is an Optional (see optional.go): a key the body did not carry
 	// leaves the stored value alone, a value sets it under the same checks as
 	// create, and null clears the fields that have a cleared state. A required
@@ -328,6 +355,16 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 		u.AuthType = in.AuthType.Value
 	}
+	// The same refusal as create, keyed on what this request named: auth_type
+	// none and a credential in one body. It sits after the auth_type block, so
+	// a null auth_type still answers "invalid auth_type", and before the
+	// auth_config branch, so nothing is sealed first. A credential sent alone
+	// to a row stored as none is still stored, as before; the next request
+	// that names none removes it.
+	if in.AuthType.Has() && in.AuthType.Value == models.AuthNone && in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value) {
+		writeError(w, http.StatusBadRequest, errAuthNoneCredential)
+		return
+	}
 	if in.AuthConfig.Has() {
 		// null keeps the stored credential. The value is write-only, so an
 		// object read back and sent again cannot carry it, and null has to mean
@@ -338,6 +375,9 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.AuthConfig = enc
+	}
+	if clearAuth {
+		u.AuthConfig = nil
 	}
 	if in.Enabled.Set {
 		if in.Enabled.Null {
@@ -354,16 +394,30 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		u.LastTestAt, u.LastTestOK = nil, nil
 	}
 	// auth_config is written back only when this request carried one (a
-	// literal {} counts). Otherwise the ciphertext read at the top of this
-	// handler stays out of the statement, so an edit that raced a
-	// `porymcp rekey` cannot put an old-key value back (PORM-52).
-	if err := s.store.UpdateUpstream(r.Context(), u, resetTest, in.AuthConfig.Has()); err != nil {
+	// literal {} counts) or named auth_type none over a stored value. Writing
+	// the empty column is not writing back a value the request did not carry.
+	// Otherwise the ciphertext read at the top of this handler stays out of
+	// the statement, so an edit that raced a `porymcp rekey` cannot put an
+	// old-key value back (PORM-52).
+	writeAuth := in.AuthConfig.Has() || cleared
+	// authChanged means a credential was stored: a request that carried {}
+	// stored nothing and is not reported as one.
+	authChanged := in.AuthConfig.Has() && len(u.AuthConfig) > 0
+	if err := s.store.UpdateUpstream(r.Context(), u, resetTest, writeAuth); err != nil {
 		storeError(w, err)
 		return
 	}
+	// The log line fires on the same test the admin event uses (a column that
+	// held bytes and holds none now), so the two records of a removal never
+	// disagree, whichever request emptied it: auth_type none, or {}. After the
+	// write returned nil, like patchGroup's line: the id and what was cleared,
+	// never the name or a value.
+	if len(before.AuthConfig) > 0 && len(u.AuthConfig) == 0 {
+		s.log.Info("upstream credential cleared", "upstream_id", u.ID, "cleared", []string{"credential"})
+	}
 	// A PATCH that changed nothing still records: the row was written (and
 	// updated_at moved), and an event with empty details says so honestly.
-	s.recordAdmin(r, models.ActionUpstreamUpdate, u.ID, u.Name, upstreamPatchDetails(before, *u, in.AuthConfig.Has()))
+	s.recordAdmin(r, models.ActionUpstreamUpdate, u.ID, u.Name, upstreamPatchDetails(before, *u, authChanged))
 	writeJSON(w, http.StatusOK, s.presentUpstream(u))
 }
 

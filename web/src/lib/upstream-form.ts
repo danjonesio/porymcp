@@ -18,6 +18,12 @@ export type UpstreamForm = {
   header: string
   value: string
   enabled: boolean
+  /**
+   * The "Remove the stored value" checkbox in the Edit dialog, offered only on
+   * a none row that still holds stored bytes. Never sent on create; read by
+   * upstreamPatchBody alone (PORM-120).
+   */
+  clear_stored: boolean
 }
 
 /**
@@ -62,6 +68,7 @@ export function blankUpstreamForm(): UpstreamForm {
     header: DEFAULT_HEADER,
     value: '',
     enabled: true,
+    clear_stored: false,
   }
 }
 
@@ -87,14 +94,16 @@ export function formFromUpstream(u: Upstream): UpstreamForm {
     header: u.auth_hint?.header ?? '',
     value: '',
     enabled: u.enabled,
+    clear_stored: false,
   }
 }
 
 /**
  * The form's credential fields, in the shape the API stores them. Returns `{}`
- * for a blank box, which create and discover depend on; a PATCH must not send
- * that (see upstreamPatchBody), because `{}` is a value to the server and seals
- * an empty credential over the stored one.
+ * for a blank box, which create and discover depend on: the server stores
+ * nothing for an object with no members (PORM-120). A PATCH must not send it
+ * (see upstreamPatchBody), because on a row with a credential it would empty
+ * the stored value.
  */
 export function authConfigFrom(form: Pick<UpstreamForm, 'auth_type' | 'token' | 'header' | 'value'>): Record<
   string,
@@ -134,7 +143,11 @@ export function upstreamCreateBody(f: UpstreamForm, slugTouched: boolean): Recor
  * The `PATCH /upstreams/{id}` body: only the keys whose value differs from the
  * row the dialog was seeded with. An absent key leaves the field unchanged
  * (docs/03-api.md, Partial updates), and the admin event lists exactly the
- * keys sent, so an unchanged field is never sent. `auth_config` goes only when
+ * keys sent, so an unchanged field is never sent, with one exception:
+ * `auth_type: 'none'` goes for a row already at none when the operator ticked
+ * "Remove the stored value", because that is the request that removes the
+ * stored bytes (PORM-120). The flag is only ever true for the row the form was
+ * seeded from: formFromUpstream seeds it false. `auth_config` goes only when
  * a credential was typed; never `{}`, never `null`. `slug` never goes: the
  * server refuses any change and the dialog has no input for it. The URL is
  * trimmed before comparing because the server's own reset predicate trims
@@ -149,7 +162,7 @@ export function upstreamPatchBody(before: Upstream, f: UpstreamForm): Record<str
   const url = f.url.trim()
   if (url !== before.url) body.url = url
   if (f.transport !== before.transport) body.transport = f.transport
-  if (f.auth_type !== before.auth_type) body.auth_type = f.auth_type
+  if (f.auth_type !== before.auth_type || (f.auth_type === 'none' && f.clear_stored)) body.auth_type = f.auth_type
   if (f.enabled !== before.enabled) body.enabled = f.enabled
   if (credentialTyped(f)) {
     // The header name is trimmed here and not in authConfigFrom, which the
@@ -252,4 +265,36 @@ export function editCredentialDescription(before: Upstream, f: UpstreamForm): st
     return 'The header name is stored inside the credential. Enter the value again to change the name.'
   }
   return credentialHelp(before, f)
+}
+
+/**
+ * The sentence under the Auth type select when the pending save would remove
+ * a stored credential: the row holds one (`auth_configured`), its type is not
+ * none, and None is selected. Saving then sends `auth_type: 'none'`, which the
+ * server answers by emptying the column (PORM-120). Null otherwise: on Add, on
+ * a row that holds nothing, and on a row already at none, whose stored bytes
+ * are the checkbox's business (clearStoredDescription).
+ */
+export function removeCredentialDescription(before: Upstream | undefined, f: UpstreamForm): string | null {
+  if (before === undefined || before.auth_type === 'none' || !before.auth_configured) return null
+  if (f.auth_type !== 'none') return null
+  return 'Saving removes the stored credential. It cannot be recovered. Switching back later means entering it again.'
+}
+
+/**
+ * The description of the "Remove the stored value" checkbox, and the test for
+ * rendering it: the row is already none and still holds stored bytes (a
+ * credential switched to None by an earlier build, the sealed `{}` earlier
+ * builds wrote for a blank box, or a credential a client sent alone to a none
+ * row; the server cannot tell which), and None is
+ * still selected. The checkbox renders on the same `f.auth_type === 'none'`
+ * test upstreamPatchBody reads for clear_stored, so a ticked box is on screen
+ * whenever it can change the request; if the two ever diverge, a ticked box
+ * could remove data with no control visible. Null otherwise, and the checkbox
+ * is not rendered.
+ */
+export function clearStoredDescription(before: Upstream | undefined, f: UpstreamForm): string | null {
+  if (before === undefined || before.auth_type !== 'none' || !before.auth_configured) return null
+  if (f.auth_type !== 'none') return null
+  return 'A value is still stored for this upstream and is not sent, because the auth type is None. Saving with this ticked removes it.'
 }

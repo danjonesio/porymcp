@@ -29,8 +29,8 @@ import (
 //     it never triggers: a fingerprint that differs while every credential
 //     opens (a rotation window, a key replaced on an empty install, a
 //     restored backup) is not an outage. A mismatch never stamps.
-//  3. Otherwise ok. Unusable-but-decryptable rows (a blank token stored as {})
-//     get a Warn naming them, the fix is the credential, never the key, and
+//  3. Otherwise ok. Unusable rows (nothing stored, or a value the auth type
+//     cannot send) get a Warn naming them, the fix is the credential, never the key, and
 //     /health is not touched. Rows that opened only under a previous key get
 //     the "rotation pending" Warn and no stamp: only `porymcp rekey` moves an
 //     existing fingerprint. The current fingerprint is recorded iff the sweep
@@ -78,12 +78,12 @@ func checkEncryption(ctx context.Context, st *store.SQLStore, cfg *config.Config
 			"stored_fingerprint", storedField, "current_fingerprint", current,
 			"credentials", rep.Credentials, "undecryptable", rep.Undecryptable, "under_previous", rep.UnderPrevious,
 			"upstream_ids", rep.IDs, "upstream_names", rep.Names, "not_listed", rep.NotListed,
-			"hint", "restore the previous key, or set ENCRYPTION_KEY_PREVIOUS to it, restart, and run: porymcp rekey")
+			"hint", "restore the previous key, or set ENCRYPTION_KEY_PREVIOUS to it, restart, and run porymcp rekey. A row whose key is gone can instead be switched to auth_type none (PATCH /api/v1/upstreams/{id}), which removes the stored credential without it; restart afterwards so /health reports encryption: ok")
 		return webutil.EncryptionMismatch, nil
 	}
 
 	if rep.Unreadable >= 1 {
-		log.Warn("stored credentials are not usable for their auth type; re-enter them",
+		log.Warn("stored credentials are not usable for their auth type; re-enter them, or switch the upstream to auth_type none",
 			"unreadable", rep.Unreadable, "upstream_ids", rep.UnreadableIDs, "upstream_names", rep.UnreadableNames,
 			"not_listed", rep.UnreadableNotListed)
 	}

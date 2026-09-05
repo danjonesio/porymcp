@@ -108,7 +108,8 @@ func TestUndecryptableCredentialFailsClosed(t *testing.T) {
 }
 
 // TestUnreadableCredentialFailsClosed: a blob that opens but holds nothing the
-// auth type can send (the dashboard stores {} for a blank token) fails closed
+// auth type can send (a sealed {}, which earlier builds stored for a blank
+// token) fails closed
 // the same way, with its own reason (security req 3).
 func TestUnreadableCredentialFailsClosed(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, Bearer: "sk-real"}, nil, nil)

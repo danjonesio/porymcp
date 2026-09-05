@@ -269,7 +269,7 @@ func TestBootRotationPendingIsNotDegraded(t *testing.T) {
 	}
 }
 
-// TestBootUnreadableIsNotMismatch: a blank token stored as {} is a Warn naming
+// TestBootUnreadableIsNotMismatch: a sealed {}, which earlier builds stored for a blank token is a Warn naming
 // the row, never the key-mismatch Error, and /health stays ok.
 func TestBootUnreadableIsNotMismatch(t *testing.T) {
 	cur := mustKey(t)
