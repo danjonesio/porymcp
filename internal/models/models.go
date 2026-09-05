@@ -23,6 +23,45 @@ const (
 	StatusBlocked = "blocked"
 )
 
+// ActorAdmin is the one actor this version knows: every management call is
+// authenticated by the single admin key, so there is one name to record.
+// PORM-127 (dashboard users) replaces it with a user id.
+const ActorAdmin = "admin"
+
+// Resource types an admin event names.
+const (
+	ResourceUpstream   = "upstream"
+	ResourceGroup      = "group"
+	ResourceVirtualKey = "virtual_key"
+)
+
+// Admin event actions. Every action is "{resource_type}.{verb}" and the
+// recorder derives resource_type by cutting at the dot, so the two columns
+// cannot disagree. "update" rather than "patch": the verb names what happened
+// to the resource, not the HTTP method that asked for it.
+const (
+	ActionUpstreamCreate   = "upstream.create"
+	ActionUpstreamUpdate   = "upstream.update"
+	ActionUpstreamDelete   = "upstream.delete"
+	ActionGroupCreate      = "group.create"
+	ActionGroupUpdate      = "group.update"
+	ActionGroupDelete      = "group.delete"
+	ActionVirtualKeyCreate = "virtual_key.create"
+	ActionVirtualKeyUpdate = "virtual_key.update"
+	ActionVirtualKeyRotate = "virtual_key.rotate"
+	ActionVirtualKeyRevoke = "virtual_key.revoke"
+	ActionVirtualKeyDelete = "virtual_key.delete"
+)
+
+// AdminActions lists every action above for the route-coverage test, the
+// well-formedness test and the docs table. Add a constant, add it here.
+var AdminActions = []string{
+	ActionUpstreamCreate, ActionUpstreamUpdate, ActionUpstreamDelete,
+	ActionGroupCreate, ActionGroupUpdate, ActionGroupDelete,
+	ActionVirtualKeyCreate, ActionVirtualKeyUpdate, ActionVirtualKeyRotate,
+	ActionVirtualKeyRevoke, ActionVirtualKeyDelete,
+}
+
 // Upstream is a real MCP server whose credentials stay inside PoryMCP.
 type Upstream struct {
 	ID          string          `json:"id"`
@@ -142,6 +181,38 @@ type AuditLog struct {
 	UpstreamID        string          `json:"upstream_id,omitempty"`
 	ErrorMessage      string          `json:"error_message,omitempty"`
 	RequestID         string          `json:"request_id"`
+}
+
+// AdminEvent records one successful state-changing management API call: who
+// changed what, when, from where, and under which request id. It is a second
+// table beside AuditLog rather than a kind column on it, because the two share
+// no field except a timestamp and an id and are read by different people for
+// different reasons.
+//
+// Details is a closed object the handler composes (internal/api adminDetails),
+// never the request body. No credential, ciphertext or plaintext virtual key
+// is ever put in it. It is always a JSON object, {} when the action has
+// nothing to add. No field carries omitempty: readers rely on every key being
+// present.
+type AdminEvent struct {
+	ID           string          `json:"id"`
+	Timestamp    time.Time       `json:"timestamp"`
+	Actor        string          `json:"actor"`
+	Action       string          `json:"action"`
+	ResourceType string          `json:"resource_type"`
+	ResourceID   string          `json:"resource_id"`
+	ResourceName string          `json:"resource_name"`
+	Details      json.RawMessage `json:"details"`
+	RequestID    string          `json:"request_id"`
+	RemoteAddr   string          `json:"remote_addr"`
+}
+
+// AdminEventFilter narrows ListAdminEvents. The zero value lists the newest page.
+type AdminEventFilter struct {
+	ResourceType string
+	Since        *time.Time
+	Limit        int
+	Cursor       string
 }
 
 // Stats is the dashboard overview payload.
