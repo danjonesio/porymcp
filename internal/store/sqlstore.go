@@ -2141,7 +2141,11 @@ func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilte
 	}
 	if f.Cursor != "" {
 		ts, id, err := decodeCursor(f.Cursor)
-		if err != nil {
+		// A cursor whose timestamp half is empty decodes to the zero time
+		// without an error (parseTime accepts ""), and a zero bound would
+		// answer an empty page. On an audit endpoint an empty answer reads as
+		// "nothing happened", so it is refused like any other malformed cursor.
+		if err != nil || ts.IsZero() {
 			return nil, "", ErrInvalidCursor
 		}
 		conds = append(conds, "(timestamp < ? OR (timestamp = ? AND id < ?))")

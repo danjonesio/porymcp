@@ -1007,24 +1007,43 @@ func TestListAdminEvents(t *testing.T) {
 			t.Errorf("first event lacks %q: %v", k, all[0])
 		}
 	}
-	for i := 1; i < len(all); i++ {
-		if all[i-1]["timestamp"].(string) < all[i]["timestamp"].(string) {
-			t.Errorf("not newest first: %v then %v", all[i-1]["timestamp"], all[i]["timestamp"])
+	// The three rows land inside one second, where the stored text order is
+	// not guaranteed to be time order (see TestAdminEventsRoundTrip, which
+	// pins newest-first with whole-second fixtures), so the set is asserted
+	// here and the order is asserted there.
+	actionsOf := func(events []map[string]any) []string {
+		out := make([]string, 0, len(events))
+		for _, e := range events {
+			out = append(out, e["action"].(string))
 		}
+		slices.Sort(out)
+		return out
 	}
-	if all[0]["action"] != models.ActionVirtualKeyCreate || all[2]["action"] != models.ActionUpstreamCreate {
-		t.Errorf("order = %v, %v, %v", all[0]["action"], all[1]["action"], all[2]["action"])
+	allThree := []string{models.ActionGroupCreate, models.ActionUpstreamCreate, models.ActionVirtualKeyCreate}
+	if got := actionsOf(all); !slices.Equal(got, allThree) {
+		t.Errorf("actions = %v, want %v", got, allThree)
 	}
 
 	body, _ = list("?resource_type=virtual_key")
 	if got := events(body); len(got) != 1 || got[0]["resource_type"] != "virtual_key" {
 		t.Errorf("resource_type filter = %v", got)
 	}
-	// A whole-second since strictly before the rows returns all of them.
-	since := time.Now().UTC().Add(-time.Minute).Truncate(time.Second).Format(time.RFC3339)
-	body, _ = list("?since=" + since)
+	// since on the whole second the oldest row fell in must include that row,
+	// which almost always carries a fraction: the handler-to-store path of
+	// sinceBound. A plain fmtTime bound would drop it.
+	oldest := all[len(all)-1]["timestamp"].(string)
+	for _, e := range all {
+		if ts := e["timestamp"].(string); ts < oldest {
+			oldest = ts
+		}
+	}
+	oldestAt, err := time.Parse(time.RFC3339Nano, oldest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = list("?since=" + oldestAt.Truncate(time.Second).Format(time.RFC3339))
 	if got := events(body); len(got) != 3 {
-		t.Errorf("since in the past = %d events, want 3", len(got))
+		t.Errorf("since on the rows' whole second = %d events, want 3", len(got))
 	}
 	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	body, _ = list("?since=" + future)
@@ -1038,6 +1057,7 @@ func TestListAdminEvents(t *testing.T) {
 		"?limit=0":            "invalid limit",
 		"?since=yesterday":    "invalid since",
 		"?cursor=%2A%2A":      "invalid cursor",
+		"?cursor=fHg":         "invalid cursor", // base64url of "|x": decodes to an empty timestamp
 	} {
 		rr := doJSON(t, h, http.MethodGet, "/admin-events"+query, "test-admin", nil)
 		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), want) {
@@ -1064,8 +1084,9 @@ func TestListAdminEvents(t *testing.T) {
 			break
 		}
 	}
-	if want := []string{models.ActionVirtualKeyCreate, models.ActionGroupCreate, models.ActionUpstreamCreate}; !slices.Equal(seen, want) {
-		t.Errorf("paged actions = %v, want %v", seen, want)
+	slices.Sort(seen)
+	if !slices.Equal(seen, allThree) {
+		t.Errorf("paged actions = %v, want %v (three pages of one)", seen, allThree)
 	}
 
 	if rr := doJSON(t, h, http.MethodGet, "/admin-events", "", nil); rr.Code != http.StatusUnauthorized {

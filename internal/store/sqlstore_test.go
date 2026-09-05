@@ -2024,8 +2024,12 @@ func TestAdminEventsRoundTrip(t *testing.T) {
 		t.Errorf("no-match page = %v (nil=%v), next %q; want [] and empty cursor", got, got == nil, next)
 	}
 
-	if _, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Cursor: "not-a-cursor"}); !errors.Is(err, ErrInvalidCursor) {
-		t.Errorf("bad cursor error = %v, want ErrInvalidCursor", err)
+	// "fHg" is base64url of "|x": it decodes, but its timestamp half is
+	// empty. It must be refused, not answered with an empty page.
+	for _, cur := range []string{"not-a-cursor", "fHg"} {
+		if _, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Cursor: cur}); !errors.Is(err, ErrInvalidCursor) {
+			t.Errorf("cursor %q error = %v, want ErrInvalidCursor", cur, err)
+		}
 	}
 }
 
@@ -2064,6 +2068,11 @@ func TestAdminEventsSinceBoundary(t *testing.T) {
 	}
 	if got, want := list(T.Add(200*time.Millisecond)), []string{"half", "next", "whole"}; !slices.Equal(got, want) {
 		t.Errorf("since fractional = %v, want %v (the whole-second row is included by design)", got, want)
+	}
+	// A since equal to a stored fractional instant is inclusive: the client
+	// that passes back the last timestamp it saw gets that row again.
+	if got, want := list(T.Add(500*time.Millisecond)), []string{"half", "next", "whole"}; !slices.Equal(got, want) {
+		t.Errorf("since equal to a stored fraction = %v, want %v", got, want)
 	}
 	if got, want := list(T.Add(time.Second)), []string{"next"}; !slices.Equal(got, want) {
 		t.Errorf("since next second = %v, want %v", got, want)
