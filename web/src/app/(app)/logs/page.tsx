@@ -4,12 +4,13 @@ import { Badge } from '@/components/badge'
 import { Button } from '@/components/button'
 import { Dialog, DialogActions, DialogBody, DialogTitle } from '@/components/dialog'
 import { Field, Label } from '@/components/fieldset'
-import { Heading } from '@/components/heading'
+import { Heading, Subheading } from '@/components/heading'
 import { Input } from '@/components/input'
 import { Select } from '@/components/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { api, type AuditLog, type VirtualKey } from '@/lib/api'
 import { ABSENT } from '@/lib/placeholder'
+import { AdminEvents } from '@/app/admin-events'
 import { useEffect, useState } from 'react'
 
 export default function LogsPage() {
@@ -39,6 +40,9 @@ export default function LogsPage() {
   return (
     <>
       <Heading>Logs</Heading>
+      <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">Proxy calls and admin changes.</p>
+
+      <Subheading className="mt-10">Proxy calls</Subheading>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
         Every proxied MCP method is recorded. Secrets in params are redacted.
       </p>
@@ -151,6 +155,9 @@ export default function LogsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Subheading className="mt-14">Admin activity</Subheading>
+      <AdminEvents />
     </>
   )
 }
