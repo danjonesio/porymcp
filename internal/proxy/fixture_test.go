@@ -37,18 +37,15 @@ type upstreamSpec struct {
 	ListCT   string   // Content-Type for tools/list (default application/json)
 	ListCode int      // HTTP status for tools/list (default 200)
 	CallBody string   // response to anything else (default a bare ok result)
-	// ListHeaders are extra response headers on tools/list. They exist for the
-	// body-integrity headers the list filter has to drop once it has rewritten
-	// a body those headers no longer describe.
-	ListHeaders map[string]string
+	// RespHeaders are extra response headers the stub writes on every reply,
+	// tools/list and the redirect arm included. Each arm sets its own
+	// Content-Type only when RespHeaders did not, so a test can put a
+	// Set-Cookie or a WWW-Authenticate here and prove the copy-back allowlist
+	// stops it, or an Mcp-Session-Id or a Content-Type and prove it passes.
+	RespHeaders map[string]string
 	// Bearer, when set, is the real credential stored (encrypted) against this
 	// upstream, so a test can prove which token a request carried.
 	Bearer string
-	// SessionID, when set, is returned as Mcp-Session-Id on every response
-	// except tools/list. ListHeaders only reaches the tools/list arm, so this
-	// is the only way to give a stub the session header a real MCP server
-	// mints on initialize.
-	SessionID string
 	// AuthType and AuthConfig give an upstream a credential of any of the four
 	// kinds the proxy supports. Bearer above is shorthand for the common one;
 	// this is the only way to build the three that write the credential into
@@ -115,6 +112,13 @@ func newStub(spec upstreamSpec) *stub {
 		_ = json.Unmarshal(body, &req)
 		s.bump(r, body, req.Method, req.Params.Name)
 
+		// RespHeaders go on before any arm, so one field reaches every reply
+		// the stub can make. The arms below set Content-Type only when this
+		// left it unset.
+		for k, v := range spec.RespHeaders {
+			w.Header().Set(k, v)
+		}
+
 		// The redirect is answered before the tools/list arm, so one stub can
 		// redirect both a request the client sent and the catalogue request
 		// the proxy composes for itself. A 304 has its body and Content-Type
@@ -124,7 +128,9 @@ func newStub(spec upstreamSpec) *stub {
 			if spec.RedirectTo != "" {
 				w.Header().Set("Location", spec.RedirectTo)
 			}
-			w.Header().Set("Content-Type", "application/json")
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", "application/json")
+			}
 			w.WriteHeader(spec.RedirectStatus)
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"redirected":true}}`)
 			return
@@ -135,9 +141,8 @@ func newStub(spec upstreamSpec) *stub {
 			if ct == "" {
 				ct = "application/json"
 			}
-			w.Header().Set("Content-Type", ct)
-			for k, v := range spec.ListHeaders {
-				w.Header().Set(k, v)
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", ct)
 			}
 			if spec.ListCode != 0 {
 				w.WriteHeader(spec.ListCode)
@@ -157,9 +162,8 @@ func newStub(spec upstreamSpec) *stub {
 			_, _ = w.Write(out)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		if spec.SessionID != "" {
-			w.Header().Set("Mcp-Session-Id", spec.SessionID)
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "application/json")
 		}
 		if spec.CallBody != "" {
 			_, _ = io.WriteString(w, spec.CallBody)

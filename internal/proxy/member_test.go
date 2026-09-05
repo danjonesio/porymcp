@@ -131,7 +131,7 @@ func TestPerUpstreamInitializeIsTheMembersOwn(t *testing.T) {
 // forward branch.
 func TestPerUpstreamSessionRoundTrips(t *testing.T) {
 	f := newFixture(t, map[string]upstreamSpec{
-		"alpha": {Tools: []string{"ping_tool"}, SessionID: "sess-alpha-1", Bearer: "sk-alpha-real"},
+		"alpha": {Tools: []string{"ping_tool"}, RespHeaders: map[string]string{"Mcp-Session-Id": "sess-alpha-1"}, Bearer: "sk-alpha-real"},
 		"beta":  {Tools: []string{"other"}},
 	}, true, nil, nil, nil)
 

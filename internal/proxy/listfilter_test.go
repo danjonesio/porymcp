@@ -311,7 +311,7 @@ func TestListFilterDropsIntegrityHeaders(t *testing.T) {
 	const list = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool"},{"name":"danger_tool"}]}}`
 	spec := upstreamSpec{
 		RawList:     list,
-		ListHeaders: map[string]string{"ETag": `"v1"`, "Content-Digest": "sha-256=:abc:"},
+		RespHeaders: map[string]string{"ETag": `"v1"`, "Content-Digest": "sha-256=:abc:"},
 	}
 
 	t.Run("filtered", func(t *testing.T) {
