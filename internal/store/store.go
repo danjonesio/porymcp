@@ -72,6 +72,16 @@ type Store interface {
 	ListAuditLogs(ctx context.Context, f models.LogFilter) (logs []models.AuditLog, next string, err error)
 	GetAuditLog(ctx context.Context, id string) (*models.AuditLog, error)
 
+	// InsertAdminEvent writes one management-plane event. It is a separate
+	// statement from the mutation it describes: Store exposes no transaction
+	// and every mutating method runs standalone, so a crash between the two
+	// loses the event and keeps the change. The API accepts that and logs a
+	// failed write at Error (internal/api/admin_events.go).
+	InsertAdminEvent(ctx context.Context, e *models.AdminEvent) error
+	// ListAdminEvents returns the newest page first, with the cursor for the
+	// next page or "" on the last one. Limit outside 1..200 becomes 50.
+	ListAdminEvents(ctx context.Context, f models.AdminEventFilter) (events []models.AdminEvent, next string, err error)
+
 	Stats(ctx context.Context) (*models.Stats, error)
 	Ping(ctx context.Context) error
 	Close() error
