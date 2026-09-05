@@ -32,8 +32,8 @@ Behaviour changes that affect a running deployment. Newest first.
 - **Every response the proxy endpoints write carries
   `Cache-Control: no-store`, and an upstream's `Cache-Control` is not
   relayed.**
-- **`Access-Control-Expose-Headers` names `Retry-After`,** so a browser client
-  can read it.
+- **`Access-Control-Expose-Headers` names `Retry-After`, so a browser client
+  can read it.**
 - **There is no setting.** Extending the list is a code change with a review.
   Rolling back to `ghcr.io/danjonesio/porymcp:sha-<short sha>` restores the
   previous binary and with it the leak; no schema or data is involved.

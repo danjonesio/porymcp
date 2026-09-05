@@ -313,8 +313,9 @@
   server's name and version, and a list of tool names, titles, descriptions and
   typed annotations, each clamped to a byte budget and forced back to valid
   UTF-8. No upstream response header reaches it: the copy-back described above
-  is a property of the relay path and is not inherited here, so a `Set-Cookie`
-  or a `WWW-Authenticate` collected during a discovery attempt goes nowhere.
+  returns three names on the relay path and is not inherited here, so no
+  header an upstream sets during a discovery attempt reaches the operator, the
+  session id it minted included.
   Nor does any byte of an upstream body outside those fields, and never
   `auth_config` or the credential in any form. None of it is persisted either:
   what the saved route records is a timestamp and a flag (`last_test_at` and
