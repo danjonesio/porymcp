@@ -4,6 +4,40 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Upstream response headers are an allowlist (PORM-98)
+
+- **A 1:1 forward returns three upstream response headers and drops the
+  rest.** `Content-Type`, `Mcp-Session-Id` and `Retry-After` reach the client
+  on `/{virtual_key_id}/mcp` and `/{virtual_key_id}/{upstream_slug}/mcp`.
+  Before this change every header except `Content-Length` did.
+- **`Set-Cookie` and `WWW-Authenticate` no longer reach the client.** A client
+  that read an OAuth challenge out of an upstream 401 now sees a 401 with no
+  challenge, which is what PoryMCP's own 401 has always been. The client's
+  `Cookie` was never forwarded upstream, so no cookie round trip is lost.
+- **An upstream's `Access-Control-Allow-Origin`, `Vary`,
+  `Content-Security-Policy` and `X-Frame-Options` no longer duplicate the ones
+  PoryMCP sets.** A browser client that failed CORS against a permissive
+  upstream now connects.
+- **`X-Request-Id`, `X-RateLimit-*`, `Server`, `ETag` and `Connection` from
+  the upstream no longer reach the client, and PoryMCP records none of
+  them.** An agent that read remaining quota out of a header loses it.
+- **`Date` is PoryMCP's own rather than the upstream's.** PoryMCP records the
+  `X-Request-Id` a client sends as the `request_id` on the audit row, which is
+  how a call is correlated now.
+- **An upstream that answers in an encoding PoryMCP did not ask for has its
+  `Content-Encoding` dropped while the compressed body is relayed.** That is
+  `br` or `zstd`, never gzip, which Go decompresses; a client then sees bytes
+  it cannot decode. No upstream is known to do this. Refusing such a response
+  at the proxy is PORM-142.
+- **Every response the proxy endpoints write carries
+  `Cache-Control: no-store`, and an upstream's `Cache-Control` is not
+  relayed.**
+- **`Access-Control-Expose-Headers` names `Retry-After`,** so a browser client
+  can read it.
+- **There is no setting.** Extending the list is a code change with a review.
+  Rolling back to `ghcr.io/danjonesio/porymcp:sha-<short sha>` restores the
+  previous binary and with it the leak; no schema or data is involved.
+
 ### Clearing an upstream's credential (PORM-120)
 
 - **Choosing None now removes the stored credential, and the removal cannot
