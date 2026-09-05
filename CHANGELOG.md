@@ -15,9 +15,11 @@ Behaviour changes that affect a running deployment. Newest first.
   select before the save.
 - `auth_config: {}` now stores nothing, on create and on patch, instead of
   sealing an empty credential. A blank credential box in the Add dialog no
-  longer leaves a row reading `auth_configured: true`. Because such rows no
-  longer count as stored credentials, an install whose only stored values were
-  empty objects now starts under an ephemeral key where it previously refused.
+  longer leaves a row reading `auth_configured: true`. Rows this build writes
+  that way no longer count as stored credentials, so an install whose only
+  stored values are empty objects written after the upgrade starts under an
+  ephemeral key where it previously refused; rows an earlier build sealed as
+  `{}` keep their bytes and keep counting until the upstream is saved again.
 - `auth_type: "none"` with a credential in the same request answers
   `400 auth_config cannot be set when auth_type is none`, on create (an
   omitted `auth_type` defaults to `none`) and on patch.
