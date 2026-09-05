@@ -305,8 +305,12 @@ func TestListPassThroughWarns(t *testing.T) {
 }
 
 // A rewritten body is not the body the upstream computed its digests over, so
-// anything claiming to describe those bytes has to go. Nothing is dropped when
-// the body was not touched.
+// anything claiming to describe those bytes has to go. The response allowlist
+// (copyResponseHeaders, PORM-98) drops the integrity headers whether or not
+// the body was rewritten, so both subtests assert absence: the filtered one
+// proves a rewritten body reaches the client without a digest, whichever
+// layer removed it, and the unfiltered one proves an untouched body carries no
+// validator either.
 func TestListFilterDropsIntegrityHeaders(t *testing.T) {
 	const list = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool"},{"name":"danger_tool"}]}}`
 	spec := upstreamSpec{
@@ -333,8 +337,13 @@ func TestListFilterDropsIntegrityHeaders(t *testing.T) {
 		if rr.Body.String() != list {
 			t.Fatal("a key with no policy had its body rewritten")
 		}
-		if v := rr.Header().Get("ETag"); v != `"v1"` {
-			t.Errorf("ETag=%q want %q; an untouched body keeps the upstream's headers", v, `"v1"`)
+		// A client cannot send If-None-Match back through copyHopHeaders, and
+		// a 304 would become a 502 at mcpclient.Send, so a validator it
+		// received could never be spent.
+		for _, k := range []string{"ETag", "Content-Digest"} {
+			if v := rr.Header().Get(k); v != "" {
+				t.Errorf("%s=%q reached the client on an untouched body; the response allowlist drops it", k, v)
+			}
 		}
 	})
 }

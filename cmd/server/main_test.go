@@ -196,8 +196,14 @@ func TestSecurityHeaders(t *testing.T) {
 	req.Header.Set("Origin", "https://claude.ai")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
-	if !strings.Contains(rr.Header().Get("Access-Control-Expose-Headers"), "Mcp-Session-Id") {
+	expose := rr.Header().Get("Access-Control-Expose-Headers")
+	if !strings.Contains(expose, "Mcp-Session-Id") {
 		t.Fatalf("proxy CORS clobbered: %v", rr.Header())
+	}
+	// Retry-After is on the response allowlist (PORM-98) and is not
+	// CORS-safelisted, so a browser client can read it only if it is named here.
+	if !strings.Contains(expose, "Retry-After") {
+		t.Fatalf("Access-Control-Expose-Headers=%q does not name Retry-After", expose)
 	}
 	if rr.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatal("OPTIONS /mcp should still carry security headers")

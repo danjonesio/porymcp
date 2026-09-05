@@ -127,8 +127,9 @@ func TestPerUpstreamInitializeIsTheMembersOwn(t *testing.T) {
 // AC2b. A member endpoint is a transport for one server, so the session that
 // server mints has to survive the round trip in both directions. Nothing in
 // the proxy does this on purpose: forward returns the upstream's headers and
-// serve copies them back, which only holds while the member path takes the
-// forward branch.
+// serve copies back the three names in copyResponseHeaders, Mcp-Session-Id
+// among them, which only holds while the member path takes the forward
+// branch.
 func TestPerUpstreamSessionRoundTrips(t *testing.T) {
 	f := newFixture(t, map[string]upstreamSpec{
 		"alpha": {Tools: []string{"ping_tool"}, RespHeaders: map[string]string{"Mcp-Session-Id": "sess-alpha-1"}, Bearer: "sk-alpha-real"},
