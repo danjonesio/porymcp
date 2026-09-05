@@ -1,6 +1,6 @@
 'use client'
 
-import { Checkbox, CheckboxField } from '@/components/checkbox'
+import { Checkbox, CheckboxField, CheckboxGroup } from '@/components/checkbox'
 import { Description, Field, FieldGroup, Label } from '@/components/fieldset'
 import { HelpDisclosure } from '@/components/help-disclosure'
 import { Input } from '@/components/input'
@@ -10,10 +10,12 @@ import type { Upstream } from '@/lib/api'
 import { PLAIN_HTTP_NOTE, plainHTTPCredential } from '@/lib/discovery'
 import {
   AUTH_TYPE_LABELS,
+  clearStoredDescription,
   credentialRequired,
   editCredentialDescription,
   headerRequired,
   headerShaped,
+  removeCredentialDescription,
   type UpstreamForm,
 } from '@/lib/upstream-form'
 
@@ -50,7 +52,10 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
   const credentialNote = credentialDescription()
   const urlChanged = !!row && form.url.trim() !== row.url && row.auth_status === 'ok'
   const plainHTTP = !!row && plainHTTPCredential(form.url, form.auth_type)
-  const stoppedSending = !!row && form.auth_type === 'none' && row.auth_type !== 'none'
+  // Both sentences come from the lib, where node --test pins their exact text
+  // and the conditions they render under (PORM-120).
+  const removesCredential = removeCredentialDescription(row, form)
+  const clearStored = clearStoredDescription(row, form)
 
   return (
     <FieldGroup className={className}>
@@ -139,9 +144,7 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
             </option>
           ))}
         </Select>
-        {stoppedSending ? (
-          <Description>None stops sending the stored credential. It stays stored until a new one replaces it.</Description>
-        ) : null}
+        {removesCredential ? <Description>{removesCredential}</Description> : null}
       </Field>
       {form.auth_type === 'bearer' ? (
         <Field>
@@ -185,10 +188,23 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
           </Field>
         </>
       ) : null}
-      <CheckboxField>
-        <Checkbox name="enabled" checked={form.enabled} onChange={(checked) => onChange({ enabled: checked })} />
-        <Label>Enabled</Label>
-      </CheckboxField>
+      <CheckboxGroup>
+        <CheckboxField>
+          <Checkbox name="enabled" checked={form.enabled} onChange={(checked) => onChange({ enabled: checked })} />
+          <Label>Enabled</Label>
+        </CheckboxField>
+        {clearStored ? (
+          <CheckboxField>
+            <Checkbox
+              name="clear_stored"
+              checked={form.clear_stored}
+              onChange={(checked) => onChange({ clear_stored: checked })}
+            />
+            <Label>Remove the stored value</Label>
+            <Description>{clearStored}</Description>
+          </CheckboxField>
+        ) : null}
+      </CheckboxGroup>
     </FieldGroup>
   )
 }
