@@ -29,15 +29,25 @@ export function AdminEvents() {
   const [resourceType, setResourceType] = useState('')
 
   useEffect(() => {
+    // A slow answer for the previous filter must not land under the new one:
+    // on an audit view rows under the wrong label are a wrong answer, not a
+    // cosmetic one. The cleanup marks the request stale when the filter moves.
+    let live = true
     const q = new URLSearchParams()
     q.set('limit', '50')
     if (resourceType) q.set('resource_type', resourceType)
     api<{ admin_events: AdminEvent[]; next_cursor: string }>(`/admin-events?${q}`)
       .then((r) => {
+        if (!live) return
         setEvents(r.admin_events)
         setLoaded(true)
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((e: Error) => {
+        if (live) setError(e.message)
+      })
+    return () => {
+      live = false
+    }
   }, [resourceType])
 
   return (
