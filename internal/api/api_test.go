@@ -2580,3 +2580,72 @@ func TestPatchUpstreamNoneWithCredentialIsRejected(t *testing.T) {
 		}
 	})
 }
+
+// TestPatchUpstreamClearLogsCredential pins the server log half of PORM-120
+// security requirement 7, in the shape of TestPatchVirtualKeyClearLogsFields:
+// one Info line per removal, on both paths that empty the column, carrying the
+// id and the word credential and never a value; nothing for a request that
+// removed nothing.
+func TestPatchUpstreamClearLogsCredential(t *testing.T) {
+	s, h, _ := testAPI(t)
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	const token = "sk-live-DO-NOT-LOG"
+
+	clearLines := func(t *testing.T) []map[string]any {
+		t.Helper()
+		var out []map[string]any
+		for _, l := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			if l == "" {
+				continue
+			}
+			var line map[string]any
+			if err := json.Unmarshal([]byte(l), &line); err != nil {
+				t.Fatalf("log line is not JSON: %v: %s", err, l)
+			}
+			if line["msg"] == "upstream credential cleared" {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+	wantOne := func(t *testing.T, id string) {
+		t.Helper()
+		got := clearLines(t)
+		if len(got) != 1 {
+			t.Fatalf("want exactly one clear line, got %d:\n%s", len(got), logs.String())
+		}
+		line := got[0]
+		if line["upstream_id"] != id {
+			t.Fatalf("line: %v", line)
+		}
+		if c, _ := line["cleared"].([]any); len(c) != 1 || c[0] != "credential" {
+			t.Fatalf("cleared = %v", line["cleared"])
+		}
+		for _, k := range []string{"name", "upstream_name", "auth_config"} {
+			if _, has := line[k]; has {
+				t.Fatalf("the clear line carries %s: %v", k, line)
+			}
+		}
+		if strings.Contains(logs.String(), token) {
+			t.Fatalf("the credential reached the log: %s", logs.String())
+		}
+	}
+
+	viaNone, _ := mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": token}})
+	logs.Reset()
+	patchUpstreamJSON(t, h, viaNone, map[string]any{"auth_type": "none"})
+	wantOne(t, viaNone)
+
+	viaEmpty, _ := mustUpstream(t, h, "Linear", map[string]any{"auth_type": "bearer", "auth_config": map[string]any{"token": token}})
+	logs.Reset()
+	patchUpstreamJSON(t, h, viaEmpty, map[string]any{"auth_config": map[string]any{}})
+	wantOne(t, viaEmpty)
+
+	logs.Reset()
+	patchUpstreamJSON(t, h, viaNone, map[string]any{"auth_type": "none"})
+	patchUpstreamJSON(t, h, viaEmpty, map[string]any{"name": "Renamed"})
+	if got := clearLines(t); len(got) != 0 {
+		t.Fatalf("a request that removed nothing logged a clear: %v", got)
+	}
+}

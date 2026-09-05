@@ -407,9 +407,12 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
-	if cleared {
-		// After the write returned nil, like patchGroup's line: the id and what
-		// was cleared, never the name or a value.
+	// The log line fires on the same test the admin event uses (a column that
+	// held bytes and holds none now), so the two records of a removal never
+	// disagree, whichever request emptied it: auth_type none, or {}. After the
+	// write returned nil, like patchGroup's line: the id and what was cleared,
+	// never the name or a value.
+	if len(before.AuthConfig) > 0 && len(u.AuthConfig) == 0 {
 		s.log.Info("upstream credential cleared", "upstream_id", u.ID, "cleared", []string{"credential"})
 	}
 	// A PATCH that changed nothing still records: the row was written (and
