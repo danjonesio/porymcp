@@ -294,8 +294,9 @@ func (s *SQLStore) ensureSchemaMeta() error {
 // migrateBase creates the tables every version shares.
 //
 // Not covered by migrateStep's advisory lock: two replicas starting against a
-// virgin Postgres can still race here on CREATE TABLE IF NOT EXISTS. The loser
-// exits and a restart succeeds, because the tables then exist.
+// virgin Postgres, or first booting a build that adds a base table (as PORM-54
+// did with admin_events), can still race here on CREATE TABLE IF NOT EXISTS.
+// The loser exits and a restart succeeds, because the tables then exist.
 func (s *SQLStore) migrateBase() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS upstreams (
@@ -356,6 +357,11 @@ func (s *SQLStore) migrateBase() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS audit_logs_ts ON audit_logs (timestamp DESC)`,
 		`CREATE INDEX IF NOT EXISTS audit_logs_virtual_key ON audit_logs (virtual_key_id, timestamp DESC)`,
+		// No index on virtual_keys.key_lookup: the column is NOT NULL UNIQUE
+		// above, and the constraint's own index is the one the planner uses for
+		// GetVirtualKeyByLookup. A second index over the same single column
+		// served no read and cost every write (PORM-68); step 4 drops it from
+		// databases that already have it.
 		// admin_events is additive and lives here rather than in a numbered
 		// step: migrateBase runs on every open ahead of the step loop, so an
 		// existing database gains the table on its next start, and
@@ -376,11 +382,6 @@ func (s *SQLStore) migrateBase() error {
 			remote_addr TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS admin_events_ts ON admin_events (timestamp DESC)`,
-		// No index on virtual_keys.key_lookup: the column is NOT NULL UNIQUE
-		// above, and the constraint's own index is the one the planner uses for
-		// GetVirtualKeyByLookup. A second index over the same single column
-		// served no read and cost every write (PORM-68); step 4 drops it from
-		// databases that already have it.
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
