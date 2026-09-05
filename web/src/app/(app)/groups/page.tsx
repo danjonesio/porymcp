@@ -91,7 +91,7 @@ export default function GroupsPage() {
   }
 
   function failed(err: unknown) {
-    const message = editErrorMessage(err, 'group')
+    const message = editErrorMessage(err, 'group', 'save')
     // The row went away under the dialog: reload so "the current list" is true
     // when the operator closes it.
     if (err instanceof ApiError && err.status === 404) void load()
@@ -178,7 +178,7 @@ export default function GroupsPage() {
       closeDelete()
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) void load()
-      setDeleteError(editErrorMessage(err, 'group'))
+      setDeleteError(editErrorMessage(err, 'group', 'delete'))
     } finally {
       setDeleting(false)
     }

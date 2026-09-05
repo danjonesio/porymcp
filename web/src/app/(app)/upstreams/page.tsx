@@ -277,7 +277,7 @@ export default function UpstreamsPage() {
   }
 
   function failed(err: unknown) {
-    const message = editErrorMessage(err, 'upstream')
+    const message = editErrorMessage(err, 'upstream', 'save')
     // The row went away under the dialog: reload so "the current list" is true
     // when the operator closes it.
     if (err instanceof ApiError && err.status === 404) void load()
@@ -354,7 +354,7 @@ export default function UpstreamsPage() {
       closeDelete()
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) void load()
-      setDeleteError(editErrorMessage(err, 'upstream'))
+      setDeleteError(editErrorMessage(err, 'upstream', 'delete'))
     } finally {
       setDeleting(false)
     }
