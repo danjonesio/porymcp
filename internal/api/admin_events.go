@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -215,4 +216,42 @@ func validResourceType(v string) bool {
 		return true
 	}
 	return false
+}
+
+// listAdminEvents is listLogs with the admin-event filter. An unknown
+// resource_type is a 400 rather than an empty page: on an audit endpoint an
+// empty answer reads as "nothing happened", so a typo has to say so. An absent
+// resource_type means no filter. Every error string is fixed; nothing echoes
+// the query. The store clamps a limit above 200 to 50, as ListAuditLogs does.
+func (s *Server) listAdminEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := models.AdminEventFilter{Cursor: q.Get("cursor")}
+	if v := q.Get("resource_type"); v != "" {
+		if !validResourceType(v) {
+			writeError(w, http.StatusBadRequest, "invalid resource_type")
+			return
+		}
+		f.ResourceType = v
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		f.Limit = n
+	}
+	since, err := parseTimeParam(q.Get("since"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid since")
+		return
+	}
+	f.Since = since
+
+	events, next, err := s.store.ListAdminEvents(r.Context(), f)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"admin_events": events, "next_cursor": next})
 }
