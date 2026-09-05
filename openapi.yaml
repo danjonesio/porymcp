@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: |
     REST API for registering MCP upstreams, grouping them, minting per-agent virtual keys,
-    and querying audit logs. All routes below are served under `/api/v1` and require
+    and querying audit logs and admin events. All routes below are served under `/api/v1` and require
     `Authorization: Bearer <ADMIN_API_KEY>` except `GET /health`. Errors are JSON
     `{"error": "..."}`; an unknown path under `/api/v1` returns `404 {"error":"not found"}`.
     The MCP proxy endpoints (`POST /{virtual_key_id}/{upstream_slug}/mcp`,
@@ -448,6 +448,49 @@ paths:
       responses:
         "200":
           description: Log
+  /admin-events:
+    get:
+      summary: Query admin events
+      description: >-
+        One row per successful state-changing management call: create, update
+        and delete of an upstream or a group; create, update, rotate, revoke
+        and delete of a virtual key. Newest first. Only completed changes are
+        recorded, and `details` never holds a credential, a ciphertext or a
+        plaintext key. See `docs/03-api.md`, Admin events.
+      parameters:
+        - name: since
+          in: query
+          description: >-
+            Inclusive lower bound, RFC 3339. Exact on a whole second; a value
+            carrying a fraction can include a row from earlier in that second.
+          schema:
+            type: string
+            format: date-time
+        - name: resource_type
+          in: query
+          description: Narrow to one resource type. A value outside the enum is a 400.
+          schema:
+            type: string
+            enum: [upstream, group, virtual_key]
+        - name: limit
+          in: query
+          description: >-
+            Page size, default 50. Below 1 or not an integer is a 400; above
+            200 is treated as 50.
+          schema:
+            type: integer
+        - name: cursor
+          in: query
+          description: Opaque, from the previous page's `next_cursor`. A malformed cursor is a 400.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Page of admin events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminEventPage"
 components:
   securitySchemes:
     adminKey:
@@ -1064,3 +1107,101 @@ components:
             hold whitespace, a control character or U+FFFD.
           items:
             type: string
+    AdminEventPage:
+      type: object
+      required: [admin_events, next_cursor]
+      properties:
+        admin_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminEvent"
+        next_cursor:
+          type: string
+          description: Cursor for the next page; empty on the last page.
+    AdminEvent:
+      type: object
+      description: One successful management-plane change. Every field is always present.
+      required:
+        - id
+        - timestamp
+        - actor
+        - action
+        - resource_type
+        - resource_id
+        - resource_name
+        - details
+        - request_id
+        - remote_addr
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        actor:
+          type: string
+          description: The literal `admin` until dashboard users land.
+        action:
+          type: string
+          enum:
+            - upstream.create
+            - upstream.update
+            - upstream.delete
+            - group.create
+            - group.update
+            - group.delete
+            - virtual_key.create
+            - virtual_key.update
+            - virtual_key.rotate
+            - virtual_key.revoke
+            - virtual_key.delete
+        resource_type:
+          type: string
+          enum: [upstream, group, virtual_key]
+        resource_id:
+          type: string
+        resource_name:
+          type: string
+          description: >-
+            The name as it stood when the change landed, cleaned of control
+            characters and cut at 256 bytes.
+        details:
+          type: object
+          description: >-
+            A closed object the server composes, `{}` when there is nothing to
+            add. Never the request body, a credential, a ciphertext or a
+            plaintext key. `fields` names the fields whose stored value differs
+            after the request; `cleared` the fields the request nulled or
+            emptied; `auth_changed` that a credential was sent (ciphertexts
+            cannot be compared, so it is presence, not a diff).
+          properties:
+            fields:
+              type: array
+              items:
+                type: string
+            cleared:
+              type: array
+              items:
+                type: string
+            slug:
+              type: string
+            auth_type:
+              type: string
+            auth_changed:
+              type: boolean
+            upstream_count:
+              type: integer
+            tool_filter_set:
+              type: boolean
+            target_type:
+              type: string
+            target_id:
+              type: string
+            key_prefix:
+              type: string
+        request_id:
+          type: string
+          description: The request id the access log carries, cut at 256 bytes.
+        remote_addr:
+          type: string
+          description: The client address after the trusted-proxy rule, or the literal `unknown`.

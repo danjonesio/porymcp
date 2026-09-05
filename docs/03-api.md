@@ -59,7 +59,8 @@ endpoints. Clearing `tool_allowlist`, `tool_denylist` or a group's
 `tool_filter` widens what a key may call. The management API writes one line
 to the server log for each (`group policy fields cleared` and `virtual key
 policy fields cleared`), naming the resource, its id and the fields, never a
-value.
+value. The same field names also land on the request's admin event, under
+`details.cleared` (see Admin events).
 
 **Round-trips.** An edit form must omit `auth_config`, `tool_filter`,
 `tool_allowlist` and `tool_denylist` when the operator did not touch them. The
@@ -273,8 +274,10 @@ usually the operator diagnosing it), and the saved route ignores its request
 body, as `rotate` and `revoke` do.
 
 Discovery contacts the upstream on the **operator's** behalf rather than a
-virtual key's, so it writes no audit row: `GET /logs` is the record of what
-agents did, and this is not one of them. The discover handlers and the upstream
+virtual key's, so it writes no `audit_logs` row: `GET /logs` is the record of
+what agents did, and this is not one of them. It writes no `admin_events` row
+either (see Admin events): a test result is an observation of the upstream,
+not a change to the configuration. The discover handlers and the upstream
 client add no log line of their own either, with one exception: when the saved
 route cannot record its result it writes a single line (`DEBUG` when the row
 was edited or deleted while the handshake ran, `WARN` when the store itself
@@ -474,6 +477,74 @@ substring. That name is the one the client sent, so on the aggregate endpoint of
 a group it is the canonical `{upstream_slug}__{tool}` and on a per-member
 endpoint or a single-upstream key it is the upstream's own bare name. Filtering
 one group's calls for a tool therefore takes the spelling the path uses.
+
+`limit` below 1 or not an integer is a `400`; above 200 it is treated as 50.
+
+## Admin events
+- `GET /admin-events?since=&resource_type=&limit=&cursor=`
+
+Every successful state-changing management call writes one row to
+`admin_events` before it answers: create, update and delete of an upstream or
+a group, and create, update, rotate, revoke and delete of a virtual key
+(PORM-54). A row carries `id`, `timestamp`, `actor` (the literal `admin` until
+dashboard users land), `action`, `resource_type`, `resource_id`,
+`resource_name`, `details`, `request_id` and `remote_addr`: the client address
+after the trusted-proxy rule, so a deployment behind a reverse proxy records
+the client rather than the proxy, or the literal `unknown` when the socket
+address does not parse. The response is
+`{"admin_events": [...], "next_cursor": "..."}`, newest first; `next_cursor`
+is empty on the last page and `admin_events` is `[]`, never null.
+
+`resource_type` is one of `upstream`, `group`, `virtual_key`; any other value
+is a `400`, because on an audit endpoint an empty answer would read as
+"nothing happened". `since` is inclusive and takes RFC 3339; on a whole second
+it is exact, and a value carrying a fraction can include a row from earlier in
+that same second. `limit` below 1 or not an integer is a `400`; above 200 it
+is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
+`400`.
+
+| action | details keys |
+|---|---|
+| `upstream.create` | `slug`, `auth_type`, `auth_changed` (when a credential was supplied) |
+| `upstream.update` | `fields`, `auth_changed` (when a credential was sent), `auth_type` (when the credential or the type changed) |
+| `upstream.delete` | none |
+| `group.create` | `upstream_count`, `tool_filter_set` (when a filter was supplied) |
+| `group.update` | `fields`, `upstream_count` (when the membership changed), `cleared` |
+| `group.delete` | none |
+| `virtual_key.create` | `target_type`, `target_id`, `key_prefix` |
+| `virtual_key.update` | `fields`, `cleared` |
+| `virtual_key.rotate` | `key_prefix` |
+| `virtual_key.revoke` | none |
+| `virtual_key.delete` | none |
+
+`details` is a closed object composed by the server, never the request body.
+It is always an object, `{}` when there is nothing to add. `fields` names the
+fields whose stored value differs after the request, not the keys the body
+carried: a client that round-trips the current values records no field, and
+sending the current `slug` (which cannot change) records nothing. `cleared`
+records that the request nulled or emptied a field (the same names the server
+log line carries) and can appear without a matching `fields` entry when the
+field was already empty. A credential is reported by `auth_changed`, never by
+a field: ciphertexts cannot be compared, so an identical credential sent again
+shows the flag and no field. A `PATCH` with an empty body answers `200` and
+records `details: {}`. A value is recorded only when it is a bounded
+identifier, enum or count the API already returns in the clear (`slug`,
+`auth_type`, `key_prefix`, `target_type`, `target_id`, `upstream_count`); a
+name, description, URL, credential, ciphertext, plaintext key, metadata, tool
+filter, tool list or member id list never appears as a value, and the string
+`auth_config` never appears at all.
+
+A row follows the store write, not the response: a request the store refused
+(`400`, `401`, `404`, `409`) records nothing, and a rare `500` raised after a
+committed write (a presenter failure) still has its row. Only completed
+changes are recorded; a refused or unauthorised request is visible only as a
+status line in the server log. The two discovery routes
+(`POST /upstreams/discover` and `POST /upstreams/{id}/discover`) are not
+recorded: the unsaved probe changes no state, and the saved one stamps a test
+result, an observation of the upstream rather than a change to the
+configuration. `resource_name` and `request_id` are cleaned (a newline or tab
+becomes a space, other control characters are dropped) and cut at 256 bytes on
+the row; the resource keeps its own name.
 
 ## Meta
 - `GET /health`: also served unauthenticated at `/health` (root). The
