@@ -29,8 +29,8 @@ response, the same as one that was never set.
 | upstream `slug` | equal to the stored slug: no-op; anything else: `400 slug cannot be changed after create` | same `400` | same `400` |
 | upstream / group `description` | set | **cleared** | **cleared** |
 | upstream `url` | set; `400 url must be an absolute http or https URL` if not; resets the last test when it differs | that `400` | that `400` |
-| upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value; resets the last test when it differs | that `400` | that `400` |
-| upstream `auth_config` | replaces the stored credential; resets the last test | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged | `{}` replaces with `{}`: an empty credential is sealed over the stored one, the row reads `unreadable` and the proxy stops authenticating, so a client that did not change the credential omits the key (the dashboard's edit dialog does) |
+| upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value; resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none` | that `400` | that `400` |
+| upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does) |
 | upstream `enabled` | set | `400 enabled must be true or false` | n/a |
 | group `upstream_ids` | validated and replaced | **cleared** to `[]`: the group has no members, and every key targeting it loses its endpoints | `[]` clears |
 | group `tool_filter` | validated and replaced | **cleared** | `{}` is a valid filter that filters nothing; stored as sent |
@@ -60,7 +60,9 @@ endpoints. Clearing `tool_allowlist`, `tool_denylist` or a group's
 to the server log for each (`group policy fields cleared` and `virtual key
 policy fields cleared`), naming the resource, its id and the fields, never a
 value. The same field names also land on the request's admin event, under
-`details.cleared` (see Admin events).
+`details.cleared` (see Admin events), beside one entry that is not a field
+name: `credential`, recorded when a request removed an upstream's stored
+credential.
 
 **Round-trips.** An edit form must omit `auth_config`, `tool_filter`,
 `tool_allowlist` and `tool_denylist` when the operator did not touch them. The
@@ -88,6 +90,23 @@ now clears those fields where it previously left them alone.
 - `DELETE /upstreams/{id}`
 - `POST   /upstreams/discover`
 - `POST   /upstreams/{id}/discover`
+
+### Removing a credential
+`PATCH /upstreams/{id}` with `{"auth_type": "none"}` stops the upstream
+sending a credential and removes the stored one: the `auth_config` column is
+emptied, the `200` reads `auth_configured: false, auth_status: "none"` with
+`last_test_at` and `last_test_ok` reset to `null`, and the admin event records
+`cleared: ["credential"]`. The same request on a row that is already `none`
+and still holds a value (a credential switched to None by an earlier build, or
+the empty object earlier builds sealed for a blank box) removes it too; on a
+row with nothing stored it changes nothing and keeps the recorded test. A
+credential sent beside `auth_type: "none"`, on create (an omitted `auth_type`
+defaults to `none`) or on patch, answers
+`400 {"error":"auth_config cannot be set when auth_type is none"}` and nothing
+is written. A credential sent alone to a row stored as `none` is stored, as
+before, and is not sent until the type changes. The removal is a row update,
+not an erasure of the database file, its write-ahead log or backups (see
+`docs/07-security.md`).
 
 ### Upstream URLs
 `url` must be an absolute `http` or `https` URL with a host and no fragment.
@@ -299,10 +318,12 @@ field is writable: `POST /upstreams` and `PATCH /upstreams/{id}` ignore them in
 a body, and the saved discovery route is the only thing that sets them.
 
 `PATCH /upstreams/{id}` resets both to `null` when it changes what a test tested:
-a different `url`, `transport` or `auth_type`, or any `auth_config` in the
-body other than an explicit `null`, since a credential is encrypted under a
-fresh nonce and two ciphertexts of one secret never compare equal. `name`,
-`description` and `enabled` never reset it. The reset is in the body of the
+a different `url`, `transport` or `auth_type`, `auth_type: "none"` over a
+stored credential (the request that removes it, see Removing a credential), or
+any `auth_config` in the body other than an explicit `null`, since a credential
+is encrypted under a fresh nonce and two ciphertexts of one secret never
+compare equal. `name`, `description` and `enabled` never reset it, and neither
+does `auth_type: "none"` on a row with nothing stored. The reset is in the body of the
 `200` the `PATCH` itself returns, not only in the next `GET`. Recording a test
 does not move `updated_at`: a test is not an edit. Every `PATCH` is one and does
 move it, `{}` included (see Partial updates).
@@ -314,14 +335,17 @@ stored credential (PORM-52): `none`: `auth_type` is `none`, the upstream sends
 no credential and nothing stored beside it is consulted; `ok`; `undecryptable`:
 no configured `ENCRYPTION_KEY` (current or `ENCRYPTION_KEY_PREVIOUS`) opens
 the stored value: the key changed, and the fix is a key; `unreadable`: nothing
-is stored, or the value opens but holds nothing the auth type can send (a blank
-token stored as `{}`): the fix is the credential, never the key. The proxy
+is stored (a blank credential box stores nothing), or the value opens but holds
+nothing the auth type can send: the fix is the credential, never the key. The proxy
 refuses to call an `undecryptable` or `unreadable` upstream (see Upstream
 failures). Invariants: `auth_status` is `"none"` iff `auth_type` is `"none"`,
 whatever the dashboard stored; `auth_hint` is present only when `ok`;
 `auth_configured` keeps its meaning (a blob is stored) and is independent: a
 `bearer` upstream with no credential yet reads `auth_configured: false,
-auth_status: "unreadable"`. It is computed live on every read, so it clears the
+auth_status: "unreadable"`, and `auth_configured: true` with
+`auth_type: "none"` means a value written by an earlier build is still stored
+and not sent, which a `PATCH` naming `auth_type: "none"` removes (see Removing
+a credential). It is computed live on every read, so it clears the
 moment a credential is re-entered or `porymcp rekey` finishes; `GET /health`'s
 `encryption` is the boot verdict and clears at the next restart.
 
@@ -505,8 +529,8 @@ is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 
 | action | details keys |
 |---|---|
-| `upstream.create` | `slug`, `auth_type`, `auth_changed` (when a credential was supplied) |
-| `upstream.update` | `fields`, `auth_changed` (when a credential was sent), `auth_type` (when the credential or the type changed) |
+| `upstream.create` | `slug`, `auth_type`, `auth_changed` (when a credential was stored) |
+| `upstream.update` | `fields`, `auth_changed` (when a credential was stored), `cleared` (`credential`, when the stored credential was removed), `auth_type` (when the credential or the type changed) |
 | `upstream.delete` | none |
 | `group.create` | `upstream_count`, `tool_filter_set` (when a filter that filters something was supplied; `{}` does not count, as on update) |
 | `group.update` | `fields`, `upstream_count` (when the membership changed), `cleared` |
@@ -523,10 +547,13 @@ fields whose stored value differs after the request, not the keys the body
 carried: a client that round-trips the current values records no field, and
 sending the current `slug` (which cannot change) records nothing. `cleared`
 records that the request nulled or emptied a field (the same names the server
-log line carries) and can appear without a matching `fields` entry when the
-field was already empty. A credential is reported by `auth_changed`, never by
-a field: ciphertexts cannot be compared, so an identical credential sent again
-shows the flag and no field. A `PATCH` with an empty body answers `200` and
+log line carries), or removed the stored credential, and can appear without a
+matching `fields` entry when the field was already empty. A stored credential
+is reported by `auth_changed`, never by a field: ciphertexts cannot be
+compared, so an identical credential sent again shows the flag and no field,
+and an object with no members stores nothing and sets no flag. A removed
+credential is the word `credential` in `cleared`, the one `cleared` entry that
+is not a field name. A `PATCH` with an empty body answers `200` and
 records `details: {}`. A value is recorded only when it is a bounded
 identifier, enum or count the API already returns in the clear (`slug`,
 `auth_type`, `key_prefix`, `target_type`, `target_id`, `upstream_count`); a

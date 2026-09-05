@@ -310,7 +310,9 @@ before doing anything else:
 `docker inspect <container> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep ENCRYPTION_KEY`.
 Write it into `.env` to keep running, or into `ENCRYPTION_KEY_PREVIOUS`
 beside a fresh `ENCRYPTION_KEY` and follow the steps below. If the key is gone
-for good, the stored credentials cannot be recovered: re-enter each one.
+for good, the stored credentials cannot be recovered: re-enter each one, or
+switch an upstream to `auth_type: none` (`PATCH /api/v1/upstreams/{id}` with
+`{"auth_type":"none"}`), which removes the stored value without the old key.
 
 ```bash
 # 0. a new key, on the host (the image has no openssl)
@@ -366,7 +368,10 @@ init container or a deploy hook: it is a deliberate, once-per-rotation step.
 
 If `rekey` exits `1` naming rows no configured key opens, nothing was changed:
 re-enter those credentials (`PATCH /api/v1/upstreams/{id}` with a fresh
-`auth_config`) or delete those upstreams, then re-run. If it reports a row
+`auth_config`), switch them to `auth_type: none` (the same route with
+`{"auth_type":"none"}`, which removes the stored value without the old key), or
+delete those upstreams; then re-run `rekey` and restart the server so
+`GET /health` reports `encryption: ok`. If it reports a row
 "changed during rekey", a concurrent credential edit raced it (a Postgres
 deployment: on SQLite, writers queue behind the rotation's transaction
 instead); re-run.

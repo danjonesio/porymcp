@@ -81,7 +81,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Upstream"
         "400":
-          description: Invalid field or slug
+          description: >-
+            Invalid field or slug, or a credential sent beside `auth_type`
+            `none` (an omitted `auth_type` defaults to `none`)
         "409":
           description: Slug already taken, or no unique slug could be derived
   /upstreams/discover:
@@ -172,6 +174,9 @@ paths:
         vouches for a connection nobody has tried; a credential is encrypted
         under a fresh nonce, so two ciphertexts of one secret never compare
         equal and any non-null `auth_config` in the body counts as a change.
+        `auth_type` `none` also removes the stored credential (the column is
+        emptied and `auth_configured` reads false) and resets both fields when
+        one was stored; on a row with nothing stored it changes nothing.
         `name`, `description` and `enabled` never reset it. The reset is in this
         response, not only in the next GET. Neither field can be set by a body.
       requestBody:
@@ -188,7 +193,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Upstream"
         "400":
-          description: Invalid field, or slug differs from the stored value
+          description: >-
+            Invalid field, slug differs from the stored value, or a credential
+            sent beside `auth_type` `none`
     delete:
       summary: Delete an upstream
       responses:
@@ -683,7 +690,9 @@ components:
         `last_test_at` and `last_test_ok` are deliberately absent: they are
         written only by POST /upstreams/{id}/discover and are ignored in a body.
         On PATCH an absent key keeps the stored value, `null` or `""` clears
-        `description`, `null` on `auth_config` keeps the stored credential, and
+        `description`, `null` on `auth_config` keeps the stored credential
+        unless the same request names `auth_type` `none`, which removes it, `{}`
+        on `auth_config` stores nothing, and
         `null` or `""` on any other field is 400 (see docs/03-api.md, Partial
         updates). The property types below are the strict PATCH shape; on POST
         the handler additionally reads `transport` and `auth_type` sent as
@@ -729,12 +738,16 @@ components:
         auth_type:
           type: string
           enum: [none, bearer, header, api_key, custom]
+          description: >-
+            On PATCH, `none` also removes the stored credential. On POST and
+            PATCH a credential sent beside `none` is 400.
         auth_config:
           type: [object, "null"]
           description: >-
-            Write-only. A value replaces the stored credential; `null` leaves
-            it unchanged, on PATCH and on POST alike (on POST that means no
-            credential).
+            Write-only. A value replaces the stored credential; an object with
+            no members stores nothing; `null` leaves it unchanged, on PATCH and
+            on POST alike (on POST that means no credential). Refused with 400
+            beside `auth_type` `none`.
         enabled:
           type: boolean
     Discovery:
@@ -1174,8 +1187,10 @@ components:
             add. Never the request body, a credential, a ciphertext or a
             plaintext key. `fields` names the fields whose stored value differs
             after the request; `cleared` the fields the request nulled or
-            emptied; `auth_changed` that a credential was sent (ciphertexts
-            cannot be compared, so it is presence, not a diff).
+            emptied, plus `credential` when an upstream's stored credential was
+            removed (the one entry that is not a field name); `auth_changed`
+            that a credential was stored (ciphertexts cannot be compared, so it
+            is presence, not a diff).
           properties:
             fields:
               type: array
