@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -210,6 +211,133 @@ func TestPatchWithoutAuthConfigDoesNotRewriteCiphertext(t *testing.T) {
 	}
 	if rawAuth(t, path, id) == before {
 		t.Fatal("a PATCH with auth_config did not write the new ciphertext")
+	}
+}
+
+// TestPatchUpstreamClearsCredential is PORM-120 acceptance criterion 1 and
+// pins security requirements 1, 4 and 5: PATCH auth_type none on a bearer row
+// with a recorded test answers auth_configured false and auth_status none with
+// both test fields null, empties the column, and echoes no credential.
+func TestPatchUpstreamClearsCredential(t *testing.T) {
+	stub := newMCPStub(t)
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	id, _ := mustUpstream(t, h, "GitHub", map[string]any{"url": stub.srv.URL, "auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})
+	recordTestOn(t, h, id)
+	if rawAuth(t, path, id) == "" {
+		t.Fatal("the bearer row holds no ciphertext before the clear")
+	}
+
+	rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"auth_type": "none"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH: %d %s", rr.Code, rr.Body.String())
+	}
+	// The key form, because auth_configured contains the same letters.
+	if strings.Contains(rr.Body.String(), `"auth_config":`) {
+		t.Fatalf("the 200 carries an auth_config key: %s", rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["auth_configured"] != false || got["auth_status"] != "none" {
+		t.Fatalf("response = %v, want auth_configured false and auth_status none", got)
+	}
+	if _, has := got["auth_hint"]; has {
+		t.Fatalf("response still carries an auth_hint: %v", got)
+	}
+	if got["last_test_at"] != nil || got["last_test_ok"] != nil {
+		t.Fatalf("the response still vouches for the old credential: at=%v ok=%v", got["last_test_at"], got["last_test_ok"])
+	}
+	if at, ok, _ := upstreamTest(t, h, id); at != nil || ok != nil {
+		t.Fatalf("the row still vouches for the old credential: at=%v ok=%v", at, ok)
+	}
+	if v := rawAuth(t, path, id); v != "" {
+		t.Fatalf("auth_config column = %q after the clear, want empty", v)
+	}
+}
+
+// TestPatchUpstreamClearsLegacyNoneRow: the rows PORM-120 exists for are
+// already none and still hold a blob. Naming none again empties the column and
+// resets the recorded test, because the request removed bytes.
+func TestPatchUpstreamClearsLegacyNoneRow(t *testing.T) {
+	stub := newMCPStub(t)
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	id, _ := mustUpstream(t, h, "Docs", map[string]any{"url": stub.srv.URL, "auth_type": "none"})
+	recordTestOn(t, h, id)
+	overwriteAuth(t, path, id, foreignSeal(t, `{"token":"old"}`))
+
+	got := patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "none"})
+	if got["auth_configured"] != false || got["last_test_at"] != nil || got["last_test_ok"] != nil {
+		t.Fatalf("response = %v, want auth_configured false and both test fields null", got)
+	}
+	if at, ok, _ := upstreamTest(t, h, id); at != nil || ok != nil {
+		t.Fatalf("the row still vouches for the old settings: at=%v ok=%v", at, ok)
+	}
+	if v := rawAuth(t, path, id); v != "" {
+		t.Fatalf("auth_config column = %q after the clear, want empty", v)
+	}
+}
+
+// TestPatchUpstreamClearsUndecryptableCredential pins PORM-120 security
+// requirement 2: the clear decrypts nothing, so a row sealed under a key this
+// server does not hold is cleared without it.
+func TestPatchUpstreamClearsUndecryptableCredential(t *testing.T) {
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	id, _ := mustUpstream(t, h, "Linear", map[string]any{"auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})
+	overwriteAuth(t, path, id, foreignSeal(t, `{"token":"sk"}`))
+	if got := upstreamsByID(t, h)[id]["auth_status"]; got != "undecryptable" {
+		t.Fatalf("auth_status before the clear = %v, want undecryptable", got)
+	}
+
+	got := patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "none"})
+	if got["auth_configured"] != false || got["auth_status"] != "none" {
+		t.Fatalf("response = %v, want auth_configured false and auth_status none", got)
+	}
+	if v := rawAuth(t, path, id); v != "" {
+		t.Fatalf("auth_config column = %q after the clear, want empty", v)
+	}
+}
+
+// TestPatchUpstreamResentNoneOnEmptyRowIsNoOp: a round-trip that names none on
+// a row with nothing stored removes nothing, so it keeps its recorded test
+// (the same rule TestPatchUpstreamSameURLKeepsTestResult pins for url).
+func TestPatchUpstreamResentNoneOnEmptyRowIsNoOp(t *testing.T) {
+	stub := newMCPStub(t)
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	id, _ := mustUpstream(t, h, "Docs", map[string]any{"url": stub.srv.URL, "auth_type": "none"})
+	at := recordTestOn(t, h, id)
+
+	got := patchUpstreamJSON(t, h, id, map[string]any{"auth_type": "none"})
+	if got["last_test_at"] != at || got["last_test_ok"] != true {
+		t.Fatalf("a no-op none reset the test in the response: at=%v ok=%v", got["last_test_at"], got["last_test_ok"])
+	}
+	if rowAt, ok, _ := upstreamTest(t, h, id); rowAt != at || ok != true {
+		t.Fatalf("a no-op none reset the test on the row: at=%v ok=%v", rowAt, ok)
+	}
+	if v := rawAuth(t, path, id); v != "" {
+		t.Fatalf("auth_config column = %q, want empty", v)
+	}
+}
+
+// TestPatchUpstreamEmptyAuthConfigClears: an object with no members stores
+// nothing on PATCH as well as on create (PORM-120). The row keeps its type,
+// so it reads unreadable and fails closed, as the sealed {} did before, but
+// now with auth_configured false and no secret-shaped bytes at rest.
+func TestPatchUpstreamEmptyAuthConfigClears(t *testing.T) {
+	stub := newMCPStub(t)
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	id, _ := mustUpstream(t, h, "GitHub", map[string]any{"url": stub.srv.URL, "auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})
+	recordTestOn(t, h, id)
+
+	got := patchUpstreamJSON(t, h, id, map[string]any{"auth_config": map[string]string{}})
+	if got["auth_configured"] != false || got["auth_status"] != "unreadable" {
+		t.Fatalf("response = %v, want auth_configured false and auth_status unreadable", got)
+	}
+	if got["last_test_at"] != nil || got["last_test_ok"] != nil {
+		t.Fatalf("the response still vouches for the old credential: at=%v ok=%v", got["last_test_at"], got["last_test_ok"])
+	}
+	if v := rawAuth(t, path, id); v != "" {
+		t.Fatalf("auth_config column = %q after {}, want empty", v)
 	}
 }
 

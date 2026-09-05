@@ -291,10 +291,20 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// auth_config therefore always counts as a change, the same condition the
 	// assignment below uses. An edit dialog has to omit the field when the
 	// operator did not touch it (PORM-2), or every save resets the dot.
+	//
+	// Choosing None removes the stored credential as well as stopping PoryMCP
+	// sending it. It keys off the value the request named rather than a change
+	// of type, so one request also empties a row that was already none and
+	// still holds a blob sealed by an earlier build (PORM-120). It counts as a
+	// change only when it removes bytes, so a resent none on an empty row
+	// stays a no-op and keeps its recorded test.
+	clearAuth := in.AuthType.Has() && in.AuthType.Value == models.AuthNone
+	cleared := clearAuth && len(u.AuthConfig) > 0
 	resetTest := (in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL) ||
 		(in.Transport.Has() && in.Transport.Value != u.Transport) ||
 		(in.AuthType.Has() && in.AuthType.Value != u.AuthType) ||
-		in.AuthConfig.Has()
+		in.AuthConfig.Has() ||
+		cleared
 	// Every field is an Optional (see optional.go): a key the body did not carry
 	// leaves the stored value alone, a value sets it under the same checks as
 	// create, and null clears the fields that have a cleared state. A required
@@ -364,6 +374,9 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 		u.AuthConfig = enc
 	}
+	if clearAuth {
+		u.AuthConfig = nil
+	}
 	if in.Enabled.Set {
 		if in.Enabled.Null {
 			writeError(w, http.StatusBadRequest, errEnabledRule)
@@ -379,10 +392,13 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		u.LastTestAt, u.LastTestOK = nil, nil
 	}
 	// auth_config is written back only when this request carried one (a
-	// literal {} counts). Otherwise the ciphertext read at the top of this
-	// handler stays out of the statement, so an edit that raced a
-	// `porymcp rekey` cannot put an old-key value back (PORM-52).
-	if err := s.store.UpdateUpstream(r.Context(), u, resetTest, in.AuthConfig.Has()); err != nil {
+	// literal {} counts) or named auth_type none over a stored value. Writing
+	// the empty column is not writing back a value the request did not carry.
+	// Otherwise the ciphertext read at the top of this handler stays out of
+	// the statement, so an edit that raced a `porymcp rekey` cannot put an
+	// old-key value back (PORM-52).
+	writeAuth := in.AuthConfig.Has() || cleared
+	if err := s.store.UpdateUpstream(r.Context(), u, resetTest, writeAuth); err != nil {
 		storeError(w, err)
 		return
 	}
