@@ -474,6 +474,13 @@ func TestSingleUpstreamListFilteredOverSSE(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("tools/list HTTP code=%d body=%q", rr.Code, rr.Body.String())
 	}
+	// A client that cannot tell a stream from a document cannot read the
+	// answer. filterListResponse reads the media type off forward's private
+	// clone before the copy-back runs; this is the client-visible half of
+	// that (PORM-98, acceptance criterion 3).
+	if got := rr.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type=%q want text/event-stream", got)
+	}
 	body := rr.Body.String()
 	if !strings.HasPrefix(body, "event: message\ndata: ") || !strings.HasSuffix(body, "\n\n") {
 		t.Errorf("the event framing was not reproduced: %q", body)
