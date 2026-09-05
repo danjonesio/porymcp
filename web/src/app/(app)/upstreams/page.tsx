@@ -312,8 +312,12 @@ export default function UpstreamsPage() {
     setSaving(true)
     try {
       await api('/upstreams', { method: 'POST', body: JSON.stringify(upstreamCreateBody(form, slugTouched)) })
-      close()
-      setSlugTouched(false)
+      // The table is updated whatever happened to the dialog meanwhile; the
+      // dialog is closed only if it is still the one this request came from.
+      if (dialogSeq.current === mine) {
+        close()
+        setSlugTouched(false)
+      }
       load()
     } catch (err) {
       failed(err, mine)
@@ -342,7 +346,7 @@ export default function UpstreamsPage() {
     try {
       const saved = await api<Upstream>(`/upstreams/${row.id}`, { method: 'PATCH', body: JSON.stringify(body) })
       setItems((list) => list.map((x) => (x.id === saved.id ? saved : x)))
-      close()
+      if (dialogSeq.current === mine) close()
     } catch (err) {
       failed(err, mine)
     } finally {

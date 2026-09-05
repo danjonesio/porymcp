@@ -125,8 +125,12 @@ export default function GroupsPage() {
     setSaving(true)
     try {
       await api('/groups', { method: 'POST', body: JSON.stringify(groupCreateBody(form)) })
-      close()
-      setForm(blankGroupForm())
+      // The table is updated whatever happened to the dialog meanwhile; the
+      // dialog is closed only if it is still the one this request came from.
+      if (dialogSeq.current === mine) {
+        close()
+        setForm(blankGroupForm())
+      }
       load()
     } catch (err) {
       failed(err, mine)
@@ -159,7 +163,7 @@ export default function GroupsPage() {
     try {
       const saved = await api<Group>(`/groups/${row.id}`, { method: 'PATCH', body: JSON.stringify(body) })
       setGroups((list) => list.map((x) => (x.id === saved.id ? saved : x)))
-      close()
+      if (dialogSeq.current === mine) close()
     } catch (err) {
       failed(err, mine)
     } finally {
