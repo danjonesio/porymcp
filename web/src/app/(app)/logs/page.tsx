@@ -18,6 +18,10 @@ export default function LogsPage() {
   const [keys, setKeys] = useState<VirtualKey[]>([])
   const [selected, setSelected] = useState<AuditLog | null>(null)
   const [error, setError] = useState('')
+  // Nothing renders in place of the table until the first fetch settles, so
+  // the empty copy cannot flash a false negative on first paint. Never reset:
+  // a filter change replaces the rows when its answer lands.
+  const [loaded, setLoaded] = useState(false)
   const [filters, setFilters] = useState({ virtual_key_id: '', method: '', status: '', tool: '' })
 
   function load() {
@@ -31,6 +35,7 @@ export default function LogsPage() {
       .then(([l, a]) => {
         setLogs(l.logs)
         setKeys(a.virtual_keys)
+        setLoaded(true)
       })
       .catch((e: Error) => setError(e.message))
   }
@@ -88,7 +93,7 @@ export default function LogsPage() {
         </Field>
       </div>
 
-      {logs.length === 0 ? (
+      {!loaded ? null : logs.length === 0 ? (
         <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">No matching log entries.</p>
       ) : (
         <Table className="mt-8 [--gutter:--spacing(6)] lg:[--gutter:--spacing(10)]">
