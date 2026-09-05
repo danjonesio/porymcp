@@ -564,7 +564,7 @@ func TestFreshAndMigratedSchemasMatch(t *testing.T) {
 		t.Errorf("ToolEntriesLeft = %d, want 2 (a2's allowlist and denylist, whose target group is gone)", got)
 	}
 
-	for _, table := range []string{"upstreams", "virtual_keys", "audit_logs"} {
+	for _, table := range []string{"upstreams", "virtual_keys", "audit_logs", "admin_events"} {
 		a, b := tableColumns(t, fresh, table), tableColumns(t, migrated, table)
 		if len(a) == 0 {
 			t.Errorf("%s: no columns on the fresh database", table)
@@ -821,6 +821,12 @@ func assertRenamed(t *testing.T, s *SQLStore) {
 	assertLookupUsesUniqueIndex(t, s)
 	if got := indexColumns(t, s, "audit_logs_virtual_key"); strings.Join(got, ",") != "virtual_key_id,timestamp DESC" {
 		t.Errorf("audit_logs_virtual_key columns = %v, want [virtual_key_id timestamp DESC]", got)
+	}
+	// PORM-54: the one admin_events index, and its DESC. The fresh-versus-
+	// migrated comparison cannot catch a dropped DESC because both sides run
+	// the same migrateBase, so it is pinned here by name.
+	if got := indexColumns(t, s, "admin_events_ts"); strings.Join(got, ",") != "timestamp DESC" {
+		t.Errorf("admin_events_ts columns = %v, want [timestamp DESC]", got)
 	}
 	for _, old := range []string{"agents_lookup", "audit_logs_agent"} {
 		if n := indexCount(t, s, old); n != 0 {
@@ -1921,5 +1927,177 @@ func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
 		if !strings.Contains(bare, p) {
 			t.Fatalf("bare file: DSN %q missing %q", bare, p)
 		}
+	}
+}
+
+// --- Admin events (PORM-54) ---
+
+// adminEventFixture is one admin_events row for the tests below.
+func adminEventFixture(id string, ts time.Time, resourceType string) *models.AdminEvent {
+	return &models.AdminEvent{
+		ID:           id,
+		Timestamp:    ts,
+		Actor:        models.ActorAdmin,
+		Action:       resourceType + ".create",
+		ResourceType: resourceType,
+		ResourceID:   "r-" + id,
+		ResourceName: "name " + id,
+		Details:      json.RawMessage(`{"slug":"` + id + `"}`),
+		RequestID:    "req-" + id,
+		RemoteAddr:   "203.0.113.10",
+	}
+}
+
+func adminEventIDs(events []models.AdminEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.ID)
+	}
+	return out
+}
+
+// TestAdminEventsRoundTrip covers the insert and list path: newest first, the
+// resource_type filter, keyset paging through next_cursor, and an empty page
+// as [] rather than nil.
+func TestAdminEventsRoundTrip(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	// Whole seconds apart: fmtTime writes RFC3339Nano, which strips trailing
+	// zeros, so two values inside one second do not sort by time as text.
+	base := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	types := []string{models.ResourceUpstream, models.ResourceGroup, models.ResourceVirtualKey}
+	for i, id := range []string{"a", "b", "c"} {
+		if err := s.InsertAdminEvent(ctx, adminEventFixture(id, base.Add(time.Duration(i)*time.Second), types[i])); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, next, err := s.ListAdminEvents(ctx, models.AdminEventFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"c", "b", "a"}; !slices.Equal(adminEventIDs(got), want) {
+		t.Fatalf("order = %v, want %v", adminEventIDs(got), want)
+	}
+	if next != "" {
+		t.Errorf("next cursor on a complete page = %q, want empty", next)
+	}
+	e := got[2]
+	if e.Actor != models.ActorAdmin || e.Action != "upstream.create" || e.ResourceType != models.ResourceUpstream ||
+		e.ResourceID != "r-a" || e.ResourceName != "name a" || e.RequestID != "req-a" || e.RemoteAddr != "203.0.113.10" ||
+		!e.Timestamp.Equal(base) || string(e.Details) != `{"slug":"a"}` {
+		t.Errorf("row a did not round-trip: %+v", e)
+	}
+
+	got, _, err = s.ListAdminEvents(ctx, models.AdminEventFilter{ResourceType: models.ResourceGroup})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"b"}; !slices.Equal(adminEventIDs(got), want) {
+		t.Errorf("resource_type filter = %v, want %v", adminEventIDs(got), want)
+	}
+
+	// Paging: limit 1 walks c, b, a and the last page has no cursor.
+	var seen []string
+	cursor := ""
+	for i := 0; i < 4; i++ {
+		page, n, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Limit: 1, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen = append(seen, adminEventIDs(page)...)
+		if n == "" {
+			break
+		}
+		cursor = n
+	}
+	if want := []string{"c", "b", "a"}; !slices.Equal(seen, want) {
+		t.Errorf("paged order = %v, want %v", seen, want)
+	}
+
+	far := base.Add(10 * time.Second)
+	got, next, err = s.ListAdminEvents(ctx, models.AdminEventFilter{ResourceType: models.ResourceVirtualKey, Since: &far})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(got) != 0 || next != "" {
+		t.Errorf("no-match page = %v (nil=%v), next %q; want [] and empty cursor", got, got == nil, next)
+	}
+
+	if _, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Cursor: "not-a-cursor"}); !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("bad cursor error = %v, want ErrInvalidCursor", err)
+	}
+}
+
+// TestAdminEventsSinceBoundary pins sinceBound. Stored timestamps are
+// RFC3339Nano text with trailing zeros stripped, so a bound written the same
+// way would drop every fractional row inside its own second. A whole-second
+// since is exact. A since carrying a fraction can include the stored
+// whole-second row from the same second, which is documented behaviour, not a
+// bug: over-inclusion is the safe direction for an audit query.
+func TestAdminEventsSinceBoundary(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 9, 5, 10, 0, 5, 0, time.UTC)
+	rows := map[string]time.Time{
+		"before": T.Add(-100 * time.Millisecond),
+		"whole":  T,
+		"half":   T.Add(500 * time.Millisecond),
+		"next":   T.Add(time.Second),
+	}
+	for id, ts := range rows {
+		if err := s.InsertAdminEvent(ctx, adminEventFixture(id, ts, models.ResourceUpstream)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(since time.Time) []string {
+		got, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Since: &since})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := adminEventIDs(got)
+		slices.Sort(ids)
+		return ids
+	}
+	if got, want := list(T), []string{"half", "next", "whole"}; !slices.Equal(got, want) {
+		t.Errorf("since whole second = %v, want %v", got, want)
+	}
+	if got, want := list(T.Add(200*time.Millisecond)), []string{"half", "next", "whole"}; !slices.Equal(got, want) {
+		t.Errorf("since fractional = %v, want %v (the whole-second row is included by design)", got, want)
+	}
+	if got, want := list(T.Add(time.Second)), []string{"next"}; !slices.Equal(got, want) {
+		t.Errorf("since next second = %v, want %v", got, want)
+	}
+}
+
+// TestAdminEventDetailsRoundTrip pins that details is always an object on the
+// way out: empty on the way in reads back as {}, and an object reads back byte
+// for byte.
+func TestAdminEventDetailsRoundTrip(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	empty := adminEventFixture("empty", ts, models.ResourceGroup)
+	empty.Details = nil
+	object := adminEventFixture("object", ts.Add(time.Second), models.ResourceUpstream)
+	object.Details = json.RawMessage(`{"fields":["url","enabled"],"auth_changed":true}`)
+	for _, e := range []*models.AdminEvent{empty, object} {
+		if err := s.InsertAdminEvent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]string{}
+	for _, e := range got {
+		byID[e.ID] = string(e.Details)
+	}
+	if byID["empty"] != "{}" {
+		t.Errorf("empty details read back as %q, want {}", byID["empty"])
+	}
+	if want := `{"fields":["url","enabled"],"auth_changed":true}`; byID["object"] != want {
+		t.Errorf("object details read back as %q, want %q", byID["object"], want)
 	}
 }
