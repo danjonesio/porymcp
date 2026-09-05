@@ -508,7 +508,7 @@ is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 | `upstream.create` | `slug`, `auth_type`, `auth_changed` (when a credential was supplied) |
 | `upstream.update` | `fields`, `auth_changed` (when a credential was sent), `auth_type` (when the credential or the type changed) |
 | `upstream.delete` | none |
-| `group.create` | `upstream_count`, `tool_filter_set` (when a filter was supplied) |
+| `group.create` | `upstream_count`, `tool_filter_set` (when a filter that filters something was supplied; `{}` does not count, as on update) |
 | `group.update` | `fields`, `upstream_count` (when the membership changed), `cleared` |
 | `group.delete` | none |
 | `virtual_key.create` | `target_type`, `target_id`, `key_prefix` |

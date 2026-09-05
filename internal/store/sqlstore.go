@@ -362,6 +362,7 @@ func (s *SQLStore) migrateBase() error {
 		// GetVirtualKeyByLookup. A second index over the same single column
 		// served no read and cost every write (PORM-68); step 4 drops it from
 		// databases that already have it.
+		//
 		// admin_events is additive and lives here rather than in a numbered
 		// step: migrateBase runs on every open ahead of the step loop, so an
 		// existing database gains the table on its next start, and
