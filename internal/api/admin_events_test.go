@@ -137,8 +137,56 @@ func groupMutationCases() []mutationCase {
 	}
 }
 
-// virtualKeyMutationCases is filled in by step 8.
-func virtualKeyMutationCases() []mutationCase { return nil }
+func virtualKeyMutationCases() []mutationCase {
+	withKey := func(t *testing.T, h http.Handler) string {
+		t.Helper()
+		upID, _ := mustUpstream(t, h, "GitHub", nil)
+		return mustVirtualKey(t, h, "demo-vk", "upstream", upID)["id"].(string)
+	}
+	return []mutationCase{
+		{
+			name: "virtual_key.create", method: http.MethodPost, action: models.ActionVirtualKeyCreate,
+			wantStatus: http.StatusCreated, wantName: "demo-vk",
+			wantKeys: []string{"key_prefix", "target_id", "target_type"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				upID, _ := mustUpstream(t, h, "GitHub", nil)
+				return "/virtual-keys", map[string]any{"name": "demo-vk", "target_type": "upstream", "target_id": upID}, ""
+			},
+		},
+		{
+			name: "virtual_key.update", method: http.MethodPatch, action: models.ActionVirtualKeyUpdate,
+			wantStatus: http.StatusOK, wantName: "renamed", wantKeys: []string{"fields"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id := withKey(t, h)
+				return "/virtual-keys/" + id, map[string]any{"name": "renamed"}, id
+			},
+		},
+		{
+			name: "virtual_key.rotate", method: http.MethodPost, action: models.ActionVirtualKeyRotate,
+			wantStatus: http.StatusOK, wantName: "demo-vk", wantKeys: []string{"key_prefix"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id := withKey(t, h)
+				return "/virtual-keys/" + id + "/rotate", nil, id
+			},
+		},
+		{
+			name: "virtual_key.revoke", method: http.MethodPost, action: models.ActionVirtualKeyRevoke,
+			wantStatus: http.StatusOK, wantName: "demo-vk", wantKeys: nil,
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id := withKey(t, h)
+				return "/virtual-keys/" + id + "/revoke", nil, id
+			},
+		},
+		{
+			name: "virtual_key.delete", method: http.MethodDelete, action: models.ActionVirtualKeyDelete,
+			wantStatus: http.StatusNoContent, wantName: "demo-vk", wantKeys: nil,
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id := withKey(t, h)
+				return "/virtual-keys/" + id, nil, id
+			},
+		},
+	}
+}
 
 // TestAdminEventPerMutation is acceptance criterion 1: each mutating route
 // writes exactly one admin_events row with the right action, resource_type,
@@ -295,6 +343,27 @@ func TestAdminEventDeleteCapturesName(t *testing.T) {
 			t.Fatalf("in-use delete recorded %+v", got)
 		}
 	})
+	t.Run("virtual key", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		upID, _ := mustUpstream(t, h, "GitHub", nil)
+		id := mustVirtualKey(t, h, "doomed-vk", "upstream", upID)["id"].(string)
+		if rr := doJSON(t, h, http.MethodDelete, "/virtual-keys/"+id, "test-admin", nil); rr.Code != http.StatusNoContent {
+			t.Fatalf("delete: %d %s", rr.Code, rr.Body.String())
+		}
+		got := eventsFor(adminEvents(t, st), models.ActionVirtualKeyDelete)
+		if len(got) != 1 || got[0].ResourceName != "doomed-vk" || got[0].ResourceID != id {
+			t.Fatalf("delete event = %+v, want one naming doomed-vk/%s", got, id)
+		}
+	})
+	t.Run("virtual key unknown id", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		if rr := doJSON(t, h, http.MethodDelete, "/virtual-keys/nope", "test-admin", nil); rr.Code != http.StatusNotFound {
+			t.Fatalf("delete unknown: %d, want 404", rr.Code)
+		}
+		if got := eventsFor(adminEvents(t, st), models.ActionVirtualKeyDelete); len(got) != 0 {
+			t.Fatalf("unknown id recorded %+v", got)
+		}
+	})
 }
 
 // TestAdminEventFieldsAreADiff pins that details.fields names the fields whose
@@ -372,6 +441,53 @@ func TestAdminEventFieldsAreADiff(t *testing.T) {
 			t.Fatalf("already-empty clear details = %s", d)
 		}
 	})
+	t.Run("virtual key retarget names both target fields", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		upID, _ := mustUpstream(t, h, "GitHub", nil)
+		gid := mustGroup(t, h, "Research", []string{upID})
+		id := mustVirtualKey(t, h, "demo-vk", "upstream", upID)["id"].(string)
+		patchVirtualKeyJSON(t, h, id, map[string]any{"target_type": "group", "target_id": gid})
+		if d := detailsOf(t, st, models.ActionVirtualKeyUpdate); d != `{"fields":["target_type","target_id"]}` {
+			t.Fatalf("retarget details = %s", d)
+		}
+	})
+	t.Run("virtual key expiry resent with another offset is not a change", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		upID, _ := mustUpstream(t, h, "GitHub", nil)
+		id := newVirtualKey(t, h, "upstream", upID, map[string]any{"expires_at": "2030-01-01T10:00:00Z"})["id"].(string)
+		patchVirtualKeyJSON(t, h, id, map[string]any{"expires_at": "2030-01-01T11:00:00+01:00"})
+		if d := detailsOf(t, st, models.ActionVirtualKeyUpdate); d != "{}" {
+			t.Fatalf("same-instant expiry details = %s, want {}", d)
+		}
+	})
+	for _, c := range []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"virtual key allowlist", map[string]any{"tool_allowlist": []string{"read_issue"}}, `{"fields":["tool_allowlist"]}`},
+		{"virtual key denylist", map[string]any{"tool_denylist": []string{"delete_repo"}}, `{"fields":["tool_denylist"]}`},
+		{"virtual key metadata name only", map[string]any{"metadata": map[string]any{"team": "billing"}}, `{"fields":["metadata"]}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, h, st := testAPI(t)
+			upID, _ := mustUpstream(t, h, "GitHub", nil)
+			id := mustVirtualKey(t, h, "demo-vk", "upstream", upID)["id"].(string)
+			patchVirtualKeyJSON(t, h, id, c.body)
+			if d := detailsOf(t, st, models.ActionVirtualKeyUpdate); d != c.want {
+				t.Fatalf("details = %s, want %s", d, c.want)
+			}
+		})
+	}
+	t.Run("virtual key rate limit nulled is a field and a clear", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		upID, _ := mustUpstream(t, h, "GitHub", nil)
+		id := newVirtualKey(t, h, "upstream", upID, map[string]any{"rate_limit": 10})["id"].(string)
+		patchVirtualKeyJSON(t, h, id, map[string]any{"rate_limit": nil})
+		if d := detailsOf(t, st, models.ActionVirtualKeyUpdate); d != `{"fields":["rate_limit"],"cleared":["rate_limit"]}` {
+			t.Fatalf("rate limit nulled details = %s", d)
+		}
+	})
 }
 
 // TestAdminEventNoOpPatchStillRecords pins the decision that PATCH {} answers
@@ -394,6 +510,17 @@ func TestAdminEventNoOpPatchStillRecords(t *testing.T) {
 			t.Fatalf("PATCH {}: %d %s", rr.Code, rr.Body.String())
 		}
 		if d := detailsOf(t, st, models.ActionGroupUpdate); d != "{}" {
+			t.Fatalf("no-op details = %s, want {}", d)
+		}
+	})
+	t.Run("virtual key", func(t *testing.T) {
+		_, h, st := testAPI(t)
+		upID, _ := mustUpstream(t, h, "GitHub", nil)
+		id := mustVirtualKey(t, h, "demo-vk", "upstream", upID)["id"].(string)
+		if rr := doJSON(t, h, http.MethodPatch, "/virtual-keys/"+id, "test-admin", map[string]any{}); rr.Code != http.StatusOK {
+			t.Fatalf("PATCH {}: %d %s", rr.Code, rr.Body.String())
+		}
+		if d := detailsOf(t, st, models.ActionVirtualKeyUpdate); d != "{}" {
 			t.Fatalf("no-op details = %s, want {}", d)
 		}
 	})
