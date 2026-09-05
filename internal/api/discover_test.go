@@ -843,9 +843,9 @@ func TestDiscoverUndecryptableCredentialMakesNoRequest(t *testing.T) {
 }
 
 // TestDiscoverUnreadableCredentialMakesNoRequest is the sibling gate for a
-// blob that opens fine but holds nothing its auth type can send (the dashboard
-// stores {} for a blank token) which must not dial either, and must not be
-// reported as a key problem (PORM-52 security requirement 3).
+// row with nothing stored, or a value the auth type cannot send (a blank
+// token box stores nothing since PORM-120), which must not dial either, and
+// must not be reported as a key problem (PORM-52 security requirement 3).
 func TestDiscoverUnreadableCredentialMakesNoRequest(t *testing.T) {
 	stub := newMCPStub(t)
 	_, h, _ := testAPI(t)

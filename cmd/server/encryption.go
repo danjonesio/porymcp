@@ -29,8 +29,8 @@ import (
 //     it never triggers: a fingerprint that differs while every credential
 //     opens (a rotation window, a key replaced on an empty install, a
 //     restored backup) is not an outage. A mismatch never stamps.
-//  3. Otherwise ok. Unusable-but-decryptable rows (a blank token stored as {})
-//     get a Warn naming them, the fix is the credential, never the key, and
+//  3. Otherwise ok. Unusable rows (nothing stored, or a value the auth type
+//     cannot send) get a Warn naming them, the fix is the credential, never the key, and
 //     /health is not touched. Rows that opened only under a previous key get
 //     the "rotation pending" Warn and no stamp: only `porymcp rekey` moves an
 //     existing fingerprint. The current fingerprint is recorded iff the sweep

@@ -77,10 +77,10 @@ func foreignSeal(t *testing.T, plain string) string {
 }
 
 // TestListUpstreamsIncludesAuthStatus covers acceptance criterion 5 with the
-// bodies the dashboard actually sends: a none upstream carries auth_config {}
-// and still reads "none"; a bearer with a token is "ok"; a bearer with {} is
-// "unreadable"; a row no configured key opens is "undecryptable", and its
-// auth_hint is gone.
+// bodies the dashboard actually sends: a none upstream carries auth_config {},
+// stores nothing and reads "none"; a bearer with a token is "ok"; a bearer
+// with {} is "unreadable" (from the empty column since PORM-120); a row no
+// configured key opens is "undecryptable", and its auth_hint is gone.
 func TestListUpstreamsIncludesAuthStatus(t *testing.T) {
 	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
 	none, _ := mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none", "auth_config": map[string]string{}})
@@ -96,8 +96,8 @@ func TestListUpstreamsIncludesAuthStatus(t *testing.T) {
 			t.Errorf("%s: auth_status = %v, want %q (row %v)", got[id]["name"], s, want, got[id])
 		}
 	}
-	if got[none]["auth_configured"] != true {
-		t.Errorf("a none row created by the dashboard stores {} and reads auth_configured true: %v", got[none])
+	if got[none]["auth_configured"] != false {
+		t.Errorf("a none row created by the dashboard sends {}, stores nothing and reads auth_configured false (PORM-120): %v", got[none])
 	}
 	if _, has := got[hinted]["auth_hint"]; !has {
 		t.Errorf("ok header row lost its auth_hint: %v", got[hinted])
@@ -109,6 +109,29 @@ func TestListUpstreamsIncludesAuthStatus(t *testing.T) {
 		if _, has := u["auth_config"]; has {
 			t.Fatalf("auth_config leaked: %v", u)
 		}
+	}
+}
+
+// TestCreateUpstreamEmptyAuthConfigStoresNothing pins PORM-120 security
+// requirement 4: an object with no members is no credential, so a create that
+// sends auth_config {} (what the Add dialog sends for an untouched box) leaves
+// the column empty for every auth type. A bearer row created that way still
+// fails closed as unreadable, now from the empty column rather than a sealed {}.
+func TestCreateUpstreamEmptyAuthConfigStoresNothing(t *testing.T) {
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	none, _ := mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none", "auth_config": map[string]string{}})
+	bearer, _ := mustUpstream(t, h, "Draft", map[string]any{"auth_type": "bearer", "auth_config": map[string]string{}})
+	for name, id := range map[string]string{"none": none, "bearer": bearer} {
+		if got := rawAuth(t, path, id); got != "" {
+			t.Errorf("%s: auth_config column = %q, want empty", name, got)
+		}
+	}
+	got := upstreamsByID(t, h)
+	if got[none]["auth_status"] != "none" || got[none]["auth_configured"] != false {
+		t.Errorf("none row created with {}: %v, want auth_status none and auth_configured false", got[none])
+	}
+	if got[bearer]["auth_status"] != "unreadable" || got[bearer]["auth_configured"] != false {
+		t.Errorf("bearer row created with {}: %v, want auth_status unreadable and auth_configured false", got[bearer])
 	}
 }
 
