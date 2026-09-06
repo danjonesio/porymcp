@@ -7,6 +7,8 @@ Register real MCP servers once, then mint per-agent virtual keys and endpoints. 
 
 **Website:** [porymcp.com](https://porymcp.com)
 
+**Repository:** [github.com/danjonesio/porymcp](https://github.com/danjonesio/porymcp)
+
 ---
 
 ## What it does

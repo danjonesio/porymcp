@@ -21,6 +21,7 @@ import (
 // is not wrong. The workflow check is a substring match on one line, so
 // reformatting that line is a deliberate change to this test. LICENSE names a
 // person, not the slug, and is checked by reading.
+// README must also name `github.com/<owner>/porymcp`, the repository line in its title block.
 func TestOwnerConsistent(t *testing.T) {
 	root := repoRoot(t)
 	m := regexp.MustCompile(`(?m)^module github\.com/([^/\s]+)/porymcp$`).FindSubmatch(readRepoFile(t, root, "go.mod"))
@@ -28,7 +29,11 @@ func TestOwnerConsistent(t *testing.T) {
 		t.Fatal("go.mod does not declare module github.com/<owner>/porymcp")
 	}
 	owner := string(m[1])
-	if want := "ghcr.io/" + owner + "/porymcp"; !bytes.Contains(readRepoFile(t, root, "README.md"), []byte(want)) {
+	readme := readRepoFile(t, root, "README.md")
+	if want := "ghcr.io/" + owner + "/porymcp"; !bytes.Contains(readme, []byte(want)) {
+		t.Errorf("README.md does not name %s", want)
+	}
+	if want := "github.com/" + owner + "/porymcp"; !bytes.Contains(readme, []byte(want)) {
 		t.Errorf("README.md does not name %s", want)
 	}
 	workflow := readRepoFile(t, root, filepath.Join(".github", "workflows", "ci.yml"))
