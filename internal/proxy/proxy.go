@@ -53,6 +53,20 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 	}
 }
 
+// allowedMethods is both sides of one rule: the Allow header on the 405 in
+// serve and on the OPTIONS 204 below, and the Access-Control-Allow-Methods
+// that applyCORS advertises. POST carries every JSON-RPC call and DELETE is
+// a session teardown. A Streamable HTTP client opens GET after initialize to
+// listen for server-initiated messages; PoryMCP proxies none, so the honest
+// answer is a 405 rather than a forward that ends at the upstream timeout.
+// For a browser the entry that matters is DELETE: GET, HEAD and POST are
+// CORS-safelisted methods, which a preflight never refuses on this header,
+// so naming GET or not changes nothing on the wire and the two headers are
+// kept equal so they cannot disagree. PORM-5 adds GET here and replaces the
+// branch in serve with a real stream; the header and the handler change
+// together, which is why they share this.
+const allowedMethods = "POST, DELETE, OPTIONS"
+
 // applyCORS writes the proxy's own CORS block when the request carries an
 // Origin, and answers a preflight. Every name in Access-Control-Expose-Headers
 // is one the proxy vetted on the response allowlist (copyResponseHeaders);
@@ -62,10 +76,13 @@ func (h *Handler) applyCORS(w http.ResponseWriter, r *http.Request) bool {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
 		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, MCP-Session-Id, Retry-After")
 	}
 	if r.Method == http.MethodOptions {
+		// A successful OPTIONS names the methods the resource supports (RFC
+		// 9110), Origin or not; the CORS block above is the browser's copy.
+		w.Header().Set("Allow", allowedMethods)
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
@@ -129,6 +146,25 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	}
 	if !h.hostAllowed(r) {
 		h.writeInvalidHost(w, r)
+		return
+	}
+
+	// Refused on the verb alone, before the key is read. Anything other than
+	// a POST or a DELETE, the GET a Streamable HTTP client opens after
+	// initialize included, is answered here rather than replayed to the
+	// upstream with the real credential attached, which is what forward does
+	// with any verb it is handed. The answer is the same with a valid key, a
+	// wrong one and none, so a GET can no longer tell a caller whether a key
+	// is live, and no upstream round trip and no audit row is spent on a
+	// probe that presents no credential; requestLogger in cmd/server records
+	// it. After applyCORS so a preflight keeps its 204, and after the host
+	// check so a rewritten Host is diagnosed the same way on every verb.
+	// Allow goes on before writeRPCError, which commits the header block.
+	// PORM-5 replaces this branch with the streaming GET handler and adds GET
+	// to allowedMethods in the same change.
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		w.Header().Set("Allow", allowedMethods)
+		writeRPCError(w, http.StatusMethodNotAllowed, nil, -32000, "method not allowed")
 		return
 	}
 

@@ -252,11 +252,13 @@ func TestUpstreamRedirectStatusCodes(t *testing.T) {
 }
 
 // The refusal is a property of the one place a request is performed, not of
-// the POST path, so the verbs the proxy replays for an SSE open and a session
-// teardown are refused the same way. This is the assertion PORM-5's streaming
-// path rests on.
+// the POST path, so the verb the proxy replays for a session teardown is
+// refused the same way. GET left this list in PORM-30, which answers it 405
+// before any upstream is contacted; PORM-5 puts it back when a GET becomes a
+// real stream, and this is the assertion that streaming path rests on. The
+// loop stays so that is one string.
 func TestUpstreamRedirectRefusedOnEveryVerb(t *testing.T) {
-	for _, verb := range []string{http.MethodGet, http.MethodDelete} {
+	for _, verb := range []string{http.MethodDelete} {
 		t.Run(verb, func(t *testing.T) {
 			b := newRecorder(t)
 			f := newSingleFixture(t, upstreamSpec{
