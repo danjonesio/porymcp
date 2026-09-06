@@ -24,7 +24,7 @@
 - Tool-policy gate (one predicate over the group `tool_filter` and the key's
   allow/deny lists, consulted by both `tools/call` and `tools/list`)
 - Audit logger (async writes)
-- Optional dashboard (React + Tailwind UI Kit)
+- Optional dashboard (React, Tailwind CSS and Headless UI)
 
 ## Data flow
 
@@ -169,7 +169,7 @@ Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
 │   ├── audit/
 │   ├── config/
 │   └── webutil/      # trusted-proxy host/scheme/IP, health payload, security headers
-├── web/              # React + Tailwind UI Kit dashboard
+├── web/              # React and Tailwind CSS dashboard
 ├── deploy/           # optional edge configs (Caddy overlay)
 ├── docs/11-deployment.md
 ├── Dockerfile
