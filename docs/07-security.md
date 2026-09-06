@@ -257,7 +257,12 @@
   `Access-Control-Expose-Headers`, `Vary`, `Content-Security-Policy`,
   `X-Frame-Options` and `X-Content-Type-Options` are dropped, so the single
   values `applyCORS` and `webutil.SecurityHeaders` set are the ones the client
-  receives. `Cache-Control`, `ETag` and the digest headers are dropped, so an
+  receives. The proxy's own CORS block advertises
+  `Access-Control-Allow-Methods: POST, DELETE, OPTIONS`, the verbs the
+  endpoints answer, from the same constant as the `Allow` header on a `405`;
+  the clear-text refusal (`426`) writes its own list, shared with the
+  management API, and is not the endpoint's advertisement. `Cache-Control`,
+  `ETag` and the digest headers are dropped, so an
   upstream cannot mark a per-key answer cacheable, and no validator or digest
   describes bytes the client may not have; end-to-end body integrity is not
   offered through the proxy, by construction. Every response the proxy
@@ -274,6 +279,11 @@
   carries no challenge by design, and translating it into a PoryMCP-originated
   hint is not done. Extending either list is a code change with a review, not
   a configuration setting.
+- **A verb the proxy refuses writes no `audit_logs` row.** `GET` and everything
+  other than `POST` and `DELETE` is answered `405` before the key is read; it
+  contacts no upstream and presents no credential, so it is not something an
+  agent did, and the server log is where it appears. A `POST` with a wrong key
+  still writes a `blocked` row, because a credential was tried.
 - **Discovery is the one outbound call PoryMCP makes on an operator's behalf.**
   `POST /api/v1/upstreams/{id}/discover` and `POST /api/v1/upstreams/discover`
   run a real MCP handshake (`initialize`, `notifications/initialized`, a
