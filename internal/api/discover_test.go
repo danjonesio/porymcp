@@ -790,8 +790,11 @@ func TestDiscoverRejectsInvalidPayload(t *testing.T) {
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("code = %d, want 400; body %s", rr.Code, rr.Body.String())
 			}
-			if tc.want != "" {
-				wantsBody(t, rr, tc.want)
+			// The whole body, not a fragment: "invalid transport" is a
+			// substring of the combined message this route used to send, so
+			// a Contains check could not tell the split from its regression.
+			if got, want := strings.TrimSpace(rr.Body.String()), `{"error":"`+tc.want+`"}`; tc.want != "" && got != want {
+				t.Fatalf("body %s, want %s", got, want)
 			}
 		})
 	}
