@@ -342,12 +342,12 @@ func TestMigrateBackfillsSlugs(t *testing.T) {
 		if n := indexCount(t, s, "upstreams_slug"); n != 1 {
 			t.Errorf("upstreams_slug index count = %d, want 1", n)
 		}
-		if v, err := s.currentSchemaVersion(); err != nil || v != 5 {
-			t.Errorf("schema version = %d err=%v, want 5", v, err)
+		if v, err := s.currentSchemaVersion(); err != nil || v != 6 {
+			t.Errorf("schema version = %d err=%v, want 6", v, err)
 		}
 		// Step 3 finds no groups and no virtual keys here, so every tool count
 		// stays zero: this fixture is about slugs.
-		wantSummary := MigrationSummary{Applied: true, Version: 5, SlugsDerived: 8, SlugsDeduplicated: 4}
+		wantSummary := MigrationSummary{Applied: true, Version: 6, SlugsDerived: 8, SlugsDeduplicated: 4, TimestampsRewritten: 8}
 		if got := s.LastMigration(); got != wantSummary {
 			t.Errorf("LastMigration() = %+v, want %+v", got, wantSummary)
 		}
@@ -370,8 +370,8 @@ func TestMigrateBackfillsSlugs(t *testing.T) {
 		if n := indexCount(t, s2, "upstreams_slug"); n != 1 {
 			t.Errorf("after re-open, index count = %d, want 1", n)
 		}
-		if v, _ := s2.currentSchemaVersion(); v != 5 {
-			t.Errorf("after re-open, schema version = %d, want 5", v)
+		if v, _ := s2.currentSchemaVersion(); v != 6 {
+			t.Errorf("after re-open, schema version = %d, want 6", v)
 		}
 		if s2.LastMigration().Applied {
 			t.Errorf("re-open reported a migration: %+v", s2.LastMigration())
@@ -416,8 +416,8 @@ func TestMigrateBackfillsSlugs(t *testing.T) {
 				t.Errorf("upstream %s collided with the pre-set slug", id)
 			}
 		}
-		if v, _ := s.currentSchemaVersion(); v != 5 {
-			t.Errorf("schema version = %d, want 5", v)
+		if v, _ := s.currentSchemaVersion(); v != 6 {
+			t.Errorf("schema version = %d, want 6", v)
 		}
 	})
 
@@ -470,8 +470,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	// and only the index creation does any work; step 2 finds no agents table
 	// and passes straight through.
 	s := testStore(t)
-	if v, err := s.currentSchemaVersion(); err != nil || v != 5 {
-		t.Fatalf("schema version = %d err=%v, want 5", v, err)
+	if v, err := s.currentSchemaVersion(); err != nil || v != 6 {
+		t.Fatalf("schema version = %d err=%v, want 6", v, err)
 	}
 	if n := indexCount(t, s, "upstreams_slug"); n != 1 {
 		t.Fatalf("upstreams_slug index count = %d, want 1", n)
@@ -742,7 +742,9 @@ var v1IndexDDL = []string{
 
 // Two keys and two audit rows, written with every column spelled out so the
 // migrated table can be compared byte for byte. a1 leaves every nullable
-// column NULL; a2 fills them all.
+// column NULL; a2 fills them all. Timestamps are in the RFC3339Nano spelling a
+// version-1 server wrote; wantVirtualKeyRows below holds them as step 6 leaves
+// them, in tsLayout.
 var v1DataRows = []string{
 	`INSERT INTO agents (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, rate_limit, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
 	 VALUES ('a1', 'cursor', '$argon2id$hash-a1', 'lookup-a1', 'pory_a1a1a1a', 'upstream', 'u1', NULL, NULL, '[]', '[]', '2026-01-05T10:00:00Z', NULL, NULL, '')`,
@@ -756,8 +758,8 @@ var v1DataRows = []string{
 
 var (
 	wantVirtualKeyRows = []string{
-		"a1|cursor|$argon2id$hash-a1|lookup-a1|pory_a1a1a1a|upstream|u1|NULL|NULL|[]|[]|2026-01-05T10:00:00Z|NULL|NULL|",
-		`a2|claude|$argon2id$hash-a2|lookup-a2|pory_a2a2a2a|group|g1|60|2027-01-01T00:00:00Z|["safe_tool"]|["rm"]|2026-01-06T10:00:00Z|2026-01-07T10:00:00Z|2026-01-08T10:00:00Z|{"team":"x"}`,
+		"a1|cursor|$argon2id$hash-a1|lookup-a1|pory_a1a1a1a|upstream|u1|NULL|NULL|[]|[]|2026-01-05T10:00:00.000000000Z|NULL|NULL|",
+		`a2|claude|$argon2id$hash-a2|lookup-a2|pory_a2a2a2a|group|g1|60|2027-01-01T00:00:00.000000000Z|["safe_tool"]|["rm"]|2026-01-06T10:00:00.000000000Z|2026-01-07T10:00:00.000000000Z|2026-01-08T10:00:00.000000000Z|{"team":"x"}`,
 	}
 	wantAuditRows = []string{
 		"l1|a1|cursor|",
@@ -833,8 +835,8 @@ func assertRenamed(t *testing.T, s *SQLStore) {
 			t.Errorf("old index %s still exists", old)
 		}
 	}
-	if v, err := s.currentSchemaVersion(); err != nil || v != 5 {
-		t.Errorf("schema version = %d err=%v, want 5", v, err)
+	if v, err := s.currentSchemaVersion(); err != nil || v != 6 {
+		t.Errorf("schema version = %d err=%v, want 6", v, err)
 	}
 	// The Go layer reads the renamed table, nullable columns included.
 	a, err := s.GetVirtualKeyByLookup(context.Background(), "lookup-a2")
@@ -862,7 +864,7 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 		// points at group g1, which v1Fixture never creates, so step 3 cannot
 		// know that key's members and leaves both of its entries alone. See
 		// TestMigrateRewritesToolIdentities for the rows it does rewrite.
-		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 5, ToolEntriesLeft: 2}); got != want {
+		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, ToolEntriesLeft: 2, TimestampsRewritten: 5}); got != want {
 			t.Errorf("LastMigration() = %+v, want %+v", got, want)
 		}
 		if err := s.Close(); err != nil {
@@ -889,7 +891,7 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 		}
 		defer s.Close()
 		assertRenamed(t, s)
-		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 5, SlugsDerived: 2, SlugsDeduplicated: 1, ToolEntriesLeft: 2}); got != want {
+		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, SlugsDerived: 2, SlugsDeduplicated: 1, ToolEntriesLeft: 2, TimestampsRewritten: 6}); got != want {
 			t.Errorf("LastMigration() = %+v, want %+v", got, want)
 		}
 		if a, b := slugOf(t, s, "u1"), slugOf(t, s, "u2"); a != "github" || b != "github-2" {
@@ -916,7 +918,7 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 		}
 		defer s2.Close()
 		assertRenamed(t, s2)
-		if got, want := s2.LastMigration(), (MigrationSummary{Applied: true, Version: 5, ToolEntriesLeft: 2}); got != want {
+		if got, want := s2.LastMigration(), (MigrationSummary{Applied: true, Version: 6, ToolEntriesLeft: 2}); got != want {
 			t.Errorf("LastMigration() = %+v, want %+v", got, want)
 		}
 	})
@@ -938,8 +940,8 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 			t.Fatalf("re-open an unstamped database with the new names: %v", err)
 		}
 		defer s2.Close()
-		if v, _ := s2.currentSchemaVersion(); v != 5 {
-			t.Errorf("schema version = %d, want 5", v)
+		if v, _ := s2.currentSchemaVersion(); v != 6 {
+			t.Errorf("schema version = %d, want 6", v)
 		}
 		if n := tableCount(t, s2, "virtual_keys"); n != 1 {
 			t.Errorf("virtual_keys table count = %d", n)
@@ -1051,8 +1053,8 @@ func TestRecordUpstreamTest(t *testing.T) {
 	// The invariant the WHERE clause rests on, asserted before anything relies
 	// on it: fmtTime reproduces the bytes the column already holds, so a
 	// reformat of a value read out through the store matches it exactly. Three
-	// shapes, because RFC3339Nano strips trailing zeros, a whole second, a
-	// half second, and an untruncated wall-clock reading.
+	// shapes that tsLayout must spell identically on the way in and out: a
+	// whole second, a half second, and an untruncated wall-clock reading.
 	for i, when := range []time.Time{
 		time.Date(2026, 8, 29, 14, 3, 11, 0, time.UTC),
 		time.Date(2026, 8, 29, 14, 3, 11, 500_000_000, time.UTC),
@@ -1480,9 +1482,10 @@ func TestMigrateRewritesToolIdentities(t *testing.T) {
 		// two entries with no target, and k5's unreadable column. Not k6's,
 		// which admits what it always did.
 		want := MigrationSummary{
-			Applied: true, Version: 5,
+			Applied: true, Version: 6,
 			ToolEntriesRewritten: 6, ToolEntriesLeft: 9,
 			ToolFiltersLeftInvalid: 1, GroupsRewritten: 1, VirtualKeysRewritten: 2,
+			TimestampsRewritten: 14,
 		}
 		if got := s.LastMigration(); got != want {
 			t.Errorf("LastMigration() = %+v, want %+v", got, want)
@@ -1859,8 +1862,8 @@ func TestMigrateDropsVirtualKeysLookupIndex(t *testing.T) {
 	if n := indexCount(t, s2, "virtual_keys_lookup"); n != 0 {
 		t.Errorf("virtual_keys_lookup came back on the second Open (count %d)", n)
 	}
-	if v, err := s2.currentSchemaVersion(); err != nil || v != 5 {
-		t.Errorf("schema version = %d, %v; want 5", v, err)
+	if v, err := s2.currentSchemaVersion(); err != nil || v != 6 {
+		t.Errorf("schema version = %d, %v; want 6", v, err)
 	}
 }
 
@@ -1962,8 +1965,9 @@ func adminEventIDs(events []models.AdminEvent) []string {
 func TestAdminEventsRoundTrip(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	// Whole seconds apart: fmtTime writes RFC3339Nano, which strips trailing
-	// zeros, so two values inside one second do not sort by time as text.
+	// Whole seconds apart so the expected order reads at a glance; since
+	// schema version 6 the stored text sorts by time at any spacing, which
+	// TestAuditLogOrderingAcrossTrailingZeros pins.
 	base := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
 	types := []string{models.ResourceUpstream, models.ResourceGroup, models.ResourceVirtualKey}
 	for i, id := range []string{"a", "b", "c"} {
@@ -2033,12 +2037,11 @@ func TestAdminEventsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAdminEventsSinceBoundary pins sinceBound. Stored timestamps are
-// RFC3339Nano text with trailing zeros stripped, so a bound written the same
-// way would drop every fractional row inside its own second. A whole-second
-// since is exact. A since carrying a fraction can include the stored
-// whole-second row from the same second, which is documented behaviour, not a
-// bug: over-inclusion is the safe direction for an audit query.
+// TestAdminEventsSinceBoundary pins the since bound (PORM-26). Stored
+// timestamps and the bound are both fmtTime, fixed width, so the byte compare
+// is a time compare: since is inclusive of the exact instant and exact at
+// fractions. A fractional since no longer includes the whole-second row earlier
+// in its own second, which the RFC3339Nano layout used to force.
 func TestAdminEventsSinceBoundary(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -2066,12 +2069,12 @@ func TestAdminEventsSinceBoundary(t *testing.T) {
 	if got, want := list(T), []string{"half", "next", "whole"}; !slices.Equal(got, want) {
 		t.Errorf("since whole second = %v, want %v", got, want)
 	}
-	if got, want := list(T.Add(200*time.Millisecond)), []string{"half", "next", "whole"}; !slices.Equal(got, want) {
-		t.Errorf("since fractional = %v, want %v (the whole-second row is included by design)", got, want)
+	if got, want := list(T.Add(200*time.Millisecond)), []string{"half", "next"}; !slices.Equal(got, want) {
+		t.Errorf("since fractional = %v, want %v (the whole-second row earlier in the second is excluded)", got, want)
 	}
 	// A since equal to a stored fractional instant is inclusive: the client
 	// that passes back the last timestamp it saw gets that row again.
-	if got, want := list(T.Add(500*time.Millisecond)), []string{"half", "next", "whole"}; !slices.Equal(got, want) {
+	if got, want := list(T.Add(500*time.Millisecond)), []string{"half", "next"}; !slices.Equal(got, want) {
 		t.Errorf("since equal to a stored fraction = %v, want %v", got, want)
 	}
 	if got, want := list(T.Add(time.Second)), []string{"next"}; !slices.Equal(got, want) {

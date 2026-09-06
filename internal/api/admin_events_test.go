@@ -1038,8 +1038,8 @@ func TestListAdminEvents(t *testing.T) {
 		t.Errorf("resource_type filter = %v", got)
 	}
 	// since on the whole second the oldest row fell in must include that row,
-	// which almost always carries a fraction: the handler-to-store path of
-	// sinceBound. A plain fmtTime bound would drop it.
+	// which almost always carries a fraction: the handler-to-store path of the
+	// fixed-width since bound, where byte order is time order.
 	oldest := all[len(all)-1]["timestamp"].(string)
 	for _, e := range all {
 		if ts := e["timestamp"].(string); ts < oldest {

@@ -58,7 +58,8 @@ func main() {
 			"slugs_derived", m.SlugsDerived, "slugs_deduplicated", m.SlugsDeduplicated,
 			"tool_entries_rewritten", m.ToolEntriesRewritten, "tool_entries_left", m.ToolEntriesLeft,
 			"tool_filters_left_invalid", m.ToolFiltersLeftInvalid,
-			"groups_rewritten", m.GroupsRewritten, "virtual_keys_rewritten", m.VirtualKeysRewritten)
+			"groups_rewritten", m.GroupsRewritten, "virtual_keys_rewritten", m.VirtualKeysRewritten,
+			"timestamps_rewritten", m.TimestampsRewritten)
 	}
 
 	// The encryption verdict is a boot fact: computed once here, handed to the

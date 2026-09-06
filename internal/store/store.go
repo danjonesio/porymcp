@@ -42,11 +42,12 @@ type Store interface {
 	// seen is the row's updated_at as read before the handshake; the UPDATE is
 	// conditioned on it, so a result for a configuration edited in the meantime is
 	// dropped rather than vouching for settings it never tested. The compare is on
-	// the canonical string fmtTime(seen): every writer of updated_at is fmtTime and
-	// the column is TEXT on both drivers, so the reformat reproduces the stored
-	// bytes exactly. A row whose updated_at came from outside PoryMCP (a +00:00
-	// offset, trailing zeros in the fraction) can never match and records nothing,
-	// fail closed, the same way steps 1 and 3 treat hand-edited rows. updated_at is
+	// the canonical string fmtTime(seen): every writer of updated_at is fmtTime, the
+	// column is TEXT on both drivers, and schema step 6 rewrote every stored value
+	// to that layout, so the reformat reproduces the stored bytes exactly. A row
+	// edited by hand after that into some other spelling can never match and
+	// records nothing, fail closed, the same way the migration steps treat
+	// hand-edited rows. updated_at is
 	// not bumped: a test is not an edit. Returns ErrNotFound when no row matched,
 	// deleted, or edited since seen. Between two overlapping tests of one unchanged
 	// row the later write wins, deliberately.
