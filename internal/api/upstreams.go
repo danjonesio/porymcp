@@ -152,8 +152,12 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 	if authType == "" {
 		authType = models.AuthNone
 	}
-	if !validTransport(transport) || !validAuthType(authType) {
-		writeError(w, http.StatusBadRequest, "invalid transport or auth_type")
+	if !validTransport(transport) {
+		writeError(w, http.StatusBadRequest, "invalid transport")
+		return
+	}
+	if !validAuthType(authType) {
+		writeError(w, http.StatusBadRequest, "invalid auth_type")
 		return
 	}
 	// A credential cannot ride along with auth_type none: the row would hold a
@@ -455,8 +459,13 @@ func usableUpstreamURL(raw string) bool {
 	return err == nil && mcpclient.CheckTarget(u) == nil
 }
 
+// validTransport is the write gate for the transport field: only
+// streamable-http is accepted on create, on PATCH and on the unsaved discover
+// route. models.TransportSSE stays a stored value that rows saved before
+// PORM-28 may still carry; the proxy refuses to dial it until PORM-5
+// implements the legacy HTTP+SSE client.
 func validTransport(v string) bool {
-	return v == models.TransportStreamableHTTP || v == models.TransportSSE
+	return v == models.TransportStreamableHTTP
 }
 
 func validAuthType(v string) bool {

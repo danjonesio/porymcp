@@ -23,6 +23,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
+	"github.com/google/uuid"
 )
 
 func testAPI(t *testing.T) (*Server, http.Handler, *store.SQLStore) {
@@ -945,7 +946,6 @@ func TestPatchUpstreamURLResetsTestResult(t *testing.T) {
 		body map[string]any
 	}{
 		{"url", map[string]any{"url": "https://new.example.com/mcp/"}},
-		{"transport", map[string]any{"transport": "sse"}},
 		{"auth_type", map[string]any{"auth_type": "bearer"}},
 		// Ciphertext cannot be compared (Keyring.Seal draws a fresh nonce per
 		// call) so a present, non-null auth_config always counts.
@@ -966,6 +966,143 @@ func TestPatchUpstreamURLResetsTestResult(t *testing.T) {
 				t.Fatalf("the row still vouches for the old settings: at=%v ok=%v", at, ok)
 			}
 		})
+	}
+}
+
+// seedStoredUpstream writes a row straight into the store with the transport
+// given, the way cmd/server's seedPolicyStore does. It is the only way a test
+// gets an sse row once the API refuses the value on write (PORM-28): rows saved
+// before that change are still in operators' databases and the API has to keep
+// serving them. Returns the id.
+func seedStoredUpstream(t *testing.T, st *store.SQLStore, slug, transport string, lastTestAt *time.Time, lastTestOK *bool) string {
+	t.Helper()
+	now := time.Now().UTC()
+	u := models.Upstream{
+		ID:         uuid.NewString(),
+		Name:       slug,
+		Slug:       slug,
+		URL:        "https://example.com/mcp",
+		Transport:  transport,
+		AuthType:   models.AuthNone,
+		Enabled:    true,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		LastTestAt: lastTestAt,
+		LastTestOK: lastTestOK,
+	}
+	if err := st.CreateUpstream(context.Background(), &u); err != nil {
+		t.Fatalf("seed upstream %s: %v", slug, err)
+	}
+	return u.ID
+}
+
+// TestPatchTransportResetsTestResult: transport is one of the fields that
+// changes what PoryMCP dials, so repairing a stored sse row to streamable-http
+// resets both test columns like a URL change does. The row is store-seeded
+// because the API no longer writes sse and recordTestOn cannot record a
+// passing test against an sse row (PORM-28).
+func TestPatchTransportResetsTestResult(t *testing.T) {
+	_, h, st := testAPI(t)
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	ok := true
+	id := seedStoredUpstream(t, st, "legacy", models.TransportSSE, &at, &ok)
+	if gotAt, gotOK, _ := upstreamTest(t, h, id); gotAt == nil || gotOK != true {
+		t.Fatalf("seed did not land: at=%v ok=%v", gotAt, gotOK)
+	}
+
+	got := patchUpstreamJSON(t, h, id, map[string]any{"transport": "streamable-http"})
+	if got["transport"] != "streamable-http" {
+		t.Fatalf("transport = %v after the repair", got["transport"])
+	}
+	if got["last_test_at"] != nil || got["last_test_ok"] != nil {
+		t.Fatalf("the PATCH response still vouches for the sse settings: at=%v ok=%v", got["last_test_at"], got["last_test_ok"])
+	}
+	if gotAt, gotOK, _ := upstreamTest(t, h, id); gotAt != nil || gotOK != nil {
+		t.Fatalf("the row still vouches for the sse settings: at=%v ok=%v", gotAt, gotOK)
+	}
+}
+
+// TestRejectsSSETransport is PORM-28 security requirements 4 and 5: sse is
+// refused on every write route with the field's usual message and never with
+// the submitted value; rows already stored as sse are still readable, editable
+// by omitting transport, repairable by sending streamable-http, and the saved
+// discover route keeps answering 200 ok:false for them.
+func TestRejectsSSETransport(t *testing.T) {
+	_, h, st := testAPI(t)
+	const wantBody = `{"error":"invalid transport"}`
+	rejected := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("code=%d body=%s, want 400", rr.Code, rr.Body.String())
+		}
+		if got := strings.TrimSpace(rr.Body.String()); got != wantBody {
+			t.Fatalf("body %s, want %s", got, wantBody)
+		}
+	}
+	transportOf := func(t *testing.T, id string) any {
+		t.Helper()
+		return getJSON(t, h, "/upstreams/"+id)["transport"]
+	}
+
+	// (a) create
+	rejected(t, doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("Legacy", map[string]any{"transport": "sse"})))
+
+	// (b) PATCH onto a default row
+	id, _ := mustUpstream(t, h, "GitHub", nil)
+	rejected(t, doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"transport": "sse"}))
+	if got := transportOf(t, id); got != "streamable-http" {
+		t.Fatalf("a refused PATCH changed transport to %v", got)
+	}
+
+	// (c) a stored sse row reads back as sse
+	stored := seedStoredUpstream(t, st, "stored", models.TransportSSE, nil, nil)
+	if got := transportOf(t, stored); got != "sse" {
+		t.Fatalf("stored row transport = %v, want sse", got)
+	}
+
+	// (d) echoing the stored value back is still a 400 (the round-trip client)
+	rejected(t, doJSON(t, h, http.MethodPatch, "/upstreams/"+stored, "test-admin", map[string]any{"transport": "sse"}))
+	if got := transportOf(t, stored); got != "sse" {
+		t.Fatalf("a refused PATCH changed the stored row to %v", got)
+	}
+
+	// (e) an edit that omits transport lands and leaves sse alone
+	if got := patchUpstreamJSON(t, h, stored, map[string]any{"name": "renamed"}); got["name"] != "renamed" {
+		t.Fatalf("name = %v after the rename", got["name"])
+	}
+	if got := transportOf(t, stored); got != "sse" {
+		t.Fatalf("a rename changed the stored row to %v", got)
+	}
+
+	// (f) the repair
+	patchUpstreamJSON(t, h, stored, map[string]any{"transport": "streamable-http"})
+	if got := transportOf(t, stored); got != "streamable-http" {
+		t.Fatalf("repair left transport = %v", got)
+	}
+
+	// (g) saved discover of a stored sse row: 200 ok:false with the mcpclient
+	// sentence, no HTTP server involved because Discover refuses before I/O.
+	third := seedStoredUpstream(t, st, "third", models.TransportSSE, nil, nil)
+	d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+third+"/discover", "test-admin", nil))
+	if d["ok"] != false {
+		t.Fatalf("saved discover of an sse row: ok = %v, want false: %v", d["ok"], d)
+	}
+	if want := "the sse transport is not implemented yet; use streamable-http"; d["error"] != want {
+		t.Fatalf("saved discover error = %v, want %q", d["error"], want)
+	}
+}
+
+// TestCreateUpstreamRejectsUnknownAuthType pins the split of the create 400:
+// a bad auth_type answers "invalid auth_type" on its own, and with transport
+// omitted the transport default is taken first and does not mask it.
+func TestCreateUpstreamRejectsUnknownAuthType(t *testing.T) {
+	_, h, _ := testAPI(t)
+	rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("GitHub", map[string]any{"auth_type": "nope"}))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+	if got, want := strings.TrimSpace(rr.Body.String()), `{"error":"invalid auth_type"}`; got != want {
+		t.Fatalf("body %s, want %s", got, want)
 	}
 }
 

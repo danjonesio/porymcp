@@ -779,8 +779,11 @@ func TestDiscoverRejectsInvalidPayload(t *testing.T) {
 		{"no body at all", nil, ""},
 		{"blank url", map[string]any{"url": "   "}, "url is required"},
 		{"missing url", map[string]any{"name": "GitHub"}, "url is required"},
-		{"unknown transport", map[string]any{"url": stub.srv.URL, "transport": "carrier-pigeon"}, "invalid transport or auth_type"},
-		{"unknown auth_type", map[string]any{"url": stub.srv.URL, "auth_type": "kerberos"}, "invalid transport or auth_type"},
+		{"unknown transport", map[string]any{"url": stub.srv.URL, "transport": "carrier-pigeon"}, "invalid transport"},
+		// sse is a stored value the proxy cannot dial, so the unsaved route
+		// refuses it like any other unknown transport (PORM-28).
+		{"sse transport", map[string]any{"url": stub.srv.URL, "transport": "sse"}, "invalid transport"},
+		{"unknown auth_type", map[string]any{"url": stub.srv.URL, "auth_type": "kerberos"}, "invalid auth_type"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin", tc.body)
