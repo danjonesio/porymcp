@@ -261,7 +261,8 @@
   `Access-Control-Allow-Methods: POST, DELETE, OPTIONS`, the verbs the
   endpoints answer, from the same constant as the `Allow` header on a `405`;
   the clear-text refusal (`426`) writes its own list, shared with the
-  management API, and is not the endpoint's advertisement. `Cache-Control`, `ETag` and the digest headers are dropped, so an
+  management API, and is not the endpoint's advertisement. `Cache-Control`,
+  `ETag` and the digest headers are dropped, so an
   upstream cannot mark a per-key answer cacheable, and no validator or digest
   describes bytes the client may not have; end-to-end body integrity is not
   offered through the proxy, by construction. Every response the proxy

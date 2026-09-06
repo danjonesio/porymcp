@@ -195,7 +195,9 @@ On creation/rotation the plaintext key is returned **once**.
   not. That covers a request refused before its body could be parsed (a
   batch, an unparseable body), a session teardown (a `DELETE` with an empty
   body) and a `POST` whose body named no method; `?method=DELETE` and
-  `?method=POST` return those rows
+  `?method=POST` return those rows. A client can also send those strings as
+  its JSON-RPC method, so the filter returns both, and the row's `tool_name`
+  and `status` are what separate them
 - `tool_name` (if applicable)
 - `params` (JSON, redacted; above 4 KiB it is replaced by
   `{"truncated":true,"bytes":N}`)
