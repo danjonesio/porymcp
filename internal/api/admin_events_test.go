@@ -1016,10 +1016,9 @@ func TestListAdminEvents(t *testing.T) {
 			t.Errorf("first event lacks %q: %v", k, all[0])
 		}
 	}
-	// The three rows land inside one second, where the stored text order is
-	// not guaranteed to be time order (see TestAdminEventsRoundTrip, which
-	// pins newest-first with whole-second fixtures), so the set is asserted
-	// here and the order is asserted there.
+	// The three rows land inside one second in whatever order the handlers
+	// ran, so the set is asserted here and newest-first order is asserted in
+	// TestAdminEventsRoundTrip, whose fixtures carry known instants.
 	actionsOf := func(events []map[string]any) []string {
 		out := make([]string, 0, len(events))
 		for _, e := range events {
