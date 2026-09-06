@@ -21,7 +21,8 @@ import (
 // is not wrong. The workflow check is a substring match on one line, so
 // reformatting that line is a deliberate change to this test. LICENSE names a
 // person, not the slug, and is checked by reading.
-// README must also name `github.com/<owner>/porymcp`, the repository line in its title block.
+// README must also name `github.com/<owner>/porymcp`, the repository line in
+// its title block.
 func TestOwnerConsistent(t *testing.T) {
 	root := repoRoot(t)
 	m := regexp.MustCompile(`(?m)^module github\.com/([^/\s]+)/porymcp$`).FindSubmatch(readRepoFile(t, root, "go.mod"))
