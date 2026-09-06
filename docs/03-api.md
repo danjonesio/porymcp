@@ -618,7 +618,6 @@ the row; the resource keeps its own name.
   and `upstreams_under_previous_key` (still sealed under an
   `ENCRYPTION_KEY_PREVIOUS` key, so a rotation `porymcp rekey` has not finished;
   the runbook waits for `0`). `auth_type: none` upstreams are never counted.
-- `GET /metrics` (optional Prometheus)
 
 ---
 

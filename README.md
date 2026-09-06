@@ -7,6 +7,8 @@ Register real MCP servers once, then mint per-agent virtual keys and endpoints. 
 
 **Website:** [porymcp.com](https://porymcp.com)
 
+**Repository:** [github.com/danjonesio/porymcp](https://github.com/danjonesio/porymcp)
+
 ---
 
 ## What it does
@@ -119,7 +121,7 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
 - Optional per-key rate limiting
 - Filterable audit logs
 - Dashboard with an application shell (React + Tailwind CSS + Headless UI). Every component is PoryMCP's own
-- REST management API + OpenAPI (`openapi.yaml`)
+- REST management API. `openapi.yaml` describes it; no route serves the file yet (PORM-22)
 - SQLite by default. Postgres via `DATABASE_URL=postgres://...` **and** `docker compose --profile postgres up` together (schema creation is verified, behaviour beyond that is not: PORM-18)
 
 ## Documentation
