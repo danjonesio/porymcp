@@ -2334,10 +2334,13 @@ func TestDecodeCursorAcceptsLegacyFormat(t *testing.T) {
 }
 
 // v5Fixture builds a database as a version-5 server left it: the current DDL
-// (step 6 changes no column and no index, see TestFreshAndMigratedSchemasMatch)
 // with rows in the RFC3339Nano spelling and the version stamped 5. Open
 // creates the schema; preChangeDB then writes the rows raw, so nothing here
-// goes through fmtTime.
+// goes through fmtTime. Using the current DDL rather than a frozen copy is
+// sound only while step 6 is a data rewrite with no CREATE, ALTER or INDEX,
+// which TestMigrateRewritesTimestampWidth pins by comparing sqlite_master
+// before and after the upgrade; a later step that adds DDL needs its own
+// frozen fixture, as v1Fixture and v2Fixture are.
 func v5Fixture(t *testing.T, path string, rows ...string) {
 	t.Helper()
 	s, err := Open(path)
@@ -2442,6 +2445,11 @@ func TestMigrateRewritesTimestampWidth(t *testing.T) {
 	if got := rawTuples(t, path, `SELECT value FROM schema_meta WHERE key = 'schema_version'`); strings.Join(got, "") != "5" {
 		t.Fatalf("fixture stamped %v, want 5", got)
 	}
+	// Every table, index and their DDL as the version-5 database holds them.
+	// Step 6 is a data rewrite and nothing else, and v5Fixture's use of the
+	// current DDL rests on that, so it is asserted here rather than assumed.
+	const schemaObjects = `SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`
+	wantSchema := rawTuples(t, path, schemaObjects)
 
 	s, err := Open(path)
 	if err != nil {
@@ -2449,6 +2457,10 @@ func TestMigrateRewritesTimestampWidth(t *testing.T) {
 	}
 	defer s.Close()
 	ctx := context.Background()
+
+	if got := rowTuples(t, s, schemaObjects); strings.Join(got, "\n") != strings.Join(wantSchema, "\n") {
+		t.Errorf("step 6 changed the schema:\n got %q\nwant %q", got, wantSchema)
+	}
 
 	if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, TimestampsRewritten: v5RowsRewritten}); got != want {
 		t.Errorf("LastMigration() = %+v, want %+v", got, want)
