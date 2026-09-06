@@ -364,9 +364,10 @@ Behind the TLS overlay, the curls in step 4 go through Caddy
 treats `caddy` as an orphan.
 
 **More than one replica** (Postgres): deploy the new binary everywhere first
-with the key unchanged: `rekey` opens the database, which runs the schema-5
-migration, so a `rekey` ahead of the rollout locks every replica still on the
-old binary out at `Open`. Then set both keys on **all** replicas and wait for
+with the key unchanged: `rekey` opens the database, which runs every schema
+step the build carries (version 6 as of PORM-26), so a `rekey` ahead of the
+rollout locks every replica still on the old binary out at `Open`. Then set
+both keys on **all** replicas and wait for
 the rollout to settle; then run `rekey` **once**, from one process; then remove
 `ENCRYPTION_KEY_PREVIOUS` everywhere. Never wire `rekey` into an entrypoint, an
 init container or a deploy hook: it is a deliberate, once-per-rotation step.
@@ -422,9 +423,11 @@ deploying it:
    A rolling deploy is not an upgrade path for this build.
 
 3. **Expect the first start to pause.** `Open` blocks while every stored
-   timestamp is rewritten, at about 40 000 rows per second on SQLite: seconds
-   is roughly rows divided by 40 000, about 30 s per million audit rows, with a
-   WAL about the size of the database file meanwhile. A crash mid-step rolls
+   timestamp is rewritten. On SQLite the measured rate was about 15 000 rows
+   per second on a four-core virtual machine, the same on RAM-backed and on
+   disk-backed storage: roughly 65 to 70 s per million audit rows, with a WAL
+   about the size of the database file meanwhile. Time the start on a copy of
+   the database before sizing a probe from that figure. A crash mid-step rolls
    back and the next start retries from the beginning. Under the shipped
    compose file the container reports `unhealthy` for that time and recovers
    on its own, because `restart: unless-stopped` acts on exit, not on health,
