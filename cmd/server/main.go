@@ -103,7 +103,17 @@ func main() {
 // the same traffic, and a call no rule stopped is indistinguishable from a call
 // no rule was written for.
 //
-// It reports five things.
+// It reports six things.
+//
+// An upstream whose stored transport the proxy cannot dial is a WARN. The API
+// refuses sse on write since PORM-28, but rows saved before that, and a column
+// edited by hand, are still stored, and the proxy refuses every request routed
+// to such a row while it is enabled (a group with one as an enabled member
+// fails on its aggregate endpoint). Disabled rows are reported too, because
+// re-enabling one puts it straight back on that path; the sentence is true
+// for them as written. The line names the one-field repair. Like the slug, the
+// stored value is operator-written text, so only the constant sse is ever
+// written to the log and an unknown value is not repeated.
 //
 // An upstream whose stored slug is not a valid slug is an ERROR. The store
 // validates every stored slug once, at the migration step that introduced the
@@ -201,6 +211,17 @@ func reportToolPolicyProblems(ctx context.Context, st store.Store, log *slog.Log
 			// enough to find the row.
 			log.Error("upstream slug is not valid; every tool it advertises on a group's aggregate endpoint is listed under a name no call can use",
 				"upstream_id", u.ID, "upstream_name", u.Name)
+		}
+		if err := mcpclient.TransportError(u.Transport); err != nil {
+			// The same rule as the slug: the stored transport is operator-written
+			// text, so the log carries the constant sse when that is what the
+			// column holds and no transport attribute at all for anything else.
+			// The URL is never logged either; it may carry a token.
+			attrs := []any{"upstream_id", u.ID, "upstream_name", u.Name, "enabled", u.Enabled}
+			if u.Transport == models.TransportSSE {
+				attrs = append(attrs, "transport", models.TransportSSE)
+			}
+			log.Warn("upstream transport is not implemented; the proxy refuses every request to this upstream while it is enabled; set transport to streamable-http to restore it", attrs...)
 		}
 		// The row still goes into the index. Its slug is what the catalogue
 		// composes with and what a rule scoped to this upstream names, so
