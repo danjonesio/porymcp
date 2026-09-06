@@ -98,11 +98,17 @@ func (ix *endpointIndex) groups(ctx context.Context) (map[string]*models.Group, 
 // endpointsFor resolves the usable endpoints of one virtual key.
 //
 // A missing group id, a missing member id and a disabled upstream are all
-// skipped in silence, exactly as the proxy's resolveTargets does: the API must
-// never advertise a URL the proxy would refuse, and it must not fail a whole
-// list page because one key's group lost a member. Each of those is a map miss
-// here, not an error. A ListUpstreams/ListGroups failure is different (the
-// answer would be silently incomplete) so only that propagates.
+// skipped in silence, exactly as the proxy's resolveTargets does: what that
+// resolver never routes to, the API does not advertise, and it must not fail a
+// whole list page because one key's group lost a member. Each of those is a
+// map miss here, not an error. A ListUpstreams/ListGroups failure is different
+// (the answer would be silently incomplete) so only that propagates.
+//
+// An enabled member whose stored transport the proxy refuses (sse, PORM-28)
+// is still listed. The proxy resolves it and then refuses it with an audit
+// row, and hiding the URL here would be the silent path that issue forbids:
+// the operator sees the endpoint, the Unsupported badge on the upstream, and
+// the refusal in the logs, and knows which row to repair.
 //
 // The resolver reads only ID, Slug and Name; a models.Upstream carries the
 // encrypted auth_config and must never escape into a response.

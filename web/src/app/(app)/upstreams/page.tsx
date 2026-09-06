@@ -25,6 +25,7 @@ import {
   type UpstreamForm,
 } from '@/lib/upstream-form'
 import { testState } from '@/lib/upstream-test'
+import { transportUnsupported } from '@/lib/upstream-transport'
 import clsx from 'clsx'
 import { useEffect, useRef, useState } from 'react'
 
@@ -246,15 +247,27 @@ export default function UpstreamsPage() {
    * Open the dialog to add. The reset is the one this button has always done:
    * the form is otherwise only cleared on a successful create, so a cancelled
    * dialog would reopen with the old values and a stale slugTouched that
-   * silently disables auto-fill. Transport, auth type, header name and enabled
-   * persist across opens on purpose, for the operator adding three upstreams
-   * behind the same scheme.
+   * silently disables auto-fill. Auth type, header name and enabled persist
+   * across opens on purpose, for the operator adding three upstreams behind the
+   * same scheme. Transport is reset, because streamable-http is the only value
+   * the API accepts on write (PORM-28): an Edit dialog closed on an sse row
+   * must not carry that value into the next Add.
    */
   function openAdd() {
     setEditing(null)
     setFormError('')
     setSlugTouched(false)
-    setForm((f) => ({ ...f, name: '', slug: '', description: '', url: '', token: '', value: '', clear_stored: false }))
+    setForm((f) => ({
+      ...f,
+      name: '',
+      slug: '',
+      description: '',
+      url: '',
+      transport: 'streamable-http',
+      token: '',
+      value: '',
+      clear_stored: false,
+    }))
     resetFormDiscovery()
     opened()
   }
@@ -418,7 +431,16 @@ export default function UpstreamsPage() {
                 <TableCell className="font-medium">{u.name}</TableCell>
                 <TableCell className="font-mono text-xs text-zinc-500">{u.slug}</TableCell>
                 <TableCell className="max-w-xs truncate text-zinc-500">{u.url}</TableCell>
-                <TableCell>{u.transport}</TableCell>
+                <TableCell>
+                  {/* The stored value, then a badge when the proxy refuses it
+                      (sse, saved before PORM-28, or a hand-edited column). The
+                      badge shows on disabled rows too: re-enabling one puts it
+                      straight back on the refused path. */}
+                  <span className="inline-flex items-center gap-2">
+                    <span>{u.transport}</span>
+                    {transportUnsupported(u.transport) ? <Badge color="pink">Unsupported</Badge> : null}
+                  </span>
+                </TableCell>
                 <TableCell>
                   {/* The type, then what the stored credential is worth: "· set"
                       when PoryMCP can use it, a badge when it cannot (Unreadable

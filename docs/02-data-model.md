@@ -24,7 +24,11 @@ Represents a real MCP server.
   discovery applies before it opens a socket), so a stored value is one PoryMCP
   can dial; anything else is `400`. Whether that host *should* be
   dialled (loopback, link-local, cloud metadata) is not checked yet (PORM-79)
-- `transport`: `"streamable-http"` | `"sse"`
+- `transport`: `"streamable-http"` is the only value accepted on write. `"sse"`
+  may still be present on rows saved before PORM-28; the proxy refuses every
+  request routed to such a row and discovery reports it as not implemented,
+  and the row is repaired by a `PATCH` sending `streamable-http`. Nothing
+  rewrites the stored value.
 - `auth_type`: `"none"` | `"bearer"` | `"header"` | `"api_key"` | `"custom"`
 - `auth_config` (JSON): e.g. `{"header": "Authorization", "value": "Bearer sk-..."}`
 - `enabled` (bool)

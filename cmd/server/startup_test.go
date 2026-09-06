@@ -555,3 +555,75 @@ func TestReportToolPolicyProblemsNamesAnInvalidStoredSlug(t *testing.T) {
 		t.Errorf("the valid upstream was reported too:\n%s", buf.String())
 	}
 }
+
+// TestReportsUnsupportedTransportAtStartup is PORM-28 security requirements 3
+// and 7. A stored transport the proxy cannot dial is named once at startup,
+// enabled or not, because nothing in the request path says why a key answers
+// 502 and the operator's repair is one field. The row's id, name and enabled
+// state reach the log. The transport column is operator-written text, so the
+// constant sse is written when that is what the column holds and nothing at
+// all for an unknown value; the URL is never written.
+func TestReportsUnsupportedTransportAtStartup(t *testing.T) {
+	st, _ := seedPolicyStore(t, nil, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, u := range []models.Upstream{
+		{ID: "u-sse", Name: "legacy", Slug: "legacy", Transport: models.TransportSSE, Enabled: true},
+		{ID: "u-ws", Name: "hand-edited", Slug: "edited", Transport: "websocket", Enabled: false},
+		{ID: "u-ok", Name: "fine", Slug: "fine", Transport: models.TransportStreamableHTTP, Enabled: true},
+	} {
+		u.URL, u.AuthType = "http://127.0.0.1:1/mcp?token=secret-query", models.AuthNone
+		u.CreatedAt, u.UpdatedAt = now, now
+		if err := st.CreateUpstream(ctx, &u); err != nil {
+			t.Fatalf("seed upstream %s: %v", u.ID, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	reportToolPolicyProblems(context.Background(), st, log)
+
+	records := decodeLogRecords(t, &buf)
+	if len(records) != 2 {
+		t.Fatalf("got %d log records, want 2 (sse and the hand-edited row):\n%s", len(records), buf.String())
+	}
+	byUpstream := make(map[string]map[string]any, len(records))
+	for _, rec := range records {
+		id, _ := rec["upstream_id"].(string)
+		byUpstream[id] = rec
+		if rec["level"] != "WARN" {
+			t.Errorf("%s: level=%v, want WARN; the server keeps serving", id, rec["level"])
+		}
+		if msg, _ := rec["msg"].(string); !strings.Contains(msg, "transport") || !strings.Contains(msg, "streamable-http") {
+			t.Errorf("%s: msg=%q does not name the field and the repair", id, msg)
+		}
+		if _, has := rec["url"]; has {
+			t.Errorf("%s: the log carries the URL:\n%s", id, buf.String())
+		}
+	}
+
+	sse, ok := byUpstream["u-sse"]
+	if !ok {
+		t.Fatalf("the sse row was not reported:\n%s", buf.String())
+	}
+	if sse["transport"] != "sse" || sse["enabled"] != true || sse["upstream_name"] != "legacy" {
+		t.Errorf("sse record = %v, want transport sse, enabled true, name legacy", sse)
+	}
+
+	ws, ok := byUpstream["u-ws"]
+	if !ok {
+		t.Fatalf("the hand-edited row was not reported:\n%s", buf.String())
+	}
+	if _, has := ws["transport"]; has {
+		t.Errorf("the hand-edited record carries a transport attribute: %v", ws)
+	}
+	if ws["enabled"] != false || ws["upstream_name"] != "hand-edited" {
+		t.Errorf("hand-edited record = %v, want enabled false, name hand-edited", ws)
+	}
+
+	for _, leak := range []string{"websocket", "secret-query", "u-ok", upGH, upDocs} {
+		if strings.Contains(buf.String(), leak) {
+			t.Errorf("the log contains %q:\n%s", leak, buf.String())
+		}
+	}
+}

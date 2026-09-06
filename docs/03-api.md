@@ -21,7 +21,11 @@ unchanged.** A value sets the field and is validated exactly as on create.
 a `400` with that field's usual message; on `auth_config` alone it means
 unchanged (see the table). `""` clears a string whose empty value is
 meaningful, and `[]` clears a list. A cleared field is absent from the
-response, the same as one that was never set.
+response, the same as one that was never set. Validated exactly as on create
+means a stored value that create no longer accepts cannot be sent back either:
+an upstream stored with `transport: "sse"` (saved before PORM-28) is edited by
+omitting `transport` or by sending `streamable-http`, and a body that echoes
+`sse` is `400 invalid transport`.
 
 | Field | value | `null` | `""` / `[]` / `{}` |
 |---|---|---|---|
@@ -29,7 +33,7 @@ response, the same as one that was never set.
 | upstream `slug` | equal to the stored slug: no-op; anything else: `400 slug cannot be changed after create` | same `400` | same `400` |
 | upstream / group `description` | set | **cleared** | **cleared** |
 | upstream `url` | set; `400 url must be an absolute http or https URL` if not; resets the last test when it differs | that `400` | that `400` |
-| upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value; resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none` | that `400` | that `400` |
+| upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value (`sse` is not one: `streamable-http` is the only transport accepted on write); resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none` | that `400` | that `400` |
 | upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does) |
 | upstream `enabled` | set | `400 enabled must be true or false` | n/a |
 | group `upstream_ids` | validated and replaced | **cleared** to `[]`: the group has no members, and every key targeting it loses its endpoints | `[]` clears |
@@ -262,10 +266,12 @@ so "the credential works but the catalogue does not" is a thing the answer can
 say. `upstream's answer to <step> is larger than discovery will read` is the
 read cap: a whole handshake is allowed 2 MiB, and an answer over it is refused
 rather than decoded from a document that stops mid-object, which would otherwise
-report a working server as one that does not speak JSON-RPC. A `transport` of
-`sse` answers `ok: false` naming the transport instead of hanging (that
-transport is accepted on `POST /upstreams` but not implemented,
-PORM-28), and a URL that is not an absolute `http` or `https` URL is refused
+report a working server as one that does not speak JSON-RPC. On the unsaved
+route a `transport` of `sse` is `400 invalid transport`, the same refusal
+`POST /upstreams` gives it. On the saved route a row stored as `sse` before
+PORM-28 answers `200` with `ok: false` and the fixed sentence
+`the sse transport is not implemented yet; use streamable-http` instead of
+hanging, and a URL that is not an absolute `http` or `https` URL is refused
 before any request is made. A stored credential that exists but cannot be
 decrypted, after a rotated `ENCRYPTION_KEY`, answers
 `stored credential cannot be decrypted` and makes **no** outbound request at
@@ -432,6 +438,9 @@ A single-upstream key, one entry mirroring `proxy_url`:
 - `proxy_url` on a group key is the *aggregate* endpoint and is never an entry.
 - A member that is disabled, or removed from the group, has no entry, and its
   URL answers `404` on the next request.
+- An enabled member whose stored `transport` is `sse` keeps its entry. The
+  proxy refuses every request to it with the `502` and a log row, and the
+  entry is how an operator reading the key sees which URL that is.
 - `endpoints` is always an array, never `null` and never omitted: `[]` when
   nothing is reachable (a group with no enabled members, a deleted group, a
   disabled single upstream).
@@ -661,20 +670,23 @@ take both forms too, but are matched against the upstream's **own** tool name
 rather than the composed one: write `delete_`, or `github__delete_` to scope it.
 See `docs/07-security.md`.
 
-Primary transport: **Streamable HTTP**. `POST` carries every call. A `GET`,
-which a client opens after `initialize` to listen for server-initiated
-messages, is answered `405` on all three paths with `Allow: POST, DELETE,
-OPTIONS` and the body below, before the virtual key is read and without
-contacting any upstream. A client that treats the stream as optional carries
-on, which is what the transport prescribes. `DELETE` is a session teardown and
-is forwarded to the upstream with the client's `Mcp-Session-Id`; the upstream
-decides whether the session ends. `OPTIONS` answers `204` with the same
-`Allow`. Any other method the router recognises, `HEAD`, `PUT` and `PATCH`
-included, gets the same `405`; a method token the router does not know is
-refused by the router itself with a bare `405` and no `Allow`. A refused verb
-contacts no upstream and presents no credential, so it appears in the server
-log and not in `audit_logs`. Server-initiated streaming over `GET` is PORM-5,
-and `Allow` gains `GET` when it lands.
+Transport to upstreams: **Streamable HTTP**, and nothing else. The legacy
+HTTP+SSE transport is not implemented (PORM-5); `sse` is refused on write since
+PORM-28, and a row stored with it before then is refused on every request (see
+Upstream failures below). `POST` carries every call. A `GET`, which a client
+opens after `initialize` to listen for server-initiated messages, is answered
+`405` on all three paths with `Allow: POST, DELETE, OPTIONS` and the body
+below, before the virtual key is read and without contacting any upstream. A
+client that treats the stream as optional carries on, which is what the
+transport prescribes. `DELETE` is a session teardown and is forwarded to the
+upstream with the client's `Mcp-Session-Id`; the upstream decides whether the
+session ends. `OPTIONS` answers `204` with the same `Allow`. Any other method
+the router recognises, `HEAD`, `PUT` and `PATCH` included, gets the same
+`405`; a method token the router does not know is refused by the router itself
+with a bare `405` and no `Allow`. A refused verb contacts no upstream and
+presents no credential, so it appears in the server log and not in
+`audit_logs`. Server-initiated streaming over `GET` is PORM-5, and `Allow`
+gains `GET` when it lands.
 
 ```json
 {"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed"}}
@@ -812,6 +824,7 @@ read by operators and never returned to a key holder (PORM-72).
 | --- | --- |
 | No configured `ENCRYPTION_KEY` opens the stored credential (the key changed) | `credential undecryptable`: no request was built; the fix is the key, and `auth_status` on the upstream reads `undecryptable` |
 | The stored credential is empty or holds nothing its auth type can send | `credential unreadable`: no request was built; the fix is the credential, and `auth_status` reads `unreadable` |
+| The stored `transport` is `sse` or an unknown value | `the sse transport is not implemented yet; use streamable-http`, or `unsupported transport` for a value that is not `sse` (the value itself is never written): no request was built; the fix is a `PATCH` sending `transport: "streamable-http"`, and the row shows an Unsupported badge in the dashboard and one WARN line at startup |
 | The upstream answered `3xx` | `upstream redirected to <host>`: the host from `Location`, never the full URL |
 | The upstream did not answer within 60 s | `Post "<the upstream's url>": context deadline exceeded (Client.Timeout exceeded while awaiting headers)` |
 | The connection was refused, or DNS failed | the same shape, ending `connect: connection refused` or `no such host` |
@@ -847,3 +860,10 @@ skipped the same way: zero requests reach it, its tools are absent, the group's
 own `tools/list` succeeds, and the `group member skipped` line carries the
 cause. The member's own endpoint answers the `502` and writes the row; the
 operator's signals are `auth_status`, the counts on `/stats` and the boot line.
+
+A member whose stored `transport` is `sse` is not skipped. While it is enabled,
+every method on the group's aggregate endpoint, `initialize` included, answers
+the `502` and writes a row naming that member, so a client sees the group as
+failed rather than a catalogue that is quietly missing one server. The other
+members' own endpoints keep working. The group serves again once the member is
+disabled or its `transport` is set to `streamable-http`.

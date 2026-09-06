@@ -46,6 +46,16 @@ export const AUTH_TYPE_LABELS: Record<string, string> = {
   custom: 'Custom',
 }
 
+/**
+ * What the transport select offers. One entry: `streamable-http` is the only
+ * value the API accepts on write (PORM-28). A row stored with another value
+ * is shown by the dialog as an extra `(unsupported)` option so the native
+ * select cannot snap to a value the operator did not choose.
+ */
+export const TRANSPORT_LABELS: Record<string, string> = {
+  'streamable-http': 'Streamable HTTP',
+}
+
 export function authTypeLabel(authType: string): string {
   return AUTH_TYPE_LABELS[authType] ?? authType
 }

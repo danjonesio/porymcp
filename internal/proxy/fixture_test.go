@@ -62,6 +62,11 @@ type upstreamSpec struct {
 	RedirectStatus int
 	RedirectTo     string
 	RedirectOn     string
+	// Transport is the stored transport column; "" means streamable-http.
+	// The API refuses every other value on write (PORM-28), so this is how a
+	// test builds the row an operator saved before that change, or one whose
+	// column was edited by hand.
+	Transport string
 }
 
 // recordedRequest is one request a stub received, kept whole. The counters
@@ -234,6 +239,9 @@ func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter 
 			ID: id, Name: strings.ToUpper(slug) + " Renamed", Slug: slug, URL: s.srv.URL,
 			Transport: models.TransportStreamableHTTP, AuthType: models.AuthNone,
 			Enabled: true, CreatedAt: now, UpdatedAt: now,
+		}
+		if tr := specs[slug].Transport; tr != "" {
+			up.Transport = tr
 		}
 		// Bearer is the shorthand; AuthType with an AuthConfig is the long
 		// way round, and the only way to build the api_key, header and custom

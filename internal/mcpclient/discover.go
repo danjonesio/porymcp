@@ -189,6 +189,36 @@ func (d Discovery) fail(msg string) Discovery {
 // sentence CheckCredential's refusal ever produces.
 const errNeedsCredential = "this auth type needs a credential; add one or choose None"
 
+// The two sentences for a stored transport the proxy cannot dial. They stay
+// unexported: callers that need to know which case fired compare
+// up.Transport against models.TransportSSE, and tests compare against
+// TransportError(models.TransportSSE).Error().
+var (
+	errSSENotImplemented    = errors.New("the sse transport is not implemented yet; use streamable-http")
+	errUnsupportedTransport = errors.New("unsupported transport")
+)
+
+// TransportError reports whether the proxy can dial a stored transport. It is
+// nil for TransportStreamableHTTP and for "" (Discover has always treated an
+// empty value as streamable-http). It is the one predicate behind the
+// discovery refusal, the proxy's pre-dispatch gate and the startup WARN, so
+// the sentence an operator reads cannot drift between them. The stored value
+// is never part of the message: the column is free text an operator wrote,
+// and it is not PoryMCP's string to repeat (PORM-28).
+func TransportError(transport string) error {
+	switch transport {
+	case models.TransportStreamableHTTP, "":
+		return nil
+	case models.TransportSSE:
+		// PORM-28 stopped accepting this value on write, but rows saved before
+		// that are still stored. Saying so is the correct outcome; hanging or
+		// reporting a network failure is not.
+		return errSSENotImplemented
+	default:
+		return errUnsupportedTransport
+	}
+}
+
 // Failed is a Discovery for a refusal decided before this package is reached,
 // the management API's "the stored credential will not decrypt", which must
 // stop before any request goes out. Same shape, same empty tool array.
@@ -229,16 +259,12 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	// Everything down to the deadline happens before a single byte leaves the
 	// process. A refusal here costs the upstream nothing and tells the
 	// operator something they can act on without waiting ten seconds.
-	switch up.Transport {
-	case models.TransportStreamableHTTP, "":
-	case models.TransportSSE:
-		// PORM-28 accepts this transport without implementing it. Saying so is
-		// the correct outcome; hanging or reporting a network failure is not.
-		return out.fail("the sse transport is not implemented yet; use streamable-http")
-	default:
-		// Never the value itself: the unsaved-payload route accepts whatever
-		// an operator types, so it is not PoryMCP's string to repeat.
-		return out.fail("unsupported transport")
+	// Saying that a stored transport cannot be dialled is the correct outcome;
+	// hanging or reporting a network failure is not. Never the value itself:
+	// the unsaved-payload route accepts whatever an operator types, so it is
+	// not PoryMCP's string to repeat. TransportError holds both rules.
+	if err := TransportError(up.Transport); err != nil {
+		return out.fail(err.Error())
 	}
 
 	u, err := url.Parse(up.URL)

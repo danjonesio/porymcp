@@ -98,8 +98,12 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 	if authType == "" {
 		authType = models.AuthNone
 	}
-	if !validTransport(transport) || !validAuthType(authType) {
-		writeError(w, http.StatusBadRequest, "invalid transport or auth_type")
+	if !validTransport(transport) {
+		writeError(w, http.StatusBadRequest, "invalid transport")
+		return
+	}
+	if !validAuthType(authType) {
+		writeError(w, http.StatusBadRequest, "invalid auth_type")
 		return
 	}
 	// No slug is derived. createUpstream walks candidates and de-duplicates,

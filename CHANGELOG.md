@@ -4,6 +4,34 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Breaking: the sse upstream transport is refused on write (PORM-28)
+
+- **The README advertised SSE pass-through and it was never implemented.**
+  The proxy has always POSTed Streamable HTTP to every upstream whatever its
+  stored `transport` said; the legacy HTTP+SSE client is PORM-5.
+- **`POST /api/v1/upstreams`, `PATCH /api/v1/upstreams/{id}` and
+  `POST /api/v1/upstreams/discover` answer `400 {"error":"invalid transport"}`
+  for `sse`.** `streamable-http` is the only value accepted on write. The
+  create and unsaved-discover `400` that read `invalid transport or auth_type`
+  is split into `invalid transport` and `invalid auth_type`, the strings PATCH
+  already used.
+- **Rows already stored as `sse` are kept.** Nothing rewrites or deletes them.
+  They are listed with an Unsupported badge in the Transport column, the Edit
+  dialog shows `sse (unsupported)` with Streamable HTTP as the repair, and the
+  server logs one WARN line per such row at startup naming its id. Edit one by
+  omitting `transport` or by sending `streamable-http`; a body that echoes
+  `sse` is `400`. No recreate is needed.
+- **A request routed to a stored `sse` row is not dialled.** The agent gets
+  the usual `502 upstream request failed`; the audit row names the upstream
+  and reads `the sse transport is not implemented yet; use streamable-http`.
+  A row that worked because its URL already spoke Streamable HTTP now fails
+  until `transport` is set to `streamable-http`; the URL does not change.
+- **A group with an enabled `sse` member fails on its aggregate endpoint**,
+  `initialize` included, until the member is disabled or repaired. The other
+  members' own endpoints keep working. Rolling back to
+  `ghcr.io/danjonesio/porymcp:sha-<short sha>` restores the previous binary,
+  which accepts `sse` on write again; no schema or data is involved.
+
 ### Timestamps stored fixed-width (PORM-26)
 
 - **Log order, `next_cursor`, `since`/`until` and the stats windows are now

@@ -288,6 +288,41 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		}
 	}
 
+	// A stored transport the proxy cannot dial (sse, or a hand-edited value)
+	// is refused here, before any dispatch, and nothing below is reached.
+	// upstreams holds the single member, the single target, or the group's
+	// enabled members, so one loop covers member URLs, single keys and every
+	// aggregate method, initialize included.
+	//
+	// Why here and not in resolveTargets: that path answers 400 with the
+	// error text on the JSON-RPC body and turns a member lookup into
+	// 404 unknown endpoint, which would take the group's healthy members
+	// offline and hand the key holder the sentence. Why before dispatch and
+	// not only in forward and listTools: the aggregate initialize never
+	// dials, and memberCatalogues skips a member whose listing fails, so a
+	// group with an sse member would answer a 200 partial catalogue and no
+	// audit row would ever name the cause, the silent failure PORM-28
+	// forbids. A group therefore fails on its aggregate endpoint while an
+	// enabled member is sse; the other members' own endpoints keep working.
+	//
+	// The client body stays the generic 502: operator configuration is not
+	// the key holder's to learn, and docs/07-security.md promises one shape
+	// for every upstream failure. The audit row carries the fixed sentence
+	// and the row's id, which is what the operator needs and no more than
+	// the undecryptable-credential arm records. A row that worked because its
+	// URL already spoke Streamable HTTP now fails until transport is set to
+	// streamable-http; that is the one-field repair the changelog and the
+	// startup WARN name.
+	for _, up := range upstreams {
+		if err := mcpclient.TransportError(up.Transport); err != nil {
+			h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes),
+				up.ID, models.StatusError, truncate(err.Error(), auditFieldBytes), start, 0,
+				boundedParams(req.Params))
+			writeRPCError(w, http.StatusBadGateway, req.ID, -32000, "upstream request failed")
+			return
+		}
+	}
+
 	// One gate for every tool rule, run here and nowhere else. It sits before
 	// the dispatch below on purpose: a refused call must cost zero upstream
 	// requests, both because the whole point is that the real credential is
@@ -613,9 +648,15 @@ const listToolsRequest = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params"
 // upstream, which is exactly what makes it the wrong thing to use for a
 // request the proxy makes on its own behalf. See listTools.
 func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte) ([]byte, int, http.Header, error) {
-	// Before the request exists: a credential that cannot be presented means
-	// nothing is dialled, not a request with the virtual key stripped and
-	// nothing put back, which is what a wrong ENCRYPTION_KEY used to send.
+	// Before the request exists: a transport this client cannot speak, or a
+	// credential that cannot be presented, means nothing is dialled, not a
+	// request with the virtual key stripped and nothing put back, which is
+	// what a wrong ENCRYPTION_KEY used to send. serve refuses the transport
+	// before dispatch; this is the same check for any future caller that
+	// reaches a dial without passing through serve, not a second policy.
+	if err := mcpclient.TransportError(up.Transport); err != nil {
+		return nil, 0, nil, err
+	}
 	plain, err := h.credential(up)
 	if err != nil {
 		return nil, 0, nil, err
@@ -663,6 +704,9 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 // call by the slug the name carries, which removes the catalogue from the call
 // path entirely.
 func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, int, error) {
+	if err := mcpclient.TransportError(up.Transport); err != nil {
+		return nil, 0, err
+	}
 	plain, err := h.credential(up)
 	if err != nil {
 		return nil, 0, err

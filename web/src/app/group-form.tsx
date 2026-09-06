@@ -6,6 +6,7 @@ import { Input } from '@/components/input'
 import { Text } from '@/components/text'
 import type { Upstream } from '@/lib/api'
 import type { GroupForm } from '@/lib/group-form'
+import { transportUnsupported } from '@/lib/upstream-transport'
 
 export type GroupFieldsProps = {
   className?: string
@@ -69,6 +70,14 @@ export function GroupFields({ className, mode, form, onChange, upstreams }: Grou
                 />
                 <Label>{u.name}</Label>
                 {u.enabled ? null : <Description>Disabled. A virtual key on this group gets no endpoint for it.</Description>}
+                {/* Only while enabled: a disabled sse member is off the proxy's
+                    path and the Disabled line above is the whole story. */}
+                {u.enabled && transportUnsupported(u.transport) ? (
+                  <Description>
+                    Not implemented. This member&apos;s endpoint fails, and so does the group endpoint, until the
+                    transport is Streamable HTTP or the member is disabled.
+                  </Description>
+                ) : null}
               </CheckboxField>
             ))}
           </CheckboxGroup>

@@ -779,16 +779,22 @@ func TestDiscoverRejectsInvalidPayload(t *testing.T) {
 		{"no body at all", nil, ""},
 		{"blank url", map[string]any{"url": "   "}, "url is required"},
 		{"missing url", map[string]any{"name": "GitHub"}, "url is required"},
-		{"unknown transport", map[string]any{"url": stub.srv.URL, "transport": "carrier-pigeon"}, "invalid transport or auth_type"},
-		{"unknown auth_type", map[string]any{"url": stub.srv.URL, "auth_type": "kerberos"}, "invalid transport or auth_type"},
+		{"unknown transport", map[string]any{"url": stub.srv.URL, "transport": "carrier-pigeon"}, "invalid transport"},
+		// sse is a stored value the proxy cannot dial, so the unsaved route
+		// refuses it like any other unknown transport (PORM-28).
+		{"sse transport", map[string]any{"url": stub.srv.URL, "transport": "sse"}, "invalid transport"},
+		{"unknown auth_type", map[string]any{"url": stub.srv.URL, "auth_type": "kerberos"}, "invalid auth_type"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin", tc.body)
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("code = %d, want 400; body %s", rr.Code, rr.Body.String())
 			}
-			if tc.want != "" {
-				wantsBody(t, rr, tc.want)
+			// The whole body, not a fragment: "invalid transport" is a
+			// substring of the combined message this route used to send, so
+			// a Contains check could not tell the split from its regression.
+			if got, want := strings.TrimSpace(rr.Body.String()), `{"error":"`+tc.want+`"}`; tc.want != "" && got != want {
+				t.Fatalf("body %s, want %s", got, want)
 			}
 		})
 	}
