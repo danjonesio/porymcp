@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2111,5 +2112,606 @@ func TestAdminEventDetailsRoundTrip(t *testing.T) {
 	}
 	if want := `{"fields":["url","enabled"],"auth_changed":true}`; byID["object"] != want {
 		t.Errorf("object details read back as %q, want %q", byID["object"], want)
+	}
+}
+
+// --- Fixed-width timestamps (PORM-26) ---
+
+// auditRow is one audit_logs row for the ordering and paging tests below.
+func auditRow(id string, ts time.Time) *models.AuditLog {
+	return &models.AuditLog{
+		ID: id, Timestamp: ts, VirtualKeyID: "k1", VirtualKeyName: "bot",
+		Method: "tools/list", Status: "success", RequestID: "req-" + id,
+	}
+}
+
+func auditIDs(logs []models.AuditLog) []string {
+	out := make([]string, 0, len(logs))
+	for _, e := range logs {
+		out = append(out, e.ID)
+	}
+	return out
+}
+
+// TestAuditLogOrderingAcrossTrailingZeros is acceptance criterion 1. Under the
+// RFC3339Nano layout ".25Z" sorted after ".250001Z" and "01Z" after
+// "01.000001Z", because "Z" is a higher byte than any digit or the dot, so a
+// row one microsecond later listed as older. Fixed width makes byte order time
+// order at both boundaries.
+func TestAuditLogOrderingAcrossTrailingZeros(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	rows := []struct {
+		id string
+		ts time.Time
+	}{
+		{"quarter", T.Add(250 * time.Millisecond)},
+		{"quarter-plus", T.Add(250*time.Millisecond + time.Microsecond)},
+		{"whole", T.Add(time.Second)},
+		{"whole-plus", T.Add(time.Second + time.Microsecond)},
+	}
+	for _, r := range rows {
+		if err := s.InsertAuditLog(ctx, auditRow(r.id, r.ts)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, next, err := s.ListAuditLogs(ctx, models.LogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"whole-plus", "whole", "quarter-plus", "quarter"}; !slices.Equal(auditIDs(got), want) {
+		t.Errorf("newest first = %v, want %v", auditIDs(got), want)
+	}
+	if next != "" {
+		t.Errorf("next cursor on a complete page = %q, want empty", next)
+	}
+	for i := range got[:len(got)-1] {
+		if !got[i].Timestamp.After(got[i+1].Timestamp) {
+			t.Errorf("row %s (%v) listed before %s (%v) but is not later", got[i].ID, got[i].Timestamp, got[i+1].ID, got[i+1].Timestamp)
+		}
+	}
+	for _, r := range rows {
+		e, err := s.GetAuditLog(ctx, r.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !e.Timestamp.Equal(r.ts) {
+			t.Errorf("%s read back as %v, want %v", r.id, e.Timestamp, r.ts)
+		}
+	}
+}
+
+// TestAuditLogCursorVisitsEveryRow is acceptance criterion 2: keyset paging
+// over rows whose fractions cross every trailing-zero boundary visits each row
+// once, each page strictly older than the one before, and the last page has no
+// cursor. Under the old layout the cursor predicate compared mixed widths and
+// skipped or repeated rows at the page edges.
+func TestAuditLogCursorVisitsEveryRow(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	fractions := []time.Duration{
+		0, time.Nanosecond, time.Microsecond, 100 * time.Millisecond, 123456789 * time.Nanosecond,
+		200 * time.Millisecond, 250 * time.Millisecond, 250*time.Millisecond + time.Microsecond,
+		500 * time.Millisecond, 999999999 * time.Nanosecond,
+	}
+	const n = 50
+	for i := 0; i < n; i++ {
+		ts := T.Add(time.Duration(i/len(fractions))*time.Second + fractions[i%len(fractions)])
+		if err := s.InsertAuditLog(ctx, auditRow(fmt.Sprintf("r%02d", i), ts)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seen := map[string]bool{}
+	var order []string
+	cursor := ""
+	var prevOldest time.Time
+	for pages := 0; ; pages++ {
+		if pages > n {
+			t.Fatalf("paging did not finish after %d pages", pages)
+		}
+		page, next, err := s.ListAuditLogs(ctx, models.LogFilter{Limit: 10, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if len(page) == 0 {
+			t.Fatalf("page %d is empty with cursor %q", pages, cursor)
+		}
+		for i, e := range page {
+			if seen[e.ID] {
+				t.Errorf("row %s returned twice", e.ID)
+			}
+			seen[e.ID] = true
+			order = append(order, e.ID)
+			if i > 0 && !page[i-1].Timestamp.After(e.Timestamp) {
+				t.Errorf("page %d: %s (%v) before %s (%v)", pages, page[i-1].ID, page[i-1].Timestamp, e.ID, e.Timestamp)
+			}
+		}
+		if pages > 0 && !page[0].Timestamp.Before(prevOldest) {
+			t.Errorf("page %d starts at %v, not strictly older than the previous page's %v", pages, page[0].Timestamp, prevOldest)
+		}
+		prevOldest = page[len(page)-1].Timestamp
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if len(order) != n || len(seen) != n {
+		t.Errorf("visited %d rows (%d distinct), want %d", len(order), len(seen), n)
+	}
+}
+
+// TestParseTimeAcceptsLegacyFormat is acceptance criterion 3: a value written
+// by a build before schema version 6, or a cursor such a build issued, still
+// reads as the exact instant. The raw INSERTs stand in for rows step 6 has not
+// seen, which is what a cursor issued before the upgrade amounts to.
+func TestParseTimeAcceptsLegacyFormat(t *testing.T) {
+	want := time.Date(2026, 9, 6, 12, 0, 36, 250_000_000, time.UTC)
+	for _, in := range []string{
+		"2026-09-06T12:00:36.25Z",
+		"2026-09-06T12:00:36.250000000Z",
+		"2026-09-06T12:00:36.25+00:00",
+		"2026-09-06T13:00:36.25+01:00",
+	} {
+		got, err := parseTime(in)
+		if err != nil || !got.Equal(want) {
+			t.Errorf("parseTime(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if got, err := parseTime("2026-09-06T12:00:36Z"); err != nil || !got.Equal(want.Truncate(time.Second)) {
+		t.Errorf("parseTime(whole second) = %v, %v", got, err)
+	}
+	if got, err := parseTime(""); err != nil || !got.IsZero() {
+		t.Errorf("parseTime(\"\") = %v, %v; want the zero time and no error", got, err)
+	}
+
+	s := testStore(t)
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, status) VALUES ('whole', '2026-09-06T12:00:36Z', 'k1', 'bot', 'tools/list', 'success')`,
+		`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, status) VALUES ('short', '2026-09-06T12:00:36.25Z', 'k1', 'bot', 'tools/list', 'success')`,
+		`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, created_at)
+		 VALUES ('k1', 'bot', 'h', 'l1', 'pory_k1', 'upstream', 'u1', '2026-09-06T12:00:36.25Z', '2026-09-06T12:00:36Z')`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, wantTS := range map[string]time.Time{"whole": want.Truncate(time.Second), "short": want} {
+		e, err := s.GetAuditLog(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !e.Timestamp.Equal(wantTS) {
+			t.Errorf("audit log %s read back as %v, want %v", id, e.Timestamp, wantTS)
+		}
+	}
+	k, err := s.GetVirtualKey(ctx, "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.ExpiresAt == nil || !k.ExpiresAt.Equal(want) {
+		t.Errorf("expires_at read back as %v, want %v", k.ExpiresAt, want)
+	}
+	if !k.CreatedAt.Equal(want.Truncate(time.Second)) {
+		t.Errorf("created_at read back as %v", k.CreatedAt)
+	}
+}
+
+// TestDecodeCursorAcceptsLegacyFormat covers the cursor-compatibility risk: a
+// next_cursor a version-5 build handed out carries the RFC3339Nano spelling,
+// and a client that pages across the upgrade passes it back. It must decode and
+// page strictly older rows, not answer ErrInvalidCursor.
+func TestDecodeCursorAcceptsLegacyFormat(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	for i, id := range []string{"a", "b", "c"} {
+		if err := s.InsertAuditLog(ctx, auditRow(id, T.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacy := base64.RawURLEncoding.EncodeToString([]byte(T.Add(time.Second).Format(time.RFC3339Nano) + "|b"))
+	if legacy == encodeCursor(T.Add(time.Second), "b") {
+		t.Fatal("the hand-built cursor equals the current encoding; the test is not exercising the legacy spelling")
+	}
+	ts, id, err := decodeCursor(legacy)
+	if err != nil || id != "b" || !ts.Equal(T.Add(time.Second)) {
+		t.Fatalf("decodeCursor(legacy) = %v, %q, %v", ts, id, err)
+	}
+	got, next, err := s.ListAuditLogs(ctx, models.LogFilter{Cursor: legacy})
+	if err != nil {
+		t.Fatalf("ListAuditLogs with a legacy cursor: %v", err)
+	}
+	if want := []string{"a"}; !slices.Equal(auditIDs(got), want) {
+		t.Errorf("page after legacy cursor = %v, want %v", auditIDs(got), want)
+	}
+	if next != "" {
+		t.Errorf("next cursor = %q, want empty on the last page", next)
+	}
+}
+
+// v5Fixture builds a database as a version-5 server left it: the current DDL
+// (step 6 changes no column and no index, see TestFreshAndMigratedSchemasMatch)
+// with rows in the RFC3339Nano spelling and the version stamped 5. Open
+// creates the schema; preChangeDB then writes the rows raw, so nothing here
+// goes through fmtTime.
+func v5Fixture(t *testing.T, path string, rows ...string) {
+	t.Helper()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	preChangeDB(t, path, append(rows, `UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'`))
+}
+
+// rawTuples is rowTuples against a database that is not open through the
+// store, for reading a fixture before Open or after a refused one.
+func rawTuples(t *testing.T, path, query string) []string {
+	t.Helper()
+	raw, err := sql.Open("sqlite", fileDSN(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	return rowTuples(t, &SQLStore{db: raw, driver: "sqlite"}, query)
+}
+
+// v5Rows is the fixture TestMigrateRewritesTimestampWidth and
+// TestMigrateTimestampsIsIdempotent share: whole seconds, short fractions, a
+// nine-digit value that is already the target width, a +00:00 offset, and
+// NULLs, across all five tables and all eleven columns. Seven rows carry a
+// value that is not 30 bytes (u1, u3, g1, k1, k2, l1 and e1), so
+// TimestampsRewritten is 7; u2 and l2 are already canonical and do not count.
+var v5Rows = []string{
+	`INSERT INTO upstreams (id, name, slug, url, transport, auth_type, auth_config, enabled, created_at, updated_at, last_test_at)
+	 VALUES ('u1', 'GitHub', 'github', 'https://example.com/mcp', 'streamable-http', 'none', 'cipher-u1', 1, '2026-01-01T10:00:00Z', '2026-01-01T10:00:00Z', '2026-01-01T10:00:00.5Z')`,
+	`INSERT INTO upstreams (id, name, slug, url, transport, auth_type, auth_config, enabled, created_at, updated_at, last_test_at)
+	 VALUES ('u2', 'Docs', 'docs', 'https://example.com/docs', 'streamable-http', 'none', '', 1, '2026-01-01T10:00:00.123456789Z', '2026-01-01T10:00:00.123456789Z', NULL)`,
+	`INSERT INTO upstreams (id, name, slug, url, transport, auth_type, auth_config, enabled, created_at, updated_at, last_test_at)
+	 VALUES ('u3', 'Wiki', 'wiki', 'https://example.com/wiki', 'streamable-http', 'none', '', 0, '2026-01-01T10:00:00.123456789Z', '2026-01-02T10:00:00Z', NULL)`,
+	`INSERT INTO groups (id, name, upstream_ids, tool_filter, created_at, updated_at)
+	 VALUES ('g1', 'Tools', '["u1"]', '', '2026-01-01T10:00:00+00:00', '2026-01-01T10:00:00Z')`,
+	`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
+	 VALUES ('k1', 'bot', '$argon2id$hash-k1', 'lookup-k1', 'pory_k1k1k1k', 'upstream', 'u1', '2027-01-01T00:00:00.25Z', '["a"]', '["b"]', '2026-01-01T10:00:00Z', NULL, NULL, '{"team":"x"}')`,
+	`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
+	 VALUES ('k2', 'old-bot', '$argon2id$hash-k2', 'lookup-k2', 'pory_k2k2k2k', 'group', 'g1', NULL, '[]', '[]', '2026-01-01T10:00:00.123456789Z', '2026-01-03T10:00:00.75Z', '2026-01-04T10:00:00Z', '')`,
+	`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, request_id)
+	 VALUES ('l1', '2026-01-09T10:00:00Z', 'k1', 'bot', 'tools/call', 'search', '{"q":"x"}', 'success', 'r1')`,
+	`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, request_id)
+	 VALUES ('l2', '2026-01-09T10:00:00.123456789Z', 'k1', 'bot', 'tools/list', '', '', 'success', 'r2')`,
+	`INSERT INTO admin_events (id, timestamp, actor, action, resource_type, resource_id, resource_name, details, request_id, remote_addr)
+	 VALUES ('e1', '2026-01-09T10:00:00.5Z', 'admin', 'upstream.create', 'upstream', 'u1', 'GitHub', '{"slug":"github"}', 'r3', '203.0.113.10')`,
+}
+
+const v5RowsRewritten = 7
+
+// The non-timestamp bytes of v5Rows, which step 6 must leave exactly as they
+// were: security requirement 2.
+var v5OtherColumns = map[string]string{
+	`SELECT id, name, slug, url, auth_config, enabled, last_test_ok FROM upstreams ORDER BY id`: strings.Join([]string{
+		"u1|GitHub|github|https://example.com/mcp|cipher-u1|1|NULL",
+		"u2|Docs|docs|https://example.com/docs||1|NULL",
+		"u3|Wiki|wiki|https://example.com/wiki||0|NULL",
+	}, "\n"),
+	`SELECT id, name, upstream_ids, tool_filter FROM groups ORDER BY id`: `g1|Tools|["u1"]|`,
+	`SELECT id, key_hash, key_lookup, key_prefix, target_type, target_id, rate_limit, tool_allowlist, tool_denylist, metadata FROM virtual_keys ORDER BY id`: strings.Join([]string{
+		`k1|$argon2id$hash-k1|lookup-k1|pory_k1k1k1k|upstream|u1|NULL|["a"]|["b"]|{"team":"x"}`,
+		"k2|$argon2id$hash-k2|lookup-k2|pory_k2k2k2k|group|g1|NULL|[]|[]|",
+	}, "\n"),
+	`SELECT id, virtual_key_id, method, tool_name, params, status, request_id FROM audit_logs ORDER BY id`: strings.Join([]string{
+		`l1|k1|tools/call|search|{"q":"x"}|success|r1`,
+		"l2|k1|tools/list|||success|r2",
+	}, "\n"),
+	`SELECT id, actor, action, resource_type, resource_id, resource_name, details, request_id, remote_addr FROM admin_events ORDER BY id`: `e1|admin|upstream.create|upstream|u1|GitHub|{"slug":"github"}|r3|203.0.113.10`,
+}
+
+// distinctLengths is the operator's post-upgrade check from docs/11-deployment.md
+// as a test assertion: the set of byte lengths of a column's non-empty values.
+func distinctLengths(t *testing.T, s *SQLStore, table, col string) []int {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT DISTINCT length(` + col + `) FROM ` + table + ` WHERE ` + col + ` IS NOT NULL AND ` + col + ` <> '' ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// TestMigrateRewritesTimestampWidth is acceptance criterion 4 and the
+// RecordUpstreamTest compare-and-set finding: after step 6 every stored value
+// in the eleven columns is 30 bytes, the count reports the rows it changed, the
+// other columns are untouched, and the compare-and-set matches a row whose
+// updated_at was a whole second before the upgrade.
+func TestMigrateRewritesTimestampWidth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v5.db")
+	v5Fixture(t, path, v5Rows...)
+	if got := rawTuples(t, path, `SELECT value FROM schema_meta WHERE key = 'schema_version'`); strings.Join(got, "") != "5" {
+		t.Fatalf("fixture stamped %v, want 5", got)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("migrate a version-5 database: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, TimestampsRewritten: v5RowsRewritten}); got != want {
+		t.Errorf("LastMigration() = %+v, want %+v", got, want)
+	}
+	for _, tc := range timestampColumns {
+		for _, col := range tc.cols {
+			if got := distinctLengths(t, s, tc.table, col); !slices.Equal(got, []int{30}) {
+				t.Errorf("%s.%s lengths = %v, want [30]", tc.table, col, got)
+			}
+		}
+	}
+	for q, want := range v5OtherColumns {
+		if got := strings.Join(rowTuples(t, s, q), "\n"); got != want {
+			t.Errorf("non-timestamp columns changed:\n got %q\nwant %q\nquery %s", got, want, q)
+		}
+	}
+
+	// The instants are preserved, the +00:00 offset is normalised to Z, and a
+	// value already in tsLayout is byte for byte what it was.
+	for q, want := range map[string]string{
+		`SELECT created_at, updated_at FROM groups WHERE id = 'g1'`:                     "2026-01-01T10:00:00.000000000Z|2026-01-01T10:00:00.000000000Z",
+		`SELECT created_at, updated_at, last_test_at FROM upstreams WHERE id = 'u2'`:    "2026-01-01T10:00:00.123456789Z|2026-01-01T10:00:00.123456789Z|NULL",
+		`SELECT last_test_at FROM upstreams WHERE id = 'u1'`:                            "2026-01-01T10:00:00.500000000Z",
+		`SELECT expires_at, last_used_at, revoked_at FROM virtual_keys WHERE id = 'k1'`: "2027-01-01T00:00:00.250000000Z|NULL|NULL",
+		`SELECT expires_at, last_used_at, revoked_at FROM virtual_keys WHERE id = 'k2'`: "NULL|2026-01-03T10:00:00.750000000Z|2026-01-04T10:00:00.000000000Z",
+		`SELECT timestamp FROM admin_events WHERE id = 'e1'`:                            "2026-01-09T10:00:00.500000000Z",
+	} {
+		if got := strings.Join(rowTuples(t, s, q), "\n"); got != want {
+			t.Errorf("%s = %q, want %q", q, got, want)
+		}
+	}
+	l1, err := s.GetAuditLog(ctx, "l1")
+	if err != nil || !l1.Timestamp.Equal(time.Date(2026, 1, 9, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("l1 read back as %v, %v", l1, err)
+	}
+
+	// The compare-and-set: a whole-second updated_at written by a version-5
+	// build used to be 20 bytes and could never equal fmtTime(seen) after the
+	// format change; step 6 rewrote it, so the test result is recorded.
+	u, err := s.GetUpstream(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	if err := s.RecordUpstreamTest(ctx, "u1", at, true, u.UpdatedAt); err != nil {
+		t.Fatalf("RecordUpstreamTest against a migrated updated_at: %v", err)
+	}
+	u, err = s.GetUpstream(ctx, "u1")
+	if err != nil || u.LastTestAt == nil || !u.LastTestAt.Equal(at) || u.LastTestOK == nil || !*u.LastTestOK {
+		t.Errorf("after RecordUpstreamTest: %+v, %v", u, err)
+	}
+
+	t.Run("pages past migrateTimestampsPage rows", func(t *testing.T) {
+		// More legacy rows than one page holds, so the second and later
+		// pages are exercised on rows that still need the rewrite, and the
+		// count is the row count.
+		path := filepath.Join(t.TempDir(), "v5-big.db")
+		s0, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := s0.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		const n = migrateTimestampsPage + 7
+		for i := 0; i < n; i++ {
+			ts := time.Date(2026, 1, 9, 10, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Millisecond)
+			if _, err := tx.Exec(`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, status) VALUES (?, ?, 'k1', 'bot', 'tools/list', 'success')`,
+				fmt.Sprintf("l%06d", i), ts.Format(time.RFC3339Nano)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tx.Exec(`UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s0.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("migrate %d legacy rows: %v", n, err)
+		}
+		defer s.Close()
+		if got := s.LastMigration().TimestampsRewritten; got != n {
+			t.Errorf("TimestampsRewritten = %d, want %d", got, n)
+		}
+		if got := distinctLengths(t, s, "audit_logs", "timestamp"); !slices.Equal(got, []int{30}) {
+			t.Errorf("audit_logs.timestamp lengths = %v, want [30]", got)
+		}
+	})
+}
+
+// TestMigrateTimestampsIsIdempotent: a second run of the helper over its own
+// output writes nothing, which is what lets a Postgres replica that lost the
+// advisory-lock race re-run step 6 safely; and a table larger than one page
+// that is already canonical is walked to the end rather than for ever.
+func TestMigrateTimestampsIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v5.db")
+	v5Fixture(t, path, v5Rows...)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	queries := make([]string, 0, len(timestampColumns))
+	for _, tc := range timestampColumns {
+		queries = append(queries, `SELECT id, `+strings.Join(tc.cols, ", ")+` FROM `+tc.table+` ORDER BY id`)
+	}
+	before := map[string]string{}
+	for _, q := range queries {
+		before[q] = strings.Join(rowTuples(t, s, q), "\n")
+	}
+	first := s.LastMigration()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrateTimestamps(tx); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.LastMigration().TimestampsRewritten - first.TimestampsRewritten; n != 0 {
+		t.Errorf("the second run rewrote %d rows, want 0", n)
+	}
+	for _, q := range queries {
+		if got := strings.Join(rowTuples(t, s, q), "\n"); got != before[q] {
+			t.Errorf("rows changed on the second run:\n got %q\nwant %q\nquery %s", got, before[q], q)
+		}
+	}
+
+	t.Run("more than one page already canonical", func(t *testing.T) {
+		s := testStore(t)
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		const n = migrateTimestampsPage + 3
+		base := time.Date(2026, 1, 9, 10, 0, 0, 0, time.UTC)
+		for i := 0; i < n; i++ {
+			if _, err := tx.Exec(`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, status) VALUES (?, ?, 'k1', 'bot', 'tools/list', 'success')`,
+				fmt.Sprintf("l%06d", i), fmtTime(base.Add(time.Duration(i)*time.Millisecond))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		tx, err = s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- s.migrateTimestamps(tx) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("run over %d canonical rows: %v", n, err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("migrateTimestamps did not return: the page loop is not advancing")
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.LastMigration().TimestampsRewritten; got != 0 {
+			t.Errorf("TimestampsRewritten = %d on canonical rows, want 0", got)
+		}
+	})
+}
+
+// TestMigrateTimestampsRefusesUnreadableValue is security requirement 1 in
+// the shape of TestMigrateRefusesInvalidStoredSlug: one cell neither layout
+// reads stops the upgrade, the transaction rolls back so the version stays 5
+// and every other row keeps its pre-upgrade bytes, and the error names the
+// table, the row id and the column and nothing else, because it goes to a log.
+func TestMigrateTimestampsRefusesUnreadableValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "badts.db")
+	rows := append(slices.Clone(v5Rows),
+		`INSERT INTO upstreams (id, name, slug, url, transport, auth_type, auth_config, enabled, created_at, updated_at)
+		 VALUES ('u9', 'Payroll Vendor', 'payroll', 'https://vendor.example.com/mcp?key=hunter2', 'streamable-http', 'none', '', 1, '2026-02-01T10:00:00Z', '2026-02-01T10:00:00Z')`,
+		`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, created_at)
+		 VALUES ('k9', 'payroll-bot', '$argon2id$hash-k9', 'lookup-k9', 'pory_k9k9k9k', 'upstream', 'u9', 'not a time', '2026-02-01T10:00:00Z')`,
+	)
+	v5Fixture(t, path, rows...)
+	const upstreams = `SELECT id, name, url, created_at, updated_at, last_test_at FROM upstreams ORDER BY id`
+	const keys = `SELECT id, expires_at, created_at FROM virtual_keys ORDER BY id`
+	wantUpstreams, wantKeys := rawTuples(t, path, upstreams), rawTuples(t, path, keys)
+
+	s, err := Open(path)
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("Open must fail when a stored timestamp is unreadable")
+	}
+	msg := err.Error()
+	for _, name := range []string{"virtual_keys", "k9", "expires_at"} {
+		if !strings.Contains(msg, name) {
+			t.Errorf("error should name %q, got %q", name, msg)
+		}
+	}
+	for _, leak := range []string{"not a time", "Payroll Vendor", "payroll-bot", "vendor.example.com", "hunter2", "hash-k9", "lookup-k9"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("error leaked %q: %q", leak, msg)
+		}
+	}
+	if got := rawTuples(t, path, `SELECT value FROM schema_meta WHERE key = 'schema_version'`); strings.Join(got, "") != "5" {
+		t.Errorf("schema_version after a refused step 6 = %v, want 5", got)
+	}
+	if got := rawTuples(t, path, upstreams); strings.Join(got, "\n") != strings.Join(wantUpstreams, "\n") {
+		t.Errorf("upstreams changed by a refused step:\n got %q\nwant %q", got, wantUpstreams)
+	}
+	if got := rawTuples(t, path, keys); strings.Join(got, "\n") != strings.Join(wantKeys, "\n") {
+		t.Errorf("virtual_keys changed by a refused step:\n got %q\nwant %q", got, wantKeys)
+	}
+}
+
+// TestMigrateTimestampsLeavesNullAndEmpty covers the zero-time finding: NULL
+// means "no value" and so does "" (parseTime("") is the zero time, and
+// parseTimePtr answers nil for both), so step 6 must leave both alone rather
+// than write fmtTime of the zero time, which would turn "never expires" into
+// "expired in year 1" and "not revoked" into "revoked".
+func TestMigrateTimestampsLeavesNullAndEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nulls.db")
+	v5Fixture(t, path,
+		`INSERT INTO upstreams (id, name, slug, url, transport, auth_type, auth_config, enabled, created_at, updated_at, last_test_at)
+		 VALUES ('u1', 'GitHub', 'github', 'https://example.com/mcp', 'streamable-http', 'none', '', 1, '2026-01-01T10:00:00Z', '2026-01-01T10:00:00Z', NULL)`,
+		`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, created_at, last_used_at, revoked_at)
+		 VALUES ('k1', 'bot', 'h', 'l1', 'pory_k1', 'upstream', 'u1', NULL, '2026-01-01T10:00:00Z', NULL, '')`,
+	)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, TimestampsRewritten: 2}); got != want {
+		t.Errorf("LastMigration() = %+v, want %+v", got, want)
+	}
+	if got := rowTuples(t, s, `SELECT last_test_at FROM upstreams WHERE id = 'u1'`); strings.Join(got, "") != "NULL" {
+		t.Errorf("upstreams.last_test_at = %q, want NULL", got)
+	}
+	if got, want := strings.Join(rowTuples(t, s, `SELECT expires_at, last_used_at, revoked_at FROM virtual_keys WHERE id = 'k1'`), ""), "NULL|NULL|"; got != want {
+		t.Errorf("virtual_keys nullable columns = %q, want %q", got, want)
+	}
+	zero := fmtTime(time.Time{})
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM virtual_keys WHERE expires_at = ? OR last_used_at = ? OR revoked_at = ?`, zero, zero, zero).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d virtual_keys rows carry the zero time %q", n, zero)
+	}
+	k, err := s.GetVirtualKey(context.Background(), "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.ExpiresAt != nil || k.LastUsedAt != nil || k.RevokedAt != nil {
+		t.Errorf("key read back with expires_at=%v last_used_at=%v revoked_at=%v, want all nil", k.ExpiresAt, k.LastUsedAt, k.RevokedAt)
 	}
 }
