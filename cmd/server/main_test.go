@@ -86,7 +86,13 @@ func TestRouterTopology(t *testing.T) {
 		// caller's own key. No cross-key reach, but it is a second URL for
 		// every member, and it is pinned here so it stays a known one.
 		{"keyless member door is owned by the proxy", http.MethodPost, "//github/mcp", "", 401, "application/json", "", "SPA-MARKER"},
-		{"a dashboard page named mcp would be shadowed by the proxy", http.MethodGet, "/virtual-keys/mcp", "", 401, "", "", "SPA-MARKER"},
+		// PORM-30 answers the verb before the key, so a GET here is 405
+		// rather than 401. The row's point is unchanged either way: the
+		// dashboard did not serve this path.
+		{"a dashboard page named mcp would be shadowed by the proxy", http.MethodGet, "/virtual-keys/mcp", "", 405, "application/json", "", "SPA-MARKER"},
+		// The 405 through the real middleware stack, which the proxy
+		// package's bare router cannot show.
+		{"a GET on the shared door is refused on the verb", http.MethodGet, "/mcp", "", 405, "application/json", `"method not allowed"`, "SPA-MARKER"},
 		// /api/v1 is a Mount, so chi resolves it at a static node and never
 		// backtracks into {keyID}: everything under the management API keeps
 		// its own JSON 404 instead of reaching the three-segment member route.
@@ -125,6 +131,25 @@ func TestRouterTopology(t *testing.T) {
 			}
 		})
 	}
+
+	// PORM-30. The table asserts status and body; the headers a refused verb
+	// carries through the assembled router are pinned here, X-Frame-Options
+	// among them, which proves the middleware ran before the handler refused.
+	t.Run("the 405 names the methods that work", func(t *testing.T) {
+		rr := do(http.MethodGet, "/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/mcp", "")
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status %d, want 405; body %q", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Allow"); got != "POST, DELETE, OPTIONS" {
+			t.Errorf("Allow=%q want %q: RFC 9110 requires it on a 405", got, "POST, DELETE, OPTIONS")
+		}
+		if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control=%q want no-store: a refusal is not cacheable either", got)
+		}
+		if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("X-Frame-Options=%q want DENY: the middleware did not run", got)
+		}
+	})
 
 	t.Run("no dashboard built", func(t *testing.T) {
 		bare := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
@@ -204,6 +229,13 @@ func TestSecurityHeaders(t *testing.T) {
 	// CORS-safelisted, so a browser client can read it only if it is named here.
 	if !strings.Contains(expose, "Retry-After") {
 		t.Fatalf("Access-Control-Expose-Headers=%q does not name Retry-After", expose)
+	}
+	// PORM-30 pins the advertised method list against the Allow header on a
+	// 405: both come from one constant in the proxy, and this assertion holds
+	// on the assembled router because applyCORS writes the header with Set
+	// after dashboardCORS, which ignores this Origin anyway.
+	if got := rr.Header().Get("Access-Control-Allow-Methods"); got != "POST, DELETE, OPTIONS" {
+		t.Fatalf("Access-Control-Allow-Methods=%q want %q", got, "POST, DELETE, OPTIONS")
 	}
 	if rr.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatal("OPTIONS /mcp should still carry security headers")

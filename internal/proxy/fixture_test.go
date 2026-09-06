@@ -347,13 +347,27 @@ func (f *fixture) postWith(rpc string, hdr map[string]string) *httptest.Response
 	return rr
 }
 
-// doPath sends a raw body at an absolute URL through the fixture's router. The
-// URL is absolute because hostAllowed compares the request's host against
-// PublicURL, which the fixture sets to http://localhost:8080.
+// doPath sends a raw body at an absolute URL through the fixture's router with
+// the fixture's bearer. The URL is absolute because hostAllowed compares the
+// request's host against PublicURL, which the fixture sets to
+// http://localhost:8080; a foreign host in the URL is how a test reaches the
+// invalid-host refusal. A header in hdr overrides the bearer, so a wrong key
+// is sent by naming Authorization there.
 func (f *fixture) doPath(method, path, rpc string, hdr map[string]string) *httptest.ResponseRecorder {
 	f.t.Helper()
+	merged := map[string]string{"Authorization": "Bearer " + f.Key}
+	for k, v := range hdr {
+		merged[k] = v
+	}
+	return f.doPathNoAuth(method, path, rpc, merged)
+}
+
+// doPathNoAuth is doPath with no bearer at all: the request a client sends
+// before it has a key, which is what a refusal written before authentication
+// has to be tested against. It is the one place a routed request is built.
+func (f *fixture) doPathNoAuth(method, path, rpc string, hdr map[string]string) *httptest.ResponseRecorder {
+	f.t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(rpc))
-	req.Header.Set("Authorization", "Bearer "+f.Key)
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range hdr {
 		req.Header.Set(k, v)
@@ -367,6 +381,12 @@ func (f *fixture) doPath(method, path, rpc string, hdr map[string]string) *httpt
 func (f *fixture) postTo(path, rpc string) *httptest.ResponseRecorder {
 	f.t.Helper()
 	return f.doPath(http.MethodPost, path, rpc, nil)
+}
+
+// keyURL is the key endpoint of the fixture's key. The key id is always "a1"
+// (newFixture), so a test names nothing.
+func (f *fixture) keyURL() string {
+	return "http://localhost:8080/a1/mcp"
 }
 
 // memberURL is the endpoint of one member of the fixture's key. The key id is
