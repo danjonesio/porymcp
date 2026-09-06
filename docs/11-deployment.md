@@ -437,14 +437,20 @@ deploying it:
 
 4. **If the start refuses**, the log names a table, row id and column whose
    value neither layout reads (a hand-edited row; every value a released build
-   wrote parses). Nothing was changed and the version is still 5. Fix that one
-   cell and restart:
+   wrote parses). Nothing was changed and the version is still 5. Under
+   `restart: unless-stopped` the container is restart-looping on that refusal,
+   so stop it first; then fix that one cell and start it again:
 
    ```bash
-   # SQLite, against the volume (needs network for apk)
-   docker run --rm -it -v porymcp_porymcp-data:/data alpine sh -c 'apk add -q sqlite && sqlite3 /data/porymcp.db'
-   # Postgres
+   # SQLite, against the volume (needs network for apk). The chown puts back
+   # the ownership the server needs (uid 65532, docs/08-docker.md) on the
+   # database and any -wal or -shm file the root shell created.
+   docker compose stop porymcp
+   docker run --rm -it -v porymcp_porymcp-data:/data alpine sh -c 'apk add -q sqlite && sqlite3 /data/porymcp.db; chown 65532:65532 /data/porymcp.db*'
+   docker compose start porymcp
+   # Postgres (the porymcp service is already stopped from step 1)
    docker compose --profile postgres exec postgres psql -U porymcp -d porymcp
+   docker compose --profile postgres start porymcp
    ```
 
 5. **Verify** after the `schema migrated` line: every stored value is 30 bytes.
