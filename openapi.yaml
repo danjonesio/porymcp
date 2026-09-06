@@ -121,7 +121,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Discovery"
         "400":
-          description: Malformed body, missing url, or an invalid transport or auth_type
+          description: Malformed body or missing url; `invalid transport` (anything but streamable-http, sse included) or `invalid auth_type`
         "429":
           $ref: "#/components/responses/DiscoveryRateLimited"
   /upstreams/{id}/discover:
@@ -642,7 +642,12 @@ components:
         transport:
           type: string
           enum: [streamable-http, sse]
-          description: The transport PoryMCP speaks here. `sse` is accepted on write but not implemented (PORM-28).
+          description: |
+            The transport PoryMCP speaks here. `streamable-http` is the only
+            value accepted on write. `sse` may appear on rows saved before
+            PORM-28 and is not implemented: the proxy refuses every request to
+            such a row and discovery reports it as not implemented. Repair it
+            with a PATCH sending `streamable-http`.
         auth_type:
           type: string
           enum: [none, bearer, header, api_key, custom]
@@ -734,7 +739,12 @@ components:
             metadata) is not checked yet (see PORM-79).
         transport:
           type: string
-          enum: [streamable-http, sse]
+          enum: [streamable-http]
+          description: |
+            The only value accepted on write. Anything else, `sse` included, is
+            `400 invalid transport`, on PATCH too: a row stored as `sse` is
+            edited by omitting this field or repaired by sending
+            `streamable-http` (PORM-28).
         auth_type:
           type: string
           enum: [none, bearer, header, api_key, custom]

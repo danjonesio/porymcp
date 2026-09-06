@@ -2,7 +2,7 @@
 
 ## High-level components
 - Management API (REST + OpenAPI)
-- MCP Proxy core (JSON-RPC forwarding, Streamable HTTP + SSE)
+- MCP Proxy core (JSON-RPC forwarding, Streamable HTTP)
 - Auth middleware (virtual key validation)
 - Credential injector (holds real secrets, never exposes them, and presents each
   to the upstream's own URL, never to a host the upstream names in a redirect)

@@ -22,6 +22,11 @@
   - Logs table with filters
   - Simple stats overview
 
+## Known gaps
+- The legacy HTTP+SSE upstream transport is not implemented (PORM-5). `sse` is
+  refused on write since PORM-28; a row stored with it before then is refused on
+  every request until its transport is set to `streamable-http`.
+
 ## Nice-to-have (post-MVP)
 - Tool-level filtering UI
 - Log export (JSONL)

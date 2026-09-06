@@ -108,7 +108,7 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
 
 ## Features
 
-- Streamable HTTP (primary) + SSE pass-through
+- Streamable HTTP to upstreams. Legacy HTTP+SSE is not implemented (PORM-5).
 - Encrypted storage of upstream secrets (AES-256-GCM)
 - Virtual keys hashed with argon2id; plaintext shown only on create or rotate
 - Virtual key rotation and revocation
