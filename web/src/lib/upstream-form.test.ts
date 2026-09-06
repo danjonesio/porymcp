@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { Upstream } from './api.ts'
 import {
   DEFAULT_HEADER,
+  TRANSPORT_LABELS,
   blankUpstreamForm,
   clearStoredDescription,
   credentialHelp,
@@ -355,4 +356,29 @@ test('clearStoredDescription: null once the select leaves None, on a none row wi
   const bearer = up()
   assert.equal(clearStoredDescription(bearer, edit(bearer, { auth_type: 'none' })), null)
   assert.equal(clearStoredDescription(undefined, blankUpstreamForm()), null)
+})
+
+// PORM-28: a row stored as sse (saved before the API refused the value) is
+// edited without any PATCH exemption. The form seeds the stored value, the
+// PATCH body omits transport while it is unchanged, and the repair sends the
+// one supported value. The select offers that one value and nothing else.
+test('formFromUpstream: keeps a stored sse transport', () => {
+  const legacy = up({ transport: 'sse' })
+  assert.equal(formFromUpstream(legacy).transport, 'sse')
+})
+
+test('upstreamPatchBody: omits transport when only the name changed on an sse row', () => {
+  const legacy = up({ transport: 'sse' })
+  assert.deepEqual(upstreamPatchBody(legacy, edit(legacy, { name: 'Renamed' })), { name: 'Renamed' })
+})
+
+test('upstreamPatchBody: sends streamable-http when the sse row is repaired', () => {
+  const legacy = up({ transport: 'sse' })
+  assert.deepEqual(upstreamPatchBody(legacy, edit(legacy, { transport: 'streamable-http' })), {
+    transport: 'streamable-http',
+  })
+})
+
+test('TRANSPORT_LABELS: offers streamable-http alone', () => {
+  assert.deepEqual(Object.keys(TRANSPORT_LABELS), ['streamable-http'])
 })

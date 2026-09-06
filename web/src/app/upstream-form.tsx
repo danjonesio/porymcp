@@ -10,6 +10,7 @@ import type { Upstream } from '@/lib/api'
 import { PLAIN_HTTP_NOTE, plainHTTPCredential } from '@/lib/discovery'
 import {
   AUTH_TYPE_LABELS,
+  TRANSPORT_LABELS,
   clearStoredDescription,
   credentialRequired,
   editCredentialDescription,
@@ -18,6 +19,7 @@ import {
   removeCredentialDescription,
   type UpstreamForm,
 } from '@/lib/upstream-form'
+import { transportUnsupported } from '@/lib/upstream-transport'
 
 export type UpstreamFieldsProps = {
   className?: string
@@ -131,9 +133,26 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
       <Field>
         <Label>Transport</Label>
         <Select name="transport" value={form.transport} onChange={(e) => onChange({ transport: e.target.value })}>
-          <option value="streamable-http">Streamable HTTP</option>
-          <option value="sse">SSE</option>
+          {Object.entries(TRANSPORT_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+          {/* A row stored with a value the proxy refuses (sse, saved before
+              PORM-28) keeps its own option, so the select shows what is stored
+              instead of snapping to the one supported value, and the operator
+              chooses the repair. upstreamPatchBody sends transport only when it
+              changed, so saving without touching this field is not a 400. */}
+          {transportUnsupported(form.transport) ? (
+            <option value={form.transport}>{form.transport} (unsupported)</option>
+          ) : null}
         </Select>
+        {transportUnsupported(form.transport) ? (
+          <Description>
+            Not implemented. Requests through this upstream fail until the transport is Streamable HTTP. The URL
+            stays as it is.
+          </Description>
+        ) : null}
       </Field>
       <Field>
         <Label>Auth type</Label>
