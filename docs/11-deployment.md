@@ -295,9 +295,10 @@ With the default `PUBLIC_URL=http://localhost:8080` and empty
 `ENCRYPTION_KEY` seals every stored upstream credential; losing it makes them
 unrecoverable, so back it up separately from the data volume and rotate it
 deliberately. (Upgrading to the build that introduced this is itself one-way:
-the first boot stamps schema version 5, which earlier builds refuse, so take the
-pre-upgrade backup before deploying it. See `CHANGELOG.md` and
-`docs/02-data-model.md`.) The policy is in `docs/07-security.md`; these are the commands
+the first boot stamps schema version 5, and version 6 at the fixed-width
+timestamp build, which earlier builds refuse, so take the pre-upgrade backup
+before deploying it. See `CHANGELOG.md`, `docs/02-data-model.md` and §13
+below.) The policy is in `docs/07-security.md`; these are the commands
 against the shipped compose file. Only step 1 has downtime. The image has no
 shell: `docker compose exec porymcp /porymcp rekey` execs the binary directly,
 inherits the container's environment as created (so edit `.env` and recreate
@@ -391,4 +392,68 @@ instead); re-run.
 
 A Kubernetes **HTTP** liveness probe on `/health` will CrashLoop the deployment
 on a key mismatch, taking the working upstreams offline with it. Use the exec
-form.
+form. On an upgrade that carries a schema step, give the pod a startup probe
+long enough for the rewrite (§13); a liveness probe alone kills the process
+mid-migration.
+
+## 13. Upgrading to schema version 6
+
+The build that stores timestamps fixed-width (PORM-26) stamps schema version 6
+on its first boot. The stamp is one-way: a version-5 binary refuses the
+database at `Open`, so the rollback is restore from backup, as in §12. Before
+deploying it:
+
+1. **Back up**, stored together with the `ENCRYPTION_KEY` it was taken under
+   (§12 step 1 for SQLite). Postgres:
+
+   ```bash
+   docker compose --profile postgres stop porymcp
+   docker compose --profile postgres exec -T postgres pg_dump -U porymcp porymcp > porymcp-$(date +%F).sql
+   ```
+
+   `-T` so the redirect captures the dump and not a TTY.
+
+2. **Stop every old process first.** The version stamp keeps an old binary from
+   starting, but it does not stop one that is already past `Open`, and such a
+   process keeps writing the short spelling to rows the step will not revisit.
+   With more than one replica (Postgres): stop every old replica, back up, start
+   **one** new process, wait for its `schema migrated` line with `version=6`
+   and `timestamps_rewritten=N`, then `porymcp listening`, then start the rest.
+   A rolling deploy is not an upgrade path for this build.
+
+3. **Expect the first start to pause.** `Open` blocks while every stored
+   timestamp is rewritten, at about 40 000 rows per second on SQLite: seconds
+   is roughly rows divided by 40 000, about 30 s per million audit rows, with a
+   WAL about the size of the database file meanwhile. A crash mid-step rolls
+   back and the next start retries from the beginning. Under the shipped
+   compose file the container reports `unhealthy` for that time and recovers
+   on its own, because `restart: unless-stopped` acts on exit, not on health,
+   and `up -d --wait` may time out before the line appears: wait for the log
+   instead (`docs/08-docker.md`). Swarm replaces an unhealthy task, so raise
+   `healthcheck.start_period` in the stack file to cover that figure before
+   upgrading. Kubernetes: a startup probe with `failureThreshold` times
+   `periodSeconds` at least that long, or the liveness probe restarts the pod
+   mid-migration and it never finishes.
+
+4. **If the start refuses**, the log names a table, row id and column whose
+   value neither layout reads (a hand-edited row; every value a released build
+   wrote parses). Nothing was changed and the version is still 5. Fix that one
+   cell and restart:
+
+   ```bash
+   # SQLite, against the volume (needs network for apk)
+   docker run --rm -it -v porymcp_porymcp-data:/data alpine sh -c 'apk add -q sqlite && sqlite3 /data/porymcp.db'
+   # Postgres
+   docker compose --profile postgres exec postgres psql -U porymcp -d porymcp
+   ```
+
+5. **Verify** after the `schema migrated` line: every stored value is 30 bytes.
+
+   ```bash
+   # SQLite
+   docker run --rm -v porymcp_porymcp-data:/data alpine sh -c 'apk add -q sqlite && sqlite3 /data/porymcp.db "SELECT DISTINCT length(timestamp) FROM audit_logs;"'   # 30
+   # Postgres
+   docker compose --profile postgres exec postgres psql -U porymcp -d porymcp -c "SELECT DISTINCT length(timestamp) FROM audit_logs;"   # 30
+   ```
+
+   An empty result means no audit rows yet, which is also fine.

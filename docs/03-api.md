@@ -505,6 +505,10 @@ one group's calls for a tool therefore takes the spelling the path uses.
 
 `limit` below 1 or not an integer is a `400`; above 200 it is treated as 50.
 
+`since` and `until` take RFC 3339 and are inclusive and exact, at any
+fraction of a second. `next_cursor` is opaque; a cursor issued by a build before
+schema version 6 still works after the upgrade.
+
 ## Admin events
 - `GET /admin-events?since=&resource_type=&limit=&cursor=`
 
@@ -522,9 +526,8 @@ is empty on the last page and `admin_events` is `[]`, never null.
 
 `resource_type` is one of `upstream`, `group`, `virtual_key`; any other value
 is a `400`, because on an audit endpoint an empty answer would read as
-"nothing happened". `since` is inclusive and takes RFC 3339; on a whole second
-it is exact, and a value carrying a fraction can include a row from earlier in
-that same second. `limit` below 1 or not an integer is a `400`; above 200 it
+"nothing happened". `since` is inclusive and exact and takes RFC 3339, at any
+fraction of a second. `limit` below 1 or not an integer is a `400`; above 200 it
 is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 `400`.
 
