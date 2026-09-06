@@ -147,7 +147,7 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
 
 ## Status
 
-Early development. The management API, proxy, audit log, Docker image, and dashboard skeleton are in place. Behaviour changes that affect a running deployment are recorded in [CHANGELOG.md](CHANGELOG.md).
+Early development. The management API, proxy, audit log, Docker image and dashboard are in place; [docs/05-mvp.md](docs/05-mvp.md) lists what ships and the known gaps. Releases are tagged `vX.Y.Z`, and the changes in each that affect a running deployment are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
