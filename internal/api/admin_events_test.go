@@ -1016,10 +1016,9 @@ func TestListAdminEvents(t *testing.T) {
 			t.Errorf("first event lacks %q: %v", k, all[0])
 		}
 	}
-	// The three rows land inside one second, where the stored text order is
-	// not guaranteed to be time order (see TestAdminEventsRoundTrip, which
-	// pins newest-first with whole-second fixtures), so the set is asserted
-	// here and the order is asserted there.
+	// The three rows land inside one second in whatever order the handlers
+	// ran, so the set is asserted here and newest-first order is asserted in
+	// TestAdminEventsRoundTrip, whose fixtures carry known instants.
 	actionsOf := func(events []map[string]any) []string {
 		out := make([]string, 0, len(events))
 		for _, e := range events {
@@ -1038,8 +1037,8 @@ func TestListAdminEvents(t *testing.T) {
 		t.Errorf("resource_type filter = %v", got)
 	}
 	// since on the whole second the oldest row fell in must include that row,
-	// which almost always carries a fraction: the handler-to-store path of
-	// sinceBound. A plain fmtTime bound would drop it.
+	// which almost always carries a fraction: the handler-to-store path of the
+	// fixed-width since bound, where byte order is time order.
 	oldest := all[len(all)-1]["timestamp"].(string)
 	for _, e := range all {
 		if ts := e["timestamp"].(string); ts < oldest {

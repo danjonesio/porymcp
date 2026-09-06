@@ -399,11 +399,13 @@ paths:
             type: string
         - name: since
           in: query
+          description: Inclusive lower bound, RFC 3339, exact at any fraction of a second.
           schema:
             type: string
             format: date-time
         - name: until
           in: query
+          description: Inclusive upper bound, RFC 3339, exact at any fraction of a second.
           schema:
             type: string
             format: date-time
@@ -467,9 +469,7 @@ paths:
       parameters:
         - name: since
           in: query
-          description: >-
-            Inclusive lower bound, RFC 3339. Exact on a whole second; a value
-            carrying a fraction can include a row from earlier in that second.
+          description: Inclusive lower bound, RFC 3339, exact at any fraction of a second.
           schema:
             type: string
             format: date-time

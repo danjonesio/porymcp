@@ -514,6 +514,10 @@ one group's calls for a tool therefore takes the spelling the path uses.
 
 `limit` below 1 or not an integer is a `400`; above 200 it is treated as 50.
 
+`since` and `until` take RFC 3339 and are inclusive and exact, at any
+fraction of a second. `next_cursor` is opaque; a cursor issued by a build before
+schema version 6 still works after the upgrade.
+
 ## Admin events
 - `GET /admin-events?since=&resource_type=&limit=&cursor=`
 
@@ -531,9 +535,8 @@ is empty on the last page and `admin_events` is `[]`, never null.
 
 `resource_type` is one of `upstream`, `group`, `virtual_key`; any other value
 is a `400`, because on an audit endpoint an empty answer would read as
-"nothing happened". `since` is inclusive and takes RFC 3339; on a whole second
-it is exact, and a value carrying a fraction can include a row from earlier in
-that same second. `limit` below 1 or not an integer is a `400`; above 200 it
+"nothing happened". `since` is inclusive and exact and takes RFC 3339, at any
+fraction of a second. `limit` below 1 or not an integer is a `400`; above 200 it
 is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 `400`.
 
@@ -670,12 +673,26 @@ See `docs/07-security.md`.
 Transport to upstreams: **Streamable HTTP**, and nothing else. The legacy
 HTTP+SSE transport is not implemented (PORM-5); `sse` is refused on write since
 PORM-28, and a row stored with it before then is refused on every request (see
-Upstream failures below). A client's `GET` for an SSE stream is forwarded and
-**buffered**, not streamed, on all three paths: a stream the upstream holds
-open fails at the proxy's 60 s upstream timeout with `502` (PORM-30 owns the
-`405`, PORM-5 real streaming).
+Upstream failures below). `POST` carries every call. A `GET`, which a client
+opens after `initialize` to listen for server-initiated messages, is answered
+`405` on all three paths with `Allow: POST, DELETE, OPTIONS` and the body
+below, before the virtual key is read and without contacting any upstream. A
+client that treats the stream as optional carries on, which is what the
+transport prescribes. `DELETE` is a session teardown and is forwarded to the
+upstream with the client's `Mcp-Session-Id`; the upstream decides whether the
+session ends. `OPTIONS` answers `204` with the same `Allow`. Any other method
+the router recognises, `HEAD`, `PUT` and `PATCH` included, gets the same
+`405`; a method token the router does not know is refused by the router itself
+with a bare `405` and no `Allow`. A refused verb contacts no upstream and
+presents no credential, so it appears in the server log and not in
+`audit_logs`. Server-initiated streaming over `GET` is PORM-5, and `Allow`
+gains `GET` when it lands.
 
-The proxy:
+```json
+{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed"}}
+```
+
+For a `POST` or a `DELETE`, the proxy:
 1. Validates the virtual key
 2. Resolves the target (Upstream or Group)
 3. On `/{virtual_key_id}/{upstream_slug}/mcp`, resolves the member named by the

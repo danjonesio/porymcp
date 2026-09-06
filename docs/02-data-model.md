@@ -191,12 +191,22 @@ On creation/rotation the plaintext key is returned **once**.
 
 ## AuditLog
 - `id`
-- `timestamp`
+- `timestamp`: stored as TEXT in the fixed layout
+  `2006-01-02T15:04:05.000000000Z`, UTC, always 30 bytes, so SQL string order
+  is time order and `ORDER BY timestamp`, the paging cursor and `since`/`until`
+  are exact (PORM-26). Every timestamp column in every table uses the same
+  layout. The JSON the API returns is RFC 3339 with trailing zeros dropped, as
+  before
 - `virtual_key_id`
 - `virtual_key_name` (denormalized)
-- `method` (tools/list, tools/call, resources/list, initialize, etc.): a
-  request refused before its body could be parsed (a batch, an unparseable
-  body) records the HTTP verb here instead, because no method was read
+- `method` (tools/list, tools/call, resources/list, initialize, etc.): the
+  JSON-RPC method when the body carried one, and the HTTP verb when it did
+  not. That covers a request refused before its body could be parsed (a
+  batch, an unparseable body), a session teardown (a `DELETE` with an empty
+  body) and a `POST` whose body named no method; `?method=DELETE` and
+  `?method=POST` return those rows. A client can also send those strings as
+  its JSON-RPC method, so the filter returns those rows as well; the row does
+  not record which it was
 - `tool_name` (if applicable)
 - `params` (JSON, redacted; above 4 KiB it is replaced by
   `{"truncated":true,"bytes":N}`)
@@ -226,7 +236,8 @@ On creation/rotation the plaintext key is returned **once**.
 One row per successful state-changing management API call (PORM-54): the
 management-plane half of the audit trail, beside `AuditLog`, the proxy half.
 - `id`
-- `timestamp`
+- `timestamp`: the same fixed-width UTC layout as `AuditLog.timestamp`, so
+  `since` and the cursor compare exactly
 - `actor`: the literal `admin` until dashboard users land (PORM-127)
 - `action`: `{resource_type}.{verb}`, one of `upstream.create|update|delete`,
   `group.create|update|delete`,
@@ -255,7 +266,7 @@ retention for both audit tables, with a longer window for this one.
 ## Schema versioning
 
 `schema_meta(key, value)` records the applied schema version under
-`schema_version`; this binary expects version 5. It also holds
+`schema_version`; this binary expects version 6. It also holds
 `encryption_key_fp`, the fingerprint of the `ENCRYPTION_KEY` the stored
 credentials open under (the PORM-52 issue text called it `enc_key_fp`). That row
 is data, not schema: it is written by the boot check once every stored
@@ -344,6 +355,33 @@ the **first boot** of this build, before any `v1:` value exists and even if that
 boot then refuses to start for another reason, so upgrading is one-way from
 that boot.
 
+Step 6 (PORM-26) rewrites every stored timestamp to the fixed layout
+`2006-01-02T15:04:05.000000000Z`: the eleven columns `upstreams.created_at`,
+`updated_at`, `last_test_at`, `groups.created_at`, `updated_at`,
+`virtual_keys.created_at`, `expires_at`, `last_used_at`, `revoked_at`,
+`audit_logs.timestamp` and `admin_events.timestamp`. Earlier builds wrote
+RFC 3339 with trailing zeros dropped, so two instants a microsecond apart could
+be 23 and 27 bytes long and sort in the wrong order as text; every comparison
+the store makes on these columns is a byte comparison, so the stored bytes are
+made uniform rather than every query padded. It is a data rewrite by primary
+key, in place: no DDL, no index change, no row inserted or deleted, no other
+column touched. `NULL` and the empty string are left as they are, because both
+mean "no value" and writing the zero time would turn "never expires" into
+"expired". A value in a spelling neither layout reads stops the start, naming
+the table, row id and column and never the value; fix the row with `sqlite3`
+against the volume or `psql`, then restart (`docs/11-deployment.md` §13). The
+step runs in one transaction, so a crash rolls it back and the next start
+retries from the beginning, and a value already in the fixed layout is skipped,
+so a re-run writes nothing. The start blocks in `Open` for the rewrite. On
+SQLite the rate measured on a four-core virtual machine was about 15 000 rows
+per second, the same on RAM-backed and on disk-backed storage, so roughly 65
+to 70 s per million audit rows; time the start on a copy of the database
+before sizing a probe or a `start_period` from it. The WAL grows to about the
+size of the database file meanwhile. The count of rows changed is reported as
+`timestamps_rewritten` on the `schema migrated` line. Like step 5 the stamp is
+one-way: a version-5 binary would write the short spelling again and
+reintroduce the mixed widths, so it refuses the database at `Open`.
+
 Step 2 is the one exception to base-then-steps: it renames the very objects the
 base `CREATE TABLE IF NOT EXISTS` statements name, so while the recorded version
 is below 2 the rename runs first, as an existence-gated prelude in its own
@@ -359,8 +397,9 @@ the step runner is then an idempotent no-op that stamps the version.
   **restore from backup**, not redeploy: the old binary will not run against the
   new schema, and step 3 has already added entries the old binary never wrote.
   Starting a build at or after PORM-52 migrates the database to version 5
-  immediately, even if startup then refuses for another reason, so take the
-  backup **before** the upgrade. A backup is restorable only together with the
+  immediately, and one at or after PORM-26 to version 6, even if startup then
+  refuses for another reason, so take the backup **before** the upgrade. A
+  backup is restorable only together with the
   `ENCRYPTION_KEY` that was current when it was taken: one taken before a
   rotation holds credentials sealed under the old key.
 
