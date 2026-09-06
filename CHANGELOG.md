@@ -4,6 +4,8 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+## v0.1.0 (2026-09-06)
+
 ### Breaking: the sse upstream transport is refused on write (PORM-28)
 
 - **The README advertised SSE pass-through and it was never implemented.**
