@@ -4,6 +4,40 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### GET on a proxy endpoint is answered 405 (PORM-30)
+
+- **A `GET` on `/mcp`, `/{virtual_key_id}/mcp` or
+  `/{virtual_key_id}/{upstream_slug}/mcp` returns `405` with
+  `Allow: POST, DELETE, OPTIONS` and contacts no upstream.** Streamable HTTP
+  clients open that `GET` after `initialize` to listen for server-initiated
+  messages. Before this change it was forwarded and the client waited for the
+  proxy's 60 s upstream timeout, so a server took about a minute to become
+  usable, or saw one failed stream per connect against an upstream that
+  answered the `GET` quickly.
+- **The refusal is written before the virtual key is read.** A probe costs no
+  key lookup and no upstream request, no audit row is written for it, and a
+  `GET` no longer tells a caller whether a key is live. The server log still
+  carries one line per refused request.
+- **Every other verb the router recognises gets the same `405`, `HEAD`, `PUT`
+  and `PATCH` included.** Before this change any verb with a valid key was
+  replayed to the upstream with the stored credential attached.
+- **`OPTIONS` now carries `Allow`.** The `204` names the methods the endpoint
+  supports, with or without an `Origin`.
+- **`DELETE` still reaches the upstream unchanged.**
+- **A request whose body named no JSON-RPC method records the HTTP verb in
+  `audit_logs.method`.** A session teardown records `DELETE` and a bodyless
+  `POST` records `POST`; those rows recorded nothing, and the Logs page's
+  method filter could never match them.
+- **`Access-Control-Allow-Methods` no longer names `GET`.** The same constant
+  feeds `Allow`, so the two cannot disagree. A browser's `GET` is unaffected
+  either way: `GET` is a CORS-safelisted method, which a preflight never
+  refuses on that header.
+- **A valid key's refused `GET`s no longer count against its rate limit.** The
+  refusal costs no store read and no upstream call.
+- **There is no setting.** Rolling back to
+  `ghcr.io/danjonesio/porymcp:sha-<short sha>` restores the previous binary
+  and with it the stall; no schema or data is involved.
+
 ### Upstream response headers are an allowlist (PORM-98)
 
 - **A 1:1 forward returns three upstream response headers and drops the

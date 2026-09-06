@@ -190,9 +190,12 @@ On creation/rotation the plaintext key is returned **once**.
 - `timestamp`
 - `virtual_key_id`
 - `virtual_key_name` (denormalized)
-- `method` (tools/list, tools/call, resources/list, initialize, etc.): a
-  request refused before its body could be parsed (a batch, an unparseable
-  body) records the HTTP verb here instead, because no method was read
+- `method` (tools/list, tools/call, resources/list, initialize, etc.): the
+  JSON-RPC method when the body carried one, and the HTTP verb when it did
+  not. That covers a request refused before its body could be parsed (a
+  batch, an unparseable body), a session teardown (a `DELETE` with an empty
+  body) and a `POST` whose body named no method; `?method=DELETE` and
+  `?method=POST` return those rows
 - `tool_name` (if applicable)
 - `params` (JSON, redacted; above 4 KiB it is replaced by
   `{"truncated":true,"bytes":N}`)

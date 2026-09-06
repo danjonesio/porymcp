@@ -2,7 +2,9 @@
 
 ## High-level components
 - Management API (REST + OpenAPI)
-- MCP Proxy core (JSON-RPC forwarding, Streamable HTTP + SSE)
+- MCP Proxy core (JSON-RPC forwarding over Streamable HTTP `POST`, plus the
+  `DELETE` that ends a session; a client's `GET` for a server-initiated stream
+  is refused `405` until PORM-5)
 - Auth middleware (virtual key validation)
 - Credential injector (holds real secrets, never exposes them, and presents each
   to the upstream's own URL, never to a host the upstream names in a redirect)
@@ -96,6 +98,14 @@ been. Every response the proxy endpoints write carries
 relays, and a `3xx` is never relayed (the call has already failed by then), so
 `Location` never reaches the client on any path, and neither does anything else
 the redirect response set.
+
+Server-initiated messages are not proxied. A `GET` on a proxy endpoint is
+answered `405` with `Allow: POST, DELETE, OPTIONS` in the shared serve body,
+after the CORS block and the host check and before the key is read, so a
+refused probe costs no key lookup, no upstream request and no audit row; the
+request log records it. The proxy's own `Access-Control-Allow-Methods` names
+the same three verbs, from the same constant. Real streaming over `GET` is
+PORM-5.
 
 ### Discovery (management plane, not a proxy path)
 

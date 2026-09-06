@@ -658,13 +658,26 @@ take both forms too, but are matched against the upstream's **own** tool name
 rather than the composed one: write `delete_`, or `github__delete_` to scope it.
 See `docs/07-security.md`.
 
-Primary transport: **Streamable HTTP**.  
-SSE support as fallback if needed. A `GET` for an SSE stream is forwarded and
-**buffered**, not streamed, on all three paths: a stream the upstream holds
-open fails at the proxy's 60 s upstream timeout with `502` (PORM-30 owns the
-`405`, PORM-5 real streaming).
+Primary transport: **Streamable HTTP**. `POST` carries every call. A `GET`,
+which a client opens after `initialize` to listen for server-initiated
+messages, is answered `405` on all three paths with `Allow: POST, DELETE,
+OPTIONS` and the body below, before the virtual key is read and without
+contacting any upstream. A client that treats the stream as optional carries
+on, which is what the transport prescribes. `DELETE` is a session teardown and
+is forwarded to the upstream with the client's `Mcp-Session-Id`; the upstream
+decides whether the session ends. `OPTIONS` answers `204` with the same
+`Allow`. Any other method the router recognises, `HEAD`, `PUT` and `PATCH`
+included, gets the same `405`; a method token the router does not know is
+refused by the router itself with a bare `405` and no `Allow`. A refused verb
+contacts no upstream and presents no credential, so it appears in the server
+log and not in `audit_logs`. Server-initiated streaming over `GET` is PORM-5,
+and `Allow` gains `GET` when it lands.
 
-The proxy:
+```json
+{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed"}}
+```
+
+For a `POST` or a `DELETE`, the proxy:
 1. Validates the virtual key
 2. Resolves the target (Upstream or Group)
 3. On `/{virtual_key_id}/{upstream_slug}/mcp`, resolves the member named by the
