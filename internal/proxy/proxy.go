@@ -96,6 +96,21 @@ type rpcRequest struct {
 	Params  json.RawMessage `json:"params"`
 }
 
+// auditMethodFor is what an audit row records as the method: the JSON-RPC
+// method when the body carried one, bounded like every other row field, and
+// the HTTP verb when it did not. parseRequest accepts a body with no method
+// member: a session teardown is a DELETE with an empty body, an operator's
+// curl is a POST with none, and a tools/call shaped body can name a tool
+// without naming a method. All of those recorded "", which the Logs filter
+// matches exactly and so could never find. Only the audit value: the
+// dispatch value stays req.Method and is compared byte-exactly downstream.
+func auditMethodFor(r *http.Request, method string) string {
+	if method == "" {
+		return r.Method
+	}
+	return truncate(method, auditFieldBytes)
+}
+
 // KeyParam is the chi route parameter that carries a virtual key's id on the
 // per-key proxy endpoint, and KeyRoute is that endpoint's pattern. cmd/server
 // registers KeyRoute and ServeHTTP reads KeyParam; sharing the constants is
@@ -207,16 +222,16 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	if rpcErr != nil {
 		// A rejection that got as far as decoding knows the method the client
 		// claimed; one that did not records the HTTP verb, as the pre-auth
-		// paths above do.
-		methodForAudit := r.Method
-		if req.Method != "" {
-			methodForAudit = truncate(req.Method, auditFieldBytes)
-		}
-		h.finish(vk, requestID, methodForAudit, "", "", models.StatusError, rpcErr.Message, start, 0, nil)
+		// paths above do (auditMethodFor).
+		auditMethod := auditMethodFor(r, req.Method)
+		h.finish(vk, requestID, auditMethod, "", "", models.StatusError, rpcErr.Message, start, 0, nil)
 		writeRPCError(w, http.StatusBadRequest, nil, rpcErr.Code, rpcErr.Message)
 		return
 	}
 	method := req.Method
+	// auditMethod is what every row below records; method itself decides
+	// dispatch and stays exactly what the body said.
+	auditMethod := auditMethodFor(r, method)
 	tool, hasName := toolNameFromParams(req.Params)
 
 	var (
@@ -239,7 +254,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// so the status is the message, a 202 would tell a client its call
 			// had been accepted by a server that is not there.
 			size := writeRPCError(w, http.StatusNotFound, req.ID, -32000, "unknown endpoint")
-			h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes), "",
+			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "",
 				models.StatusBlocked, unknownEndpointReason(slug, err), start, size, boundedParams(req.Params))
 			if h.log != nil {
 				attrs := []any{
@@ -266,7 +281,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// No upstream is contacted on this path (a valid key against a
 			// disabled upstream or an empty group provokes it) so the row is
 			// bounded like every other one the proxy writes for free.
-			h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes), "", models.StatusError,
+			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError,
 				truncate(err.Error(), auditFieldBytes), start, 0, nil)
 			writeRPCError(w, http.StatusBadRequest, req.ID, -32000, err.Error())
 			return
@@ -321,7 +336,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// The MCP schema requires params.name, so this is a malformed
 			// request rather than a policy decision, audited as an error, not as
 			// a block, and still refused before anything is forwarded.
-			h.finish(vk, requestID, truncate(method, auditFieldBytes), "", "", models.StatusError, "tools/call without a tool name", start, 0, boundedParams(req.Params))
+			h.finish(vk, requestID, auditMethod, "", "", models.StatusError, "tools/call without a tool name", start, 0, boundedParams(req.Params))
 			writeRPCError(w, http.StatusOK, req.ID, codeInvalidParams, "invalid params: tools/call requires a tool name")
 			return
 		}
@@ -349,17 +364,17 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// truncate leaves no split rune behind. A notification gets the
 			// envelope with "id":null, as writeRPCError does everywhere.
 			size := writeRPCError(w, http.StatusOK, req.ID, codeInvalidParams, "unknown tool: "+truncate(tool, auditFieldBytes))
-			h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes), "",
+			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "",
 				models.StatusError, "unknown tool", start, size, boundedParams(req.Params))
 			return
 		}
 		if by := pol.blockedBy(tool); by != "" {
-			h.block(w, vk, requestID, req, tool, blockedUpstream, by, start)
+			h.block(w, vk, requestID, req, auditMethod, tool, blockedUpstream, by, start)
 			return
 		}
 	case tool != "":
 		if by := pol.keyListsOnly().blockedBy(tool); by != "" {
-			h.block(w, vk, requestID, req, tool, blockedUpstream, by, start)
+			h.block(w, vk, requestID, req, auditMethod, tool, blockedUpstream, by, start)
 			return
 		}
 	}
@@ -397,7 +412,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		// getting here.
 		msg := "unknown tool: " + truncate(tool, auditFieldBytes)
 		size := writeRPCError(w, http.StatusOK, req.ID, codeInvalidParams, msg)
-		h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes), "",
+		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "",
 			models.StatusError, msg, start, size, boundedParams(req.Params))
 		return
 	}
@@ -407,7 +422,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		// line, say) and http.Client.Do would quote an unparseable Location
 		// the same way, a megabyte of it if the upstream sent a megabyte, were
 		// upstreamTransport not dropping that header first.
-		h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes),
+		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
 			usedID, models.StatusError, truncate(err.Error(), auditFieldBytes), start, 0,
 			boundedParams(req.Params))
 		writeRPCError(w, http.StatusBadGateway, req.ID, -32000, "upstream request failed")
@@ -426,7 +441,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// 200 {"error":{"message":"<8 MiB>"}} wrote a multi-megabyte row on every
 	// request; method and tool are the client's strings and params can be the
 	// whole 8 MiB the reader admits.
-	h.finish(vk, requestID, truncate(method, auditFieldBytes), truncate(tool, auditFieldBytes),
+	h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
 		usedID, st, truncate(errMsg, auditFieldBytes), start, len(respBody),
 		boundedParams(req.Params))
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
@@ -851,7 +866,7 @@ func rpcErrorMessage(body []byte) string {
 // sending one, and everything client-controlled on the row is bounded before
 // it is stored. The client is told "tool blocked" and nothing more; which rule
 // fired goes to the operator's audit row and log, not to the caller.
-func (h *Handler) block(w http.ResponseWriter, vk *models.VirtualKey, requestID string, req rpcRequest, tool, upstreamID, reason string, start time.Time) {
+func (h *Handler) block(w http.ResponseWriter, vk *models.VirtualKey, requestID string, req rpcRequest, auditMethod, tool, upstreamID, reason string, start time.Time) {
 	tool = truncate(tool, auditFieldBytes)
 	size := 0
 	if len(bytes.TrimSpace(req.ID)) == 0 {
@@ -862,14 +877,14 @@ func (h *Handler) block(w http.ResponseWriter, vk *models.VirtualKey, requestID 
 	} else {
 		size = writeRPCError(w, http.StatusOK, req.ID, codeInvalidParams, "tool blocked")
 	}
-	h.finish(vk, requestID, truncate(req.Method, auditFieldBytes), tool, upstreamID, models.StatusBlocked, reason, start, size, boundedParams(req.Params))
+	h.finish(vk, requestID, auditMethod, tool, upstreamID, models.StatusBlocked, reason, start, size, boundedParams(req.Params))
 	if h.log != nil {
 		// No params: they are the one part of a request that routinely carries
 		// the caller's secrets, and only the audit path redacts them.
 		h.log.Warn("tool blocked",
 			"virtual_key_id", vk.ID,
 			"virtual_key_name", vk.Name,
-			"method", truncate(req.Method, auditFieldBytes),
+			"method", auditMethod,
 			"tool", tool,
 			"reason", reason,
 			"request_id", requestID,

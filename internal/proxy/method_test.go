@@ -231,8 +231,43 @@ func TestDeleteOnProxyForwards(t *testing.T) {
 			if got := reqs[0].Header.Get("Mcp-Session-Id"); got != "sess-1" {
 				t.Errorf("the upstream saw Mcp-Session-Id=%q want sess-1", got)
 			}
+			// Security requirement 8: the teardown's row records the verb,
+			// found through the same filter the Logs page uses. It recorded
+			// "" before, which that filter could never select.
+			row := f.waitAudit(models.LogFilter{Method: http.MethodDelete})[0]
+			if row.Status != models.StatusSuccess || row.VirtualKeyID != "a1" {
+				t.Errorf("audit row=%+v want a success row for key a1", row)
+			}
 		})
 	}
+}
+
+// Security requirement 8 on the POST shapes. A request whose body named no
+// JSON-RPC method records the HTTP verb, on the forwarded path and in block,
+// so no row is left with an empty method. The teardown DELETE is asserted in
+// TestDeleteOnProxyForwards; here an empty body, and a body that names a
+// tool and no method, which is the one shape that reaches block.
+func TestMethodlessRequestRecordsTheVerb(t *testing.T) {
+	t.Run("an empty body forwards and records POST", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}}, nil, nil)
+		f.post("{}")
+		row := f.waitAudit(models.LogFilter{Method: http.MethodPost})[0]
+		if row.VirtualKeyID != "a1" {
+			t.Errorf("audit row=%+v want the key's own row", row)
+		}
+		if n := f.totalReqs("solo"); n != 1 {
+			t.Errorf("the upstream saw %d requests, want 1: a POST with no method still forwards", n)
+		}
+	})
+	t.Run("a tool name with no method is blocked and records POST", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"allowed_tool"}}, []string{"allowed_tool"}, nil)
+		rr := f.post(`{"jsonrpc":"2.0","id":1,"params":{"name":"denied_tool"}}`)
+		assertBlocked(t, f, rr)
+		row := f.waitAudit(models.LogFilter{Method: http.MethodPost, Status: models.StatusBlocked})[0]
+		if row.ToolName != "denied_tool" {
+			t.Errorf("audit row=%+v want tool_name denied_tool", row)
+		}
+	})
 }
 
 // Security requirement 4. The host check runs before the verb is judged, so a
