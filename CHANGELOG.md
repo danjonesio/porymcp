@@ -27,8 +27,7 @@ Behaviour changes that affect a running deployment. Newest first.
 - **An upstream that answers in an encoding PoryMCP did not ask for has its
   `Content-Encoding` dropped while the compressed body is relayed.** That is
   `br` or `zstd`, never gzip, which Go decompresses; a client then sees bytes
-  it cannot decode. No upstream is known to do this. Refusing such a response
-  at the proxy is PORM-142.
+  it cannot decode. Refusing such a response at the proxy is PORM-142.
 - **Every response the proxy endpoints write carries
   `Cache-Control: no-store`, and an upstream's `Cache-Control` is not
   relayed.**
