@@ -2333,24 +2333,40 @@ func TestDecodeCursorAcceptsLegacyFormat(t *testing.T) {
 	}
 }
 
-// v5Fixture builds a database as a version-5 server left it: the current DDL
-// with rows in the RFC3339Nano spelling and the version stamped 5. Open
-// creates the schema; preChangeDB then writes the rows raw, so nothing here
-// goes through fmtTime. Using the current DDL rather than a frozen copy is
-// sound only while step 6 is a data rewrite with no CREATE, ALTER or INDEX,
-// which TestMigrateRewritesTimestampWidth pins by comparing sqlite_master
-// before and after the upgrade; a later step that adds DDL needs its own
-// frozen fixture, as v1Fixture and v2Fixture are.
+// v5Fixture builds a database as a version-5 server left it, without ever
+// running step 6: the base DDL and steps 1 to 5 through this binary's own
+// migrate helpers on a raw connection (the same statements a version-5 binary
+// ran on a fresh database; the diff that added step 6 touched none of them),
+// then rows in the RFC3339Nano spelling written raw, so nothing here goes
+// through fmtTime. The stamp reads 5 because step 5 wrote it, not because it
+// was rolled back, so the Open that follows runs step 6 and only step 6, and a
+// sqlite_master snapshot taken here sees exactly what that step does to the
+// schema (TestMigrateRewritesTimestampWidth).
 func v5Fixture(t *testing.T, path string, rows ...string) {
 	t.Helper()
-	s, err := Open(path)
+	raw, err := sql.Open("sqlite", fileDSN(path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Close(); err != nil {
+	s := &SQLStore{db: raw, driver: "sqlite"}
+	if err := s.ensureSchemaMeta(); err != nil {
 		t.Fatal(err)
 	}
-	preChangeDB(t, path, append(rows, `UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'`))
+	if err := s.migrateBase(); err != nil {
+		t.Fatal(err)
+	}
+	for v := 1; v <= 5; v++ {
+		if err := s.migrateStep(v); err != nil {
+			t.Fatalf("step %d on the version-5 fixture: %v", v, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := rawTuples(t, path, `SELECT value FROM schema_meta WHERE key = 'schema_version'`); strings.Join(got, "") != "5" {
+		t.Fatalf("fixture stamped %v after steps 1 to 5, want 5", got)
+	}
+	preChangeDB(t, path, rows)
 }
 
 // rawTuples is rowTuples against a database that is not open through the
@@ -2445,9 +2461,10 @@ func TestMigrateRewritesTimestampWidth(t *testing.T) {
 	if got := rawTuples(t, path, `SELECT value FROM schema_meta WHERE key = 'schema_version'`); strings.Join(got, "") != "5" {
 		t.Fatalf("fixture stamped %v, want 5", got)
 	}
-	// Every table, index and their DDL as the version-5 database holds them.
-	// Step 6 is a data rewrite and nothing else, and v5Fixture's use of the
-	// current DDL rests on that, so it is asserted here rather than assumed.
+	// Every table, index and their DDL as the version-5 database holds them,
+	// taken before step 6 has ever run on this file. Step 6 is a data rewrite
+	// and nothing else, so the same query after Open must answer the same
+	// bytes; a CREATE, ALTER or INDEX in case 6 would show up here.
 	const schemaObjects = `SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`
 	wantSchema := rawTuples(t, path, schemaObjects)
 
