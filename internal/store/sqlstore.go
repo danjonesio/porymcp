@@ -49,6 +49,10 @@ type SQLStore struct {
 //   - ToolFiltersLeftInvalid: group filters left exactly as stored because
 //     validation refused them, on the way in or on the way out.
 //
+// TimestampsRewritten describes step 6, migrateTimestamps: the number of rows,
+// across the five tables, that had at least one timestamp column rewritten to
+// tsLayout. A row whose values were already in that layout does not count.
+//
 // Every field is an int, so MigrationSummary stays comparable: the tests assert
 // on whole summaries with ==, which is what makes a new count hard to forget.
 type MigrationSummary struct {
@@ -62,6 +66,7 @@ type MigrationSummary struct {
 	ToolFiltersLeftInvalid int
 	GroupsRewritten        int
 	VirtualKeysRewritten   int
+	TimestampsRewritten    int
 }
 
 // LastMigration reports what migrate() did during Open. Zero value means the
@@ -211,7 +216,8 @@ const (
 	// schemaVersion is the migration level this binary expects. Bump it in the
 	// SAME commit as the migrateStep case it enables, or the tree is unbuildable
 	// at that commit and future bisects land on a broken store.Open.
-	schemaVersion    = 5
+	// 6 (PORM-26): every stored timestamp rewritten to tsLayout.
+	schemaVersion    = 6
 	schemaVersionKey = "schema_version"
 
 	// EncryptionKeyFPKey is the schema_meta row holding the fingerprint of the
@@ -466,6 +472,14 @@ func (s *SQLStore) migrateStep(v int) error {
 		// no credential. The stamp makes that binary refuse the database at
 		// Open instead. It lands on the FIRST boot of this build, before any
 		// v1 value exists: upgrading is one-way from that boot.
+	case 6:
+		// Data rewrite, no DDL, no index change (PORM-26): every timestamp
+		// column is rewritten to tsLayout so that byte order is time order.
+		// One-way like 5: a version-5 binary would write RFC3339Nano again and
+		// reintroduce the mixed widths, so it refuses the database at Open.
+		if err := s.migrateTimestamps(tx); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("no migration defined for version %d", v)
 	}
@@ -1364,12 +1378,130 @@ func (s *SQLStore) dropVirtualKeysLookupIndex(tx *sql.Tx) error {
 	return err
 }
 
+// timestampColumns lists every column fmtTime writes, by table. Step 6 rewrites
+// exactly these; the names are compile-time literals and are spliced into SQL
+// as such, never anything read from the database.
+var timestampColumns = []struct {
+	table string
+	cols  []string
+}{
+	{"upstreams", []string{"created_at", "updated_at", "last_test_at"}},
+	{"groups", []string{"created_at", "updated_at"}},
+	{"virtual_keys", []string{"created_at", "expires_at", "last_used_at", "revoked_at"}},
+	{"audit_logs", []string{"timestamp"}},
+	{"admin_events", []string{"timestamp"}},
+}
+
+// migrateTimestampsPage is how many rows one SELECT of migrateTimestamps
+// scans. audit_logs has no retention yet, so the whole table is not collected
+// at once the way steps 1 and 3 collect theirs; a page bounds the heap and,
+// measured on modernc SQLite, does not change the rewrite rate.
+const migrateTimestampsPage = 5000
+
+// migrateTimestamps is step 6 (PORM-26). fmtTime wrote RFC3339Nano until this
+// version, which strips trailing zeros from the fraction, so two instants a
+// microsecond apart could be 23 and 27 bytes long and compare in the wrong
+// order as TEXT: "Z" (0x5A) sorts after "0" (0x30). Every comparison the store
+// makes on these columns is a byte comparison (ORDER BY, the keyset cursor,
+// since and until, the stats windows), so every stored value is rewritten to
+// tsLayout, in place, by primary key.
+//
+// NULL and "" stay as they are: parseTime("") is the zero time, and writing
+// fmtTime of that would turn "no value" into year 1. A value neither layout
+// reads fails the step, naming table, id and column and never the value, the
+// way steps 1 and 3 treat hand-edited rows; the transaction rolls back and the
+// version stays at 5. A value already in tsLayout is skipped, which is what
+// makes a re-run by the replica that lost the advisory lock a no-op.
+//
+// Pages by id so an unbounded audit_logs does not sit in memory; every page is
+// read to the end and Rows closed before its first UPDATE, because SQLite runs
+// on one connection. lastID advances on every page, written or not, or a table
+// that is already canonical would be re-read for ever.
+func (s *SQLStore) migrateTimestamps(tx *sql.Tx) error {
+	type scanned struct {
+		id   string
+		vals []sql.NullString
+	}
+	for _, t := range timestampColumns {
+		query := s.q(`SELECT id, ` + strings.Join(t.cols, ", ") + ` FROM ` + t.table +
+			` WHERE id > ? ORDER BY id LIMIT ` + strconv.Itoa(migrateTimestampsPage))
+		lastID := ""
+		for {
+			rows, err := tx.Query(query, lastID)
+			if err != nil {
+				return err
+			}
+			var page []scanned
+			for rows.Next() {
+				r := scanned{vals: make([]sql.NullString, len(t.cols))}
+				dest := make([]any, 0, 1+len(t.cols))
+				dest = append(dest, &r.id)
+				for i := range r.vals {
+					dest = append(dest, &r.vals[i])
+				}
+				if err := rows.Scan(dest...); err != nil {
+					rows.Close()
+					return err
+				}
+				page = append(page, r)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			if len(page) == 0 {
+				break
+			}
+			lastID = page[len(page)-1].id
+
+			// Every read of this page is done; from here on it is UPDATEs only.
+			for _, r := range page {
+				changed := false
+				for i, v := range r.vals {
+					if !v.Valid || v.String == "" {
+						continue
+					}
+					parsed, err := parseTime(v.String)
+					if err != nil {
+						return fmt.Errorf("%s %s has an unreadable %s; fix it in the database and restart", t.table, r.id, t.cols[i])
+					}
+					next := fmtTime(parsed)
+					if next == v.String {
+						continue
+					}
+					if _, err := tx.Exec(s.q(`UPDATE `+t.table+` SET `+t.cols[i]+` = ? WHERE id = ?`), next, r.id); err != nil {
+						return err
+					}
+					changed = true
+				}
+				if changed {
+					s.lastMigration.TimestampsRewritten++
+				}
+			}
+			if len(page) < migrateTimestampsPage {
+				break
+			}
+		}
+	}
+	return nil
+}
+
 func (s *SQLStore) Close() error { return s.db.Close() }
 
 func (s *SQLStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
-func fmtTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// tsLayout is the on-disk timestamp layout (schema version 6, PORM-26). Nine
+// fractional digits and a literal Z make every value 30 bytes, so the byte
+// order SQL applies to these TEXT columns is time order. The Z is a literal,
+// not a zone specifier: fmtTime converts to UTC first, so the label is true.
+const tsLayout = "2006-01-02T15:04:05.000000000Z"
 
+func fmtTime(t time.Time) string { return t.UTC().Format(tsLayout) }
+
+// parseTime reads tsLayout and the RFC3339Nano spelling written before schema
+// version 6 (a cursor issued before the upgrade carries one). time.RFC3339Nano
+// accepts both, and a nine-digit layout would reject the older strings, so one
+// parse covers every stored value. Empty string is the zero time, no error.
 func parseTime(v string) (time.Time, error) {
 	if v == "" {
 		return time.Time{}, nil
@@ -1377,11 +1509,14 @@ func parseTime(v string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, v)
 }
 
+// parseTimePtr is the nullable read: nil for NULL, "" or a value parseTime
+// rejects. After step 6 every stored value parses, so the last case is reached
+// only by a row edited outside PoryMCP.
 func parseTimePtr(v sql.NullString) *time.Time {
 	if !v.Valid || v.String == "" {
 		return nil
 	}
-	t, err := time.Parse(time.RFC3339Nano, v.String)
+	t, err := parseTime(v.String)
 	if err != nil {
 		return nil
 	}
@@ -1617,11 +1752,12 @@ func (s *SQLStore) UpdateUpstream(ctx context.Context, u *models.Upstream, reset
 // seen is the row's updated_at as read before the handshake; the UPDATE is
 // conditioned on it, so a result for a configuration edited in the meantime is
 // dropped rather than vouching for settings it never tested. The compare is on
-// the canonical string fmtTime(seen): every writer of updated_at is fmtTime and
-// the column is TEXT on both drivers, so the reformat reproduces the stored
-// bytes exactly. A row whose updated_at came from outside PoryMCP (a +00:00
-// offset, trailing zeros in the fraction) can never match and records nothing,
-// fail closed, the same way steps 1 and 3 treat hand-edited rows.
+// the canonical string fmtTime(seen): every writer of updated_at is fmtTime, the
+// column is TEXT on both drivers, and schema step 6 rewrote every stored value
+// to tsLayout (a +00:00 offset from outside PoryMCP became Z then), so the
+// reformat reproduces the stored bytes exactly. A row edited by hand after that
+// into some other spelling can never match and records nothing, fail closed,
+// the same way steps 1, 3 and 6 treat hand-edited rows.
 //
 // updated_at is deliberately not bumped: a test is not an edit, and updated_at
 // answers "when did a person last edit this?", the rule migrateToolIdentities
@@ -2096,18 +2232,6 @@ func decodeCursor(cur string) (time.Time, string, error) {
 
 const adminEventCols = `id, timestamp, actor, action, resource_type, resource_id, resource_name, details, request_id, remote_addr`
 
-// sinceBound formats a lower bound for a TEXT timestamp column, compared in
-// byte order. fmtTime writes RFC3339Nano, which strips trailing zeros, so
-// "...00Z" sorts after "...00.5Z" and a bound written the same way would drop
-// rows inside its own second. A fixed-width bound is exact for a whole-second
-// since and never worse than fmtTime; a since that itself carries a fraction
-// can still include a stored whole-second row from the same second, because
-// that row has no separator to compare against. Only the bound is formatted
-// this way; stored values and cursors keep fmtTime.
-func sinceBound(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
-}
-
 // InsertAdminEvent writes one management-plane event. Details is stored as
 // JSON text, {} when empty, so a row never reads back as null.
 func (s *SQLStore) InsertAdminEvent(ctx context.Context, e *models.AdminEvent) error {
@@ -2139,7 +2263,7 @@ func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilte
 	}
 	if f.Since != nil {
 		conds = append(conds, "timestamp >= ?")
-		args = append(args, sinceBound(*f.Since))
+		args = append(args, fmtTime(*f.Since))
 	}
 	if f.Cursor != "" {
 		ts, id, err := decodeCursor(f.Cursor)

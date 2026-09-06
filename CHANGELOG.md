@@ -4,6 +4,36 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Timestamps stored fixed-width (PORM-26)
+
+- **Log order, `next_cursor`, `since`/`until` and the stats windows are now
+  exact at any fraction of a second.** Every stored timestamp is written as
+  `2006-01-02T15:04:05.000000000Z`, 30 bytes, UTC, so the byte order SQL
+  applies to the TEXT columns is time order. Before this change trailing
+  zeros were dropped, so two audit rows a microsecond apart could list in the
+  wrong order and a page cursor could skip or repeat rows at a page edge.
+- **Upgrading is one-way from the first boot, and needs a backup first.** This
+  build stamps schema version 6 the moment it opens the database, even if
+  startup then refuses for another reason, and earlier builds refuse a
+  version-6 database. Take a database backup before upgrading, and keep it
+  with the `ENCRYPTION_KEY` that was current when it was taken
+  (`docs/11-deployment.md` §13).
+- **Stop every old process before starting the new one.** A process already
+  running the old build keeps writing the short spelling to rows the
+  migration will not revisit. With more than one replica, stop them all, start
+  one, wait for `schema migrated` with `version=6`, then start the rest.
+- **The first start pauses while stored timestamps are rewritten**, about 30 s
+  per million audit rows on SQLite, and the container reports `unhealthy`
+  until it finishes. Under the shipped compose file it recovers on its own;
+  Swarm and Kubernetes operators size `start_period` or a startup probe from
+  that figure first.
+- `GET /admin-events?since=` with a fractional `since` no longer includes a
+  row from earlier in the same second. `GET /logs` `since` and `until` are
+  inclusive and exact. A `next_cursor` issued by the previous build still
+  works.
+- No settings and no API shape change. The JSON timestamps the API returns
+  are unchanged.
+
 ### GET on a proxy endpoint is answered 405 (PORM-30)
 
 - **A `GET` on `/mcp`, `/{virtual_key_id}/mcp` or

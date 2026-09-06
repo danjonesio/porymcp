@@ -96,29 +96,20 @@ func rekeyWith(t *testing.T, k crypto.Keyring) func([]RekeyRow) ([]string, error
 	}
 }
 
-// TestMigrateStep5IsANoOp: the version-5 stamp changes no column and no index,
-// is idempotent, and a version-2 database migrates through it to 5.
-func TestMigrateStep5IsANoOp(t *testing.T) {
+// TestMigrateFromV2ReachesCurrent: a fresh database is stamped at
+// schemaVersion, and a version-2 database migrates through steps 3 to 6 to the
+// same stamp. Step 5 changed no column and no index (PORM-52); the re-run of
+// migrateStep(5) that used to prove it would now stamp a version-6 database
+// back to 5, so the fixed point is pinned by TestMigrateIsAFixedPoint and
+// TestMigrateTimestampsIsIdempotent instead.
+func TestMigrateFromV2ReachesCurrent(t *testing.T) {
 	s, _ := openTemp(t)
-	if v, err := s.currentSchemaVersion(); err != nil || v != 5 {
-		t.Fatalf("fresh database at version %d (%v), want 5", v, err)
-	}
-	cols, idx := tableColumns(t, s, "upstreams"), indexNames(t, s)
-	if err := s.migrateStep(5); err != nil {
-		t.Fatalf("second run of step 5: %v", err)
-	}
-	if got := tableColumns(t, s, "upstreams"); strings.Join(got, ",") != strings.Join(cols, ",") {
-		t.Errorf("step 5 changed upstreams columns: %v -> %v", cols, got)
-	}
-	if got := indexNames(t, s); strings.Join(got, ",") != strings.Join(idx, ",") {
-		t.Errorf("step 5 changed indexes: %v -> %v", idx, got)
-	}
-	if v, _ := s.currentSchemaVersion(); v != 5 {
-		t.Errorf("version after re-run = %d", v)
+	if v, err := s.currentSchemaVersion(); err != nil || v != schemaVersion {
+		t.Fatalf("fresh database at version %d (%v), want %d", v, err, schemaVersion)
 	}
 	s2, _ := v2Store(t)
-	if got := s2.LastMigration(); !got.Applied || got.Version != 5 {
-		t.Errorf("v2 database migrated to %+v, want Applied at version 5", got)
+	if got := s2.LastMigration(); !got.Applied || got.Version != schemaVersion {
+		t.Errorf("v2 database migrated to %+v, want Applied at version %d", got, schemaVersion)
 	}
 }
 
@@ -137,7 +128,7 @@ func TestMetaRoundTrip(t *testing.T) {
 	if v, err := s.Meta(ctx, EncryptionKeyFPKey); err != nil || v != "fedcba9876543210" {
 		t.Fatalf("after two upserts: got (%q, %v)", v, err)
 	}
-	if v, _ := s.Meta(ctx, schemaVersionKey); v != "5" {
+	if v, _ := s.Meta(ctx, schemaVersionKey); v != "6" {
 		t.Fatalf("schema_version through Meta = %q", v)
 	}
 }

@@ -2376,7 +2376,8 @@ func TestPatchRejectsBlankRequiredFields(t *testing.T) {
 // TestPatchEmptyObjectIsANoOp: {} changes no field on any of the three
 // resources, and on the two that carry updated_at it still moves it, the
 // compare-and-set in RecordUpstreamTest keys on that. Timestamps are parsed,
-// not compared as strings: RFC3339Nano strips trailing zeros.
+// not compared as strings: the JSON layout is RFC3339Nano, whose trailing
+// zeros are stripped even though the store now holds a fixed width.
 func TestPatchEmptyObjectIsANoOp(t *testing.T) {
 	_, h, _ := testAPI(t)
 	ghID, _ := mustUpstream(t, h, "GitHub", map[string]any{"description": "d"})
