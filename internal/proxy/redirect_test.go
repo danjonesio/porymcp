@@ -270,7 +270,7 @@ func TestUpstreamRedirectRefusedOnEveryVerb(t *testing.T) {
 			}, nil, nil)
 
 			// An empty body is not a JSON-RPC request, so nothing aggregates
-			// and both verbs reach forward, which replays them upstream.
+			// and the teardown reaches forward, which replays it upstream.
 			rr := f.do(verb, "")
 			if got := b.requests(); len(got) != 0 {
 				t.Fatalf("%s: the redirect target saw %d requests: %+v", verb, len(got), got)
