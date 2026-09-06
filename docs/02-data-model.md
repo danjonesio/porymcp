@@ -368,9 +368,11 @@ the table, row id and column and never the value; fix the row with `sqlite3`
 against the volume or `psql`, then restart (`docs/11-deployment.md` §13). The
 step runs in one transaction, so a crash rolls it back and the next start
 retries from the beginning, and a value already in the fixed layout is skipped,
-so a re-run writes nothing. The start blocks in `Open` for the rewrite, at
-about 40 000 rows per second on SQLite (seconds is roughly rows divided by
-40 000, about 30 s per million audit rows), with a WAL that grows to about the
+so a re-run writes nothing. The start blocks in `Open` for the rewrite. On
+SQLite the rate measured on a four-core virtual machine was about 15 000 rows
+per second, the same on RAM-backed and on disk-backed storage, so roughly 65
+to 70 s per million audit rows; time the start on a copy of the database
+before sizing a probe or a `start_period` from it. The WAL grows to about the
 size of the database file meanwhile. The count of rows changed is reported as
 `timestamps_rewritten` on the `schema migrated` line. Like step 5 the stamp is
 one-way: a version-5 binary would write the short spelling again and

@@ -22,11 +22,12 @@ Behaviour changes that affect a running deployment. Newest first.
   running the old build keeps writing the short spelling to rows the
   migration will not revisit. With more than one replica, stop them all, start
   one, wait for `schema migrated` with `version=6`, then start the rest.
-- **The first start pauses while stored timestamps are rewritten**, about 30 s
-  per million audit rows on SQLite, and the container reports `unhealthy`
-  until it finishes. Under the shipped compose file it recovers on its own;
-  Swarm and Kubernetes operators size `start_period` or a startup probe from
-  that figure first.
+- **The first start pauses while stored timestamps are rewritten**, roughly
+  65 to 70 s per million audit rows on SQLite as measured on a four-core
+  virtual machine, and the container reports `unhealthy` until it finishes.
+  Under the shipped compose file it recovers on its own; Swarm and Kubernetes
+  operators time the start on a copy of the database and size `start_period`
+  or a startup probe from that.
 - `GET /admin-events?since=` with a fractional `since` no longer includes a
   row from earlier in the same second. `GET /logs` `since` and `until` are
   inclusive and exact. A `next_cursor` issued by the previous build still
