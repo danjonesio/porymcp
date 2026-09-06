@@ -1004,10 +1004,11 @@ func TestDiscoverAfterCredentialClearSendsNoHeader(t *testing.T) {
 	}
 }
 
-// TestDiscoverReturnsNoUpstreamHeaders pins that discovery does not inherit
-// the proxy's 1:1 header pass-through (PORM-98): its only write is a
-// Discovery, so an upstream cannot set a cookie or a challenge in the
-// operator's browser.
+// TestDiscoverReturnsNoUpstreamHeaders pins that discovery returns named
+// fields and copies no header: its only write is a Discovery, so an upstream
+// cannot set a cookie or a challenge in the operator's browser. The proxy's
+// 1:1 path copies back only the three names in copyResponseHeaders
+// (PORM-98).
 func TestDiscoverReturnsNoUpstreamHeaders(t *testing.T) {
 	stub := newMCPStub(t, func(s *mcpStub) {
 		s.extra = http.Header{

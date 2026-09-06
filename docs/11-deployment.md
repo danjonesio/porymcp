@@ -121,12 +121,16 @@ Set `PUBLIC_URL=https://porymcp.example.com` and `TRUSTED_PROXIES` to the
 nginx hop's address `/32`.
 
 `proxy_pass_request_headers` is on by default, so inbound headers are
-forwarded. The proxy copies `Mcp-Session-Id`, `Mcp-Protocol-Version`, and
-`Last-Event-ID` outbound. Those names use hyphens; they usually survive.
+forwarded. The proxy copies `Accept`, `Accept-Language`, `Content-Type`,
+`Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` outbound and no
+other client header. Those names use hyphens; they usually survive.
 nginx lowercases header names and may drop unknown headers that contain
 underscores unless `underscores_in_headers on` is set. If a client or an
 intermediate hop sends underscore forms (`Mcp_Session_Id`), either enable
 that flag or set the hyphenated names explicitly with `proxy_set_header`.
+In the other direction the proxy returns `Content-Type`, `Mcp-Session-Id` and
+`Retry-After` from the upstream and drops every other response header; the
+reasons are in `docs/07-security.md`.
 
 ## 5. Traefik
 

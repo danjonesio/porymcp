@@ -53,13 +53,17 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 	}
 }
 
+// applyCORS writes the proxy's own CORS block when the request carries an
+// Origin, and answers a preflight. Every name in Access-Control-Expose-Headers
+// is one the proxy vetted on the response allowlist (copyResponseHeaders);
+// Content-Type needs no entry because it is CORS-safelisted.
 func (h *Handler) applyCORS(w http.ResponseWriter, r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, MCP-Session-Id")
+		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, MCP-Session-Id, Retry-After")
 	}
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -112,6 +116,14 @@ func (h *Handler) ServeMember(w http.ResponseWriter, r *http.Request) { h.serve(
 // serve is both endpoints. memberPath says which route this request arrived
 // on; everything else about the two is deliberately the same code.
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool) {
+	// Every proxy response is uncacheable. The upstream's own Cache-Control is
+	// not relayed (copyResponseHeaders): a per-key answer an upstream marked
+	// cacheable would be stored against a URL that does not name the key on
+	// the shared /mcp door. Written here rather than beside the relay so the
+	// refusal paths and the preflight carry it too (uniformity, not a leak
+	// today: a preflight cache reads Access-Control-Max-Age, not this) and so
+	// PORM-5's streaming path inherits it before its first write.
+	w.Header().Set("Cache-Control", "no-store")
 	if h.applyCORS(w, r) {
 		return
 	}
@@ -383,14 +395,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		boundedParams(req.Params))
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 
-	for k, vs := range headers {
-		if strings.EqualFold(k, "Content-Length") {
-			continue
-		}
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
+	copyResponseHeaders(w.Header(), headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}

@@ -372,7 +372,9 @@ func TestUpstreamRedirectAuditRowIsBounded(t *testing.T) {
 
 // Everything a Location can carry beyond the host (userinfo, a path, a query
 // string) stops at the proxy, and the Location itself never reaches the
-// client, because the 502 mapping returns before the header copy-back loop.
+// client, because the 502 mapping returns before the copy site
+// (copyResponseHeaders). An allowed name on the stub is what proves that, and
+// the 502 carries the proxy's own Cache-Control like every other response.
 func TestUpstreamRedirectLocationNeverReachesTheClient(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{
 		Tools:          []string{"ping_tool"},
@@ -380,16 +382,25 @@ func TestUpstreamRedirectLocationNeverReachesTheClient(t *testing.T) {
 		AuthConfig:     models.AuthConfig{Value: "REAL-APIKEY-SECRET"},
 		RedirectStatus: http.StatusFound,
 		RedirectTo:     "https://u:p@evil.example/x?token=secret",
+		RespHeaders:    map[string]string{"Mcp-Session-Id": "sess-redirect"},
 	}, nil, nil)
 
 	rr := f.post(toolCall("1", "ping_tool"))
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
 	}
-	for _, h := range []string{"Location", "Set-Cookie"} {
+	// Location and Set-Cookie are off the response allowlist and would be
+	// absent whatever this arm did. Mcp-Session-Id is on it, and Send returns
+	// a nil header on every error path today, so it is the name that would
+	// notice a future error path that both carries headers and reaches the
+	// copy site.
+	for _, h := range []string{"Location", "Set-Cookie", "Mcp-Session-Id"} {
 		if got := rr.Header().Get(h); got != "" {
 			t.Errorf("the 502 carries %s=%q; no upstream header is copied back on this path", h, got)
 		}
+	}
+	if vs := rr.Header().Values("Cache-Control"); len(vs) != 1 || vs[0] != "no-store" {
+		t.Errorf("Cache-Control=%q on the 502 want exactly [no-store]", vs)
 	}
 	for _, leak := range []string{"evil.example", "token", "secret", "u:p"} {
 		if strings.Contains(rr.Body.String(), leak) {

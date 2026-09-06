@@ -78,8 +78,12 @@ func (h *Handler) filterListResponse(body []byte, status int, hdr http.Header, p
 
 	// The body is no longer the one these headers were computed over. hdr is
 	// the private clone forward returned, so deleting from it affects nothing
-	// else. Content-Length needs no handling here: the copy-back loop skips
-	// it and net/http recomputes it.
+	// else. These deletions are this function's own contract over the clone it
+	// returns, which PORM-5's streaming path will carry too. The copy-back
+	// allowlist (copyResponseHeaders) excludes these four names as well; the
+	// deletion stays so a later addition to that list cannot ship a digest
+	// describing bytes the client never received. Content-Length needs no
+	// handling here: the allowlist never copies it and net/http recomputes it.
 	for _, k := range []string{"Etag", "Content-Digest", "Repr-Digest", "Digest"} {
 		hdr.Del(k)
 	}
@@ -95,10 +99,12 @@ func (h *Handler) warnListPassThrough(vk *models.VirtualKey, up *models.Upstream
 	if h.log == nil {
 		return
 	}
+	// media_type is the one upstream header string a log line carries, so it
+	// is bounded the way the audit row's fields are.
 	h.log.Warn("tools/list passed through unfiltered",
 		"virtual_key_id", vk.ID,
 		"upstream_id", up.ID,
-		"media_type", mt,
+		"media_type", truncate(mt, auditFieldBytes),
 		"bytes", size,
 	)
 }

@@ -238,13 +238,42 @@
   instead of reporting a working server as one that speaks no JSON-RPC, and a
   relayed call whose response exceeds 16 MiB fails as a call rather than
   reaching the agent (and the audit row) cut off mid-object.
-- One thing follows the credential once a call *is* forwarded, on every path,
-  and the per-member endpoint makes 1:1 forwarding the primary one. Every
-  response header the upstream sets except `Content-Length` is copied back to
-  the client: `Set-Cookie` (a session minted with the real credential),
-  `WWW-Authenticate` (the upstream's identity and authorization-server URL) and
-  a second `Access-Control-Allow-Origin` included. Narrowing that to an
-  allowlist that keeps `Mcp-Session-Id` is PORM-98, and is not fixed today.
+- **The headers that cross the proxy are two named lists, one each way.**
+  Inbound, `copyHopHeaders` forwards six client headers to the upstream:
+  `Accept`, `Accept-Language`, `Content-Type`, `Mcp-Session-Id`,
+  `Mcp-Protocol-Version` and `Last-Event-ID`. The client's `Authorization` is
+  not among them: `mcpclient.ApplyAuth` deletes it and writes the stored
+  credential instead. Outbound, `copyResponseHeaders` returns three:
+  `Content-Type`, `Mcp-Session-Id` and `Retry-After` (PORM-98). `Set-Cookie` is
+  dropped, so a session minted with the real credential is never stored by a
+  browser against PoryMCP's origin; `Cookie` was never on the inbound list, so
+  nothing that worked stops working. `WWW-Authenticate`, `Server`,
+  `X-Powered-By`, `Via`, `Alt-Svc` and `X-Request-Id` are dropped, so a key
+  holder learns neither the upstream's software nor the authorization server
+  its 401 names from a response header. The response body is relayed as
+  received, so an upstream that names itself in an error message, a tool
+  description or a 401 body still does; that channel is out of scope here.
+  `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`,
+  `Access-Control-Expose-Headers`, `Vary`, `Content-Security-Policy`,
+  `X-Frame-Options` and `X-Content-Type-Options` are dropped, so the single
+  values `applyCORS` and `webutil.SecurityHeaders` set are the ones the client
+  receives. `Cache-Control`, `ETag` and the digest headers are dropped, so an
+  upstream cannot mark a per-key answer cacheable, and no validator or digest
+  describes bytes the client may not have; end-to-end body integrity is not
+  offered through the proxy, by construction. Every response the proxy
+  endpoints write carries `Cache-Control: no-store`. What remains: an upstream
+  still chooses the client's media type, mints the session id the client
+  holds, and sets the backoff a client honours after a `429`. A `text/html`
+  answer served from PoryMCP's origin cannot execute script or send data
+  off-origin, because `SecurityHeaders` writes a CSP with no `'unsafe-inline'`
+  in `script-src` and `connect-src 'self'`, and it cannot be framed; it can
+  still render as a document on that origin (PORM-145). The proxy asks
+  upstreams for gzip only and decompresses it; a response in any other
+  encoding is relayed as received and the header is not, a known gap tracked
+  as PORM-142. Relayed values are not bounded (PORM-143). A relayed `401`
+  carries no challenge by design, and translating it into a PoryMCP-originated
+  hint is not done. Extending either list is a code change with a review, not
+  a configuration setting.
 - **Discovery is the one outbound call PoryMCP makes on an operator's behalf.**
   `POST /api/v1/upstreams/{id}/discover` and `POST /api/v1/upstreams/discover`
   run a real MCP handshake (`initialize`, `notifications/initialized`, a
@@ -284,8 +313,9 @@
   server's name and version, and a list of tool names, titles, descriptions and
   typed annotations, each clamped to a byte budget and forced back to valid
   UTF-8. No upstream response header reaches it: the copy-back described above
-  is a property of the relay path and is not inherited here, so a `Set-Cookie`
-  or a `WWW-Authenticate` collected during a discovery attempt goes nowhere.
+  returns three names on the relay path and is not inherited here, so no
+  header an upstream sets during a discovery attempt reaches the operator, the
+  session id it minted included.
   Nor does any byte of an upstream body outside those fields, and never
   `auth_config` or the credential in any form. None of it is persisted either:
   what the saved route records is a timestamp and a flag (`last_test_at` and

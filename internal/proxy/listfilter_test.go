@@ -304,14 +304,39 @@ func TestListPassThroughWarns(t *testing.T) {
 	}
 }
 
+// The media type on that record is the upstream's own string, so it is cut at
+// auditFieldBytes like every other upstream string a row or a log line
+// carries (PORM-98, security requirement 6). mcpclient.MediaType only splits
+// at a semicolon, so a long bare type reaches the line whole.
+func TestListPassThroughWarnsBoundsMediaType(t *testing.T) {
+	long := "text/" + strings.Repeat("x", 1024)
+	f := newSingleFixture(t, upstreamSpec{RawList: `<html></html>`, ListCT: long}, []string{"safe_tool"}, nil)
+	logs := captureLogs(f)
+
+	f.post(listRequest)
+
+	recs := logRecords(t, logs)
+	if len(recs) != 1 {
+		t.Fatalf("got %d log records, want exactly 1: %s", len(recs), logs.String())
+	}
+	mt, _ := recs[0]["media_type"].(string)
+	if mt == "" || len(mt) > auditFieldBytes {
+		t.Errorf("media_type is %d bytes, want non-empty and at most %d", len(mt), auditFieldBytes)
+	}
+}
+
 // A rewritten body is not the body the upstream computed its digests over, so
-// anything claiming to describe those bytes has to go. Nothing is dropped when
-// the body was not touched.
+// anything claiming to describe those bytes has to go. The response allowlist
+// (copyResponseHeaders, PORM-98) drops the integrity headers whether or not
+// the body was rewritten, so both subtests assert absence: the filtered one
+// proves a rewritten body reaches the client without a digest, whichever
+// layer removed it, and the unfiltered one proves an untouched body carries no
+// validator either.
 func TestListFilterDropsIntegrityHeaders(t *testing.T) {
 	const list = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool"},{"name":"danger_tool"}]}}`
 	spec := upstreamSpec{
 		RawList:     list,
-		ListHeaders: map[string]string{"ETag": `"v1"`, "Content-Digest": "sha-256=:abc:"},
+		RespHeaders: map[string]string{"ETag": `"v1"`, "Content-Digest": "sha-256=:abc:"},
 	}
 
 	t.Run("filtered", func(t *testing.T) {
@@ -333,8 +358,13 @@ func TestListFilterDropsIntegrityHeaders(t *testing.T) {
 		if rr.Body.String() != list {
 			t.Fatal("a key with no policy had its body rewritten")
 		}
-		if v := rr.Header().Get("ETag"); v != `"v1"` {
-			t.Errorf("ETag=%q want %q; an untouched body keeps the upstream's headers", v, `"v1"`)
+		// A client cannot send If-None-Match back through copyHopHeaders, and
+		// a 304 would become a 502 at mcpclient.Send, so a validator it
+		// received could never be spent.
+		for _, k := range []string{"ETag", "Content-Digest"} {
+			if v := rr.Header().Get(k); v != "" {
+				t.Errorf("%s=%q reached the client on an untouched body; the response allowlist drops it", k, v)
+			}
 		}
 	})
 }
@@ -447,6 +477,31 @@ func TestFilterToolsListSSE(t *testing.T) {
 			t.Errorf("got  %q\nwant %q", got, want)
 		}
 	})
+
+	// Deleting the body-integrity headers is the filter's own contract over
+	// the clone it returns. The response allowlist (PORM-98) drops those
+	// names too, so nothing observable at the client tells the two apart;
+	// this is what keeps the deletion honest.
+	t.Run("a rewrite drops the integrity headers from the clone", func(t *testing.T) {
+		var h Handler
+		hdr := http.Header{}
+		hdr.Set("Content-Type", "application/json")
+		for _, k := range []string{"ETag", "Content-Digest", "Repr-Digest", "Digest"} {
+			hdr.Set(k, "x")
+		}
+		got, out := h.filterListResponse([]byte(sseFull), http.StatusOK, hdr, allowSafe, nil, nil)
+		if string(got) == sseFull {
+			t.Fatal("the body was not rewritten, so this test proves nothing")
+		}
+		for _, k := range []string{"ETag", "Content-Digest", "Repr-Digest", "Digest"} {
+			if v := out.Get(k); v != "" {
+				t.Errorf("%s=%q survived a rewrite on the returned header", k, v)
+			}
+		}
+		if ct := out.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type=%q; the filter must delete only the integrity headers", ct)
+		}
+	})
 }
 
 // The same catalogue as AC2, delivered the way the reference SDKs deliver it.
@@ -464,6 +519,13 @@ func TestSingleUpstreamListFilteredOverSSE(t *testing.T) {
 	rr := f.post(listRequest)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("tools/list HTTP code=%d body=%q", rr.Code, rr.Body.String())
+	}
+	// A client that cannot tell a stream from a document cannot read the
+	// answer. filterListResponse reads the media type off forward's private
+	// clone before the copy-back runs; this is the client-visible half of
+	// that (PORM-98, acceptance criterion 3).
+	if got := rr.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type=%q want text/event-stream", got)
 	}
 	body := rr.Body.String()
 	if !strings.HasPrefix(body, "event: message\ndata: ") || !strings.HasSuffix(body, "\n\n") {

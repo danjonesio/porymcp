@@ -42,7 +42,8 @@ Agent → /{virtual_key_id}/{upstream_slug}/mcp with its virtual key
   error row naming the redirect host), not a second request
 → Filter its tools/list response through the same policy, leaving the original
   names
-→ Copy the response headers back, Mcp-Session-Id included
+→ Copy back only the allowed response headers: Content-Type, Mcp-Session-Id,
+  Retry-After
 → Log (async)
 → Return response
 ```
@@ -82,10 +83,16 @@ The proxy is stateless: it holds no session table. Each member URL carries its
 own MCP session, minted by that member and returned to the client in
 `Mcp-Session-Id`. A session id minted by member A is forwarded verbatim if a
 client sends it to member B, which rejects it: that is the member's decision,
-not PoryMCP's. On the 1:1 path every response header the upstream sets other
-than `Content-Length` currently reaches the client, `Set-Cookie` and
-`WWW-Authenticate` included; narrowing that to an allowlist that keeps
-`Mcp-Session-Id` is PORM-98. That copying happens only on a response the proxy
+not PoryMCP's. On the 1:1 path the proxy copies back three response headers
+and no others: `Content-Type`, `Mcp-Session-Id` and `Retry-After`
+(`copyResponseHeaders`, PORM-98). Everything else the upstream sets is dropped,
+`Set-Cookie`, `WWW-Authenticate`, `Server` and the upstream's own
+`Access-Control-Allow-Origin` included. An upstream cannot mint a session a
+browser stores against PoryMCP's origin, cannot name its authorization server
+to a key holder in a response header, and cannot duplicate the CORS and
+security headers PoryMCP sets. The response body is relayed as it always has
+been. Every response the proxy endpoints write carries
+`Cache-Control: no-store`. That copying happens only on a response the proxy
 relays, and a `3xx` is never relayed (the call has already failed by then), so
 `Location` never reaches the client on any path, and neither does anything else
 the redirect response set.
