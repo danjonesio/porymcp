@@ -208,6 +208,20 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 
+	// The bound on what the proxy forwards blind, before the body is read so
+	// a header flood does not also buy an 8 MiB read, and after authenticate
+	// so an unauthenticated caller buys no audit row outside the key's rate
+	// limit. It is a size limit and not a mismatch, so the status is 431 and
+	// the code is the proxy's own: a 400 whose body is not a recognised
+	// modern error is the signal on which a dual-era client abandons the
+	// 2026-07-28 protocol for the whole connection. Nothing has been read, so
+	// the row records the verb and the reply carries no id.
+	if rpcErr := checkParamHeaders(r.Header); rpcErr != nil {
+		n := writeRPCError(w, http.StatusRequestHeaderFieldsTooLarge, nil, rpcErr.Code, rpcErr.Message)
+		h.finish(vk, requestID, auditMethodFor(r, ""), "", "", models.StatusError, rpcErr.Message, start, n, nil)
+		return
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	if err != nil {
 		writeRPCError(w, http.StatusBadRequest, nil, -32000, "invalid body")
@@ -232,7 +246,24 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// auditMethod is what every row below records; method itself decides
 	// dispatch and stays exactly what the body said.
 	auditMethod := auditMethodFor(r, method)
-	tool, hasName := toolNameFromParams(req.Params)
+	fields := decodeRoutingFields(req.Params)
+	tool, hasName := fields.toolName()
+
+	// The 2026-07-28 revision's routing headers, held to the body just read.
+	// The tool policy below still reads the body and only the body; this
+	// runs first, before any member or upstream is resolved, so a refused
+	// request costs one audit write and presents no credential, and so a
+	// strict tools/call that omits params.name but sends Mcp-Name answers
+	// -32020 here while one that sends neither reaches the -32602 below. A
+	// DELETE, or an empty body, has method == "" and is not compared. The
+	// message names the header and never its value; the row carries the
+	// bounded tool name and the method, as the unknown-shape refusal's does,
+	// so a probe that swaps a block for this row is still visible.
+	if rpcErr := checkRoutingHeaders(r.Header, method, fields); rpcErr != nil {
+		n := writeRPCError(w, http.StatusBadRequest, req.ID, rpcErr.Code, rpcErr.Message)
+		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError, rpcErr.Message, start, n, boundedParams(req.Params))
+		return
+	}
 
 	var (
 		upstreams []*models.Upstream
