@@ -888,3 +888,87 @@ func TestCorruptKeyListFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// strictCall is a tools/call on the 2026-07-28 revision: the body declares
+// its version in _meta, and the headers below mirror it. Every routing test
+// starts from this pair.
+const strictCall = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+
+// strictHeaders are the routing headers that agree with strictCall, plus one
+// mirrored parameter.
+func strictHeaders() map[string]string {
+	return map[string]string{
+		"MCP-Protocol-Version": "2026-07-28",
+		"Mcp-Method":           "tools/call",
+		"Mcp-Name":             "echo",
+		"Mcp-Param-Region":     "us-west1",
+	}
+}
+
+// Acceptance criterion 1; security requirement 3. The revision's routing
+// headers, and the mirrored parameters a tool's schema asks for, reach the
+// upstream on a single-upstream key. The stub records every request header
+// it received, so "all four intact" is a read of that record, and the
+// client's own Authorization is not among what crossed. The bound and the
+// refusals are TestHeaderMismatchRefused and the sub-tests below it.
+func TestRoutingHeadersForwarded(t *testing.T) {
+	t.Run("all four headers reach the upstream", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		rr := f.doPath(http.MethodPost, f.keyURL(), strictCall, strictHeaders())
+		assertNotBlocked(t, rr, "a strict tools/call in agreement with its headers")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		for k, want := range strictHeaders() {
+			if got := reqs[0].Header.Get(k); got != want {
+				t.Errorf("upstream saw %s=%q want %q", k, got, want)
+			}
+		}
+		if got := reqs[0].Header.Get("Authorization"); strings.Contains(got, f.Key) {
+			t.Error("the client's virtual key reached the upstream")
+		}
+	})
+
+	t.Run("two values of one Mcp-Param name both arrive", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		hdr := http.Header{}
+		for k, v := range strictHeaders() {
+			hdr.Set(k, v)
+		}
+		hdr.Add("Mcp-Param-Region", "eu-west1")
+		rr := f.doPathHeader(http.MethodPost, f.keyURL(), strictCall, hdr)
+		assertNotBlocked(t, rr, "two values of one mirrored parameter")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		if got := reqs[0].Header.Values("Mcp-Param-Region"); len(got) != 2 || got[0] != "us-west1" || got[1] != "eu-west1" {
+			t.Errorf("upstream saw Mcp-Param-Region=%q want both values in order", got)
+		}
+	})
+}
+
+// Acceptance criterion 5. A member endpoint renames nothing, so the routing
+// headers cross unchanged, Mcp-Name included: the client names the tool as
+// the member advertises it, and no other member is contacted.
+func TestMemberEndpointForwardsMcpName(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"github": {"create_issue"}, "docs": {"search"}}, nil, nil, nil)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_issue","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+	hdr := strictHeaders()
+	hdr["Mcp-Name"] = "create_issue"
+	rr := f.postMemberWith("github", body, hdr)
+	assertNotBlocked(t, rr, "a strict tools/call on a member endpoint")
+	reqs := f.requestsTo("github")
+	if len(reqs) != 1 {
+		t.Fatalf("github saw %d requests, want 1", len(reqs))
+	}
+	for k, want := range hdr {
+		if got := reqs[0].Header.Get(k); got != want {
+			t.Errorf("github saw %s=%q want %q", k, got, want)
+		}
+	}
+	if n := f.totalReqs("docs"); n != 0 {
+		t.Errorf("docs saw %d requests on github's endpoint", n)
+	}
+}
