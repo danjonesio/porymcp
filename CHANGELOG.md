@@ -4,6 +4,46 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The 2026-07-28 routing headers cross the proxy, and are checked (PORM-150)
+
+- **`Mcp-Method`, `Mcp-Name` and the `Mcp-Param-` headers now reach the
+  upstream.** The proxy forwarded six client headers by name and dropped
+  these. An upstream on the 2026-07-28 revision answers `400` with a header
+  mismatch when they are missing, and that error tells a client the server is
+  modern, so it does not fall back: the connection was a dead end with a
+  relayed `400` in the log. On a group's aggregate endpoint `Mcp-Name` is
+  rewritten to the member's own tool name, beside the `params.name` that was
+  already rewritten.
+- **A request whose routing headers disagree with its body is now refused by
+  PoryMCP.** `400` with `-32020`, the revision's own code, a message naming
+  the header and never its value, no upstream contacted and an `error` audit
+  row. A client that sent a wrong `Mcp-Name` was relayed before this and
+  failed at the upstream.
+- **On a request declaring `2026-07-28` or later the headers are required.**
+  The declared version is `MCP-Protocol-Version`, or the body's `_meta`
+  version when the header is absent, and the two must agree. A request
+  declaring an earlier version, or none, is refused only when a header it did
+  send disagrees, so a client that sends none of them behaves exactly as
+  before.
+- **At most 32 `Mcp-Param-` values cross, none over 4096 bytes.** Over either
+  bound the answer is `431` with `-32000 "too many or too large Mcp-Param
+  headers"`, and a value outside printable ASCII is `400` with `-32020`. The
+  bounds are PoryMCP's own; the revision caps neither.
+- **A `tools/list` the proxy relays no longer claims `cacheScope: "public"`.**
+  Any scope an upstream sends on that list leaves as `private`, whether or
+  not a tool was removed, because one proxy URL answers for every key; a list
+  that carried no scope is relayed byte for byte, so a client on an earlier
+  revision whose upstream sends none sees no change. The aggregate endpoint's
+  merged list carries `cacheScope: "private"` and `resultType: "complete"`;
+  `ttlMs` on it is PORM-153.
+- **The CORS preflight allows the new names.** `Mcp-Method` and `Mcp-Name` are
+  always allowed, and up to 32 `Mcp-Param-` names the request asks for are
+  echoed back; a request that asks for more is refused them all at the
+  preflight.
+- **There is no setting.** Rolling back to
+  `ghcr.io/danjonesio/porymcp:sha-<short sha>` restores the previous binary;
+  no schema or data is involved.
+
 ## v0.1.0 (2026-09-06)
 
 ### Breaking: the sse upstream transport is refused on write (PORM-28)

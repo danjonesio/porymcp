@@ -239,11 +239,24 @@
   relayed call whose response exceeds 16 MiB fails as a call rather than
   reaching the agent (and the audit row) cut off mid-object.
 - **The headers that cross the proxy are two named lists, one each way.**
-  Inbound, `copyHopHeaders` forwards six client headers to the upstream:
+  Inbound, `copyHopHeaders` forwards eight client headers to the upstream:
   `Accept`, `Accept-Language`, `Content-Type`, `Mcp-Session-Id`,
-  `Mcp-Protocol-Version` and `Last-Event-ID`. The client's `Authorization` is
-  not among them: `mcpclient.ApplyAuth` deletes it and writes the stored
-  credential instead. Outbound, `copyResponseHeaders` returns three:
+  `Mcp-Protocol-Version`, `Last-Event-ID`, `Mcp-Method` and `Mcp-Name`, and
+  every header whose name begins `Mcp-Param-`, at most 32 values and none over
+  4096 bytes. The last three are the 2026-07-28 revision's routing headers:
+  `Mcp-Method` carries the JSON-RPC method, `Mcp-Name` carries `params.name`
+  or `params.uri`, and an `Mcp-Param-` header mirrors a tool argument the
+  upstream's own schema marked `x-mcp-header`. The revision requires an
+  intermediary to forward them. A request over either bound is answered `431`
+  with `-32000 "too many or too large Mcp-Param headers"`, reaches no upstream
+  and writes an `error` row (Go's own server answers a `431` of its own above
+  1 MiB of headers, before PoryMCP sees the request and with no row); an
+  `Mcp-Param-` value outside printable ASCII is answered `400` with `-32020`.
+  `Mcp-Param-Authorization` is a legal name and crosses like the rest,
+  carrying the client's own value and never the stored credential, which
+  `mcpclient.ApplyAuth` writes last. The client's `Authorization` is not among
+  them: `mcpclient.ApplyAuth` deletes it and writes the stored credential
+  instead. Outbound, `copyResponseHeaders` returns three:
   `Content-Type`, `Mcp-Session-Id` and `Retry-After` (PORM-98). `Set-Cookie` is
   dropped, so a session minted with the real credential is never stored by a
   browser against PoryMCP's origin; `Cookie` was never on the inbound list, so
@@ -279,6 +292,28 @@
   carries no challenge by design, and translating it into a PoryMCP-originated
   hint is not done. Extending either list is a code change with a review, not
   a configuration setting.
+- **The routing headers are compared with the body before anything is
+  forwarded.** The tool gate still reads the body and only the body, so a
+  header can neither open nor close a rule; the comparison is there because a
+  header and a body that say different things are two requests in one, and a
+  downstream that routes on the header would then execute what nothing gated.
+  On a request declaring `2026-07-28` or later, `Mcp-Method` must be present
+  and equal to the body's `method`, and on `tools/call`, `resources/read` and
+  `prompts/get`, `Mcp-Name` must be present and equal to `params.name` or
+  `params.uri`, decoded first when it arrives in the `=?base64?...?=` form.
+  The declared version is the `MCP-Protocol-Version` header, or the body's
+  `_meta` version when the header is absent; the two must agree, and a body
+  that declares the revision with no header is refused. On a request
+  declaring an earlier version or none, a header that is present must still
+  agree, and an absent one is accepted. A `DELETE` carries no request for a
+  header to disagree with and is forwarded as before. A failure is `400` with
+  `-32020`, the revision's own code, naming the header and never its value,
+  and an `error` row. `Mcp-Param-` values are checked for the header-safe
+  character set alone: comparing one with the body needs the tool's input
+  schema, which the upstream holds and PoryMCP does not, and the revision
+  requires the upstream to make that comparison itself. A stored
+  `auth_config` may name none of these headers; discovery reports one that
+  does (`sendableHeaderName`, PORM-150).
 - **A verb the proxy refuses writes no `audit_logs` row.** `GET` and everything
   other than `POST` and `DELETE` is answered `405` before the key is read; it
   contacts no upstream and presents no credential, so it is not something an
@@ -381,9 +416,15 @@
   entry in an allow rule on a group.
 - Filtering `tools/list` is presentation; the call gate is the control. The
   proxy rewrites JSON and SSE-framed list responses on the way back through
-  the same policy, and passes through, with a warning log, any body it
-  cannot parse. A pass-through can advertise a tool the proxy will still
-  refuse to call; it can never make a blocked tool callable.
+  the same policy, and passes through any body it cannot parse, with a
+  warning log when a policy was active. A pass-through can advertise a tool
+  the proxy will still refuse to call; it can never make a blocked tool
+  callable. Any `cacheScope` an upstream sends on a `tools/list` leaves as
+  `private`, whether or not a tool was removed: it is the one catalogue the
+  proxy rewrites per key, and one proxy URL answers for every key. A list
+  that carried no `cacheScope` is relayed byte for byte, and `resources/list`
+  and `prompts/list` are relayed as they arrive. Every proxy response carries
+  `Cache-Control: no-store` either way.
 - Tool policy matches a name byte-exactly: no trimming, no case folding, no
   wildcards, no regular expressions, no Unicode normalisation. There is one
   identity, and it is the same on every path.
