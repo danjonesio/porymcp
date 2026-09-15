@@ -296,3 +296,98 @@ func TestWrongHostBeatsTheVerb(t *testing.T) {
 		t.Error("a request with a wrong host reached an upstream")
 	}
 }
+
+// Acceptance criterion 7; security requirement 10. The preflight names the
+// revision's routing headers, echoes the Mcp-Param- names a request asks for
+// in the spelling the proxy produced, refuses the whole set over the bound so
+// the fixed names still stand, reflects nothing else, echoes only on OPTIONS,
+// and leaves Vary alone: the answer is no-store, and Set would drop Origin.
+func TestPreflightAllowsRoutingHeaders(t *testing.T) {
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}}, nil, nil)
+	fixed := []string{"Authorization", "Content-Type", "Accept", "MCP-Session-Id", "Mcp-Session-Id", "MCP-Protocol-Version", "Mcp-Method", "Mcp-Name", "Last-Event-ID"}
+	preflight := func(t *testing.T, requested string) http.Header {
+		t.Helper()
+		rr := f.doPathNoAuth(http.MethodOptions, f.keyURL(), "", map[string]string{
+			"Origin":                         "https://claude.ai",
+			"Access-Control-Request-Method":  "POST",
+			"Access-Control-Request-Headers": requested,
+		})
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("HTTP code=%d want 204; body=%s", rr.Code, rr.Body.String())
+		}
+		return rr.Header()
+	}
+	allowed := func(h http.Header) []string {
+		var out []string
+		for _, n := range strings.Split(h.Get("Access-Control-Allow-Headers"), ",") {
+			out = append(out, strings.TrimSpace(n))
+		}
+		return out
+	}
+	has := func(list []string, name string) bool {
+		for _, n := range list {
+			if n == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("the routing headers and a requested Mcp-Param name", func(t *testing.T) {
+		h := preflight(t, "Mcp-Method, Mcp-Name, mcp-param-region")
+		got := allowed(h)
+		for _, n := range append(fixed, "Mcp-Param-Region") {
+			if !has(got, n) {
+				t.Errorf("Access-Control-Allow-Headers lacks %s: %q", n, got)
+			}
+		}
+		if has(got, "mcp-param-region") {
+			t.Error("the client's own spelling was echoed rather than the canonical one")
+		}
+		if v := h.Get("Vary"); v != "Origin" {
+			t.Errorf("Vary=%q want Origin", v)
+		}
+	})
+
+	t.Run("33 requested Mcp-Param names are all refused and the fixed names stand", func(t *testing.T) {
+		var req []string
+		for i := 0; i <= maxParamHeaders; i++ {
+			req = append(req, "Mcp-Param-N"+strings.Repeat("x", i))
+		}
+		got := allowed(preflight(t, strings.Join(req, ", ")))
+		for _, n := range got {
+			if strings.HasPrefix(n, "Mcp-Param-") {
+				t.Errorf("echoed %s over the bound: a truncated allowance sends a request the upstream refuses", n)
+			}
+		}
+		for _, n := range fixed {
+			if !has(got, n) {
+				t.Errorf("Access-Control-Allow-Headers lacks %s when the mirrored names were refused: %q", n, got)
+			}
+		}
+	})
+
+	t.Run("a name outside the prefix is not reflected", func(t *testing.T) {
+		got := allowed(preflight(t, "X-Custom, Mcp-Param-Region"))
+		if has(got, "X-Custom") {
+			t.Errorf("a client-chosen name was reflected: %q", got)
+		}
+		if !has(got, "Mcp-Param-Region") {
+			t.Errorf("the valid name beside it was dropped: %q", got)
+		}
+	})
+
+	t.Run("a POST carrying an Origin does not echo", func(t *testing.T) {
+		rr := f.doPath(http.MethodPost, f.keyURL(), listRequest, map[string]string{
+			"Origin":                         "https://claude.ai",
+			"Access-Control-Request-Headers": "Mcp-Param-Region",
+		})
+		got := allowed(rr.Header())
+		if has(got, "Mcp-Param-Region") {
+			t.Error("the echo ran on a request that was not a preflight")
+		}
+		if !has(got, "Mcp-Method") {
+			t.Errorf("the fixed names are missing from the CORS block on a POST: %q", got)
+		}
+	})
+}

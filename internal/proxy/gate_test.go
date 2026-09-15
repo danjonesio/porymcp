@@ -888,3 +888,336 @@ func TestCorruptKeyListFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// strictCall is a tools/call on the 2026-07-28 revision: the body declares
+// its version in _meta, and the headers below mirror it. Every routing test
+// starts from this pair.
+const strictCall = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+
+// strictHeaders are the routing headers that agree with strictCall, plus one
+// mirrored parameter.
+func strictHeaders() map[string]string {
+	return map[string]string{
+		"MCP-Protocol-Version": "2026-07-28",
+		"Mcp-Method":           "tools/call",
+		"Mcp-Name":             "echo",
+		"Mcp-Param-Region":     "us-west1",
+	}
+}
+
+// Acceptance criterion 1; security requirement 3. The revision's routing
+// headers, and the mirrored parameters a tool's schema asks for, reach the
+// upstream on a single-upstream key. The stub records every request header
+// it received, so "all four intact" is a read of that record, and the
+// client's own Authorization is not among what crossed. The bound and the
+// refusals are TestHeaderMismatchRefused and the sub-tests below it.
+func TestRoutingHeadersForwarded(t *testing.T) {
+	t.Run("all four headers reach the upstream", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		rr := f.doPath(http.MethodPost, f.keyURL(), strictCall, strictHeaders())
+		assertNotBlocked(t, rr, "a strict tools/call in agreement with its headers")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		for k, want := range strictHeaders() {
+			if got := reqs[0].Header.Get(k); got != want {
+				t.Errorf("upstream saw %s=%q want %q", k, got, want)
+			}
+		}
+		if got := reqs[0].Header.Get("Authorization"); strings.Contains(got, f.Key) {
+			t.Error("the client's virtual key reached the upstream")
+		}
+	})
+
+	t.Run("Mcp-Param-Authorization carries the client's value beside the stored credential", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}, Bearer: "sk-real-secret"}, nil, nil)
+		hdr := strictHeaders()
+		hdr["Mcp-Param-Authorization"] = "client-chosen"
+		rr := f.doPath(http.MethodPost, f.keyURL(), strictCall, hdr)
+		assertNotBlocked(t, rr, "a mirrored parameter named Authorization")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		if got := reqs[0].Header.Get("Mcp-Param-Authorization"); got != "client-chosen" {
+			t.Errorf("upstream saw Mcp-Param-Authorization=%q want the client's own value", got)
+		}
+		if got := reqs[0].Header.Get("Authorization"); got != "Bearer sk-real-secret" {
+			t.Errorf("upstream saw Authorization=%q want the stored credential, written last", got)
+		}
+	})
+
+	t.Run("two values of one Mcp-Param name both arrive", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		hdr := http.Header{}
+		for k, v := range strictHeaders() {
+			hdr.Set(k, v)
+		}
+		hdr.Add("Mcp-Param-Region", "eu-west1")
+		rr := f.doPathHeader(http.MethodPost, f.keyURL(), strictCall, hdr)
+		assertNotBlocked(t, rr, "two values of one mirrored parameter")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		if got := reqs[0].Header.Values("Mcp-Param-Region"); len(got) != 2 || got[0] != "us-west1" || got[1] != "eu-west1" {
+			t.Errorf("upstream saw Mcp-Param-Region=%q want both values in order", got)
+		}
+	})
+
+	t.Run("33 Mcp-Param values answer 431", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		hdr := http.Header{}
+		for k, v := range strictHeaders() {
+			hdr.Set(k, v)
+		}
+		for i := 0; i < maxParamHeaders; i++ {
+			hdr.Add("Mcp-Param-Region", "r")
+		}
+		assertParamBound(t, f, f.doPathHeader(http.MethodPost, f.keyURL(), strictCall, hdr))
+	})
+
+	t.Run("a value one byte over the bound answers 431", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		hdr := strictHeaders()
+		hdr["Mcp-Param-Region"] = strings.Repeat("a", maxRoutingValueBytes+1)
+		assertParamBound(t, f, f.doPath(http.MethodPost, f.keyURL(), strictCall, hdr))
+	})
+}
+
+// Acceptance criterion 5. A member endpoint renames nothing, so the routing
+// headers cross unchanged, Mcp-Name included: the client names the tool as
+// the member advertises it, and no other member is contacted.
+func TestMemberEndpointForwardsMcpName(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"github": {"create_issue"}, "docs": {"search"}}, nil, nil, nil)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_issue","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+	hdr := strictHeaders()
+	hdr["Mcp-Name"] = "create_issue"
+	rr := f.postMemberWith("github", body, hdr)
+	assertNotBlocked(t, rr, "a strict tools/call on a member endpoint")
+	reqs := f.requestsTo("github")
+	if len(reqs) != 1 {
+		t.Fatalf("github saw %d requests, want 1", len(reqs))
+	}
+	for k, want := range hdr {
+		if got := reqs[0].Header.Get(k); got != want {
+			t.Errorf("github saw %s=%q want %q", k, got, want)
+		}
+	}
+	if n := f.totalReqs("docs"); n != 0 {
+		t.Errorf("docs saw %d requests on github's endpoint", n)
+	}
+}
+
+// assertParamBound pins the bound's whole contract: 431, the proxy's own
+// code and one message, a null id because nothing was read, no upstream
+// request, and an error row recording the verb, as every refusal decided
+// before the body does.
+func assertParamBound(t *testing.T, f *fixture, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if rr.Code != http.StatusRequestHeaderFieldsTooLarge {
+		t.Errorf("HTTP code=%d want 431; body=%s", rr.Code, rr.Body.String())
+	}
+	code, msg, id := rpcErrorOf(t, rr.Body.Bytes())
+	if code != -32000 || msg != msgParamBound {
+		t.Errorf("code=%d message=%q want -32000 %q", code, msg, msgParamBound)
+	}
+	if id != nil {
+		t.Errorf("id=%v want null: the bound is decided before the body is read", id)
+	}
+	if !f.upstreamsIdle() {
+		t.Error("a request over the Mcp-Param bound reached the upstream")
+	}
+	row := f.waitAudit(models.LogFilter{Status: models.StatusError})[0]
+	if row.Method != http.MethodPost || row.ErrorMessage != msgParamBound || row.UpstreamID != "" {
+		t.Errorf("row=%+v want method POST, error_message %q, no upstream", row, msgParamBound)
+	}
+}
+
+// Acceptance criterion 2; security requirements 1 and 4. Every arm of the
+// comparison end to end: HTTP 400, the revision's own code, a message that
+// names the header and never a value, no upstream request, and an error row
+// naming the header, the method and the tool the body named.
+func TestHeaderMismatchRefused(t *testing.T) {
+	const metaOld = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}`
+	with := func(edit func(map[string]string)) map[string]string {
+		h := strictHeaders()
+		edit(h)
+		return h
+	}
+	cases := []struct {
+		name string
+		body string
+		hdr  map[string]string
+		want string
+	}{
+		{"Mcp-Method names another method", strictCall, with(func(h map[string]string) { h["Mcp-Method"] = "tools/list" }), msgMismatchMethod},
+		{"Mcp-Method missing", strictCall, with(func(h map[string]string) { delete(h, "Mcp-Method") }), msgMismatchMethod},
+		{"Mcp-Name missing on tools/call", strictCall, with(func(h map[string]string) { delete(h, "Mcp-Name") }), msgMismatchName},
+		{"Mcp-Name names another tool", strictCall, with(func(h map[string]string) { h["Mcp-Name"] = "other" }), msgMismatchName},
+		{"_meta version differs from the header", metaOld, strictHeaders(), msgMismatchProtocol},
+		{"header missing against a strict _meta", strictCall, with(func(h map[string]string) { delete(h, "MCP-Protocol-Version") }), msgMismatchProtocol},
+		{"an Mcp-Param value outside printable ASCII", strictCall, with(func(h map[string]string) { h["Mcp-Param-Region"] = "caf\xc3\xa9" }), msgMismatchParam},
+		{"a sentinel that will not decode", strictCall, with(func(h map[string]string) { h["Mcp-Name"] = "=?base64?!!!?=" }), msgMismatchName},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+			rr := f.doPath(http.MethodPost, f.keyURL(), c.body, c.hdr)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("HTTP code=%d want 400; body=%s", rr.Code, rr.Body.String())
+			}
+			code, msg, id := rpcErrorOf(t, rr.Body.Bytes())
+			if code != codeHeaderMismatch || msg != c.want {
+				t.Errorf("code=%d message=%q want %d %q", code, msg, codeHeaderMismatch, c.want)
+			}
+			if id != float64(1) {
+				t.Errorf("id=%v want the request's own id echoed", id)
+			}
+			for _, leaked := range []string{"other", "echo", "2025-11-25", "us-west1", "tools/list"} {
+				if strings.Contains(rr.Body.String(), leaked) {
+					t.Errorf("the reply echoes a client value %q: %s", leaked, rr.Body.String())
+				}
+			}
+			if !f.upstreamsIdle() {
+				t.Error("a refused request reached the upstream: the credential was presented for a call the proxy did not gate")
+			}
+			row := f.waitAudit(models.LogFilter{Status: models.StatusError})[0]
+			if row.ErrorMessage != c.want || row.Method != "tools/call" || row.ToolName != "echo" || row.UpstreamID != "" {
+				t.Errorf("row=%+v want error_message %q, method tools/call, tool echo, no upstream", row, c.want)
+			}
+		})
+	}
+
+	t.Run("a sentinel Mcp-Name decodes, passes, and is forwarded raw", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		const enc = "=?base64?ZWNobw==?="
+		rr := f.doPath(http.MethodPost, f.keyURL(), strictCall, with(func(h map[string]string) { h["Mcp-Name"] = enc }))
+		assertNotBlocked(t, rr, "a sentinel-encoded Mcp-Name that decodes to the body's name")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		if got := reqs[0].Header.Get("Mcp-Name"); got != enc {
+			t.Errorf("upstream saw Mcp-Name=%q want the raw sentinel %q: the upstream applies the same rule to the same bytes", got, enc)
+		}
+	})
+
+	t.Run("two Mcp-Name lines are refused", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		hdr := http.Header{}
+		for k, v := range strictHeaders() {
+			hdr.Set(k, v)
+		}
+		hdr.Add("Mcp-Name", "echo")
+		rr := f.doPathHeader(http.MethodPost, f.keyURL(), strictCall, hdr)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("HTTP code=%d want 400; body=%s", rr.Code, rr.Body.String())
+		}
+		if code, msg, _ := rpcErrorOf(t, rr.Body.Bytes()); code != codeHeaderMismatch || msg != msgMismatchName {
+			t.Errorf("code=%d message=%q; a duplicate line is refused, not reduced to its first value", code, msg)
+		}
+		if !f.upstreamsIdle() {
+			t.Error("a request with two Mcp-Name lines reached the upstream")
+		}
+	})
+
+	t.Run("a DELETE carrying Mcp-Name is refused", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		rr := f.doPath(http.MethodDelete, f.keyURL(), "", map[string]string{"Mcp-Session-Id": "sess-1", "Mcp-Name": "echo"})
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("HTTP code=%d want 400; body=%s", rr.Code, rr.Body.String())
+		}
+		if code, msg, _ := rpcErrorOf(t, rr.Body.Bytes()); code != codeHeaderMismatch || msg != msgMismatchName {
+			t.Errorf("code=%d message=%q; a teardown carries no body value for Mcp-Name to mirror", code, msg)
+		}
+		if !f.upstreamsIdle() {
+			t.Error("a DELETE carrying Mcp-Name reached the upstream")
+		}
+	})
+
+	t.Run("a notification gets the envelope with a null id", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		const notif = `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+		rr := f.doPath(http.MethodPost, f.keyURL(), notif, with(func(h map[string]string) { h["Mcp-Name"] = "other" }))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("HTTP code=%d want 400; body=%s", rr.Code, rr.Body.String())
+		}
+		if code, msg, id := rpcErrorOf(t, rr.Body.Bytes()); code != codeHeaderMismatch || msg != msgMismatchName || id != nil {
+			t.Errorf("code=%d message=%q id=%v want %d %q null", code, msg, id, codeHeaderMismatch, msgMismatchName)
+		}
+		if !f.upstreamsIdle() {
+			t.Error("a refused notification reached the upstream")
+		}
+	})
+}
+
+// Acceptance criterion 3. A client on an earlier revision that sends none of
+// the routing headers is forwarded as it always was; one that sends a wrong
+// Mcp-Name is refused on any revision; a version the proxy cannot read as a
+// revision date raises nothing; and a DELETE, which carries no request for a
+// header to disagree with, is forwarded whatever it declares.
+func TestLegacyRequestsUnchanged(t *testing.T) {
+	legacy := toolCall("1", "echo")
+	forwarded := func(t *testing.T, hdr map[string]string) recordedRequest {
+		t.Helper()
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		rr := f.doPath(http.MethodPost, f.keyURL(), legacy, hdr)
+		assertNotBlocked(t, rr, "a legacy tools/call")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		return reqs[0]
+	}
+
+	t.Run("2025-06-18 with no routing headers is forwarded as today", func(t *testing.T) {
+		got := forwarded(t, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
+		if v := got.Header.Get("Mcp-Protocol-Version"); v != "2025-06-18" {
+			t.Errorf("upstream saw Mcp-Protocol-Version=%q", v)
+		}
+		for _, h := range []string{"Mcp-Method", "Mcp-Name"} {
+			if v := got.Header.Get(h); v != "" {
+				t.Errorf("upstream saw %s=%q on a request that sent none", h, v)
+			}
+		}
+	})
+
+	t.Run("2025-06-18 with a wrong Mcp-Name is refused", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		rr := f.doPath(http.MethodPost, f.keyURL(), legacy, map[string]string{"MCP-Protocol-Version": "2025-06-18", "Mcp-Name": "other"})
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("HTTP code=%d want 400; body=%s", rr.Code, rr.Body.String())
+		}
+		if code, msg, _ := rpcErrorOf(t, rr.Body.Bytes()); code != codeHeaderMismatch || msg != msgMismatchName {
+			t.Errorf("code=%d message=%q", code, msg)
+		}
+		if !f.upstreamsIdle() {
+			t.Error("a legacy request with a wrong Mcp-Name reached the upstream")
+		}
+	})
+
+	t.Run("a version that is not a revision date raises nothing", func(t *testing.T) {
+		forwarded(t, map[string]string{"Mcp-Protocol-Version": "9999"})
+	})
+
+	t.Run("no version anywhere with an agreeing Mcp-Method is forwarded", func(t *testing.T) {
+		got := forwarded(t, map[string]string{"Mcp-Method": "tools/call"})
+		if v := got.Header.Get("Mcp-Method"); v != "tools/call" {
+			t.Errorf("upstream saw Mcp-Method=%q want tools/call", v)
+		}
+	})
+
+	t.Run("a DELETE declaring the strict revision is forwarded", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		rr := f.doPath(http.MethodDelete, f.keyURL(), "", map[string]string{"Mcp-Session-Id": "sess-1", "MCP-Protocol-Version": "2026-07-28"})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 || reqs[0].HTTPMethod != http.MethodDelete {
+			t.Fatalf("the upstream saw %d requests (%+v), want one DELETE: a teardown carries no request for a header to disagree with", len(reqs), reqs)
+		}
+	})
+}

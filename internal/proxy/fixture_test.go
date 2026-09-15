@@ -385,6 +385,25 @@ func (f *fixture) doPathNoAuth(method, path, rpc string, hdr map[string]string) 
 	return rr
 }
 
+// doPathHeader is doPath for a test that has to send two values of one header
+// name, which the map the other helpers take cannot express: the duplicate
+// line refusals and the value-counted Mcp-Param bound are reachable only this
+// way. hdr's values are copied whole through Add, after the fixture's bearer.
+func (f *fixture) doPathHeader(method, path, rpc string, hdr http.Header) *httptest.ResponseRecorder {
+	f.t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(rpc))
+	req.Header.Set("Authorization", "Bearer "+f.Key)
+	req.Header.Set("Content-Type", "application/json")
+	for k, vals := range hdr {
+		for _, v := range vals {
+			req.Header.Add(k, v)
+		}
+	}
+	rr := httptest.NewRecorder()
+	f.Router.ServeHTTP(rr, req)
+	return rr
+}
+
 // postTo is doPath for a POST with no extra headers.
 func (f *fixture) postTo(path, rpc string) *httptest.ResponseRecorder {
 	f.t.Helper()

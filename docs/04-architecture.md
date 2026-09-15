@@ -33,6 +33,8 @@
 ```text
 Agent → /{virtual_key_id}/{upstream_slug}/mcp with its virtual key
 → Validate key and path (a key on another key's path is 403 before the body is read)
+→ Compare the routing headers with the body: a disagreement stops here with
+  400 and JSON-RPC -32020, contacting no upstream
 → Resolve target (a Group, or 404)
 → Resolve the enabled member the slug names (404 if there is none)
 → Apply tool policy with that member's {slug}__ identity: a blocked
@@ -55,6 +57,8 @@ Agent → /{virtual_key_id}/{upstream_slug}/mcp with its virtual key
 ```text
 Agent → /{virtual_key_id}/mcp (or shared /mcp) with its virtual key
 → Validate key (and path, when present)
+→ Compare the routing headers with the body: a disagreement stops here with
+  400 and JSON-RPC -32020, contacting no upstream
 → Resolve target (Upstream or Group)
 → On a group tools/call, split the tool name at its first __ into an
   upstream slug and that upstream's own tool name: a name with no __, an
@@ -98,6 +102,12 @@ been. Every response the proxy endpoints write carries
 relays, and a `3xx` is never relayed (the call has already failed by then), so
 `Location` never reaches the client on any path, and neither does anything else
 the redirect response set.
+
+Inbound, the proxy forwards eight named client headers and every `Mcp-Param-`
+header within its bound, and compares `Mcp-Method`, `Mcp-Name` and
+`MCP-Protocol-Version` with the body before anything is sent
+(`copyHopHeaders`, PORM-150). The names and the bound are in
+`docs/07-security.md`.
 
 Server-initiated messages are not proxied. A `GET` on a proxy endpoint is
 answered `405` with `Allow: POST, DELETE, OPTIONS` in the shared serve body,

@@ -177,3 +177,29 @@ func TestEnforceHTTPSNilLogger(t *testing.T) {
 		t.Fatalf("status=%d", rr.Code)
 	}
 }
+
+// The 426's own CORS block names the 2026-07-28 routing headers too, or a
+// browser client on that revision reaching a clear-text hop would see a CORS
+// failure instead of the 426 that says what is wrong. The list is static:
+// it echoes no requested name.
+func TestEnforceHTTPSCORSNamesRoutingHeaders(t *testing.T) {
+	h := EnforceHTTPS(true, nil, nil)(okHandler())
+	req := httptest.NewRequest(http.MethodOptions, "http://porymcp.example.com/mcp", nil)
+	req.RemoteAddr = "203.0.113.9:1234"
+	req.Header.Set("Origin", "https://dashboard.example")
+	req.Header.Set("Access-Control-Request-Headers", "Mcp-Param-Region")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUpgradeRequired {
+		t.Fatalf("status=%d", rr.Code)
+	}
+	got := rr.Header().Get("Access-Control-Allow-Headers")
+	for _, n := range []string{"Mcp-Method", "Mcp-Name"} {
+		if !strings.Contains(got, n) {
+			t.Errorf("ACA-Headers=%q lacks %s", got, n)
+		}
+	}
+	if strings.Contains(got, "Mcp-Param") {
+		t.Errorf("ACA-Headers=%q: the 426 list is static and echoes nothing", got)
+	}
+}

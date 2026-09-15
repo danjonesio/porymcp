@@ -57,7 +57,12 @@ func writeInsecureScheme(w http.ResponseWriter, r *http.Request, trusted []netip
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
 		h.Set("Vary", "Origin")
-		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID")
+		// The same names the proxy's own preflight advertises, the 2026-07-28
+		// routing headers included, or a browser client on that revision
+		// would see a CORS failure here instead of the 426. This list is
+		// static and echoes nothing: it is an error answer for a
+		// misconfigured edge, not the endpoint's advertisement.
+		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID")
 		h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 	}
 	logInsecureOnce(log, scheme, RequestHost(r, trusted))

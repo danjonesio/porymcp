@@ -798,8 +798,8 @@ func authHeadersSendable(authType string, raw json.RawMessage) bool {
 }
 
 // sendableHeaderName reports whether name is an RFC 7230 token that is neither
-// a hop-by-hop header the transport owns nor one of the three protocol headers
-// PoryMCP writes for itself.
+// a hop-by-hop header the transport owns nor one of the protocol headers
+// PoryMCP writes or vouches for itself.
 //
 // The hop-by-hop set is the whole RFC list, not the four Go computes: the
 // point of the list is that it is closed, and Proxy-Authorization is a
@@ -807,6 +807,11 @@ func authHeadersSendable(authType string, raw json.RawMessage) bool {
 // Accept, Mcp-Session-Id and MCP-Protocol-Version are PoryMCP's own half of
 // the conversation, a stored auth_config must not get to choose what Accept
 // PoryMCP offers, or hand an upstream a session id PoryMCP never minted.
+// Mcp-Method and Mcp-Name are the 2026-07-28 routing headers, compared with
+// the body before the proxy forwards them, and an Mcp-Param- header is the
+// client's own mirrored argument, so a stored config may name none of those
+// either. Discovery is what reports the misconfiguration; ApplyAuth consults
+// no list and writes whatever a stored config names, as it always has.
 func sendableHeaderName(name string) bool {
 	for i := 0; i < len(name); i++ {
 		switch c := name[i]; {
@@ -821,7 +826,10 @@ func sendableHeaderName(name string) bool {
 		"proxy-authorization", "proxy-authenticate", "proxy-connection",
 		"keep-alive", "te", "trailer":
 		return false
-	case "accept", "mcp-session-id", "mcp-protocol-version":
+	case "accept", "mcp-session-id", "mcp-protocol-version", "mcp-method", "mcp-name":
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(name), "mcp-param-") {
 		return false
 	}
 	return name != ""

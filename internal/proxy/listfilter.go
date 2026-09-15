@@ -37,10 +37,19 @@ var (
 // and this is presentation, so a catalogue the proxy cannot parse leaks tool
 // names that still cannot be called, whereas failing closed would take an
 // upstream offline for answering in a shape the proxy has not seen before.
-// Every pass-through is logged once, so an operator can tell an enforced
-// filter from an inert one.
+// Every pass-through under an active policy is logged once, so an operator
+// can tell an enforced filter from an inert one.
+//
+// Every tools/list passes through here, a key with no policy included, since
+// the 2026-07-28 revision's cacheScope member is corrected on any list that
+// carries one (see filterToolsListJSON). A key with no policy pays the parse
+// and nothing else: a list it did not need to touch comes back byte for
+// byte, and a list it could not read passes through without a log line, as
+// it always did for such a key. The pol.active() decision lives here and
+// nowhere below it, so the two filters cannot each keep a guard of their own
+// that a caller forgets.
 func (h *Handler) filterListResponse(body []byte, status int, hdr http.Header, pol toolPolicy, vk *models.VirtualKey, up *models.Upstream) ([]byte, http.Header) {
-	if status < 200 || status >= 300 || len(body) == 0 || !pol.active() {
+	if status < 200 || status >= 300 || len(body) == 0 {
 		return body, hdr
 	}
 
@@ -69,7 +78,13 @@ func (h *Handler) filterListResponse(body []byte, status int, hdr http.Header, p
 		err = errUnfilterableMedia
 	}
 	if err != nil {
-		h.warnListPassThrough(vk, up, mt, len(body))
+		// The line's contract is "unfiltered while a policy was active". A
+		// key with no policy had nothing to enforce, so a body the proxy
+		// could not read is relayed for it in silence, as it was before the
+		// scope correction brought such keys here.
+		if pol.active() {
+			h.warnListPassThrough(vk, up, mt, len(body))
+		}
 		return body, hdr
 	}
 	if !changed {
@@ -122,15 +137,21 @@ func (h *Handler) warnListPassThrough(vk *models.VirtualKey, up *models.Upstream
 // those fields, and re-encoding an id through an interface is how it corrupts
 // large ones.
 //
-// When nothing was removed (the common case, and every case for a key with no
-// policy) the original bytes are returned. Not re-encoding is both free and
-// the only way to guarantee a body the proxy did not need to touch is passed
-// on byte for byte.
+// When nothing was removed and the result carries no cacheScope, or one that
+// already reads private (the common case, and every case against an upstream
+// on an earlier revision) the original bytes are returned. Not re-encoding is
+// both free and the only way to guarantee a body the proxy did not need to
+// touch is passed on byte for byte.
+//
+// cacheScope is the revision's cache directive for the client's own store.
+// The proxy never adds one: a list that carried none is returned as it came.
+// It corrects one it relays, whether or not a tool was removed: one /mcp URL
+// answers for every key and the same upstream catalogue is a different
+// document per key, so "public" is a claim this proxy cannot honour on any
+// list it answers, which is the same reason serve writes Cache-Control:
+// no-store on every response. Only tools/list comes through here;
+// resources/list and prompts/list are relayed as they arrive (PORM-6).
 func filterToolsListJSON(body []byte, pol toolPolicy) ([]byte, bool, error) {
-	if !pol.active() {
-		return body, false, nil
-	}
-
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(body, &env); err != nil {
 		return body, false, errUnreadableList
@@ -173,7 +194,9 @@ func filterToolsListJSON(body []byte, pol toolPolicy) ([]byte, bool, error) {
 			kept = append(kept, tool)
 		}
 	}
-	if len(kept) == len(tools) {
+	scope, hasScope := result["cacheScope"]
+	needScope := hasScope && !bytes.Equal(bytes.TrimSpace(scope), []byte(`"private"`))
+	if len(kept) == len(tools) && !needScope {
 		return body, false, nil
 	}
 
@@ -185,6 +208,9 @@ func filterToolsListJSON(body []byte, pol toolPolicy) ([]byte, bool, error) {
 		return body, false, err
 	}
 	result["tools"] = newTools
+	if hasScope {
+		result["cacheScope"] = json.RawMessage(`"private"`)
+	}
 	newResult, err := marshalRaw(result)
 	if err != nil {
 		return body, false, err
@@ -218,10 +244,6 @@ var dataField = []byte("data:")
 // exactly, because the framing is the upstream's and only the catalogue inside
 // it is ours to edit.
 func filterToolsListSSE(body []byte, pol toolPolicy) ([]byte, bool, error) {
-	if !pol.active() {
-		return body, false, nil
-	}
-
 	var (
 		out        bytes.Buffer
 		lines      [][]byte // the current event's lines, terminators stripped
