@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -218,4 +219,144 @@ func TestParamHeaderNames(t *testing.T) {
 			t.Errorf("got %q", got)
 		}
 	})
+}
+
+// toolNameFromParams is now a wrapper over the one-pass decode. These rows
+// pin what the wrapper has to keep identical, the null case above all: a
+// "name":null reaches the decode as the literal bytes null rather than as an
+// absent member, and it is jsonString's quote test that keeps it refused.
+func TestToolNameFromParams(t *testing.T) {
+	for _, c := range []struct {
+		name, params, want string
+		ok                 bool
+	}{
+		{"absent name", `{}`, "", false},
+		{"null name", `{"name":null}`, "", false},
+		{"numeric name", `{"name":5}`, "", false},
+		{"miscased key binds", `{"Name":"echo"}`, "echo", true},
+		{"unusable name", `{"name":"a\u0001b"}`, "", false},
+		{"params not an object", `"x"`, "", false},
+		{"empty params", ``, "", false},
+		{"usable name", `{"name":"echo","arguments":{}}`, "echo", true},
+	} {
+		got, ok := toolNameFromParams(json.RawMessage(c.params))
+		if got != c.want || ok != c.ok {
+			t.Errorf("%s: got (%q,%v) want (%q,%v)", c.name, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// Security requirements 2, 6, 7 and 8. Every arm of the comparison on its
+// own, against a tools/call body naming echo unless the row says otherwise.
+// A want of "" is a request the check lets through.
+func TestCheckRoutingHeaders(t *testing.T) {
+	const (
+		strictMeta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}`
+		echoStrict = `{"name":"echo",` + strictMeta + `}`
+		echoPlain  = `{"name":"echo"}`
+	)
+	hdr := func(pairs ...string) http.Header {
+		h := http.Header{}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			h.Add(pairs[i], pairs[i+1])
+		}
+		return h
+	}
+	cases := []struct {
+		name   string
+		method string
+		params string
+		h      http.Header
+		want   string
+	}{
+		{"strict request in agreement", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), ""},
+		{"Mcp-Method disagrees with the body", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/list", "Mcp-Name", "echo"), msgMismatchMethod},
+		{"Mcp-Method missing on a strict request", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Name", "echo"), msgMismatchMethod},
+		{"Mcp-Name missing on a strict tools/call", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call"), msgMismatchName},
+		{"Mcp-Name disagrees with params.name", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "other"), msgMismatchName},
+		{"_meta version disagrees with the header", "tools/call",
+			`{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchProtocol},
+		{"a body declaring the strict revision with no header", "tools/call", echoStrict,
+			hdr("Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchProtocol},
+		{"a legacy header against a strict _meta", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2025-06-18", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchProtocol},
+		{"a strict header with no _meta version is judged on the header", "tools/call", echoPlain,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), ""},
+		{"a null _meta version member declares nothing", "tools/call",
+			`{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":null}}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), ""},
+		{"a _meta that is not an object declares nothing", "tools/call", `{"name":"echo","_meta":"x"}`,
+			hdr(), ""},
+		{"_meta with two spellings of the version key", "tools/call",
+			`{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","IO.MODELCONTEXTPROTOCOL/PROTOCOLVERSION":"2026-07-28"}}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchProtocol},
+		{"a numeric _meta version member", "tools/call",
+			`{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":2026}}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchProtocol},
+		{"two Mcp-Method lines", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchMethod},
+		{"two Mcp-Name lines", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo", "Mcp-Name", "echo"), msgMismatchName},
+		{"the 9999 fixture is not strict", "tools/call", echoPlain,
+			hdr("Mcp-Protocol-Version", "9999"), ""},
+		{"a legacy request with no routing headers", "tools/call", echoPlain,
+			hdr("MCP-Protocol-Version", "2025-06-18"), ""},
+		{"a legacy request with a wrong Mcp-Name", "tools/call", echoPlain,
+			hdr("MCP-Protocol-Version", "2025-06-18", "Mcp-Name", "other"), msgMismatchName},
+		{"no version anywhere with an agreeing Mcp-Method", "tools/call", echoPlain,
+			hdr("Mcp-Method", "tools/call"), ""},
+		{"an empty method is not compared", "", ``,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call"), ""},
+		{"an Mcp-Param value outside printable ASCII, even with an empty method", "", ``,
+			hdr("Mcp-Param-X", "\x80"), msgMismatchParam},
+		{"an Mcp-Param value outside printable ASCII on a strict request", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo", "Mcp-Param-X", "caf\xc3\xa9"), msgMismatchParam},
+		{"a printable Mcp-Param value passes", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo", "Mcp-Param-Region", "us west 1"), ""},
+		{"Mcp-Name on tools/list is not compared", "tools/list", `{` + strictMeta + `}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/list", "Mcp-Name", "anything"), ""},
+		{"resources/read compares params.uri", "resources/read", `{"uri":"file:///a",` + strictMeta + `}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "resources/read", "Mcp-Name", "file:///a"), ""},
+		{"resources/read with a different uri", "resources/read", `{"uri":"file:///a",` + strictMeta + `}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "resources/read", "Mcp-Name", "file:///b"), msgMismatchName},
+		{"prompts/get compares params.name without the tool-name rule", "prompts/get", `{"name":"a\u0001b",` + strictMeta + `}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "prompts/get", "Mcp-Name", encodeHeaderValue("a\x01b")), ""},
+		{"tools/call holds the same name to the tool-name rule", "tools/call", `{"name":"a\u0001b",` + strictMeta + `}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", encodeHeaderValue("a\x01b")), msgMismatchName},
+		{"a sentinel Mcp-Name decodes and passes", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "=?base64?ZWNobw==?="), ""},
+		{"a sentinel that will not decode", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "=?base64?!!!?="), msgMismatchName},
+		{"Mcp-Name over the length bound", "tools/call", echoStrict,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", strings.Repeat("a", maxRoutingValueBytes+1)), msgMismatchName},
+		{"Mcp-Name sent against a body with no usable name, strict", "tools/call", `{` + strictMeta + `}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchName},
+		{"Mcp-Name sent against a body with no usable name, legacy", "tools/call", `{}`,
+			hdr("Mcp-Name", "echo"), msgMismatchName},
+		{"neither Mcp-Name nor params.name on a strict tools/call falls through", "tools/call", `{` + strictMeta + `}`,
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call"), ""},
+		{"an empty Mcp-Method value is not the method", "tools/call", echoPlain,
+			hdr("Mcp-Method", ""), msgMismatchMethod},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkRoutingHeaders(c.h, c.method, decodeRoutingFields(json.RawMessage(c.params)))
+			got := ""
+			if err != nil {
+				if err.Code != codeHeaderMismatch {
+					t.Errorf("code=%d want %d", err.Code, codeHeaderMismatch)
+				}
+				got = err.Message
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
 }

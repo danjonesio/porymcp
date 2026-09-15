@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -115,15 +116,72 @@ func rewriteToolCallParams(params json.RawMessage, original string) json.RawMess
 	return b
 }
 
-// toolNameFromParams reads the tool a request names, and reports whether it
-// found one it can hold the caller to. ok is false when params.name is absent,
-// is not a JSON string, or is not a usable name.
-func toolNameFromParams(params json.RawMessage) (string, bool) {
-	var m struct {
-		Name *string `json:"name"`
+// routingFields is the one bounded read of params that serve makes: the
+// three members the routing headers are compared with, decoded in a single
+// pass so the tool name the gate judges and the name the header is held to
+// are the same string read once. A second decode of the same bytes would be
+// a second chance to disagree about which call this is, and would scan an
+// up to 8 MiB body twice.
+//
+// Like the envelope and params themselves (parseRequest), these are fields
+// Go binds by tag, which it matches case-insensitively. distinctKeys over the
+// top level of params refuses two spellings of one member together; a single
+// miscased key ("Name") is read here and looked up exactly, and so ignored,
+// by an upstream. That is leniency, not bypass: the gate then judges a name
+// the upstream will not execute, and a routing header compared against it
+// still has to agree with what the proxy read.
+type routingFields struct {
+	Name json.RawMessage `json:"name"`
+	URI  json.RawMessage `json:"uri"`
+	Meta json.RawMessage `json:"_meta"`
+}
+
+// decodeRoutingFields reads params once. Params that do not decode as an
+// object yield the zero value, which names nothing.
+func decodeRoutingFields(params json.RawMessage) routingFields {
+	var f routingFields
+	if err := json.Unmarshal(params, &f); err != nil {
+		return routingFields{}
 	}
-	if err := json.Unmarshal(params, &m); err != nil || m.Name == nil || !models.UsableToolName(*m.Name) {
+	return f
+}
+
+// name is the JSON string at params.name. A null, a number, an object or an
+// absent member is not a name.
+func (f routingFields) name() (string, bool) { return jsonString(f.Name) }
+
+// uri is the JSON string at params.uri, the value Mcp-Name mirrors on
+// resources/read. A URI is not a tool name, so UsableToolName is not applied.
+func (f routingFields) uri() (string, bool) { return jsonString(f.URI) }
+
+// toolName is name under the rule the gate applies: a string the proxy can
+// hold the caller to. ok is false when params.name is absent, is not a JSON
+// string, or is not a usable name.
+func (f routingFields) toolName() (string, bool) {
+	s, ok := f.name()
+	if !ok || !models.UsableToolName(s) {
 		return "", false
 	}
-	return *m.Name, true
+	return s, true
+}
+
+// toolNameFromParams reads the tool a request names, and reports whether it
+// found one it can hold the caller to. It is decodeRoutingFields followed by
+// toolName, kept as one call for the sites that need only the name.
+func toolNameFromParams(params json.RawMessage) (string, bool) {
+	return decodeRoutingFields(params).toolName()
+}
+
+// jsonString decodes raw when it is a JSON string and reports false for
+// anything else, a null included.
+func jsonString(raw json.RawMessage) (string, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] != '"' {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
 }

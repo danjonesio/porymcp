@@ -278,3 +278,133 @@ func metaProtocolVersion(meta json.RawMessage) (version string, present bool, ba
 	}
 	return *m.Version, true, false
 }
+
+// mismatchFor is the refusal for one routing header: the revision's own code
+// and a message that names the header and nothing else.
+func mismatchFor(name string) *rpcError {
+	msg := msgMismatchName
+	switch name {
+	case hdrProtocol:
+		msg = msgMismatchProtocol
+	case hdrMethod:
+		msg = msgMismatchMethod
+	}
+	return &rpcError{Code: codeHeaderMismatch, Message: msg}
+}
+
+// headerLine is the one value of a header the caller has already confirmed
+// appears at most once, and whether it appears at all. Get alone cannot tell
+// an absent header from one sent with an empty value.
+func headerLine(h http.Header, name string) (string, bool) {
+	vals := h.Values(name)
+	if len(vals) == 0 {
+		return "", false
+	}
+	return vals[0], true
+}
+
+// checkRoutingHeaders compares the routing headers with the body the gate
+// read. It runs after parseRequest, before the tool policy and before any
+// upstream is resolved, and returns only an error: it never writes to the
+// request, the method or the tool name, so a header can refuse a request and
+// can never permit one.
+//
+// The first arm, the character check on Mcp-Param- values, applies to every
+// request. The comparisons apply only when method is non-empty: a DELETE, or
+// a POST with an empty body, carries no JSON-RPC request for a header to
+// disagree with, and both are forwarded as they always were.
+//
+// The declared version is the MCP-Protocol-Version header, or the body's
+// _meta version when the header is absent; when both are present they must
+// agree, and a body that declares a strict revision with no header is refused
+// rather than read leniently. Strictness (the headers being required, not
+// only compared) is strictRevision over that value. A duplicate header line
+// is refused rather than reduced to its first value, as distinctKeys refuses
+// two spellings of one member name: an intermediary in front of this proxy
+// may fold duplicates differently, and the value compared here has to be the
+// one the upstream reads.
+//
+// Mcp-Name is compared against the value the gate already holds: toolName on
+// tools/call (the same string the policy judges), params.name on prompts/get
+// and params.uri on resources/read. On a strict request it is required only
+// when the body carries a value at that field, so a tools/call that names no
+// usable tool and sends no header falls through to the existing -32602; a
+// header sent against an absent body value is a mismatch whatever the
+// version. On every other method Mcp-Name is forwarded and not compared. The
+// inbound header is compared decoded and forwarded raw.
+func checkRoutingHeaders(h http.Header, method string, f routingFields) *rpcError {
+	for name, vals := range h {
+		if !isParamHeader(name) {
+			continue
+		}
+		for _, v := range vals {
+			if !printableASCII(v) {
+				return &rpcError{Code: codeHeaderMismatch, Message: msgMismatchParam}
+			}
+		}
+	}
+	if method == "" {
+		return nil
+	}
+	for _, name := range []string{hdrProtocol, hdrMethod, hdrName} {
+		if len(h.Values(name)) > 1 {
+			return mismatchFor(name)
+		}
+	}
+
+	headerVersion, headerPresent := headerLine(h, hdrProtocol)
+	metaVersion, metaPresent, metaBad := metaProtocolVersion(f.Meta)
+	if metaBad {
+		return mismatchFor(hdrProtocol)
+	}
+	declared := headerVersion
+	if metaPresent {
+		if !headerPresent {
+			if strictRevision(metaVersion) {
+				return mismatchFor(hdrProtocol)
+			}
+			declared = metaVersion
+		} else if headerVersion != metaVersion {
+			return mismatchFor(hdrProtocol)
+		}
+	}
+	strict := strictRevision(declared)
+
+	if hm, ok := headerLine(h, hdrMethod); ok {
+		if hm != method {
+			return mismatchFor(hdrMethod)
+		}
+	} else if strict {
+		return mismatchFor(hdrMethod)
+	}
+
+	var (
+		bodyValue string
+		hasBody   bool
+	)
+	switch method {
+	case "tools/call":
+		bodyValue, hasBody = f.toolName()
+	case "prompts/get":
+		bodyValue, hasBody = f.name()
+	case "resources/read":
+		bodyValue, hasBody = f.uri()
+	default:
+		return nil
+	}
+	hn, ok := headerLine(h, hdrName)
+	if !ok {
+		if strict && hasBody {
+			return mismatchFor(hdrName)
+		}
+		return nil
+	}
+	if !hasBody || len(hn) > maxRoutingValueBytes {
+		return mismatchFor(hdrName)
+	}
+	decoded, ok := decodeHeaderValue(hn)
+	if !ok || decoded != bodyValue {
+		return mismatchFor(hdrName)
+	}
+	return nil
+}
