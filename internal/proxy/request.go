@@ -20,6 +20,11 @@ const (
 	codeParseError     = -32700
 	codeInvalidRequest = -32600
 	codeInvalidParams  = -32602
+	// codeHeaderMismatch is the 2026-07-28 revision's HeaderMismatch. It is the
+	// one code PoryMCP writes that it did not choose: a client on that revision
+	// recognises it and does not fall back to the legacy handshake over it.
+	// PoryMCP's own refusals stay at -32000 and codeInvalidParams.
+	codeHeaderMismatch = -32020
 )
 
 // auditFieldBytes caps a client-controlled string before it is stored on an
