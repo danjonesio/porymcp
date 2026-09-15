@@ -121,16 +121,22 @@ Set `PUBLIC_URL=https://porymcp.example.com` and `TRUSTED_PROXIES` to the
 nginx hop's address `/32`.
 
 `proxy_pass_request_headers` is on by default, so inbound headers are
-forwarded. The proxy copies `Accept`, `Accept-Language`, `Content-Type`,
-`Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` outbound and no
-other client header. Those names use hyphens; they usually survive.
-nginx lowercases header names and may drop unknown headers that contain
-underscores unless `underscores_in_headers on` is set. If a client or an
-intermediate hop sends underscore forms (`Mcp_Session_Id`), either enable
-that flag or set the hyphenated names explicitly with `proxy_set_header`.
-In the other direction the proxy returns `Content-Type`, `Mcp-Session-Id` and
-`Retry-After` from the upstream and drops every other response header; the
-reasons are in `docs/07-security.md`.
+forwarded. The proxy copies eight named client headers and every `Mcp-Param-`
+header to the upstream, and returns three upstream response headers; both
+lists are in `docs/07-security.md`. Those names use hyphens; they usually
+survive. nginx lowercases header names and may drop unknown headers that
+contain underscores unless `underscores_in_headers on` is set. If a client or
+an intermediate hop sends underscore forms (`Mcp_Session_Id`), either enable
+that flag or set the hyphenated names explicitly with `proxy_set_header`. The
+`Mcp-Param-` headers cannot be listed one by one in `proxy_set_header` and do
+not need to be, since nothing in this block removes them; an edge that
+filters request headers by name has to admit `Mcp-Method`, `Mcp-Name` and
+that prefix, or a client on the 2026-07-28 revision is refused by PoryMCP for
+headers the edge dropped (PORM-150). nginx reaches its own header limits before
+PoryMCP's bound of 32 `Mcp-Param-` values at 4096 bytes each:
+`large_client_header_buffers` (four buffers of 8k by default) caps a single
+header line and the header block together, and nginx answers with its own
+`400` when a request exceeds it.
 
 ## 5. Traefik
 

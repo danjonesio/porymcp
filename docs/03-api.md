@@ -693,17 +693,23 @@ gains `GET` when it lands.
 
 For a `POST` or a `DELETE`, the proxy:
 1. Validates the virtual key
-2. Resolves the target (Upstream or Group)
-3. On `/{virtual_key_id}/{upstream_slug}/mcp`, resolves the member named by the
+2. Compares the 2026-07-28 revision's routing headers with the body, when the
+   request sends them (the table below)
+3. Resolves the target (Upstream or Group)
+4. On `/{virtual_key_id}/{upstream_slug}/mcp`, resolves the member named by the
    slug among the target group's **enabled** members, or answers `404`
-4. Applies tool policy: the group `tool_filter` plus the key's
+5. Applies tool policy: the group `tool_filter` plus the key's
    `tool_allowlist`/`tool_denylist`
-5. Injects real upstream credentials
-6. Forwards the JSON-RPC request to the upstream's own URL, and never to a host
+6. Injects real upstream credentials
+7. Forwards the JSON-RPC request to the upstream's own URL, and never to a host
    the upstream names in a redirect (a `3xx` answer ends the call)
-7. Filters a `tools/list` response down to what the key may call
-8. Writes an AuditLog entry
-9. Returns the response
+8. Filters a `tools/list` response down to what the key may call, and marks
+   any `cacheScope` the upstream sent as `private` when it can read the list; the aggregate endpoint's
+   merged list carries `cacheScope: "private"` and `resultType: "complete"`
+   (`resultType` is the retry protocol's field and says nothing about a member
+   skipped at catalogue time; `ttlMs` is PORM-153)
+9. Writes an AuditLog entry
+10. Returns the response
 
 Policy is applied **before** credentials are injected, so a blocked call
 contacts no upstream and never presents the real secret. A call that *is*
@@ -762,6 +768,51 @@ contains U+FFFD or a control character answers `200` with
 substitutes U+FFFD for a lone surrogate or an invalid byte that a JavaScript or
 Python client keeps, so such a name is not one the proxy can hold the caller
 to: it would authorise a different string from the one the upstream runs.
+
+The 2026-07-28 revision mirrors three routing values into headers, and
+PoryMCP compares them with the body before it forwards anything. These
+refusals contact no upstream and write an `error` row whose `error_message`
+names the header (PORM-150):
+
+| Request | HTTP | JSON-RPC error |
+| --- | --- | --- |
+| `MCP-Protocol-Version` disagrees with `params._meta["io.modelcontextprotocol/protocolVersion"]`, or the body declares `2026-07-28` and the header is absent, or `params._meta` is an object the proxy cannot read (member names that collide under case folding, or a version member that is not a JSON string, a null included) | `400` | `-32020 "header mismatch: MCP-Protocol-Version"` |
+| `Mcp-Method` absent on a request declaring `2026-07-28` or later, or present and not equal to `method` | `400` | `-32020 "header mismatch: Mcp-Method"` |
+| `Mcp-Name` absent on a `tools/call`, `resources/read` or `prompts/get` that declares `2026-07-28` or later and whose body carries the value it would name, or present and not equal to `params.name` or `params.uri` | `400` | `-32020 "header mismatch: Mcp-Name"` |
+| An `Mcp-Param-` value outside printable ASCII | `400` | `-32020 "header mismatch: Mcp-Param"` |
+| More than 32 `Mcp-Param-` values, or one name or value over 4096 bytes | `431` | `-32000 "too many or too large Mcp-Param headers"` |
+
+`-32020` is the revision's own `HeaderMismatch` code, the one place PoryMCP
+uses a code it did not choose; its own errors stay at `-32000` and `-32602`.
+The message names the header and never its value. Each of
+`MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` may appear on one line
+only; two lines of one of them are refused with that header's message rather
+than folded into a single value, because an intermediary in front of the
+proxy may fold them differently from the upstream behind it. `Mcp-Name` on
+any other method is forwarded and not compared, and one over 4096 bytes, raw
+or decoded, is a mismatch. A value in the revision's `=?base64?...?=` form is
+decoded before the comparison. A request declaring an earlier version, or
+none, is refused only when a header it did send disagrees or its `_meta`
+cannot be read; a client that sends none of these headers with a readable
+body is forwarded as it was before this. A version the proxy cannot read as
+a revision date counts as none. A `DELETE`, or a `POST` with an empty body,
+carries no JSON-RPC request, so `Mcp-Method` and the declared version are
+not compared on it; an `Mcp-Name` sent on it has nothing to mirror and is
+refused, and the `Mcp-Param-` character check and the `431` bound apply to
+it as they do to every request. A notification (no `id`) gets the same body
+with `"id":null`. On a request declaring
+`2026-07-28` or later these checks run before the body's own shape is judged,
+so a `tools/call` that sends `Mcp-Name` and omits `params.name` answers
+`-32020`; one that sends neither still answers the `-32602` above. The bound
+is checked before the request body is read, so its answer carries no id even
+when the request had one:
+
+```json
+{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"too many or too large Mcp-Param headers"}}
+```
+
+The audit row for it records the HTTP verb in `method`, as every refusal
+decided before the body does.
 
 Every policy rejection writes an audit row with `status = "blocked"`, so
 `GET /api/v1/logs?status=blocked` is the list of them. The row carries

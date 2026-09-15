@@ -67,6 +67,15 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 // together, which is why they share this.
 const allowedMethods = "POST, DELETE, OPTIONS"
 
+// allowedHeaders is the fixed half of the endpoint's Access-Control-Allow-
+// Headers: the names a browser client may send on every request, the
+// 2026-07-28 routing headers included. The mirrored Mcp-Param- names are
+// known only from a preflight's own request, so applyCORS appends those per
+// answer. The clear-text refusal (webutil.writeInsecureScheme) writes a list
+// of its own on purpose, docs/07-security.md records why, and it is widened
+// by the same two names, never merged with this one.
+const allowedHeaders = "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID"
+
 // applyCORS writes the proxy's own CORS block when the request carries an
 // Origin, and answers a preflight. Every name in Access-Control-Expose-Headers
 // is one the proxy vetted on the response allowlist (copyResponseHeaders);
@@ -75,9 +84,24 @@ func (h *Handler) applyCORS(w http.ResponseWriter, r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID")
+		w.Header().Set("Access-Control-Allow-Headers", allowedHeaders)
 		w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
 		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, MCP-Session-Id, Retry-After")
+		// A preflight asking to send mirrored parameters is answered with
+		// their names, in the spelling the proxy produced and only when the
+		// whole set is within the bound (paramHeaderNames). This is the one
+		// place client input is reflected into a response header, and it
+		// runs before authentication, so it is confined to OPTIONS: the
+		// block above is written on every request carrying an Origin and
+		// nothing else in it comes from the client. Vary is untouched. The
+		// answer depends on Access-Control-Request-Headers, but serve has
+		// already written Cache-Control: no-store, so no shared cache keys
+		// on it, and Set would drop Origin.
+		if r.Method == http.MethodOptions {
+			if names := paramHeaderNames(r.Header.Values("Access-Control-Request-Headers")); len(names) > 0 {
+				w.Header().Set("Access-Control-Allow-Headers", allowedHeaders+", "+strings.Join(names, ", "))
+			}
+		}
 	}
 	if r.Method == http.MethodOptions {
 		// A successful OPTIONS names the methods the resource supports (RFC
@@ -208,6 +232,20 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 
+	// The bound on what the proxy forwards blind, before the body is read so
+	// a header flood does not also buy an 8 MiB read, and after authenticate
+	// so an unauthenticated caller buys no audit row outside the key's rate
+	// limit. It is a size limit and not a mismatch, so the status is 431 and
+	// the code is the proxy's own: a 400 whose body is not a recognised
+	// modern error is the signal on which a dual-era client abandons the
+	// 2026-07-28 protocol for the whole connection. Nothing has been read, so
+	// the row records the verb and the reply carries no id.
+	if rpcErr := checkParamHeaders(r.Header); rpcErr != nil {
+		n := writeRPCError(w, http.StatusRequestHeaderFieldsTooLarge, nil, rpcErr.Code, rpcErr.Message)
+		h.finish(vk, requestID, auditMethodFor(r, ""), "", "", models.StatusError, rpcErr.Message, start, n, nil)
+		return
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	if err != nil {
 		writeRPCError(w, http.StatusBadRequest, nil, -32000, "invalid body")
@@ -232,7 +270,24 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// auditMethod is what every row below records; method itself decides
 	// dispatch and stays exactly what the body said.
 	auditMethod := auditMethodFor(r, method)
-	tool, hasName := toolNameFromParams(req.Params)
+	fields := decodeRoutingFields(req.Params)
+	tool, hasName := fields.toolName()
+
+	// The 2026-07-28 revision's routing headers, held to the body just read.
+	// The tool policy below still reads the body and only the body; this
+	// runs first, before any member or upstream is resolved, so a refused
+	// request costs one audit write and presents no credential, and so a
+	// strict tools/call that omits params.name but sends Mcp-Name answers
+	// -32020 here while one that sends neither reaches the -32602 below. A
+	// DELETE, or an empty body, has method == "" and is not compared. The
+	// message names the header and never its value; the row carries the
+	// bounded tool name and the method, as the unknown-shape refusal's does,
+	// so a probe that swaps a block for this row is still visible.
+	if rpcErr := checkRoutingHeaders(r.Header, method, fields); rpcErr != nil {
+		n := writeRPCError(w, http.StatusBadRequest, req.ID, rpcErr.Code, rpcErr.Message)
+		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError, rpcErr.Message, start, n, boundedParams(req.Params))
+		return
+	}
 
 	var (
 		upstreams []*models.Upstream
@@ -430,7 +485,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	} else {
 		up := upstreams[0]
 		usedID = up.ID
-		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body)
+		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body, nil)
 		// Trim the catalogue to what the gate above would let this key call,
 		// before the classification below, so the row records the size of the
 		// body the client is actually sent.
@@ -647,7 +702,14 @@ const listToolsRequest = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params"
 // Everything the client sent that an upstream might act on reaches that
 // upstream, which is exactly what makes it the wrong thing to use for a
 // request the proxy makes on its own behalf. See listTools.
-func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte) ([]byte, int, http.Header, error) {
+//
+// override is the aggregate's rewrite of the routing headers (the Mcp-Name
+// carrying the member's own tool name, memberRoutingHeaders) and nil on every
+// other path. It is applied through the same allowlist as the client's
+// headers, after them and before ApplyAuth, so copyHopHeaders stays the one
+// writer of outbound client headers: an override cannot introduce a name
+// that is not on the list, and the credential is still written last.
+func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, override http.Header) ([]byte, int, http.Header, error) {
 	// Before the request exists: a transport this client cannot speak, or a
 	// credential that cannot be presented, means nothing is dialled, not a
 	// request with the virtual key stripped and nothing put back, which is
@@ -666,6 +728,7 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 		return nil, 0, nil, err
 	}
 	copyHopHeaders(req.Header, inbound.Header)
+	copyHopHeaders(req.Header, override)
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", mcpclient.AcceptMCP)
 	}
@@ -813,7 +876,14 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// The same policy the gate would apply to a call on each of these
 		// names, so the catalogue and the call agree by construction.
 		merged = filterTools(merged, pol)
-		return encodeRPC(req.ID, map[string]any{"tools": merged}, nil), http.StatusOK, "", nil
+		// This list is PoryMCP's own document, composed per key from composed
+		// names, so it is private by construction and says so in the
+		// revision's cacheScope member. resultType is the revision's retry
+		// protocol field: complete means no client input is needed to finish
+		// the result, and says nothing about a member skipped at catalogue
+		// time, which memberCatalogues logs. ttlMs and the _meta server info
+		// are PORM-153's.
+		return encodeRPC(req.ID, map[string]any{"tools": merged, "cacheScope": "private", "resultType": "complete"}, nil), http.StatusOK, "", nil
 	case "tools/call":
 		// ok is not checked: ServeHTTP refuses a tools/call without a usable
 		// name before it gets here.
@@ -836,11 +906,15 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// these bytes could only ever agree with it, which is why the one
 		// that used to live here was unreachable, and why a group's filter
 		// went unenforced with no audit row to show for it.
+		// The body's params.name and the Mcp-Name header are two spellings of
+		// one identity and are rewritten together, so the member compares a
+		// header and a body that agree; the client's Mcp-Method is already
+		// tools/call and crosses as it is.
 		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original))
-		out, status, _, err := h.forward(ctx, inbound, route.Upstream, rewritten)
+		out, status, _, err := h.forward(ctx, inbound, route.Upstream, rewritten, memberRoutingHeaders(inbound.Header, route.Original))
 		return out, status, route.Upstream.ID, err
 	default:
-		out, status, _, err := h.forward(ctx, inbound, ups[0], body)
+		out, status, _, err := h.forward(ctx, inbound, ups[0], body, nil)
 		return out, status, ups[0].ID, err
 	}
 }

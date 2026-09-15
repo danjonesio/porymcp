@@ -593,3 +593,115 @@ func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	}
 	return out
 }
+
+// Acceptance criterion 6; security requirement 9. Any cacheScope an upstream
+// sends on a tools/list leaves as private, whether or not a tool was removed
+// and whether or not the key has a policy, on both framings; a list that
+// carried none, or one already private, is byte-identical; a scope-only
+// rewrite still drops the integrity headers; and a key with no policy whose
+// list the proxy cannot read is relayed with no log line, as before. The two
+// fixture cases at the end are the ones that fail at b127b9b.
+func TestFilteredCatalogueIsPrivate(t *testing.T) {
+	const (
+		publicList     = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool"},{"name":"danger"}],"cacheScope":"public","ttlMs":60000,"nextCursor":"n"}}`
+		publicTrimmed  = `{"id":1,"jsonrpc":"2.0","result":{"cacheScope":"private","nextCursor":"n","tools":[{"name":"safe_tool"}],"ttlMs":60000}}`
+		publicAllKept  = `{"id":1,"jsonrpc":"2.0","result":{"cacheScope":"private","nextCursor":"n","tools":[{"name":"safe_tool"},{"name":"danger"}],"ttlMs":60000}}`
+		privateList    = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool"},{"name":"danger"}],"cacheScope":"private"}}`
+		noScopeList    = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool"},{"name":"danger"}]}}`
+		unreadableList = `{"jsonrpc":"2.0","id":1,"result":"not a catalogue"}`
+	)
+	denyDanger := toolPolicy{deny: []string{"danger"}}
+	cases := []struct {
+		name    string
+		body    string
+		pol     toolPolicy
+		want    string
+		changed bool
+	}{
+		{"a denylist removes a tool and the scope becomes private", publicList, denyDanger, publicTrimmed, true},
+		{"no policy keeps every tool and the scope becomes private", publicList, toolPolicy{}, publicAllKept, true},
+		{"an upstream's private scope is byte-identical", privateList, toolPolicy{}, privateList, false},
+		{"a list with no scope is byte-identical", noScopeList, toolPolicy{}, noScopeList, false},
+	}
+	for _, c := range cases {
+		t.Run("json: "+c.name, func(t *testing.T) {
+			got, changed, err := filterToolsListJSON([]byte(c.body), c.pol)
+			if err != nil {
+				t.Fatalf("err=%v", err)
+			}
+			if changed != c.changed {
+				t.Errorf("changed=%v want %v", changed, c.changed)
+			}
+			if string(got) != c.want {
+				t.Errorf("got  %s\nwant %s", got, c.want)
+			}
+		})
+		t.Run("sse: "+c.name, func(t *testing.T) {
+			in := "event: message\ndata: " + c.body + "\n\n"
+			want := "event: message\ndata: " + c.want + "\n\n"
+			got, changed, err := filterToolsListSSE([]byte(in), c.pol)
+			if err != nil {
+				t.Fatalf("err=%v", err)
+			}
+			if changed != c.changed {
+				t.Errorf("changed=%v want %v", changed, c.changed)
+			}
+			if string(got) != want {
+				t.Errorf("got  %q\nwant %q", got, want)
+			}
+		})
+	}
+
+	t.Run("a scope-only rewrite drops the integrity headers", func(t *testing.T) {
+		var h Handler
+		hdr := http.Header{}
+		hdr.Set("Content-Type", "application/json")
+		for _, k := range []string{"ETag", "Content-Digest", "Repr-Digest", "Digest"} {
+			hdr.Set(k, "x")
+		}
+		got, out := h.filterListResponse([]byte(publicList), http.StatusOK, hdr, toolPolicy{}, nil, nil)
+		if string(got) != publicAllKept {
+			t.Fatalf("got %s\nwant %s", got, publicAllKept)
+		}
+		for _, k := range []string{"ETag", "Content-Digest", "Repr-Digest", "Digest"} {
+			if v := out.Get(k); v != "" {
+				t.Errorf("%s=%q survived a rewrite the headers no longer describe", k, v)
+			}
+		}
+	})
+
+	t.Run("an unreadable list with no policy passes through silently", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{RawList: unreadableList}, nil, nil)
+		logs := captureLogs(f)
+		rr := f.post(listRequest)
+		if got := rr.Body.String(); got != unreadableList {
+			t.Errorf("got  %s\nwant %s", got, unreadableList)
+		}
+		if recs := logRecords(t, logs); len(recs) != 0 {
+			t.Errorf("logged a pass-through for a key with no policy: %v", recs)
+		}
+	})
+
+	t.Run("a no-policy key receives private over JSON", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{RawList: publicList}, nil, nil)
+		rr := f.post(listRequest)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if got := rr.Body.String(); got != publicAllKept {
+			t.Errorf("got  %s\nwant %s", got, publicAllKept)
+		}
+	})
+
+	t.Run("a no-policy key receives private over SSE", func(t *testing.T) {
+		raw := "event: message\ndata: " + publicList + "\n\n"
+		f := newSingleFixture(t, upstreamSpec{RawList: raw, ListCT: "text/event-stream"}, nil, nil)
+		rr := f.post(listRequest)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if got, want := rr.Body.String(), "event: message\ndata: "+publicAllKept+"\n\n"; got != want {
+			t.Errorf("got  %q\nwant %q", got, want)
+		}
+	})
+}

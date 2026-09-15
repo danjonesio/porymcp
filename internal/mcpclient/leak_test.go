@@ -451,3 +451,23 @@ func TestDiscoverSendsCustomHeaders(t *testing.T) {
 		}
 	}
 }
+
+// Security requirement 11 of PORM-150. The 2026-07-28 routing headers are
+// compared with the body before the proxy forwards them, and an Mcp-Param-
+// header is the client's own mirrored argument, so a stored auth_config may
+// name none of them. The first direct test of sendableHeaderName; the table
+// above reaches it through Discover.
+func TestSendableHeaderNameRefusesRoutingHeaders(t *testing.T) {
+	for name, want := range map[string]bool{
+		"Mcp-Method":       false,
+		"mcp-name":         false,
+		"Mcp-Param-Region": false,
+		"MCP-PARAM-X":      false,
+		"X-Team":           true,
+		"Mcp-Params":       true, // not the prefix: no hyphen after param
+	} {
+		if got := sendableHeaderName(name); got != want {
+			t.Errorf("sendableHeaderName(%q)=%v want %v", name, got, want)
+		}
+	}
+}
