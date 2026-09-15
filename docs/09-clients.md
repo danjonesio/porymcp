@@ -45,6 +45,8 @@ Keep PoryMCP running while the client is connected. Copy the plaintext key when 
 
 Clients cache the tool catalogue they fetch on connect. After an operator changes a group's tool filter or a key's allow/deny lists, reconnect the client so it picks up the new catalogue; until then it may still offer tools the proxy now refuses. Reconnect after upgrading PoryMCP itself, too, if the client is on an aggregate URL: v0.1 renamed every tool there to `{upstream_slug}__{tool}`, and a cached old name now answers `-32602 unknown tool` (see [CHANGELOG.md](../CHANGELOG.md)). A refused tool call comes back as a failed tool call (a JSON-RPC error against that one request), not as a transport or connection error. Removing a member from a group, or disabling it, makes that member's URL answer `404` on the next request: the client shows that one server as failed and the others as healthy.
 
+A client on the 2026-07-28 revision needs no setting (PORM-150). PoryMCP forwards `Mcp-Method`, `Mcp-Name` and the `Mcp-Param-` headers a tool's schema asks for, and compares the first two with the body before forwarding, so a request whose headers and body disagree is answered `400` with `{"code":-32020,"message":"header mismatch: Mcp-Name"}` and reaches no upstream. On an aggregate URL, send the composed name you were shown, `github__create_issue`, in `params.name` and in `Mcp-Name` alike: PoryMCP rewrites both to the member's own name on the way to that member. At most 32 `Mcp-Param-` headers cross and none over 4096 bytes; a request over either bound is answered `431` and reaches no upstream, and a browser whose preflight asks for more than 32, or lists more than 64 header names in all, is refused them at the preflight. A client on an earlier revision that sends none of these headers is unaffected.
+
 The create/rotate dialog can copy a snippet for Claude Code, Cursor, Codex, OpenCode, Gemini CLI, or curl, and for a group key it emits one entry per member, with a “One combined server” option that emits the aggregate URL instead.
 
 ---
@@ -259,6 +261,33 @@ An unknown or non-member slug answers `404` with
 `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"unknown endpoint"}}`.
 (Do not count on a `..` in the path reaching PoryMCP to get that `404`: an
 intermediary that normalises dot-segments may resolve the path first.)
+
+A `tools/call` on the 2026-07-28 revision carries the routing headers beside
+the body:
+
+```bash
+# a tools/call on the 2026-07-28 revision
+curl -sS -X POST http://localhost:8080/{virtual_key_id}/github/mcp \
+  -H "Authorization: Bearer pory_YOUR_VIRTUAL_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: create_issue" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_issue","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+The three headers must agree with the body. `MCP-Protocol-Version` must match
+the `_meta` version, and it must be sent: a body that declares the revision
+with no header is refused the same way. The same call with `Mcp-Name: other`
+answers `400` with
+
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"header mismatch: Mcp-Name"}}
+```
+
+On the aggregate URL send `github__create_issue` in both `params.name` and
+`Mcp-Name`.
 
 ---
 

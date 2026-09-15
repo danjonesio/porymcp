@@ -163,3 +163,44 @@ func TestGroupCallStillSkipsFailingMember(t *testing.T) {
 		t.Errorf("alpha saw %d tools/call for search_docs, want 1", n)
 	}
 }
+
+// The 2026-07-28 revision's routing headers are the strongest form of the
+// hazard above: a client's Mcp-Method: tools/call reaching a member's
+// catalogue request would make every member on that revision answer -32020
+// and vanish from the merge, and a client's Mcp-Param- headers would steer
+// the request. None of them crosses. copyHopHeaders now copies a whole
+// prefix, and this is what keeps that loop from ever leaking into a request
+// the proxy composes: listTools never calls it. What that request declares
+// for itself (a version, an Mcp-Method of its own) is PORM-151's.
+func TestRoutingListsIgnoreRoutingHeaders(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{
+		"alpha": {"search"},
+		"beta":  {"search"},
+	}, nil, nil, nil)
+
+	rr := f.postWith(memberList, map[string]string{
+		"MCP-Protocol-Version": "2026-07-28",
+		"Mcp-Method":           "tools/list",
+		"Mcp-Name":             "alpha__search",
+		"Mcp-Param-Region":     "x",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := strings.Join(listedNames(t, rr.Body.Bytes()), ","); got != "alpha__search,beta__search" {
+		t.Fatalf("listed %q want both members' tools: a member that refused a client header dropped out of the merge", got)
+	}
+	for _, slug := range []string{"alpha", "beta"} {
+		reqs := f.requestsTo(slug)
+		if len(reqs) == 0 {
+			t.Fatalf("%s was never asked for its catalogue", slug)
+		}
+		for _, got := range reqs {
+			for _, h := range []string{"Mcp-Method", "Mcp-Name", "Mcp-Param-Region", "Mcp-Protocol-Version"} {
+				if v := got.Header.Get(h); v != "" {
+					t.Errorf("%s: the client's %s reached the member's catalogue request as %q", slug, h, v)
+				}
+			}
+		}
+	}
+}
