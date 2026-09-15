@@ -704,7 +704,7 @@ For a `POST` or a `DELETE`, the proxy:
 7. Forwards the JSON-RPC request to the upstream's own URL, and never to a host
    the upstream names in a redirect (a `3xx` answer ends the call)
 8. Filters a `tools/list` response down to what the key may call, and marks
-   any `cacheScope` the upstream sent as `private`; the aggregate endpoint's
+   any `cacheScope` the upstream sent as `private` when it can read the list; the aggregate endpoint's
    merged list carries `cacheScope: "private"` and `resultType: "complete"`
    (`resultType` is the retry protocol's field and says nothing about a member
    skipped at catalogue time; `ttlMs` is PORM-153)
@@ -776,7 +776,7 @@ names the header (PORM-150):
 
 | Request | HTTP | JSON-RPC error |
 | --- | --- | --- |
-| `MCP-Protocol-Version` disagrees with `params._meta["io.modelcontextprotocol/protocolVersion"]`, or the body declares `2026-07-28` and the header is absent | `400` | `-32020 "header mismatch: MCP-Protocol-Version"` |
+| `MCP-Protocol-Version` disagrees with `params._meta["io.modelcontextprotocol/protocolVersion"]`, or the body declares `2026-07-28` and the header is absent, or `params._meta` is an object the proxy cannot read (member names that collide under case folding, or a version member that is not a JSON string) | `400` | `-32020 "header mismatch: MCP-Protocol-Version"` |
 | `Mcp-Method` absent on a request declaring `2026-07-28` or later, or present and not equal to `method` | `400` | `-32020 "header mismatch: Mcp-Method"` |
 | `Mcp-Name` absent on a `tools/call`, `resources/read` or `prompts/get` that declares `2026-07-28` or later and whose body carries the value it would name, or present and not equal to `params.name` or `params.uri` | `400` | `-32020 "header mismatch: Mcp-Name"` |
 | An `Mcp-Param-` value outside printable ASCII | `400` | `-32020 "header mismatch: Mcp-Param"` |
@@ -784,13 +784,23 @@ names the header (PORM-150):
 
 `-32020` is the revision's own `HeaderMismatch` code, the one place PoryMCP
 uses a code it did not choose; its own errors stay at `-32000` and `-32602`.
-The message names the header and never its value. A value in the revision's
-`=?base64?...?=` form is decoded before the comparison. A request declaring
-an earlier version, or none, is refused only when a header it did send
-disagrees; one that sends none behaves exactly as it did before this. A
-version the proxy cannot read as a revision date counts as none. A `DELETE`,
-or an empty body, carries no request and is not compared. A notification (no
-`id`) gets the same body with `"id":null`. On a request declaring
+The message names the header and never its value. Each of
+`MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` may appear on one line
+only; two lines of one of them are refused with that header's message rather
+than folded into a single value, because an intermediary in front of the
+proxy may fold them differently from the upstream behind it. `Mcp-Name` on
+any other method is forwarded and not compared, and one over 4096 bytes, raw
+or decoded, is a mismatch. A value in the revision's `=?base64?...?=` form is
+decoded before the comparison. A request declaring an earlier version, or
+none, is refused only when a header it did send disagrees or its `_meta`
+cannot be read; a client that sends none of these headers with a readable
+body is forwarded as it was before this. A version the proxy cannot read as
+a revision date counts as none. A `DELETE`, or a `POST` with an empty body,
+carries no JSON-RPC request, so `Mcp-Method` and the declared version are
+not compared on it; an `Mcp-Name` sent on it has nothing to mirror and is
+refused, and the `Mcp-Param-` character check and the `431` bound apply to
+it as they do to every request. A notification (no `id`) gets the same body
+with `"id":null`. On a request declaring
 `2026-07-28` or later these checks run before the body's own shape is judged,
 so a `tools/call` that sends `Mcp-Name` and omits `params.name` answers
 `-32020`; one that sends neither still answers the `-32602` above. The bound

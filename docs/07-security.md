@@ -242,8 +242,9 @@
   Inbound, `copyHopHeaders` forwards eight client headers to the upstream:
   `Accept`, `Accept-Language`, `Content-Type`, `Mcp-Session-Id`,
   `Mcp-Protocol-Version`, `Last-Event-ID`, `Mcp-Method` and `Mcp-Name`, and
-  every header whose name begins `Mcp-Param-`, at most 32 values and none over
-  4096 bytes. The last three are the 2026-07-28 revision's routing headers:
+  every header whose name begins `Mcp-Param-`, at most 32 values and no name
+  or value over 4096 bytes. The last three are the 2026-07-28 revision's
+  routing headers:
   `Mcp-Method` carries the JSON-RPC method, `Mcp-Name` carries `params.name`
   or `params.uri`, and an `Mcp-Param-` header mirrors a tool argument the
   upstream's own schema marked `x-mcp-header`. The revision requires an
@@ -274,7 +275,10 @@
   `Access-Control-Allow-Methods: POST, DELETE, OPTIONS`, the verbs the
   endpoints answer, from the same constant as the `Allow` header on a `405`;
   the clear-text refusal (`426`) writes its own list, shared with the
-  management API, and is not the endpoint's advertisement. `Cache-Control`,
+  management API, and is not the endpoint's advertisement. A preflight is
+  also answered with the `Mcp-Param-` names it asked for, canonicalised, and
+  only when 32 or fewer were asked for; that is the one client-supplied value
+  any proxy response header carries. `Cache-Control`,
   `ETag` and the digest headers are dropped, so an
   upstream cannot mark a per-key answer cacheable, and no validator or digest
   describes bytes the client may not have; end-to-end body integrity is not
@@ -302,13 +306,20 @@
   `prompts/get`, `Mcp-Name` must be present and equal to `params.name` or
   `params.uri`, decoded first when it arrives in the `=?base64?...?=` form.
   The declared version is the `MCP-Protocol-Version` header, or the body's
-  `_meta` version when the header is absent; the two must agree, and a body
-  that declares the revision with no header is refused. On a request
-  declaring an earlier version or none, a header that is present must still
-  agree, and an absent one is accepted. A `DELETE` carries no request for a
-  header to disagree with and is forwarded as before. A failure is `400` with
-  `-32020`, the revision's own code, naming the header and never its value,
-  and an `error` row. `Mcp-Param-` values are checked for the header-safe
+  `_meta` version when the header is absent; the two must agree, a body that
+  declares the revision with no header is refused, and so is a body whose
+  `_meta` the proxy cannot read (member names that collide under case
+  folding, or a version member that is not a JSON string), whatever headers
+  it sent. On a request declaring an earlier version or none, a header that
+  is present must still agree, and an absent one is accepted. Each of the
+  three may appear on one line only; two lines are refused rather than folded
+  into one value. A `DELETE`, or a `POST` with an empty body, carries no
+  request for `Mcp-Method` or the version to disagree with, so neither is
+  compared on it and it is forwarded as before; an `Mcp-Name` sent on it has
+  nothing to mirror and is refused, and the `Mcp-Param-` bound and character
+  check apply to it as to every request. A failure is `400` with `-32020`,
+  the revision's own code, naming the header and never its value, and an
+  `error` row. `Mcp-Param-` values are checked for the header-safe
   character set alone: comparing one with the body needs the tool's input
   schema, which the upstream holds and PoryMCP does not, and the revision
   requires the upstream to make that comparison itself. A stored
@@ -419,8 +430,8 @@
   the same policy, and passes through any body it cannot parse, with a
   warning log when a policy was active. A pass-through can advertise a tool
   the proxy will still refuse to call; it can never make a blocked tool
-  callable. Any `cacheScope` an upstream sends on a `tools/list` leaves as
-  `private`, whether or not a tool was removed: it is the one catalogue the
+  callable. Any `cacheScope` an upstream sends on a `tools/list` the proxy
+  can read leaves as `private`, whether or not a tool was removed: it is the one catalogue the
   proxy rewrites per key, and one proxy URL answers for every key. A list
   that carried no `cacheScope` is relayed byte for byte, and `resources/list`
   and `prompts/list` are relayed as they arrive. Every proxy response carries

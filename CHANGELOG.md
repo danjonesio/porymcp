@@ -23,23 +23,24 @@ Behaviour changes that affect a running deployment. Newest first.
   The declared version is `MCP-Protocol-Version`, or the body's `_meta`
   version when the header is absent, and the two must agree. A request
   declaring an earlier version, or none, is refused only when a header it did
-  send disagrees, so a client that sends none of them behaves exactly as
-  before.
-- **At most 32 `Mcp-Param-` values cross, none over 4096 bytes.** Over either
-  bound the answer is `431` with `-32000 "too many or too large Mcp-Param
+  send disagrees, so a client that sends none of them is unaffected, as long
+  as its `params._meta` is an object the proxy can read.
+- **At most 32 `Mcp-Param-` values cross, no name or value over 4096 bytes.**
+  Over either bound the answer is `431` with `-32000 "too many or too large Mcp-Param
   headers"`, and a value outside printable ASCII is `400` with `-32020`. The
   bounds are PoryMCP's own; the revision caps neither.
 - **A `tools/list` the proxy relays no longer claims `cacheScope: "public"`.**
-  Any scope an upstream sends on that list leaves as `private`, whether or
-  not a tool was removed, because one proxy URL answers for every key; a list
+  Any scope an upstream sends on a list the proxy can read leaves as
+  `private`, whether or not a tool was removed, because one proxy URL answers
+  for every key; a list
   that carried no scope is relayed byte for byte, so a client on an earlier
   revision whose upstream sends none sees no change. The aggregate endpoint's
   merged list carries `cacheScope: "private"` and `resultType: "complete"`;
   `ttlMs` on it is PORM-153.
 - **The CORS preflight allows the new names.** `Mcp-Method` and `Mcp-Name` are
   always allowed, and up to 32 `Mcp-Param-` names the request asks for are
-  echoed back; a request that asks for more is refused them all at the
-  preflight.
+  echoed back; a request that asks for more, or that lists more than 64
+  header names in all, is refused them all at the preflight.
 - **There is no setting.** Rolling back to
   `ghcr.io/danjonesio/porymcp:sha-<short sha>` restores the previous binary;
   no schema or data is involved.
