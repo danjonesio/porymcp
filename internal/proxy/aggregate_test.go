@@ -487,3 +487,30 @@ func TestAggregateRewritesMcpName(t *testing.T) {
 		}
 	})
 }
+
+// Acceptance criterion 6, the aggregate's half. The merged list is PoryMCP's
+// own document and carries the revision's cache and result fields: private,
+// because it is composed per key, and complete, because no client input is
+// needed to finish it. ttlMs is PORM-153's and is not pinned either way.
+func TestAggregateListIsPrivate(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"alpha": {"search"}, "beta": {"lookup"}}, nil, nil, nil)
+	rr := f.post(listRequest)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var env struct {
+		Result struct {
+			CacheScope string `json:"cacheScope"`
+			ResultType string `json:"resultType"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body is not JSON: %v (%s)", err, rr.Body.String())
+	}
+	if env.Result.CacheScope != "private" || env.Result.ResultType != "complete" {
+		t.Errorf("cacheScope=%q resultType=%q want private and complete", env.Result.CacheScope, env.Result.ResultType)
+	}
+	if got := strings.Join(listedNames(t, rr.Body.Bytes()), ","); got != "alpha__search,beta__lookup" {
+		t.Errorf("listed %q want both members' tools beside the new members", got)
+	}
+}

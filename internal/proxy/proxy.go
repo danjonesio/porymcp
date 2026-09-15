@@ -852,7 +852,14 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// The same policy the gate would apply to a call on each of these
 		// names, so the catalogue and the call agree by construction.
 		merged = filterTools(merged, pol)
-		return encodeRPC(req.ID, map[string]any{"tools": merged}, nil), http.StatusOK, "", nil
+		// This list is PoryMCP's own document, composed per key from composed
+		// names, so it is private by construction and says so in the
+		// revision's cacheScope member. resultType is the revision's retry
+		// protocol field: complete means no client input is needed to finish
+		// the result, and says nothing about a member skipped at catalogue
+		// time, which memberCatalogues logs. ttlMs and the _meta server info
+		// are PORM-153's.
+		return encodeRPC(req.ID, map[string]any{"tools": merged, "cacheScope": "private", "resultType": "complete"}, nil), http.StatusOK, "", nil
 	case "tools/call":
 		// ok is not checked: ServeHTTP refuses a tools/call without a usable
 		// name before it gets here.
