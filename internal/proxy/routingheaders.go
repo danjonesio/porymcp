@@ -408,3 +408,23 @@ func checkRoutingHeaders(h http.Header, method string, f routingFields) *rpcErro
 	}
 	return nil
 }
+
+// memberRoutingHeaders is the aggregate's half of the rewrite that
+// rewriteToolCallParams makes on the body. When the client sent an Mcp-Name,
+// which checkRoutingHeaders has already held to the composed name, the member
+// receives one carrying its own tool name instead, sentinel-encoded when that
+// name is not header-safe; the member then compares it with the params.name
+// it was sent and the two agree. nil when the client sent none, so a legacy
+// client's member sees none. forward applies it through copyHopHeaders,
+// after the inbound copy and before ApplyAuth, so the allowlist stays the
+// one writer of outbound client headers. The value is bounded without a
+// check of its own: it is written only when the client sent one, which was
+// capped and had to equal a composed name the member's own name is part of.
+func memberRoutingHeaders(src http.Header, memberTool string) http.Header {
+	if len(src.Values(hdrName)) == 0 {
+		return nil
+	}
+	override := http.Header{}
+	override.Set(hdrName, encodeHeaderValue(memberTool))
+	return override
+}

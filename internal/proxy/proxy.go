@@ -461,7 +461,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	} else {
 		up := upstreams[0]
 		usedID = up.ID
-		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body)
+		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body, nil)
 		// Trim the catalogue to what the gate above would let this key call,
 		// before the classification below, so the row records the size of the
 		// body the client is actually sent.
@@ -678,7 +678,14 @@ const listToolsRequest = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params"
 // Everything the client sent that an upstream might act on reaches that
 // upstream, which is exactly what makes it the wrong thing to use for a
 // request the proxy makes on its own behalf. See listTools.
-func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte) ([]byte, int, http.Header, error) {
+//
+// override is the aggregate's rewrite of the routing headers (the Mcp-Name
+// carrying the member's own tool name, memberRoutingHeaders) and nil on every
+// other path. It is applied through the same allowlist as the client's
+// headers, after them and before ApplyAuth, so copyHopHeaders stays the one
+// writer of outbound client headers: an override cannot introduce a name
+// that is not on the list, and the credential is still written last.
+func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, override http.Header) ([]byte, int, http.Header, error) {
 	// Before the request exists: a transport this client cannot speak, or a
 	// credential that cannot be presented, means nothing is dialled, not a
 	// request with the virtual key stripped and nothing put back, which is
@@ -697,6 +704,7 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 		return nil, 0, nil, err
 	}
 	copyHopHeaders(req.Header, inbound.Header)
+	copyHopHeaders(req.Header, override)
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", mcpclient.AcceptMCP)
 	}
@@ -867,11 +875,15 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// these bytes could only ever agree with it, which is why the one
 		// that used to live here was unreachable, and why a group's filter
 		// went unenforced with no audit row to show for it.
+		// The body's params.name and the Mcp-Name header are two spellings of
+		// one identity and are rewritten together, so the member compares a
+		// header and a body that agree; the client's Mcp-Method is already
+		// tools/call and crosses as it is.
 		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original))
-		out, status, _, err := h.forward(ctx, inbound, route.Upstream, rewritten)
+		out, status, _, err := h.forward(ctx, inbound, route.Upstream, rewritten, memberRoutingHeaders(inbound.Header, route.Original))
 		return out, status, route.Upstream.ID, err
 	default:
-		out, status, _, err := h.forward(ctx, inbound, ups[0], body)
+		out, status, _, err := h.forward(ctx, inbound, ups[0], body, nil)
 		return out, status, ups[0].ID, err
 	}
 }

@@ -398,3 +398,92 @@ func TestAggregateRouteMissIsBounded(t *testing.T) {
 		}
 	})
 }
+
+// Acceptance criterion 4; security requirement 8. On a group's aggregate
+// endpoint the client names a tool by its identity, and both halves of that
+// identity are rewritten together on the way to the member: params.name by
+// rewriteToolCallParams and Mcp-Name by memberRoutingHeaders, so the member
+// compares a header and a body that agree. A member's own name that is not
+// header-safe crosses sentinel-encoded, and a client that sent no Mcp-Name
+// leaves the member seeing none.
+func TestAggregateRewritesMcpName(t *testing.T) {
+	members := map[string][]string{"github": {"create_issue"}, "docs": {"search"}, "alpha": {"créer"}}
+	strict := func(name string) string {
+		return `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+	}
+	headers := func(name string) map[string]string {
+		return map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "tools/call",
+			"Mcp-Name":             name,
+		}
+	}
+	// theCall is the one tools/call a member received; the catalogue
+	// requests the aggregate composes for itself are not it.
+	theCall := func(t *testing.T, f *fixture, slug string) recordedRequest {
+		t.Helper()
+		var calls []recordedRequest
+		for _, r := range f.requestsTo(slug) {
+			if r.RPCMethod == "tools/call" {
+				calls = append(calls, r)
+			}
+		}
+		if len(calls) != 1 {
+			t.Fatalf("%s saw %d tools/call requests, want 1", slug, len(calls))
+		}
+		return calls[0]
+	}
+	noCall := func(t *testing.T, f *fixture, slug string) {
+		t.Helper()
+		for _, r := range f.requestsTo(slug) {
+			if r.RPCMethod == "tools/call" {
+				t.Errorf("%s saw a tools/call it was not the target of", slug)
+			}
+		}
+	}
+
+	t.Run("the composed name becomes the member's own in both places", func(t *testing.T) {
+		f := newGroupFixture(t, members, nil, nil, nil)
+		rr := f.postWith(strict("github__create_issue"), headers("github__create_issue"))
+		assertNotBlocked(t, rr, "a strict tools/call by identity")
+		got := theCall(t, f, "github")
+		if v := got.Header.Get("Mcp-Name"); v != "create_issue" {
+			t.Errorf("github saw Mcp-Name=%q want create_issue", v)
+		}
+		if v := got.Header.Get("Mcp-Method"); v != "tools/call" {
+			t.Errorf("github saw Mcp-Method=%q want tools/call", v)
+		}
+		var sent struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(got.Body, &sent); err != nil || sent.Params.Name != "create_issue" {
+			t.Errorf("github saw params.name=%q (err=%v) want create_issue", sent.Params.Name, err)
+		}
+		noCall(t, f, "docs")
+		noCall(t, f, "alpha")
+	})
+
+	t.Run("a name that is not header-safe crosses sentinel-encoded", func(t *testing.T) {
+		f := newGroupFixture(t, members, nil, nil, nil)
+		rr := f.postWith(strict("alpha__créer"), headers(encodeHeaderValue("alpha__créer")))
+		assertNotBlocked(t, rr, "a strict tools/call naming a non-ASCII tool")
+		got := theCall(t, f, "alpha")
+		if v := got.Header.Get("Mcp-Name"); v != "=?base64?Y3LDqWVy?=" {
+			t.Errorf("alpha saw Mcp-Name=%q want the sentinel form of its own name", v)
+		}
+		if dec, ok := decodeHeaderValue(got.Header.Get("Mcp-Name")); !ok || dec != "créer" {
+			t.Errorf("decoded=%q ok=%v want créer", dec, ok)
+		}
+	})
+
+	t.Run("a client that sent no Mcp-Name leaves the member seeing none", func(t *testing.T) {
+		f := newGroupFixture(t, members, nil, nil, nil)
+		assertNotBlocked(t, f.post(toolCall("1", "github__create_issue")), "a legacy tools/call by identity")
+		got := theCall(t, f, "github")
+		if v := got.Header.Get("Mcp-Name"); v != "" {
+			t.Errorf("github saw Mcp-Name=%q on a call whose client sent none", v)
+		}
+	})
+}
