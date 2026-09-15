@@ -930,6 +930,24 @@ func TestRoutingHeadersForwarded(t *testing.T) {
 		}
 	})
 
+	t.Run("Mcp-Param-Authorization carries the client's value beside the stored credential", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}, Bearer: "sk-real-secret"}, nil, nil)
+		hdr := strictHeaders()
+		hdr["Mcp-Param-Authorization"] = "client-chosen"
+		rr := f.doPath(http.MethodPost, f.keyURL(), strictCall, hdr)
+		assertNotBlocked(t, rr, "a mirrored parameter named Authorization")
+		reqs := f.requestsTo("solo")
+		if len(reqs) != 1 {
+			t.Fatalf("the upstream saw %d requests, want 1", len(reqs))
+		}
+		if got := reqs[0].Header.Get("Mcp-Param-Authorization"); got != "client-chosen" {
+			t.Errorf("upstream saw Mcp-Param-Authorization=%q want the client's own value", got)
+		}
+		if got := reqs[0].Header.Get("Authorization"); got != "Bearer sk-real-secret" {
+			t.Errorf("upstream saw Authorization=%q want the stored credential, written last", got)
+		}
+	})
+
 	t.Run("two values of one Mcp-Param name both arrive", func(t *testing.T) {
 		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
 		hdr := http.Header{}
@@ -1102,6 +1120,20 @@ func TestHeaderMismatchRefused(t *testing.T) {
 		}
 		if !f.upstreamsIdle() {
 			t.Error("a request with two Mcp-Name lines reached the upstream")
+		}
+	})
+
+	t.Run("a DELETE carrying Mcp-Name is refused", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"echo"}}, nil, nil)
+		rr := f.doPath(http.MethodDelete, f.keyURL(), "", map[string]string{"Mcp-Session-Id": "sess-1", "Mcp-Name": "echo"})
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("HTTP code=%d want 400; body=%s", rr.Code, rr.Body.String())
+		}
+		if code, msg, _ := rpcErrorOf(t, rr.Body.Bytes()); code != codeHeaderMismatch || msg != msgMismatchName {
+			t.Errorf("code=%d message=%q; a teardown carries no body value for Mcp-Name to mirror", code, msg)
+		}
+		if !f.upstreamsIdle() {
+			t.Error("a DELETE carrying Mcp-Name reached the upstream")
 		}
 	})
 

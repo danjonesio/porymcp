@@ -226,7 +226,7 @@ func paramHeaderNames(requested []string) []string {
 
 // checkParamHeaders is the bound on what the proxy forwards blind, applied
 // before the body is read and on every verb: more than maxParamHeaders
-// Mcp-Param- values across all names, or any one value over
+// Mcp-Param- values across all names, or any one name or value over
 // maxRoutingValueBytes, is refused. The caller answers 431 with -32000, the
 // literal every other proxy-originated refusal uses. It is a size limit, not
 // a mismatch, so it stays off the revision's 400 rule: a 400 whose body is
@@ -239,7 +239,7 @@ func checkParamHeaders(h http.Header) *rpcError {
 			continue
 		}
 		count += len(vals)
-		if count > maxParamHeaders {
+		if count > maxParamHeaders || len(name) > maxRoutingValueBytes {
 			return &rpcError{Code: -32000, Message: msgParamBound}
 		}
 		for _, v := range vals {
@@ -256,9 +256,10 @@ func checkParamHeaders(h http.Header) *rpcError {
 // carries no version member. bad is true when _meta is an object the proxy
 // cannot read: member names that collide under case folding (the same rule
 // distinctKeys applies to the envelope and to params) or a version member
-// that is not a JSON string. A declaration that cannot be read cannot be
-// shown to agree with the header, and treating it as absent would let a body
-// opt out of strictness by being malformed, so the caller refuses it.
+// that is not a JSON string, a null included. A declaration that cannot be
+// read cannot be shown to agree with the header, and treating it as absent
+// would let a body opt out of strictness by being malformed, so the caller
+// refuses it.
 func metaProtocolVersion(meta json.RawMessage) (version string, present bool, bad bool) {
 	trimmed := bytes.TrimSpace(meta)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -268,15 +269,19 @@ func metaProtocolVersion(meta json.RawMessage) (version string, present bool, ba
 		return "", false, true
 	}
 	var m struct {
-		Version *string `json:"io.modelcontextprotocol/protocolVersion"`
+		Version json.RawMessage `json:"io.modelcontextprotocol/protocolVersion"`
 	}
 	if err := json.Unmarshal(trimmed, &m); err != nil {
 		return "", false, true
 	}
-	if m.Version == nil {
+	if len(bytes.TrimSpace(m.Version)) == 0 {
 		return "", false, false
 	}
-	return *m.Version, true, false
+	s, ok := jsonString(m.Version)
+	if !ok {
+		return "", false, true
+	}
+	return s, true, false
 }
 
 // mismatchFor is the refusal for one routing header: the revision's own code
@@ -309,10 +314,14 @@ func headerLine(h http.Header, name string) (string, bool) {
 // request, the method or the tool name, so a header can refuse a request and
 // can never permit one.
 //
-// The first arm, the character check on Mcp-Param- values, applies to every
-// request. The comparisons apply only when method is non-empty: a DELETE, or
-// a POST with an empty body, carries no JSON-RPC request for a header to
-// disagree with, and both are forwarded as they always were.
+// The first two arms, the character check on Mcp-Param- values and the
+// refusal of a duplicate routing header line, apply to every request. The
+// comparisons apply only when method is non-empty: a DELETE, or a POST with
+// an empty body, carries no JSON-RPC request for Mcp-Method or the declared
+// version to disagree with, so neither is compared and both are forwarded as
+// they always were. Mcp-Name mirrors a body value, and such a request has
+// none, so an Mcp-Name sent on it is refused, the same rule a compared method
+// applies to a header sent against an absent value.
 //
 // The declared version is the MCP-Protocol-Version header, or the body's
 // _meta version when the header is absent; when both are present they must
@@ -343,13 +352,16 @@ func checkRoutingHeaders(h http.Header, method string, f routingFields) *rpcErro
 			}
 		}
 	}
-	if method == "" {
-		return nil
-	}
 	for _, name := range []string{hdrProtocol, hdrMethod, hdrName} {
 		if len(h.Values(name)) > 1 {
 			return mismatchFor(name)
 		}
+	}
+	if method == "" {
+		if _, sent := headerLine(h, hdrName); sent {
+			return mismatchFor(hdrName)
+		}
+		return nil
 	}
 
 	headerVersion, headerPresent := headerLine(h, hdrProtocol)
@@ -417,9 +429,12 @@ func checkRoutingHeaders(h http.Header, method string, f routingFields) *rpcErro
 // it was sent and the two agree. nil when the client sent none, so a legacy
 // client's member sees none. forward applies it through copyHopHeaders,
 // after the inbound copy and before ApplyAuth, so the allowlist stays the
-// one writer of outbound client headers. The value is bounded without a
-// check of its own: it is written only when the client sent one, which was
-// capped and had to equal a composed name the member's own name is part of.
+// one writer of outbound client headers. The value is not held to
+// maxRoutingValueBytes: base64 grows a name by a third, so a member name near
+// that bound leaves larger than it. The client's inbound header, which is
+// bounded, is what the comparison read; the member bounds its own request
+// headers, and Go's transport refuses a value it cannot send before dialling,
+// which surfaces as the existing 502 path.
 func memberRoutingHeaders(src http.Header, memberTool string) http.Header {
 	if len(src.Values(hdrName)) == 0 {
 		return nil

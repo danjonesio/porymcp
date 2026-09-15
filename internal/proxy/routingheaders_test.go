@@ -134,6 +134,13 @@ func TestCheckParamHeaders(t *testing.T) {
 			t.Errorf("err=%+v", err)
 		}
 	})
+	t.Run("a name over the bound is refused", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("Mcp-Param-"+strings.Repeat("n", maxRoutingValueBytes), "v")
+		if err := checkParamHeaders(h); err == nil || err.Message != msgParamBound {
+			t.Errorf("err=%+v; a name is forwarded blind as much as a value is", err)
+		}
+	})
 	t.Run("a value at the bound passes", func(t *testing.T) {
 		h := http.Header{}
 		h.Set("Mcp-Param-X", strings.Repeat("a", maxRoutingValueBytes))
@@ -288,9 +295,12 @@ func TestCheckRoutingHeaders(t *testing.T) {
 			hdr("MCP-Protocol-Version", "2025-06-18", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchProtocol},
 		{"a strict header with no _meta version is judged on the header", "tools/call", echoPlain,
 			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), ""},
-		{"a null _meta version member declares nothing", "tools/call",
+		{"a null _meta version member is unreadable", "tools/call",
 			`{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":null}}`,
-			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), ""},
+			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call", "Mcp-Name", "echo"), msgMismatchProtocol},
+		{"a null _meta version member with no header is still unreadable", "tools/call",
+			`{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":null}}`,
+			hdr(), msgMismatchProtocol},
 		{"a _meta that is not an object declares nothing", "tools/call", `{"name":"echo","_meta":"x"}`,
 			hdr(), ""},
 		{"_meta with two spellings of the version key", "tools/call",
@@ -313,6 +323,10 @@ func TestCheckRoutingHeaders(t *testing.T) {
 			hdr("Mcp-Method", "tools/call"), ""},
 		{"an empty method is not compared", "", ``,
 			hdr("MCP-Protocol-Version", "2026-07-28", "Mcp-Method", "tools/call"), ""},
+		{"two Mcp-Method lines are refused even with an empty method", "", ``,
+			hdr("Mcp-Method", "tools/call", "Mcp-Method", "tools/call"), msgMismatchMethod},
+		{"Mcp-Name sent with an empty method has nothing to mirror", "", ``,
+			hdr("Mcp-Name", "echo"), msgMismatchName},
 		{"an Mcp-Param value outside printable ASCII, even with an empty method", "", ``,
 			hdr("Mcp-Param-X", "\x80"), msgMismatchParam},
 		{"an Mcp-Param value outside printable ASCII on a strict request", "tools/call", echoStrict,
