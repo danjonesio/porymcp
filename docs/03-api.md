@@ -776,11 +776,11 @@ names the header (PORM-150):
 
 | Request | HTTP | JSON-RPC error |
 | --- | --- | --- |
-| `MCP-Protocol-Version` disagrees with `params._meta["io.modelcontextprotocol/protocolVersion"]`, or the body declares `2026-07-28` and the header is absent, or `params._meta` is an object the proxy cannot read (member names that collide under case folding, or a version member that is not a JSON string) | `400` | `-32020 "header mismatch: MCP-Protocol-Version"` |
+| `MCP-Protocol-Version` disagrees with `params._meta["io.modelcontextprotocol/protocolVersion"]`, or the body declares `2026-07-28` and the header is absent, or `params._meta` is an object the proxy cannot read (member names that collide under case folding, or a version member that is not a JSON string, a null included) | `400` | `-32020 "header mismatch: MCP-Protocol-Version"` |
 | `Mcp-Method` absent on a request declaring `2026-07-28` or later, or present and not equal to `method` | `400` | `-32020 "header mismatch: Mcp-Method"` |
 | `Mcp-Name` absent on a `tools/call`, `resources/read` or `prompts/get` that declares `2026-07-28` or later and whose body carries the value it would name, or present and not equal to `params.name` or `params.uri` | `400` | `-32020 "header mismatch: Mcp-Name"` |
 | An `Mcp-Param-` value outside printable ASCII | `400` | `-32020 "header mismatch: Mcp-Param"` |
-| More than 32 `Mcp-Param-` values, or one over 4096 bytes | `431` | `-32000 "too many or too large Mcp-Param headers"` |
+| More than 32 `Mcp-Param-` values, or one name or value over 4096 bytes | `431` | `-32000 "too many or too large Mcp-Param headers"` |
 
 `-32020` is the revision's own `HeaderMismatch` code, the one place PoryMCP
 uses a code it did not choose; its own errors stay at `-32000` and `-32602`.

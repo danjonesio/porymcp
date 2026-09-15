@@ -309,13 +309,13 @@
   `_meta` version when the header is absent; the two must agree, a body that
   declares the revision with no header is refused, and so is a body whose
   `_meta` the proxy cannot read (member names that collide under case
-  folding, or a version member that is not a JSON string), whatever headers
-  it sent. On a request declaring an earlier version or none, a header that
+  folding, or a version member that is not a JSON string, a null included),
+  whatever headers it sent. On a request declaring an earlier version or none, a header that
   is present must still agree, and an absent one is accepted. Each of the
   three may appear on one line only; two lines are refused rather than folded
   into one value. A `DELETE`, or a `POST` with an empty body, carries no
   request for `Mcp-Method` or the version to disagree with, so neither is
-  compared on it and it is forwarded as before; an `Mcp-Name` sent on it has
+  compared on it; an `Mcp-Name` sent on it has
   nothing to mirror and is refused, and the `Mcp-Param-` bound and character
   check apply to it as to every request. A failure is `400` with `-32020`,
   the revision's own code, naming the header and never its value, and an
