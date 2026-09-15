@@ -67,6 +67,15 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 // together, which is why they share this.
 const allowedMethods = "POST, DELETE, OPTIONS"
 
+// allowedHeaders is the fixed half of the endpoint's Access-Control-Allow-
+// Headers: the names a browser client may send on every request, the
+// 2026-07-28 routing headers included. The mirrored Mcp-Param- names are
+// known only from a preflight's own request, so applyCORS appends those per
+// answer. The clear-text refusal (webutil.writeInsecureScheme) writes a list
+// of its own on purpose, docs/07-security.md records why, and it is widened
+// by the same two names, never merged with this one.
+const allowedHeaders = "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID"
+
 // applyCORS writes the proxy's own CORS block when the request carries an
 // Origin, and answers a preflight. Every name in Access-Control-Expose-Headers
 // is one the proxy vetted on the response allowlist (copyResponseHeaders);
@@ -75,9 +84,24 @@ func (h *Handler) applyCORS(w http.ResponseWriter, r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID")
+		w.Header().Set("Access-Control-Allow-Headers", allowedHeaders)
 		w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
 		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, MCP-Session-Id, Retry-After")
+		// A preflight asking to send mirrored parameters is answered with
+		// their names, in the spelling the proxy produced and only when the
+		// whole set is within the bound (paramHeaderNames). This is the one
+		// place client input is reflected into a response header, and it
+		// runs before authentication, so it is confined to OPTIONS: the
+		// block above is written on every request carrying an Origin and
+		// nothing else in it comes from the client. Vary is untouched. The
+		// answer depends on Access-Control-Request-Headers, but serve has
+		// already written Cache-Control: no-store, so no shared cache keys
+		// on it, and Set would drop Origin.
+		if r.Method == http.MethodOptions {
+			if names := paramHeaderNames(r.Header.Values("Access-Control-Request-Headers")); len(names) > 0 {
+				w.Header().Set("Access-Control-Allow-Headers", allowedHeaders+", "+strings.Join(names, ", "))
+			}
+		}
 	}
 	if r.Method == http.MethodOptions {
 		// A successful OPTIONS names the methods the resource supports (RFC
