@@ -1,0 +1,117 @@
+# Dependabot config for danjonesio/porymcp. Written by /d-github on 2026-09-15.
+#
+# Deploy on merge: yes for cmd/, internal/, web/, go.mod, go.sum and
+# openapi.yaml, the paths the Dockerfile copies, because the publish job in
+# .github/workflows/ci.yml runs on every push to main and pushes
+# ghcr.io/danjonesio/porymcp:edge and :sha-<short>. Nothing else goes live on
+# its own: the Coolify dev instance pulls edge only when Dan presses Redeploy
+# (AGENTS.md, Dev deployment) and README.md tells production to pin a digest.
+# No for .github/workflows/ and the compose files, which the image never
+# contains.
+#
+# Every entry is a version lane, on Dan's decision of 2026-09-15 ("whichever
+# is most thorough") and on PORM-42, which asks for version updates on all
+# four ecosystems so the digest pins move deliberately. The standard's default
+# for a deploying path is security-only; the reasons for going wider are that
+# a merge republishes edge from whatever sources it changed while the deploy
+# itself is a hand press, and that a pin nothing watches is the drift PORM-42
+# exists to stop. Monthly rather than PORM-42's weekly: the default-branch
+# ruleset requires an up-to-date branch, so every open PR rebases after every
+# merge, and fewer grouped PRs cost fewer CI runs. Each lane carries two
+# groups, so a bump month is one PR and an advisory wave is one PR.
+#
+# github-actions (/): version lane. 13 of 13 uses: lines in .github/workflows
+# are SHA-pinned (grep -rEho 'uses: [^ ]+@[0-9a-f]{40}'), so nothing moves
+# them but this, and the workflow files are not part of the image.
+#
+# gomod (/): version lane. go.sum is copied into the image (Dockerfile, COPY
+# go.mod go.sum); the go job's govulncheck step is the check a bump has to
+# pass.
+#
+# npm (/web): version lane. web/package-lock.json builds the dashboard in the
+# image's web stage; the web job ends with npm audit --audit-level=high, which
+# failed on PR #21 on 2026-09-15 for a js-yaml advisory nothing was watching.
+#
+# docker (/): version lane. All three FROM lines in the Dockerfile are
+# digest-pinned (node:22-alpine, golang:1.26-alpine and
+# gcr.io/distroless/static-debian12:nonroot, each @sha256); PORM-42 notes that
+# Dependabot moves the tag and the digest together, which is the deliberate
+# movement it asks for.
+#
+# Not covered, on purpose:
+#   - docker-compose (docker-compose.yml, docker-compose.tls.yml): every
+#     image: is a floating tag (postgres:16-alpine, caddy:2.10-alpine) or a
+#     local build (porymcp:local from build: .), so there is no version for
+#     Dependabot to move.
+#
+# Unknown at write time: whether Dependabot raises security updates for the
+# docker ecosystem. The docker lane's security group is written as the
+# standard shapes it and opens nothing if it does not.
+#
+# No commit-message prefix: the last 30 subjects carry no conventional prefix
+# (PORM-NN: is the shape), so Dependabot's own default stands.
+#
+# This file's own path is not part of the image; a merge of it triggers CI as
+# every merge to main does and republishes edge from unchanged sources.
+
+version: 2
+updates:
+  # Version lane: the workflow files are not part of the image; SHA pins never
+  # move on their own.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    groups:
+      actions-versions:
+        applies-to: version-updates
+        patterns: ["*"]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # Version lane on a deploying path, by the decision in the header: go.sum is
+  # in the image.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    groups:
+      gomod-versions:
+        applies-to: version-updates
+        patterns: ["*"]
+      gomod-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # Version lane on a deploying path, by the decision in the header: the
+  # lockfile builds the dashboard in the image.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    groups:
+      npm-versions:
+        applies-to: version-updates
+        patterns: ["*"]
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # Version lane on a deploying path, by the decision in the header: the three
+  # digest-pinned FROM lines are the image.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    groups:
+      docker-versions:
+        applies-to: version-updates
+        patterns: ["*"]
+      docker-security:
+        applies-to: security-updates
+        patterns: ["*"]
