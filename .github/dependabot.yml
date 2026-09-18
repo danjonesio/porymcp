@@ -4,8 +4,8 @@
 # openapi.yaml, the paths the Dockerfile copies, because the publish job in
 # .github/workflows/ci.yml runs on every push to main and pushes
 # ghcr.io/danjonesio/porymcp:edge and :sha-<short>. Nothing else goes live on
-# its own: the Coolify dev instance pulls edge only when Dan presses Redeploy
-# (AGENTS.md, Dev deployment) and README.md tells production to pin a digest.
+# its own: the Coolify dev instance pulls edge only when Dan presses Redeploy,
+# and README.md tells production to pin a digest.
 # No for .github/workflows/ and the compose files, which the image never
 # contains.
 #
