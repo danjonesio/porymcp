@@ -215,7 +215,7 @@ treated as legacy and gets what is left of the ten for its handshake.
   "ok": true,
   "latency_ms": 140,
   "era": "legacy",
-  "protocol_version": "2025-06-18",
+  "protocol_version": "2025-11-25",
   "capabilities": ["tools", "resources", "prompts", "completions"],
   "server_info": { "name": "mcp-servers/everything", "version": "2.0.0" },
   "slug": "everything",
@@ -262,8 +262,11 @@ A legacy server normally has none, because `protocol_version` already holds the
 one version it negotiated. `capabilities` is the names of what the server
 advertised and never the settings under them: `tools`, `resources`, `prompts`
 and `completions` in that order when present, then the keys of its `extensions`
-object, sorted, at most 16 in all, each at most 128 bytes of visible ASCII. A
-legacy server's come from its `initialize` result. A modern server that answered
+object, sorted, at most 16 in all, each at most 128 bytes of visible ASCII.
+Those names and nothing else, so it is not the server's whole advertisement: a
+legacy server's come from its `initialize` result, where `logging` and the
+`experimental` bucket are never listed, and their absence here says nothing
+about the server. A modern server that answered
 with a full result and no version PoryMCP speaks keeps its `server_info` and
 `capabilities` on the failure; the three error codes carry neither.
 `server_info` on a modern server is `_meta["io.modelcontextprotocol/serverInfo"]`

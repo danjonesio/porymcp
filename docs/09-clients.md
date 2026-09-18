@@ -305,7 +305,10 @@ npx -y @modelcontextprotocol/server-everything@2026.8.18 streamableHttp
 `streamableHttp` is a positional argument, not a flag: this server has no
 `--transport` option. Register `http://localhost:3001/mcp` as an upstream with
 `auth_type: none` and press **Discover tools**: it answers with the server's
-name and version, a protocol line ending in "handshake", and **13** tools.
+name and version, the protocol line "2025-11-25, handshake", and **13** tools.
+(That server answers the `server/discover` PoryMCP sends first with `400` and
+`-32000` "Server not initialized", which is how a handshake server is
+recognised; checked against `2026.8.18`.)
 
 An upstream that serves only the 2026-07-28 revision has no `initialize` at
 all. PoryMCP asks every upstream `server/discover` first, so such a server

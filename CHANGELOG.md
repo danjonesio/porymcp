@@ -22,9 +22,9 @@ Behaviour changes that affect a running deployment. Newest first.
   list), and asks again when the upstream is saved. A legacy member receives
   the same catalogue request as before. Expect one extra request per member
   after a restart or redeploy.
-- **Still to come (PORM-153):** a call to a modern-only member through a
-  group's aggregate URL is the client's own request relayed as sent, so it is
-  refused with `-32020` unless the client is itself on 2026-07-28.
+- **A call to a modern-only member through a group is not bridged yet.** It is
+  the client's own request relayed as sent, so that member refuses it with
+  `-32020` unless the client is itself on 2026-07-28. PORM-153 has it.
 
 ### The 2026-07-28 routing headers cross the proxy, and are checked (PORM-150)
 

@@ -341,9 +341,12 @@
   cannot be dialled, or whose credential cannot be read, is not probed at all.
   Each probe is bounded (5 s, 2 MiB). How often one is sent is bounded for
   sequential callers only: the verdict is remembered for ten minutes, or thirty
-  seconds when the member did not list, so a member that is broken for good
-  costs at most one probe per thirty seconds however many calls arrive one after
-  another. Concurrent misses are not deduplicated, so a burst of K group calls
+  seconds when the probe got no answer, was refused, or the member then did not
+  list, so such a member costs at most one probe per thirty seconds however many
+  calls arrive one after another, whether or not each caller waits for its
+  answer. That includes a member that never answers the probe and lists fine by
+  the handshake: it is probed every thirty seconds for good, up to 5 s each
+  time. Concurrent misses are not deduplicated, so a burst of K group calls
   on a cold or expired entry costs K probes, and a virtual key with no
   `rate_limit` chooses K. The walk over a group's N members has no deadline of
   its own. A legacy upstream therefore receives one method it does not know,

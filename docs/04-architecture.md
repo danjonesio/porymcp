@@ -171,7 +171,14 @@ minutes. Anything that did not list lives thirty seconds: an unusable verdict,
 a probe nothing answered, and any failure to list. That second figure is a
 floor and not an eviction, because the member walk runs on every `tools/call`
 as well as every `tools/list`: a member that is broken for good costs at most
-one probe per thirty seconds, whatever a key holder sends. The cache holds one
+one probe per thirty seconds from callers arriving one after another. The
+lifetime is chosen when the probe returns and nothing lengthens it afterwards,
+so the thirty seconds also applies to a member that never answers
+`server/discover` and then lists perfectly well the legacy way: it is asked
+again every thirty seconds, and the group call that asks pays up to the 5 s
+probe budget each time. A verdict is remembered whether or not the caller
+waited for it; the one thing not remembered is a probe nothing answered
+because the caller had already gone. The cache holds one
 entry per upstream id (at most 1024, dropping the one that expires soonest),
 and an entry is a miss as soon as the upstream's `updated_at` differs from the
 one the probe saw, so saving the upstream makes the proxy ask again. Pressing
