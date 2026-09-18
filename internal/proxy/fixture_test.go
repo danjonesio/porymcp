@@ -71,6 +71,9 @@ type upstreamSpec struct {
 	// and method in headers and carries params._meta (400 and -32020
 	// otherwise, as the revision requires), and knows no other method.
 	Modern bool
+	// Dead closes the stub's listener as soon as it is built, so the upstream's
+	// URL refuses every connection: a member that answers nothing at all.
+	Dead bool
 	// DiscoverCode and DiscoverBody are a verbatim answer to server/discover,
 	// for a member that refuses the era probe in some particular way.
 	DiscoverCode int
@@ -318,6 +321,9 @@ func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter 
 	for i, slug := range slugs {
 		s := newStub(specs[slug])
 		t.Cleanup(s.srv.Close)
+		if specs[slug].Dead {
+			s.srv.Close() // the URL is kept; nothing listens on it any more
+		}
 		f.Stubs[slug] = s
 		id := "u" + strconv.Itoa(i+1)
 		ids = append(ids, id)

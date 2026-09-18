@@ -1,7 +1,10 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -518,15 +521,30 @@ func TestAggregateListIsPrivate(t *testing.T) {
 	}
 }
 
-// eraGroup is a group of three members, one per kind of era verdict: alpha is
-// a handshake server, modern speaks only 2026-07-28, and refused answers the
-// era probe with -32022 and a version PoryMCP does not speak. Sorted by slug
-// they are u1, u2 and u3.
+// eraGroup is a group of four members, one per kind of era verdict: alpha is
+// a handshake server, dead refuses every connection, modern speaks only
+// 2026-07-28, and refused answers the era probe with -32022 and a version
+// PoryMCP does not speak. Sorted by slug they are u1 to u4.
+//
+// modern's stored credential is a custom auth_config that names the two
+// headers a modern request declares itself with. The API has refused such a
+// config on write since PORM-150, but a row saved before that still holds one,
+// and on this plane nothing but the order of two lines in listTools stops it
+// choosing what a member is told (PORM-151 security requirement 9).
 func eraGroup(t *testing.T) *fixture {
 	t.Helper()
 	return newFixture(t, map[string]upstreamSpec{
-		"alpha":  {Tools: []string{"search"}},
-		"modern": {Tools: []string{"lookup"}, Modern: true},
+		"alpha": {Tools: []string{"search"}},
+		"dead":  {Tools: []string{"unreachable"}, Dead: true},
+		"modern": {
+			Tools: []string{"lookup"}, Modern: true,
+			AuthType: models.AuthCustom,
+			AuthConfig: models.AuthConfig{Headers: map[string]string{
+				"X-Stored-Key":         "REAL-CUSTOM-SECRET",
+				"Mcp-Method":           "resources/read",
+				"MCP-Protocol-Version": "2099-01-01",
+			}},
+		},
 		"refused": {
 			Tools:        []string{"never"},
 			DiscoverCode: http.StatusBadRequest,
@@ -543,10 +561,26 @@ func eraGroup(t *testing.T) *fixture {
 // spoken to is skipped without a catalogue request.
 func TestListToolsEraCache(t *testing.T) {
 	f := eraGroup(t)
+	logs := captureLogs(f)
 	base := time.Now()
 	now := base
 	f.H.eras.SetClock(func() time.Time { return now })
 	probes := func(slug string) int { return f.count(slug, "server/discover", "") }
+	// dead's stub is closed and counts nothing, so its probes are read off the
+	// one line every probe writes.
+	deadProbes := func() int {
+		t.Helper()
+		n := 0
+		for _, r := range logRecords(t, logs) {
+			if r["msg"] == "member era probed" && r["slug"] == "dead" {
+				if r["reached"] != false || r["era"] != "legacy" {
+					t.Errorf("dead's probe logged reached=%v era=%v, want false and legacy", r["reached"], r["era"])
+				}
+				n++
+			}
+		}
+		return n
+	}
 	list := func() string {
 		t.Helper()
 		rr := f.post(listRequest)
@@ -581,6 +615,11 @@ func TestListToolsEraCache(t *testing.T) {
 		if err := json.Unmarshal(r.Body, &body); err != nil || len(body.Params.Meta) != 3 {
 			t.Errorf("modern: %s body carries no _meta: %s", r.RPCMethod, r.Body)
 		}
+		// The stored credential rode along, and its two protocol headers lost
+		// to the proxy's own, which are written after it.
+		if v := r.Header.Get("X-Stored-Key"); v != "REAL-CUSTOM-SECRET" {
+			t.Errorf("modern: %s carried X-Stored-Key %q, want the stored credential", r.RPCMethod, v)
+		}
 	}
 
 	// The handshake member: the probe it does not know, then exactly the
@@ -603,12 +642,28 @@ func TestListToolsEraCache(t *testing.T) {
 		t.Errorf("refused saw %d tools/list and %d probes, want 0 and 1", n, probes("refused"))
 	}
 
-	// A second call asks nobody's era again.
-	_ = list()
+	// The member nothing answers for: probed once, skipped, and not an error.
+	if n := deadProbes(); n != 1 {
+		t.Errorf("dead was probed %d times on the first call, want 1", n)
+	}
+
+	// A second call asks nobody's era again, and lists the modern member from
+	// the CACHED verdict: the names prove the cached era and version composed
+	// a request the member accepted, which a probe count alone would not.
+	if got := list(); got != "alpha__search,modern__lookup" {
+		t.Fatalf("second call listed %q, want both eras' tools again", got)
+	}
 	for _, slug := range []string{"alpha", "modern", "refused"} {
 		if n := probes(slug); n != 1 {
 			t.Errorf("%s saw %d probes after a second call, want 1", slug, n)
 		}
+	}
+	if n := deadProbes(); n != 1 {
+		t.Errorf("dead was probed %d times after a second call, want 1", n)
+	}
+	if reqs := f.requestsTo("modern"); len(reqs) != 3 || reqs[2].Header.Get("Mcp-Method") != "tools/list" ||
+		reqs[2].Header.Get("Mcp-Protocol-Version") != mcpclient.RevisionModern {
+		t.Errorf("modern's listing from the cached verdict did not declare itself: %+v", reqs[len(reqs)-1].Header)
 	}
 
 	// modern's listing starts failing. Inside the retry floor it is listed the
@@ -622,6 +677,9 @@ func TestListToolsEraCache(t *testing.T) {
 	if n := probes("modern"); n != 1 {
 		t.Errorf("modern saw %d probes inside the retry floor, want 1: a failing member must not cost a probe per call", n)
 	}
+	if n := deadProbes(); n != 1 {
+		t.Errorf("dead was probed %d times inside the retry floor, want 1: a probe nothing answered lives thirty seconds", n)
+	}
 	// Past the floor, the first call asks again. So does the refused member's.
 	now = base.Add(eraRetry + time.Second)
 	_ = list()
@@ -631,10 +689,16 @@ func TestListToolsEraCache(t *testing.T) {
 	if n := probes("refused"); n != 2 {
 		t.Errorf("refused saw %d probes after the retry floor, want 2", n)
 	}
+	if n := deadProbes(); n != 2 {
+		t.Errorf("dead was probed %d times after the retry floor, want 2: thirty seconds, not ten minutes", n)
+	}
 	if n := probes("alpha"); n != 1 {
 		t.Errorf("alpha saw %d probes; a healthy member's verdict lasts ten minutes", n)
 	}
 	f.Stubs["modern"].failListing(false)
+	if got := list(); got != "alpha__search,modern__lookup" {
+		t.Fatalf("listed %q once modern recovered, want both eras' tools", got)
+	}
 
 	// Saving the upstream moves updated_at, and that is a miss. Through the
 	// real store, with nothing but updated_at changed.
@@ -667,7 +731,13 @@ func TestListToolsEraCache(t *testing.T) {
 // member refuses the call with -32020. Composing a modern call on a legacy
 // client's behalf belongs to PORM-153.
 func TestGroupCallToModernMemberFromLegacyClient(t *testing.T) {
-	f := eraGroup(t)
+	// Its own group, with no stored credential: eraGroup's modern member holds
+	// a custom auth_config naming Mcp-Method, which the relay path writes onto
+	// the client's call as it always has, and that is not what is under test.
+	f := newFixture(t, map[string]upstreamSpec{
+		"alpha":  {Tools: []string{"search"}},
+		"modern": {Tools: []string{"lookup"}, Modern: true},
+	}, true, nil, nil, nil)
 	rr := f.post(toolCall("7", "modern__lookup"))
 
 	calls := 0
@@ -690,5 +760,91 @@ func TestGroupCallToModernMemberFromLegacyClient(t *testing.T) {
 	row := f.waitAudit(models.LogFilter{})[0]
 	if row.Status != models.StatusError || row.ToolName != "modern__lookup" {
 		t.Errorf("audit row status=%q tool=%q, want an error row naming the tool", row.Status, row.ToolName)
+	}
+}
+
+// cancelAfterAnswer is a transport that cancels a context once an upstream has
+// answered in full, which is a client hanging up just after a member's probe
+// came back. The body is read and replaced first, so the cancellation cannot
+// turn an answered probe into a failed read.
+type cancelAfterAnswer struct {
+	next   http.RoundTripper
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterAnswer) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.next.RoundTrip(r)
+	if err != nil {
+		return resp, err
+	}
+	body, rerr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if rerr != nil {
+		return nil, rerr
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	c.cancel()
+	return resp, nil
+}
+
+// A verdict is remembered unless the caller going away is the reason there is
+// none. A probe that was answered is kept even when nobody waited for it:
+// otherwise a client that always hangs up early costs a member one probe per
+// call, with no retry floor, which docs/07-security.md says cannot happen.
+func TestMemberEraAndACallerWhoWentAway(t *testing.T) {
+	f := eraGroup(t)
+	logs := captureLogs(f)
+	up, err := f.Store.GetUpstream(t.Context(), "u1") // alpha, auth none
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("the probe was answered", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		real := f.H.client.Transport
+		f.H.client.Transport = cancelAfterAnswer{next: real, cancel: cancel}
+		got := f.H.memberEra(ctx, up, nil)
+		f.H.client.Transport = real
+		if ctx.Err() == nil {
+			t.Fatal("the context was never cancelled; the test proves nothing")
+		}
+		if got.era != mcpclient.EraLegacy {
+			t.Fatalf("verdict era=%q, want legacy", got.era)
+		}
+		if _, ok := f.H.eras.get(up.ID, up.UpdatedAt); !ok {
+			t.Error("an answered probe was not remembered because its caller had gone")
+		}
+		_ = f.H.memberEra(t.Context(), up, nil)
+		if n := f.count("alpha", "server/discover", ""); n != 1 {
+			t.Errorf("alpha saw %d probes, want 1: the second lookup should have hit", n)
+		}
+	})
+
+	t.Run("the caller's going away is why nothing answered", func(t *testing.T) {
+		gone, cancel := context.WithCancel(t.Context())
+		cancel()
+		dead, err := f.Store.GetUpstream(t.Context(), "u2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := f.H.memberEra(gone, dead, nil)
+		if got.era != mcpclient.EraLegacy {
+			t.Fatalf("verdict era=%q, want the legacy fallback", got.era)
+		}
+		if _, ok := f.H.eras.get(dead.ID, dead.UpdatedAt); ok {
+			t.Error("nothing-answered was remembered against a member whose caller had simply gone")
+		}
+	})
+
+	// One line per probe that was sent, the unremembered one included.
+	n := 0
+	for _, r := range logRecords(t, logs) {
+		if r["msg"] == "member era probed" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("%d member era probed lines, want 2: one per probe, whether or not it was remembered", n)
 	}
 }

@@ -170,9 +170,18 @@ func (h *Handler) memberEra(ctx context.Context, up *models.Upstream, plainAuth 
 	}
 	pr := mcpclient.ProbeEra(ctx, h.client, up, plainAuth)
 	v := eraVerdict{era: pr.Era, version: pr.Version, fail: pr.Fail, seen: up.UpdatedAt}
-	if ctx.Err() != nil {
-		// The client went away mid-probe. "Nothing answered" is then a fact
-		// about the caller and not the upstream, so it is not remembered.
+	// One line per probe that was sent, before anything below can return: a
+	// probe a client did not wait for still cost the upstream a request.
+	if h.log != nil {
+		h.log.Debug("member era probed", "slug", up.Slug, "upstream_id", up.ID,
+			"era", string(pr.Era), "reached", pr.Reached, "latency_ms", pr.LatencyMS)
+	}
+	if !pr.Reached && ctx.Err() != nil {
+		// The client went away and took the probe with it. "Nothing answered"
+		// is then a fact about the caller and not the upstream, so it is not
+		// remembered. Only that case: a probe that WAS answered is remembered
+		// whether or not the caller waited, or a client that always hangs up
+		// early would cost its members a probe per call with no floor.
 		return v
 	}
 	ttl := eraTTL
@@ -180,9 +189,5 @@ func (h *Handler) memberEra(ctx context.Context, up *models.Upstream, plainAuth 
 		ttl = eraRetry
 	}
 	h.eras.put(up.ID, v, ttl)
-	if h.log != nil {
-		h.log.Debug("member era probed", "slug", up.Slug, "upstream_id", up.ID,
-			"era", string(pr.Era), "reached", pr.Reached, "latency_ms", pr.LatencyMS)
-	}
 	return v
 }

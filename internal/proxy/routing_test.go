@@ -230,7 +230,13 @@ func TestRoutingListsIgnoreRoutingHeaders(t *testing.T) {
 			// What each proxy-composed request declares for itself. These
 			// members are handshake servers, so their catalogue request
 			// declares nothing and the client's Mcp-Method: tools/list has
-			// nowhere to hide.
+			// nowhere to hide. That is a property of this fixture: a modern
+			// member's listing composes Mcp-Method: tools/list itself, and
+			// the client cannot send another value, because a strict request
+			// whose Mcp-Method disagrees with its body is refused before any
+			// member is reached. If a modern member is ever added here, the
+			// version half of this test still tells a leak from a composed
+			// header and the Mcp-Method half no longer does.
 			wantMethod, wantVersion := "", ""
 			if got.RPCMethod == "server/discover" {
 				probes++
