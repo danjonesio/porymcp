@@ -837,6 +837,30 @@ func TestMemberEraAndACallerWhoWentAway(t *testing.T) {
 		}
 	})
 
+	// A probe nothing answered, with the caller still there, is remembered for
+	// the retry floor and not for ten minutes. Read off the entry itself,
+	// straight after the probe: in a group walk the listing that follows fails
+	// too and retrySoon reaches the same expiry, so only this tells the two
+	// apart. docs/04-architecture.md promises thirty seconds for a member that
+	// never answers the probe and then lists fine.
+	t.Run("nothing answered, and the caller waited", func(t *testing.T) {
+		now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+		f.H.eras.SetClock(func() time.Time { return now })
+		defer f.H.eras.SetClock(nil)
+		dead, err := f.Store.GetUpstream(t.Context(), "u2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.H.memberEra(t.Context(), dead, nil)
+		got, ok := f.H.eras.get(dead.ID, dead.UpdatedAt)
+		if !ok {
+			t.Fatal("an unanswered probe was not remembered at all; every call would probe again")
+		}
+		if want := now.Add(eraRetry); !got.expires.Equal(want) {
+			t.Errorf("entry expires %v after now, want the %v retry floor", got.expires.Sub(now), eraRetry)
+		}
+	})
+
 	// One line per probe that was sent, the unremembered one included.
 	n := 0
 	for _, r := range logRecords(t, logs) {
@@ -844,7 +868,7 @@ func TestMemberEraAndACallerWhoWentAway(t *testing.T) {
 			n++
 		}
 	}
-	if n != 2 {
-		t.Errorf("%d member era probed lines, want 2: one per probe, whether or not it was remembered", n)
+	if n != 3 {
+		t.Errorf("%d member era probed lines, want 3: one per probe, whether or not it was remembered", n)
 	}
 }
