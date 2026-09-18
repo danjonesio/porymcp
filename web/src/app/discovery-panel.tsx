@@ -92,7 +92,9 @@ function ReportedList({ label, items }: { label: string; items: string[] }) {
   return (
     <div>
       <p className="font-medium text-zinc-950 dark:text-white">{label}</p>
-      <ul role="list" className="mt-2 flex flex-wrap gap-2">
+      {/* Named, because two of these sit side by side and "list, 4 items"
+          says nothing about which one a screen reader has reached. */}
+      <ul role="list" aria-label={label} className="mt-2 flex flex-wrap gap-2">
         {items.map((item, index) => (
           <li key={index} className="max-w-full min-w-0">
             <Badge color="zinc" dir="ltr" className="max-w-full break-all">
