@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 )
 
 // rpcError is a JSON-RPC error the proxy originates itself, before any
@@ -23,8 +25,10 @@ const (
 	// codeHeaderMismatch is the 2026-07-28 revision's HeaderMismatch. It is the
 	// one code PoryMCP writes that it did not choose: a client on that revision
 	// recognises it and does not fall back to the legacy handshake over it.
-	// PoryMCP's own refusals stay at -32000 and codeInvalidParams.
-	codeHeaderMismatch = -32020
+	// PoryMCP's own refusals stay at -32000 and codeInvalidParams. The number
+	// has one spelling in the tree, mcpclient's, because the discovery probe
+	// reads the same code off an upstream that this proxy writes to a client.
+	codeHeaderMismatch = mcpclient.CodeHeaderMismatch
 )
 
 // auditFieldBytes caps a client-controlled string before it is stored on an

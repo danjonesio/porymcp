@@ -67,13 +67,19 @@ const (
 	clientVersion = "dev"
 )
 
-// The JSON-RPC ids PoryMCP puts on its own two requests. They are named
-// because they are read back as well as written: a Streamable HTTP server may
-// put its own notifications and requests on the POST's stream, and the id is
-// what tells its answer to THIS request apart from the rest of the traffic.
+// The JSON-RPC ids PoryMCP puts on its own requests. They are named because
+// they are read back as well as written: a Streamable HTTP server may put its
+// own notifications and requests on the POST's stream, and the id is what
+// tells its answer to THIS request apart from the rest of the traffic.
+//
+// idDiscover is 3 and not 0 on purpose. The ids are raw JSON tokens, and a
+// server that tests `!request.id` reads 0 as "no id", treats the probe as a
+// notification and answers it with nothing, which would make a modern server
+// look like a legacy one.
 const (
 	idInitialize = "1"
 	idList       = "2"
+	idDiscover   = "3"
 )
 
 var initializeRequest = fmt.Sprintf(
@@ -85,13 +91,15 @@ var initializeRequest = fmt.Sprintf(
 // implementations answer 202 with an empty body.
 const notifyRequest = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
 
-// The three steps a failure can be attributed to. They are named in
+// The steps a request can belong to. The three handshake steps are named in
 // Discovery.Error, so they are fixed strings and never anything an upstream
-// chose.
+// chose. stepDiscover is the 2026-07-28 probe that now goes first; its
+// failures are a verdict (see classify) and never a sentence of their own.
 const (
 	stepInitialize = "initialize"
 	stepNotify     = "notifications/initialized"
 	stepList       = "tools/list"
+	stepDiscover   = "server/discover"
 )
 
 // Annotations is the MCP tool-annotation block, decoded into a fixed shape
@@ -340,13 +348,7 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	// the Scrub is what keeps an upstream's control characters out of an
 	// operator's terminal.
 	out.ProtocolVersion, _ = Clamp(Scrub(initResult.ProtocolVersion), maxProtocolVersionBytes)
-	if initResult.ServerInfo != nil {
-		name, _ := Clamp(Scrub(initResult.ServerInfo.Name), maxServerNameBytes)
-		version, _ := Clamp(Scrub(initResult.ServerInfo.Version), maxServerVersionBytes)
-		if name != "" || version != "" {
-			out.ServerInfo = &Info{Name: name, Version: version}
-		}
-	}
+	out.ServerInfo = boundInfo(initResult.ServerInfo)
 	// The NEGOTIATED version, not the one asked for: a strict 2025-06-18
 	// server answers 400 when the header disagrees with what it chose. It is
 	// only sent when it is a value a header can hold, so a server that
@@ -434,6 +436,22 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	return out
 }
 
+// boundInfo prepares an upstream's name for itself to be shown: Scrub then
+// Clamp on both halves, and nil when neither survives. Both eras learn it (the
+// handshake from initialize's serverInfo, a modern server from the _meta of its
+// server/discover answer) and both go through here, so the two cannot drift.
+func boundInfo(in *Info) *Info {
+	if in == nil {
+		return nil
+	}
+	name, _ := Clamp(Scrub(in.Name), maxServerNameBytes)
+	version, _ := Clamp(Scrub(in.Version), maxServerVersionBytes)
+	if name == "" && version == "" {
+		return nil
+	}
+	return &Info{Name: name, Version: version}
+}
+
 // upstreamTool is the catalogue entry as the upstream writes it, before any of
 // it is clamped.
 type upstreamTool struct {
@@ -474,11 +492,20 @@ type probe struct {
 // stepResult is one request's outcome: either a JSON-RPC result to read, or a
 // sentence saying why there is none. message is the upstream's own words,
 // sanitised, and it can accompany either.
+//
+// status, id, code and data are what the era probe's verdict is read from, so
+// they are recorded on every path that got an HTTP response: status is zero
+// only when nothing came back, id is the raw id token of the document that was
+// picked, and code and data are its JSON-RPC error's, when it carried one.
 type stepResult struct {
 	header  http.Header
 	result  json.RawMessage
 	fail    string
 	message string
+	status  int
+	id      string
+	code    int
+	data    json.RawMessage
 }
 
 // rpcEnvelope is a JSON-RPC document as far as this package reads one: which
@@ -487,8 +514,9 @@ type rpcEnvelope struct {
 	ID     json.RawMessage `json:"id"`
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	} `json:"error"`
 }
 
@@ -567,9 +595,21 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 		// news, for an operator, as a stream with no data event at all.
 		perr = errNoEvent
 	}
-	message := ""
-	if decoded && env.Error != nil {
-		message = sanitiseMessage(env.Error.Message)
+	// out is filled before any branch below returns, so every outcome that
+	// got an HTTP response says which status it was and which document was
+	// read, whatever sentence it goes on to choose.
+	out := stepResult{status: status}
+	if decoded {
+		out.id = strings.TrimSpace(string(env.ID))
+		if env.Error != nil {
+			out.message = sanitiseMessage(env.Error.Message)
+			out.code = env.Error.Code
+			out.data = env.Error.Data
+		}
+	}
+	failed := func(msg string) stepResult {
+		out.fail = msg
+		return out
 	}
 
 	if status < 200 || status >= 300 {
@@ -578,37 +618,39 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 		// and a server is free to attach a JSON-RPC body to either. The
 		// upstream's own message rides along in its own field.
 		if msg, ok := statusFailure(status, step); ok {
-			return stepResult{fail: msg, message: message}
+			return failed(msg)
 		}
 		if decoded && env.Error != nil {
-			return stepResult{fail: fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code), message: message}
+			return failed(fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code))
 		}
-		return stepResult{fail: fmt.Sprintf("upstream answered %d at %s", status, step)}
+		return failed(fmt.Sprintf("upstream answered %d at %s", status, step))
 	}
 
 	if !wantResult {
-		return stepResult{header: hdr}
+		return stepResult{header: hdr, status: status}
 	}
 	if perr != nil {
+		out.message = ""
 		switch {
 		case errors.Is(perr, errEmptyBody):
-			return stepResult{fail: "upstream answered " + step + " with an empty body"}
+			return failed("upstream answered " + step + " with an empty body")
 		case errors.Is(perr, errNoEvent):
-			return stepResult{fail: "upstream answered " + step + " with an event stream carrying no response"}
+			return failed("upstream answered " + step + " with an event stream carrying no response")
 		default:
-			return stepResult{fail: "upstream did not answer " + step + " with JSON-RPC"}
+			return failed("upstream did not answer " + step + " with JSON-RPC")
 		}
 	}
 	if !decoded {
-		return stepResult{fail: "upstream did not answer " + step + " with JSON-RPC"}
+		return failed("upstream did not answer " + step + " with JSON-RPC")
 	}
 	if env.Error != nil {
-		return stepResult{fail: fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code), message: message}
+		return failed(fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code))
 	}
 	if len(env.Result) == 0 || string(env.Result) == "null" {
-		return stepResult{fail: "upstream answered " + step + " with no result"}
+		return failed("upstream answered " + step + " with no result")
 	}
-	return stepResult{header: hdr, result: env.Result}
+	out.header, out.result = hdr, env.Result
+	return out
 }
 
 // setHeaders writes what every discovery request carries.
@@ -856,6 +898,8 @@ func rpcID(step string) string {
 		return idInitialize
 	case stepList:
 		return idList
+	case stepDiscover:
+		return idDiscover
 	}
 	return ""
 }
