@@ -452,16 +452,25 @@ func TestGroupCatalogueSkipsRedirectingMember(t *testing.T) {
 	if got, want := strings.Join(listedNames(t, rr.Body.Bytes()), ","), "alpha__search_docs"; got != want {
 		t.Errorf("listed %q want %q: one member's redirect must cost only that member's tools", got, want)
 	}
-	if n := f.totalReqs("beta"); n != 1 {
-		t.Errorf("beta saw %d requests, want 1", n)
+	// The era probe, which this stub answers, then the catalogue request it
+	// redirects. Nothing follows the redirect.
+	if n := f.totalReqs("beta"); n != 2 {
+		t.Errorf("beta saw %d requests, want 2", n)
 	}
 	row := f.waitAudit(models.LogFilter{})[0]
 	if row.Status != models.StatusSuccess {
 		t.Errorf("row status=%q want %q: the request succeeded on the surviving member", row.Status, models.StatusSuccess)
 	}
-	recs := logRecords(t, logs)
+	// One WARN. captureLogs records at DEBUG, where each member's era probe
+	// now writes a line of its own, so the count is of warnings.
+	var recs []map[string]any
+	for _, r := range logRecords(t, logs) {
+		if r["level"] == "WARN" {
+			recs = append(recs, r)
+		}
+	}
 	if len(recs) != 1 {
-		t.Fatalf("got %d log records, want exactly 1: %s", len(recs), logs.String())
+		t.Fatalf("got %d WARN records, want exactly 1: %s", len(recs), logs.String())
 	}
 	rec := recs[0]
 	want := map[string]any{

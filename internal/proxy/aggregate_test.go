@@ -5,8 +5,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 )
 
 // A group's aggregate endpoint advertises one name per tool per member, and
@@ -512,5 +515,180 @@ func TestAggregateListIsPrivate(t *testing.T) {
 	}
 	if got := strings.Join(listedNames(t, rr.Body.Bytes()), ","); got != "alpha__search,beta__lookup" {
 		t.Errorf("listed %q want both members' tools beside the new members", got)
+	}
+}
+
+// eraGroup is a group of three members, one per kind of era verdict: alpha is
+// a handshake server, modern speaks only 2026-07-28, and refused answers the
+// era probe with -32022 and a version PoryMCP does not speak. Sorted by slug
+// they are u1, u2 and u3.
+func eraGroup(t *testing.T) *fixture {
+	t.Helper()
+	return newFixture(t, map[string]upstreamSpec{
+		"alpha":  {Tools: []string{"search"}},
+		"modern": {Tools: []string{"lookup"}, Modern: true},
+		"refused": {
+			Tools:        []string{"never"},
+			DiscoverCode: http.StatusBadRequest,
+			DiscoverBody: `{"jsonrpc":"2.0","id":null,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2027-01-01"]}}}`,
+		},
+	}, true, nil, nil, nil)
+}
+
+// PORM-151 criterion 8, as amended, and security requirements 8, 9 and 10. A
+// group lists a modern member and a handshake member side by side, each the
+// way it speaks; the era is asked once and remembered; a member that stops
+// listing is asked again after the retry floor and not before; saving the
+// upstream forgets what was learned; and a modern member that cannot be
+// spoken to is skipped without a catalogue request.
+func TestListToolsEraCache(t *testing.T) {
+	f := eraGroup(t)
+	base := time.Now()
+	now := base
+	f.H.eras.SetClock(func() time.Time { return now })
+	probes := func(slug string) int { return f.count(slug, "server/discover", "") }
+	list := func() string {
+		t.Helper()
+		rr := f.post(listRequest)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		return strings.Join(listedNames(t, rr.Body.Bytes()), ",")
+	}
+
+	if got := list(); got != "alpha__search,modern__lookup" {
+		t.Fatalf("listed %q, want both eras' tools", got)
+	}
+
+	// The modern member: the probe, then a catalogue request that declares
+	// itself and carries _meta.
+	reqs := f.requestsTo("modern")
+	if len(reqs) != 2 || reqs[0].RPCMethod != "server/discover" || reqs[1].RPCMethod != "tools/list" {
+		t.Fatalf("modern saw %d requests, want the probe then the listing: %+v", len(reqs), reqs)
+	}
+	for _, r := range reqs {
+		if v := r.Header.Get("Mcp-Protocol-Version"); v != mcpclient.RevisionModern {
+			t.Errorf("modern: %s declared version %q, want %q", r.RPCMethod, v, mcpclient.RevisionModern)
+		}
+		if v := r.Header.Get("Mcp-Method"); v != r.RPCMethod {
+			t.Errorf("modern: %s carried Mcp-Method %q", r.RPCMethod, v)
+		}
+		var body struct {
+			Params struct {
+				Meta map[string]json.RawMessage `json:"_meta"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(r.Body, &body); err != nil || len(body.Params.Meta) != 3 {
+			t.Errorf("modern: %s body carries no _meta: %s", r.RPCMethod, r.Body)
+		}
+	}
+
+	// The handshake member: the probe it does not know, then exactly the
+	// request it has always received.
+	reqs = f.requestsTo("alpha")
+	if len(reqs) != 2 || reqs[0].RPCMethod != "server/discover" {
+		t.Fatalf("alpha saw %d requests, want the probe then the listing: %+v", len(reqs), reqs)
+	}
+	if got := string(reqs[1].Body); got != listToolsRequest {
+		t.Errorf("alpha's catalogue request is %s, want the legacy bytes %s", got, listToolsRequest)
+	}
+	for _, h := range []string{"Mcp-Method", "Mcp-Protocol-Version"} {
+		if v := reqs[1].Header.Get(h); v != "" {
+			t.Errorf("alpha's catalogue request carried %s %q; a handshake member gets none", h, v)
+		}
+	}
+
+	// The member that cannot be spoken to: probed, never listed.
+	if n := f.count("refused", "tools/list", ""); n != 0 || probes("refused") != 1 {
+		t.Errorf("refused saw %d tools/list and %d probes, want 0 and 1", n, probes("refused"))
+	}
+
+	// A second call asks nobody's era again.
+	_ = list()
+	for _, slug := range []string{"alpha", "modern", "refused"} {
+		if n := probes(slug); n != 1 {
+			t.Errorf("%s saw %d probes after a second call, want 1", slug, n)
+		}
+	}
+
+	// modern's listing starts failing. Inside the retry floor it is listed the
+	// way the verdict says and not asked again, however many calls arrive.
+	f.Stubs["modern"].failListing(true)
+	if got := list(); got != "alpha__search" {
+		t.Fatalf("listed %q, want alpha alone while modern fails", got)
+	}
+	now = base.Add(eraRetry - time.Second)
+	_ = list()
+	if n := probes("modern"); n != 1 {
+		t.Errorf("modern saw %d probes inside the retry floor, want 1: a failing member must not cost a probe per call", n)
+	}
+	// Past the floor, the first call asks again. So does the refused member's.
+	now = base.Add(eraRetry + time.Second)
+	_ = list()
+	if n := probes("modern"); n != 2 {
+		t.Errorf("modern saw %d probes after the retry floor, want 2", n)
+	}
+	if n := probes("refused"); n != 2 {
+		t.Errorf("refused saw %d probes after the retry floor, want 2", n)
+	}
+	if n := probes("alpha"); n != 1 {
+		t.Errorf("alpha saw %d probes; a healthy member's verdict lasts ten minutes", n)
+	}
+	f.Stubs["modern"].failListing(false)
+
+	// Saving the upstream moves updated_at, and that is a miss. Through the
+	// real store, with nothing but updated_at changed.
+	ctx := t.Context()
+	up, err := f.Store.GetUpstream(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.UpdatedAt = up.UpdatedAt.Add(time.Second)
+	if err := f.Store.UpdateUpstream(ctx, up, store.KeepTest, store.KeepAuth); err != nil {
+		t.Fatal(err)
+	}
+	_ = list()
+	if n := probes("alpha"); n != 2 {
+		t.Errorf("alpha saw %d probes after it was saved, want 2", n)
+	}
+
+	// And a healthy verdict is asked again when its ten minutes are up.
+	now = now.Add(eraTTL + time.Second)
+	_ = list()
+	if n := probes("alpha"); n != 3 {
+		t.Errorf("alpha saw %d probes after the verdict expired, want 3", n)
+	}
+}
+
+// The boundary PORM-151 ships with, pinned so it is a named fact and not a
+// surprise: a group lists a modern-only member's tools, and a call to one is
+// still the CLIENT's request, relayed with the client's headers and body. A
+// handshake-era client sends neither the routing headers nor _meta, so the
+// member refuses the call with -32020. Composing a modern call on a legacy
+// client's behalf belongs to PORM-153.
+func TestGroupCallToModernMemberFromLegacyClient(t *testing.T) {
+	f := eraGroup(t)
+	rr := f.post(toolCall("7", "modern__lookup"))
+
+	calls := 0
+	for _, r := range f.requestsTo("modern") {
+		if r.RPCMethod != "tools/call" {
+			continue
+		}
+		calls++
+		if v := r.Header.Get("Mcp-Method"); v != "" {
+			t.Errorf("the relayed call carried Mcp-Method %q; the proxy composed nothing for the client", v)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("modern saw %d tools/call, want the one relayed call", calls)
+	}
+	code, _, _ := rpcErrorOf(t, rr.Body.Bytes())
+	if code != mcpclient.CodeHeaderMismatch {
+		t.Errorf("client got JSON-RPC code %d, want the member's own %d; body=%s", code, mcpclient.CodeHeaderMismatch, rr.Body.String())
+	}
+	row := f.waitAudit(models.LogFilter{})[0]
+	if row.Status != models.StatusError || row.ToolName != "modern__lookup" {
+		t.Errorf("audit row status=%q tool=%q, want an error row naming the tool", row.Status, row.ToolName)
 	}
 }

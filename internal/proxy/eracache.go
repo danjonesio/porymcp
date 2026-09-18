@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // How long the proxy trusts what it learned about an upstream's era.
@@ -148,4 +151,38 @@ func (c *eraCache) evictLocked(now time.Time) {
 		}
 		delete(c.entries, oldestID)
 	}
+}
+
+// memberEra is the one lookup of an upstream's era: the cached verdict, or a
+// fresh server/discover probe whose verdict is then cached. PORM-32's route
+// cache is expected to absorb it, which is why nothing else reads h.eras for a
+// verdict.
+//
+// The caller has already refused a transport it cannot dial and read the
+// credential, so a member that must not be contacted is never probed. seen is
+// up.UpdatedAt from the struct this was handed, the one the probe is built
+// from. The probe carries PoryMCP's own constants and nothing of the inbound
+// request. The log line carries no upstream string: the era is one of two
+// constants.
+func (h *Handler) memberEra(ctx context.Context, up *models.Upstream, plainAuth json.RawMessage) eraVerdict {
+	if v, ok := h.eras.get(up.ID, up.UpdatedAt); ok {
+		return v
+	}
+	pr := mcpclient.ProbeEra(ctx, h.client, up, plainAuth)
+	v := eraVerdict{era: pr.Era, version: pr.Version, fail: pr.Fail, seen: up.UpdatedAt}
+	if ctx.Err() != nil {
+		// The client went away mid-probe. "Nothing answered" is then a fact
+		// about the caller and not the upstream, so it is not remembered.
+		return v
+	}
+	ttl := eraTTL
+	if pr.Fail != "" || !pr.Reached {
+		ttl = eraRetry
+	}
+	h.eras.put(up.ID, v, ttl)
+	if h.log != nil {
+		h.log.Debug("member era probed", "slug", up.Slug, "upstream_id", up.ID,
+			"era", string(pr.Era), "reached", pr.Reached, "latency_ms", pr.LatencyMS)
+	}
+	return v
 }

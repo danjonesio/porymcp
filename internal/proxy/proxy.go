@@ -35,6 +35,10 @@ type Handler struct {
 	limit  *auth.Limiter
 	log    *slog.Logger
 	client *http.Client
+	// eras remembers which MCP era each upstream speaks, so a group call asks
+	// server/discover once and not on every walk. In memory only: nothing an
+	// upstream said is persisted (PORM-58).
+	eras *eraCache
 }
 
 func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger) *Handler {
@@ -50,6 +54,7 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 		// upstream credential has them, and NewHTTPClient is the only place
 		// they are set. See its comment for why.
 		client: mcpclient.NewHTTPClient(mcpclient.Options{Timeout: 60 * time.Second}),
+		eras:   newEraCache(),
 	}
 }
 
@@ -693,9 +698,14 @@ func (h *Handler) credential(u *models.Upstream) (json.RawMessage, error) {
 	return credential.Read(h.keys, u.AuthType, u.AuthConfig)
 }
 
-// listToolsRequest is the body the proxy sends to discover what an upstream
-// can do. The id is the proxy's own, because this is the proxy's request.
-const listToolsRequest = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+// listToolsRequest is the body the proxy sends to discover what a handshake-era
+// upstream can do. The id is the proxy's own, because this is the proxy's
+// request. A 2026-07-28 upstream gets mcpclient.ModernListRequest under the
+// same id; these bytes are what every other upstream has always received.
+const (
+	listToolsID      = "1"
+	listToolsRequest = `{"jsonrpc":"2.0","id":` + listToolsID + `,"method":"tools/list","params":{}}`
+)
 
 // forward relays the client's own request to an upstream: its verb, its hop
 // headers and its body, with the virtual key swapped for the real credential.
@@ -766,6 +776,14 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 // routes and its tools cannot be called until it does. PORM-32 owns routing a
 // call by the slug the name carries, which removes the catalogue from the call
 // path entirely.
+//
+// The request is still the proxy's own when the member speaks the 2026-07-28
+// era, and for the same reason. Such a member has to be told the version, the
+// method and who is asking on every request, and all three come from the
+// cached verdict and PoryMCP's constants (see memberEra), never from the
+// inbound request: a client that could choose them would be choosing which
+// members answer. The two guards run before the era is looked up, so a member
+// the proxy must not dial is not probed either.
 func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, int, error) {
 	if err := mcpclient.TransportError(up.Transport); err != nil {
 		return nil, 0, err
@@ -774,7 +792,18 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	if err != nil {
 		return nil, 0, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, up.URL, strings.NewReader(listToolsRequest))
+	verdict := h.memberEra(ctx, up, plain)
+	if verdict.fail != "" {
+		// A modern server that cannot be spoken to: one of mcpclient's fixed
+		// sentences, and no request. The entry expires at the retry floor.
+		return nil, 0, errors.New(verdict.fail)
+	}
+	modern := verdict.era == mcpclient.EraModern
+	request := listToolsRequest
+	if modern {
+		request = mcpclient.ModernListRequest(listToolsID, "")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, up.URL, strings.NewReader(request))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -782,6 +811,10 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	req.Header.Set("Content-Type", "application/json")
 	if err := mcpclient.ApplyAuth(req, up.AuthType, plain); err != nil {
 		return nil, 0, errCredentialUnreadable
+	}
+	if modern {
+		// After ApplyAuth, so a stored auth_config cannot choose either header.
+		mcpclient.SetModernHeaders(req.Header, verdict.version, "tools/list")
 	}
 	body, status, _, err := mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
 	return body, status, err
@@ -830,13 +863,20 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 		// so a member that answers its catalogue request with a redirect
 		// arrives here as an error. Any other status is not consulted: a
 		// catalogue is still judged by whether it parses, as it was before.
+		//
+		// retrySoon sits beside skip and not inside it: skip returns at once
+		// when there is no logger, and the retry floor is not a log line. Any
+		// failure to list brings the member's era entry forward to the floor,
+		// which is what lets a wrong verdict heal without a probe per call.
 		listBody, _, err := h.listTools(ctx, up)
 		if err != nil {
+			h.eras.retrySoon(up.ID)
 			skip(up, err)
 			continue
 		}
 		tools, err := parseToolsList(listBody)
 		if err != nil {
+			h.eras.retrySoon(up.ID)
 			skip(up, err)
 			continue
 		}
