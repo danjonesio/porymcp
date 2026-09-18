@@ -151,6 +151,32 @@ func TestDiscoverSendsNegotiatedProtocolVersion(t *testing.T) {
 	}
 }
 
+// PORM-151 criterion 6. PoryMCP asks for the newest handshake revision, and a
+// server on an older one still decides what is spoken: its answer is what gets
+// recorded and what every later request declares.
+func TestDiscoverLegacyVersionRaised(t *testing.T) {
+	f := newFixture(t) // answers 2025-06-18
+	got := discover(t, f.upstream(), nil)
+	if !got.OK {
+		t.Fatalf("ok=false error=%q", got.Error)
+	}
+	if got.ProtocolVersion != fixtureProtocol {
+		t.Errorf("protocol_version=%q, want the %s the server answered", got.ProtocolVersion, fixtureProtocol)
+	}
+	for _, r := range f.requests() {
+		switch r.RPC {
+		case "initialize":
+			if !strings.Contains(r.Body, `"protocolVersion":"2025-11-25"`) {
+				t.Errorf("initialize asked for %s, want protocolVersion 2025-11-25", r.Body)
+			}
+		case "notifications/initialized", "tools/list":
+			if r.Protocol != fixtureProtocol {
+				t.Errorf("%s declared MCP-Protocol-Version %q, want the negotiated %s", r.RPC, r.Protocol, fixtureProtocol)
+			}
+		}
+	}
+}
+
 // A stateless server mints nothing, so nothing is echoed and there is no
 // session to tear down.
 func TestDiscoverStatelessServer(t *testing.T) {

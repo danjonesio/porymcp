@@ -55,11 +55,13 @@ const (
 // shorten it; TestDiscoverTimesOut pins the shipped value at 10s first.
 var discoverBudget = 10 * time.Second
 
-// The MCP revision PoryMCP asks for, and who it says it is. tools/list is
-// unchanged across every revision to date, so no fallback negotiation is
-// needed: what a server answers with is what later requests declare.
+// The handshake revision PoryMCP asks for, and who it says it is. It is the
+// newest revision that still has a handshake; a server on an older one answers
+// with its own, and what a server answers with is what later requests declare.
+// tools/list is unchanged across every handshake revision, so no further
+// negotiation is needed.
 const (
-	clientProtocolVersion = "2025-06-18"
+	clientProtocolVersion = "2025-11-25"
 	clientName            = "porymcp"
 	// clientVersion: the binary carries no build-stamped version today. When
 	// one lands it belongs here, so an upstream's own logs can tell which
