@@ -1205,3 +1205,39 @@ func TestDiscoverBudgetIncludesProbe(t *testing.T) {
 		t.Errorf("took %v; the probe must sit inside the whole-sequence budget", elapsed)
 	}
 }
+
+// overdue is a context whose deadline has passed and whose Done channel has
+// not closed yet: what a context looks like in the moment between its deadline
+// and the scheduler running its timer. On a busy machine that moment is long
+// enough for a loopback handshake.
+type overdue struct {
+	context.Context
+	deadline time.Time
+}
+
+func (o overdue) Deadline() (time.Time, bool) { return o.deadline, true }
+
+// Nothing is sent once the budget has run out, judged by the clock and not
+// only by the context. Found by review as a flake in
+// TestDiscoverBudgetIncludesProbe under CPU load: the client's timeout
+// cancelled the probe a moment before the context's overdue timer fired, the
+// context still read as live, and the fallback handshake ran, and sometimes
+// completed, after the budget was spent. The server here answers everything
+// at once, so without the check in exchange this discovery succeeds.
+func TestDiscoverSendsNothingPastItsDeadline(t *testing.T) {
+	f := newFixture(t)
+	ctx := overdue{Context: t.Context(), deadline: time.Now().Add(-time.Millisecond)}
+	if ctx.Err() != nil {
+		t.Fatal("the context already reads as done; the test would prove nothing")
+	}
+	got := New().Discover(ctx, f.upstream(), nil)
+	if want := "upstream did not answer within " + discoverBudget.String(); got.Error != want {
+		t.Errorf("error=%q, want %q", got.Error, want)
+	}
+	if got.OK || got.Era != "" {
+		t.Errorf("ok=%v era=%q after the budget had run out", got.OK, got.Era)
+	}
+	if n := len(f.requests()); n != 0 {
+		t.Errorf("%d requests were sent after the deadline, want 0: %v", n, f.rpcCalls())
+	}
+}

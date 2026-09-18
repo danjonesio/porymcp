@@ -637,6 +637,18 @@ func pickResponse(payloads [][]byte, wantID string) (rpcEnvelope, bool) {
 // for the notification, where any 2xx is success and an empty body is the
 // expected answer.
 func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool) stepResult {
+	// The budget is judged by the clock as well as by the context. A deadline
+	// is a timer, and an overdue timer fires when the scheduler gets to it:
+	// on a busy machine the client's own timeout, set a moment after the
+	// context's and run by a different goroutine, can cancel a request while
+	// the context still reads as live. Before the era probe went first that
+	// was harmless, because the failed request was the last one. Now a probe
+	// that spent the whole budget is followed by a handshake, and without
+	// this the handshake could start, and even finish, after the budget had
+	// run out. Same sentence as the deadline itself, and nothing is sent.
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return stepResult{fail: p.transportFailure(step, context.DeadlineExceeded)}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.up.URL, strings.NewReader(body))
 	if err != nil {
 		// Unreachable: CheckTarget already parsed this URL. Classified rather
