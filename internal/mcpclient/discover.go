@@ -560,10 +560,12 @@ type probe struct {
 // sentence saying why there is none. message is the upstream's own words,
 // sanitised, and it can accompany either.
 //
-// status, id, code and data are what the era probe's verdict is read from, so
-// they are recorded on every path that got an HTTP response: status is zero
-// only when nothing came back, id is the raw id token of the document that was
-// picked, and code and data are its JSON-RPC error's, when it carried one.
+// status, id, code and data are what the era probe's verdict is read from.
+// status is recorded on every path that got an HTTP response and is zero only
+// when nothing came back. id, code and data are recorded on every such path
+// that was asked for a result: id is the raw id token of the document that was
+// picked, and code and data are its JSON-RPC error's, when it carried one. The
+// notification, which expects no document, records the status alone.
 type stepResult struct {
 	header  http.Header
 	result  json.RawMessage

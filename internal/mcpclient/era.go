@@ -1,12 +1,12 @@
 package mcpclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/models"
@@ -57,7 +57,9 @@ const (
 	// array before it is decoded. Eight versions of 32 bytes is about 300
 	// bytes, so 4 KiB is generous, and a list past it is never unmarshalled:
 	// capping after the decode would let one probe allocate a body's worth of
-	// strings first.
+	// strings first. The capabilities object has no such bound of its own, on
+	// purpose: its extension keys are reported sorted, which means reading all
+	// of them, so it is bounded by the body cap (discoverBodyBytes) alone.
 	maxVersionListBytes = 4 << 10
 )
 
@@ -246,8 +248,10 @@ const (
 // never unmarshalled. The whole decoded list is returned, uncut: membership is
 // tested over all of it, and boundVersions cuts it for display afterwards.
 func versionList(raw json.RawMessage) ([]string, int) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed[0] != '[' {
+	// On the byte slice, so an oversized value is never copied either: raw is
+	// a slice of a body that can be 2 MiB, and the bound below is 4 KiB.
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, listAbsent
 	}
 	if len(raw) > maxVersionListBytes {

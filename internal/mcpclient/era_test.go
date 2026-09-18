@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // discoverResult is a server/discover result body, as raw JSON, for the rows
@@ -265,5 +266,42 @@ func TestModernListRequest(t *testing.T) {
 		if string(body.Params.Meta[metaClientCaps]) != `{}` {
 			t.Errorf("_meta clientCapabilities = %s", body.Params.Meta[metaClientCaps])
 		}
+	}
+}
+
+// TestProbeBudget pins the probe's own deadline (PORM-151 security requirement
+// 10). On the proxy plane nothing else bounds it short of the client's sixty
+// seconds, so a member that accepts a connection and never answers costs a
+// group call this much and no more. TestDiscoverBudgetIncludesProbe cannot
+// stand in for this: it shortens discoverBudget, so the parent deadline fires
+// first and the probe's own bound is never the one under test.
+func TestProbeBudget(t *testing.T) {
+	// The shipped value first: three docs state it.
+	if probeBudget != 5*time.Second {
+		t.Fatalf("probeBudget=%v, want 5s: the shipped budget for one server/discover", probeBudget)
+	}
+	// A package var, mutated here under the same rule as discoverBudget:
+	// nothing in this package calls t.Parallel.
+	restore := probeBudget
+	probeBudget = 100 * time.Millisecond
+	t.Cleanup(func() { probeBudget = restore })
+
+	f := newFixture(t)
+	// Held open until the test ends, so httptest.Server.Close (which waits for
+	// outstanding requests) is not the thing under test. No sleep.
+	f.on[stepDiscover] = func(http.ResponseWriter, request) { <-t.Context().Done() }
+
+	// The proxy's own kind of client: a timeout far longer than the budget, and
+	// a caller's context with no deadline at all.
+	hc := NewHTTPClient(Options{Timeout: time.Minute})
+	start := time.Now()
+	got := ProbeEra(t.Context(), hc, f.upstream(), nil)
+	elapsed := time.Since(start)
+
+	if got.Reached || got.Era != EraLegacy || got.Fail != "" {
+		t.Errorf("probe = %+v, want an unreached legacy verdict and no sentence", got)
+	}
+	if elapsed > time.Second {
+		t.Errorf("took %v; the probe's own budget did not fire", elapsed)
 	}
 }
