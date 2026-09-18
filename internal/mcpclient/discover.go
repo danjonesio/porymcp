@@ -487,6 +487,10 @@ type probe struct {
 	host     string
 	session  string
 	protocol string
+	// modern marks a request of the 2026-07-28 era: it declares its version
+	// and its method in headers, and protocol is PoryMCP's own constant from
+	// the first request rather than something an initialize negotiated.
+	modern bool
 }
 
 // stepResult is one request's outcome: either a JSON-RPC result to read, or a
@@ -575,7 +579,7 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 		return stepResult{fail: "url must be an absolute http or https URL"}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if err := p.setHeaders(req); err != nil {
+	if err := p.setHeaders(req, step); err != nil {
 		return stepResult{fail: errNeedsCredential}
 	}
 
@@ -663,7 +667,12 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 // handed the upstream a session id PoryMCP never minted, on every request.
 // ApplyAuth clears the three header names a credential can arrive in before it
 // writes the real one, and it touches none of the three set here.
-func (p *probe) setHeaders(req *http.Request) error {
+//
+// step is the JSON-RPC method the request carries, which a modern request
+// declares in Mcp-Method; the teardown has none and passes "". The version has
+// exactly one writer per request: SetModernHeaders on a modern probe, the
+// negotiated value otherwise.
+func (p *probe) setHeaders(req *http.Request, step string) error {
 	if err := ApplyAuth(req, p.up.AuthType, p.auth); err != nil {
 		// Unreachable: Discover refused the credential before building the
 		// probe. Kept so the seam cannot regress silently.
@@ -673,7 +682,9 @@ func (p *probe) setHeaders(req *http.Request) error {
 	if p.session != "" {
 		req.Header.Set("Mcp-Session-Id", p.session)
 	}
-	if p.protocol != "" {
+	if p.modern {
+		SetModernHeaders(req.Header, p.protocol, step)
+	} else if p.protocol != "" {
 		// Not on initialize: there is nothing negotiated to declare yet.
 		req.Header.Set("MCP-Protocol-Version", p.protocol)
 	}
@@ -706,7 +717,7 @@ func (p *probe) endSession(ctx context.Context) {
 		return
 	}
 	// Every outcome of the teardown is ignored, this one included.
-	_ = p.setHeaders(req)
+	_ = p.setHeaders(req, "")
 	_, _, _, _ = Send(p.client, req, discoverBodyBytes)
 }
 
