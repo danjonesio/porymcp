@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ApiError } from './api.ts'
-import { discoverable, discoveryErrorMessage, hostOf, plainHTTPCredential, scopedToolName } from './discovery.ts'
+import {
+  discoverable,
+  discoveryErrorMessage,
+  hostOf,
+  plainHTTPCredential,
+  protocolSummary,
+  scopedToolName,
+} from './discovery.ts'
 
 // Run with: npm test (node --test). The .ts extensions above are required:
 // Node will not resolve an extensionless TypeScript specifier; tsconfig.json
@@ -90,4 +97,28 @@ test('discoveryErrorMessage says PoryMCP itself is unreachable when fetch reject
     discoveryErrorMessage(new TypeError('fetch failed')),
     'Could not reach PoryMCP. Check that the server is still running.',
   )
+})
+
+// PORM-151: the five things the Protocol row can say. The label beside it is
+// the literal "Protocol", so the first two read "Protocol 2026-07-28, stateless"
+// and "Protocol 2025-06-18, handshake".
+test('protocolSummary names the version and the era of a modern server', () => {
+  assert.equal(protocolSummary({ era: 'modern', protocol_version: '2026-07-28' }), '2026-07-28, stateless')
+})
+
+test('protocolSummary names the version and the era of a handshake server', () => {
+  assert.equal(protocolSummary({ era: 'legacy', protocol_version: '2025-06-18' }), '2025-06-18, handshake')
+})
+
+test('protocolSummary says no version was agreed when a failure knows only the era', () => {
+  assert.equal(protocolSummary({ era: 'modern' }), 'stateless, no version agreed')
+  assert.equal(protocolSummary({ era: 'legacy' }), 'handshake, no version agreed')
+})
+
+test('protocolSummary shows the version alone when the response carries no era', () => {
+  assert.equal(protocolSummary({ protocol_version: '2025-06-18' }), '2025-06-18')
+})
+
+test('protocolSummary is empty when there is nothing to show', () => {
+  assert.equal(protocolSummary({}), '')
 })
