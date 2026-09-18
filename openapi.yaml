@@ -788,6 +788,11 @@ components:
             (401) at initialize`, `upstream's answer to <step> is larger than
             discovery will read` (the 2 MiB read cap: an answer over it is
             refused rather than decoded from a document that stops mid-object),
+            `upstream supports no protocol version PoryMCP speaks`, `upstream
+            refused the routing headers PoryMCP sent (-32020)` and `upstream
+            requires a client capability PoryMCP does not offer (-32021)` (the
+            three ways a 2026-07-28 server can refuse the era probe, after
+            which no handshake is attempted),
             `stored credential cannot be decrypted`, `stored credential is not
             usable for this auth type` (nothing stored, or a value that opens
             but holds nothing the auth type can send), `this auth type
@@ -806,12 +811,53 @@ components:
         latency_ms:
           type: integer
           description: >-
-            The whole handshake, rounded to 10 ms: enough to tell a slow server
-            from a fast one, blunt enough not to be a stopwatch on the network
-            PoryMCP sits in.
+            The whole call, the era probe included, rounded to 10 ms: enough to
+            tell a slow server from a fast one, blunt enough not to be a
+            stopwatch on the network PoryMCP sits in.
+        era:
+          type: string
+          enum: [modern, legacy]
+          description: >-
+            Which MCP era the upstream spoke. `modern` is the stateless
+            2026-07-28 revision, learned from its answer to server/discover,
+            whether or not PoryMCP could then speak to it. `legacy` is the
+            initialize handshake: the probe got an HTTP response that was not a
+            modern one, or initialize completed. It is evidence and never a
+            default, so it is absent when nothing came back, when the request
+            was refused before any I/O, and on a response from a PoryMCP that
+            predates the field.
         protocol_version:
           type: string
-          description: The MCP protocol version the upstream negotiated. Clamped to 32 bytes.
+          description: >-
+            The MCP protocol version discovery ended up speaking: `2026-07-28`
+            on a modern upstream, the version initialize negotiated on a legacy
+            one, clamped to 32 bytes. Absent when no version was agreed.
+        supported_versions:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+            maxLength: 32
+          description: >-
+            The versions the upstream said it supports, from its
+            server/discover answer or from the data of a -32022. Each entry is
+            visible ASCII; one that is not is dropped rather than repaired.
+            Absent on an upstream that advertised none, which is the usual
+            legacy case, because `protocol_version` already holds the one
+            version that was negotiated. It never sets `truncated`.
+        capabilities:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+            maxLength: 128
+          description: >-
+            The names of what the upstream advertised, never the settings under
+            them: `tools`, `resources`, `prompts` and `completions` in that
+            order when present, then the keys of its `extensions` object,
+            sorted. From server/discover on a modern upstream and from the
+            initialize result on a legacy one. Absent when none were advertised
+            and on the three modern error answers.
         server_info:
           $ref: "#/components/schemas/ServerInfo"
         slug:

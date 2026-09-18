@@ -169,18 +169,54 @@ checkers fetch on their own. `GET /upstreams/discover` is not a route at all: it
 falls through to `GET /upstreams/{id}` with `discover` as the id and answers the
 ordinary `404 {"error":"not found"}`.
 
-Each call is the handshake a client would make: `initialize`,
-`notifications/initialized`, `tools/list` followed to the end of its cursors,
-then a `DELETE` of the session so none is left open on the upstream. The whole
-sequence is bounded at 10 seconds and the teardown at a further 2, so a hung
-upstream cannot hold an admin request open; the proxy's own 60 s budget is for
-relaying a client's call, not for answering the dashboard.
+Each call first asks the upstream which MCP era it speaks, then talks to it that
+way. Step 0 is `server/discover` on the 2026-07-28 revision: the request carries
+`MCP-Protocol-Version: 2026-07-28`, `Mcp-Method: server/discover` and the
+`params._meta` every request of that revision carries (the protocol version,
+`clientInfo` and empty `clientCapabilities`). It has five seconds of the budget
+below and reads at most 2 MiB. What comes back decides the rest:
+
+- **Modern.** A `200` whose result, in the document that answers the probe's own
+  JSON-RPC id, carries a `supportedVersions` array that lists `2026-07-28`.
+  `tools/list` is then followed to the end of its cursors, each request carrying
+  the same two headers (with `Mcp-Method: tools/list`) and the same `_meta`.
+  There is no `initialize`, no `notifications/initialized`, no session and no
+  `DELETE`: that era has none of them.
+- **Modern, and not one PoryMCP can speak to.** A `400` whose JSON-RPC error is
+  `-32020`, `-32021` or `-32022`, or a `200` whose `supportedVersions` is empty
+  or lists nothing PoryMCP speaks. Discovery fails with one of three sentences
+  (below) and there is no fallback: a server of that era has no handshake to
+  fall back to.
+- **Legacy.** Everything else: any other status, `-32601`, the reference
+  server's `-32000` "not initialized", a `404` page, a body that is not
+  JSON-RPC, a `200` with no `supportedVersions`, or no answer at all. So is a
+  server that answers `server/discover` (or `-32022`'s `data.supported`) with
+  only handshake revisions (`2025-11-25`, `2025-06-18`, `2025-03-26`,
+  `2024-11-05`): it has said how to talk to it. The handshake a client would make
+  follows, exactly as before this probe existed: `initialize` asking for
+  `2025-11-25`, `notifications/initialized`, `tools/list` followed to the end of
+  its cursors, then a `DELETE` of the session so none is left open on the
+  upstream. What the server answers `initialize` with is the version recorded
+  and declared from then on.
+
+Only those three codes, on a `400`, count as a modern server refusing. `-32601`
+does not, although the revision lists it as a modern server's answer to a method
+it does not know: a modern server must implement `server/discover`, and a
+handshake server answering `-32601` is the common case.
+
+The whole sequence, probe included, is bounded at 10 seconds and the teardown at
+a further 2, so a hung upstream cannot hold an admin request open; the proxy's
+own 60 s budget is for relaying a client's call, not for answering the
+dashboard. A server slower than five seconds to answer `server/discover` is
+treated as legacy and gets what is left of the ten for its handshake.
 
 ```json
 {
   "ok": true,
   "latency_ms": 140,
+  "era": "legacy",
   "protocol_version": "2025-06-18",
+  "capabilities": ["tools", "resources", "prompts", "completions"],
   "server_info": { "name": "mcp-servers/everything", "version": "2.0.0" },
   "slug": "everything",
   "tool_count": 13,
@@ -198,18 +234,67 @@ relaying a client's call, not for answering the dashboard.
 }
 ```
 
+A 2026-07-28 server's answer differs in four fields:
+
+```json
+{
+  "ok": true,
+  "era": "modern",
+  "protocol_version": "2026-07-28",
+  "supported_versions": ["2026-07-28"],
+  "capabilities": ["tools", "io.example/search"],
+  "server_info": { "name": "stateless-server", "version": "2.0.0" }
+}
+```
+
+`era` is `modern` or `legacy`. It is evidence and never a default: `modern` when
+the probe was answered as a modern server (a usable one or not), `legacy` when
+the probe got an HTTP response that was not modern or when `initialize`
+completed, and absent when nothing came back or a request was refused before
+any I/O. `protocol_version` is the version discovery ended up speaking:
+PoryMCP's own `2026-07-28` on a modern server, the negotiated one on a legacy
+server, absent when none was agreed. `supported_versions` is what the server
+said it supports, from its `server/discover` answer or a `-32022`'s
+`data.supported`: at most 8 entries, each at most 32 bytes of visible ASCII. An
+entry that is anything else is dropped, never repaired, because a version is a
+token and scrubbing one would show an operator a version the server never sent.
+A legacy server normally has none, because `protocol_version` already holds the
+one version it negotiated. `capabilities` is the names of what the server
+advertised and never the settings under them: `tools`, `resources`, `prompts`
+and `completions` in that order when present, then the keys of its `extensions`
+object, sorted, at most 16 in all, each at most 128 bytes of visible ASCII. A
+legacy server's come from its `initialize` result. A modern server that answered
+with a full result and no version PoryMCP speaks keeps its `server_info` and
+`capabilities` on the failure; the three error codes carry neither.
+`server_info` on a modern server is `_meta["io.modelcontextprotocol/serverInfo"]`
+of its answer, and may be absent. Neither list touches `truncated`. The server's
+`instructions` are never carried: they are prompt content (PORM-83).
+
+These fields are what the upstream answered just now. The proxy keeps its own
+memory of each group member's era (see `docs/04-architecture.md`), for up to ten
+minutes, so the panel and the proxy can disagree for that long after a server
+changes. Saving the upstream makes the proxy ask again; a passing discovery on
+its own does not.
+
 Every field is either PoryMCP's own or a clamped copy of something the upstream
 said, and there is nothing else in the body. `error`, present only when `ok` is
 `false`, is one of a closed set of sentences composed from a status code, a
-host name and the step that failed. `upstream_message` carries the upstream's
+host name and the step that failed. The era probe adds three to that set, each a
+fixed string: `upstream supports no protocol version PoryMCP speaks` (`-32022`,
+an empty `supportedVersions`, or a list with nothing PoryMCP speaks; what the
+server does support is in `supported_versions`), `upstream refused the routing
+headers PoryMCP sent (-32020)`, and `upstream requires a client capability
+PoryMCP does not offer (-32021)`. Every other outcome of the probe has no
+sentence of its own: it falls through to the handshake, which reports in the
+words it always used. `upstream_message` carries the upstream's
 own JSON-RPC `error.message`, single line, visible characters, at most 200
 bytes, and it is a separate field precisely so that `error` stays a string
 PoryMCP wrote: "token lacks the `repo` scope" is the answer an operator came
 for, but it is the upstream talking. `latency_ms` is the whole handshake,
-rounded to 10 ms: enough to tell a slow server from a fast one, blunt enough
-not to be a stopwatch on the network PoryMCP sits in. `protocol_version` and
-`server_info` are what came back from `initialize`, clamped to 32, 128 and 64
-bytes. Every upstream-controlled string PoryMCP carries (`description`,
+rounded to 10 ms, the era probe included: enough to tell a slow server from a
+fast one, blunt enough not to be a stopwatch on the network PoryMCP sits in. On
+a legacy server `protocol_version` and `server_info` are what came back from
+`initialize`, clamped to 32, 128 and 64 bytes. Every upstream-controlled string PoryMCP carries (`description`,
 `title`, `server_info.name`, `server_info.version`, `protocol_version` and
 `upstream_message`) has its control characters scrubbed before it is clamped: a
 newline or a tab becomes a space, and any other C0 character, `DEL` or U+FFFD is

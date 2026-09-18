@@ -330,8 +330,28 @@
   contacts no upstream and presents no credential, so it is not something an
   agent did, and the server log is where it appears. A `POST` with a wrong key
   still writes a `blocked` row, because a credential was tried.
+- **The proxy makes one kind of request nobody asked it for: the era probe.** A
+  group's aggregate endpoint sends `server/discover`, with the member's real
+  credential, to learn whether that member speaks the 2026-07-28 revision
+  before it lists it. It goes out over the same client as everything else, to
+  exactly the host in `upstreams.url`, with the same refusal to follow a
+  redirect, and everything in it is PoryMCP's own constant: no header and no
+  byte of the inbound request reaches it, so a key holder cannot choose what a
+  member is asked or which members answer. A member whose stored transport
+  cannot be dialled, or whose credential cannot be read, is not probed at all.
+  Each probe is bounded (5 s, 2 MiB). How often one is sent is bounded for
+  sequential callers only: the verdict is remembered for ten minutes, or thirty
+  seconds when the member did not list, so a member that is broken for good
+  costs at most one probe per thirty seconds however many calls arrive one after
+  another. Concurrent misses are not deduplicated, so a burst of K group calls
+  on a cold or expired entry costs K probes, and a virtual key with no
+  `rate_limit` chooses K. The walk over a group's N members has no deadline of
+  its own. A legacy upstream therefore receives one method it does not know,
+  carrying the credential, per miss; the common refusals (a `400` for a missing
+  session, a `404`, `-32601`, a closed connection) all read as legacy.
 - **Discovery is the one outbound call PoryMCP makes on an operator's behalf.**
   `POST /api/v1/upstreams/{id}/discover` and `POST /api/v1/upstreams/discover`
+  ask `server/discover` and then either list a 2026-07-28 server statelessly or
   run a real MCP handshake (`initialize`, `notifications/initialized`, a
   paginated `tools/list`, then a `DELETE` of the session so none is left open on
   the upstream) over the same client, with the same credential injection and
