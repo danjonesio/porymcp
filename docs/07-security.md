@@ -343,8 +343,11 @@
   sequential callers only: the verdict is remembered for ten minutes, or thirty
   seconds when the probe got no answer, was refused, or the member then did not
   list, so such a member costs at most one probe per thirty seconds however many
-  calls arrive one after another, whether or not each caller waits for its
-  answer. That includes a member that never answers the probe and lists fine by
+  calls arrive one after another. A probe that was answered is remembered
+  whether or not its caller waited. The one verdict not remembered is a probe
+  nothing answered because the caller had already gone, so a client that hangs
+  up mid-call costs a member that answers nothing one abandoned probe per call,
+  at that client's own rate. That includes a member that never answers the probe and lists fine by
   the handshake: it is probed every thirty seconds for good, up to 5 s each
   time. Concurrent misses are not deduplicated, so a burst of K group calls
   on a cold or expired entry costs K probes, and a virtual key with no
