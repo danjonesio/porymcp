@@ -13,6 +13,10 @@ import { ChevronDownIcon } from '@heroicons/react/16/solid'
  * into a well below it and pushes the rest of the dialog down rather than
  * covering it, so the options it compares stay on screen while it is read.
  *
+ * The label is left-aligned because a button centres its text by default, and a
+ * question long enough to wrap on a phone would otherwise sit centred above a
+ * left-aligned answer.
+ *
  * Headless owns `aria-expanded` and `aria-controls`; Escape needs no handling
  * because nothing opens without a deliberate press, and the dialog around this
  * one is welcome to take Escape for itself.
@@ -20,7 +24,7 @@ import { ChevronDownIcon } from '@heroicons/react/16/solid'
 export function HelpDisclosure({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Headless.Disclosure>
-      <Headless.DisclosureButton className="group relative flex items-center gap-1 rounded-lg text-base/6 font-medium text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:text-sm/6 dark:text-white">
+      <Headless.DisclosureButton className="group relative flex items-center gap-1 rounded-lg text-left text-base/6 font-medium text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:text-sm/6 dark:text-white">
         <span
           aria-hidden="true"
           className="absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
