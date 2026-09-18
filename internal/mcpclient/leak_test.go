@@ -320,6 +320,45 @@ func TestDiscoverErrorAllowlist(t *testing.T) {
 		}
 	})
 
+	// The three sentences the era probe can end a discovery with (PORM-151
+	// security requirement 3). Each is a fixed string: what the upstream
+	// advertised rides in supported_versions and its own words in
+	// upstream_message, and neither reaches Error. The probe's other outcomes
+	// have no sentence at all, which is why every row above still names
+	// initialize: a probe that learned nothing falls through to the handshake.
+	probed := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"modern server refuses the routing headers",
+			`{"jsonrpc":"2.0","id":null,"error":{"code":-32020,"message":"UPSTREAM_WORDS"}}`,
+			"upstream refused the routing headers PoryMCP sent (-32020)"},
+		{"modern server requires a client capability",
+			`{"jsonrpc":"2.0","id":null,"error":{"code":-32021,"message":"UPSTREAM_WORDS"}}`,
+			"upstream requires a client capability PoryMCP does not offer (-32021)"},
+		{"modern server speaks no shared version",
+			`{"jsonrpc":"2.0","id":null,"error":{"code":-32022,"message":"UPSTREAM_WORDS","data":{"supported":["UPSTREAM_VERSION"]}}}`,
+			"upstream supports no protocol version PoryMCP speaks"},
+	}
+	for _, tc := range probed {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.on[stepDiscover] = func(w http.ResponseWriter, _ request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, tc.body)
+			}
+			got := discover(t, f.upstream(), nil)
+			if got.Error != tc.want {
+				t.Errorf("error=%q, want %q", got.Error, tc.want)
+			}
+			if got.UpstreamMessage != "UPSTREAM_WORDS" {
+				t.Errorf("upstream_message=%q, want the server's own words and nothing PoryMCP composed", got.UpstreamMessage)
+			}
+		})
+	}
+
 	t.Run("undecryptable credential", func(t *testing.T) {
 		// Decided by the management API, before this package is reached, and
 		// built through the same helper so the shape matches.
@@ -444,8 +483,9 @@ func TestDiscoverSendsCustomHeaders(t *testing.T) {
 			t.Errorf("%s %s sent Accept %q, want %q", r.Method, r.RPC, r.Accept, AcceptMCP)
 		}
 	}
-	// The session the upstream minted, not one an auth_config chose.
-	for _, r := range f.requests()[1:] {
+	// The session the upstream minted, not one an auth_config chose. From the
+	// notification on: the era probe and initialize come before any session.
+	for _, r := range f.requests()[2:] {
 		if r.Session != fixtureSession {
 			t.Errorf("%s %s carried session %q, want the one initialize minted", r.Method, r.RPC, r.Session)
 		}

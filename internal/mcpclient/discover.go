@@ -166,9 +166,22 @@ type Discovery struct {
 	// caller to their names. A count and never a name: the reason they were
 	// dropped is that the name carries something a log or a page has no
 	// business reproducing.
-	Unnameable int    `json:"unnameable_tools"`
-	Truncated  bool   `json:"truncated"`
-	Error      string `json:"error,omitempty"`
+	Unnameable int  `json:"unnameable_tools"`
+	Truncated  bool `json:"truncated"`
+	// Era is which generation of MCP the upstream spoke: "modern" when it
+	// answered server/discover as a 2026-07-28 server, "legacy" when it
+	// answered that probe some other way or completed initialize. It is
+	// evidence and never a default, so it is absent when nothing came back.
+	Era string `json:"era,omitempty"`
+	// SupportedVersions is what the upstream said it supports, from its
+	// server/discover answer or a -32022's data. At most eight entries, each a
+	// plain token. Truncated is not touched by it: that flag is about the tool
+	// catalogue, and the dashboard says so in words.
+	SupportedVersions []string `json:"supported_versions,omitempty"`
+	// Capabilities is the names of what the upstream advertised, never the
+	// settings under them: see capabilityFamilies.
+	Capabilities []string `json:"capabilities,omitempty"`
+	Error        string   `json:"error,omitempty"`
 	// UpstreamMessage is a sanitised JSON-RPC error.message and the one place
 	// an upstream's own words are repeated. It is a separate field from Error
 	// on purpose: Error stays a closed set an operator and the dashboard can
@@ -251,9 +264,13 @@ func New() *Client {
 	return &Client{http: NewHTTPClient(Options{Timeout: discoverBudget})}
 }
 
-// Discover performs a real MCP handshake against one upstream and reports what
-// it advertises: initialize, notifications/initialized, tools/list following
-// every cursor, then DELETE to end the session it opened.
+// Discover asks one upstream what it advertises, in whichever era it speaks.
+// It sends server/discover first (see ProbeEra). A 2026-07-28 server is then
+// listed statelessly: tools/list following every cursor, each request carrying
+// its own version, method and _meta, with no session to open or end. Anything
+// else gets the handshake it always got: initialize,
+// notifications/initialized, tools/list following every cursor, then DELETE to
+// end the session it opened.
 //
 // It is a pure function of its arguments. plainAuth is the DECRYPTED
 // credential, this package holds no key and reads no config, which is what
@@ -303,6 +320,33 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	defer cancel()
 	start := time.Now()
 
+	// Step 0: which era. Inside the budget and after start, so latency_ms
+	// covers the whole call. The probe's value is read here and never stamped
+	// through fail on the path that falls back: a legacy verdict is not a
+	// failure, and the handshake below reports its own.
+	pr := ProbeEra(ctx, c.http, up, plainAuth)
+	if pr.Era == EraModern {
+		out.Era = string(EraModern)
+		out.SupportedVersions = pr.Supported
+		out.Capabilities = pr.Capabilities
+		out.ServerInfo = pr.Info
+		if pr.Fail != "" {
+			// A modern server that cannot be spoken to. No fallback: it has no
+			// handshake to fall back to.
+			out.LatencyMS = latencyMS(time.Since(start))
+			out.UpstreamMessage = pr.Message
+			return out.fail(pr.Fail)
+		}
+		out.ProtocolVersion = pr.Version
+		p := &probe{client: c.http, up: up, auth: plainAuth, host: host, modern: true, protocol: pr.Version}
+		return p.catalogue(ctx, start, out)
+	}
+	if pr.Reached {
+		// The upstream answered, and not as a modern server.
+		out.Era = string(EraLegacy)
+		out.SupportedVersions = pr.Supported
+	}
+
 	p := &probe{client: c.http, up: up, auth: plainAuth, host: host}
 
 	// Step 1: initialize.
@@ -338,12 +382,17 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	}
 
 	var initResult struct {
-		ProtocolVersion string `json:"protocolVersion"`
-		ServerInfo      *Info  `json:"serverInfo"`
+		ProtocolVersion string          `json:"protocolVersion"`
+		ServerInfo      *Info           `json:"serverInfo"`
+		Capabilities    json.RawMessage `json:"capabilities"`
 	}
 	if json.Unmarshal(res.result, &initResult) != nil || initResult.ProtocolVersion == "" {
 		return out.fail("upstream did not complete the MCP handshake")
 	}
+	// A completed initialize is evidence of the era on its own, which matters
+	// when the probe got nothing back inside its budget and the handshake did.
+	out.Era = string(EraLegacy)
+	out.Capabilities = capabilityFamilies(initResult.Capabilities)
 	// Scrub before Clamp on every one of these: the cap bounds the size, and
 	// the Scrub is what keeps an upstream's control characters out of an
 	// operator's terminal.
@@ -367,13 +416,25 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	}
 
 	// Step 3: the catalogue.
+	return p.catalogue(ctx, start, out)
+}
+
+// catalogue pages tools/list into out and returns the finished Discovery. Both
+// eras end here: what differs is the request, a bare one inside a session for
+// the handshake era and one that carries _meta and declares itself for the
+// modern one, and the probe knows which it is.
+func (p *probe) catalogue(ctx context.Context, start time.Time, out Discovery) Discovery {
 	cursor := ""
 	for page := 0; ; page++ {
 		if page >= maxPages {
 			out.Truncated = true
 			break
 		}
-		res := p.exchange(ctx, stepList, listRequest(cursor), true)
+		request := listRequest(cursor)
+		if p.modern {
+			request = ModernListRequest(idList, cursor)
+		}
+		res := p.exchange(ctx, stepList, request, true)
 		if res.fail != "" {
 			out.LatencyMS = latencyMS(time.Since(start))
 			out.UpstreamMessage = res.message

@@ -40,18 +40,20 @@ func TestDiscoverSendsInitializeFirst(t *testing.T) {
 		t.Errorf("latency_ms=%d, want it rounded to 10ms", got.LatencyMS)
 	}
 
-	want := []string{"initialize", "notifications/initialized", "tools/list", "DELETE"}
+	// The era probe goes first (PORM-151). This fixture refuses it the way a
+	// session-enforcing server does, so the handshake follows unchanged.
+	want := []string{"server/discover", "initialize", "notifications/initialized", "tools/list", "DELETE"}
 	if calls := f.rpcCalls(); !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v, want %v", calls, want)
 	}
 	reqs := f.requests()
-	if reqs[0].Session != "" || reqs[0].Protocol != "" {
-		t.Errorf("initialize carried session=%q protocol=%q; there is nothing negotiated to declare yet", reqs[0].Session, reqs[0].Protocol)
+	if reqs[1].Session != "" || reqs[1].Protocol != "" {
+		t.Errorf("initialize carried session=%q protocol=%q; there is nothing negotiated to declare yet", reqs[1].Session, reqs[1].Protocol)
 	}
-	if reqs[1].HasID {
+	if reqs[2].HasID {
 		t.Error("notifications/initialized carried an id; a notification has none, and a server that got one would owe a response")
 	}
-	for _, r := range reqs[1:] {
+	for _, r := range reqs[2:] {
 		if r.Session != fixtureSession {
 			t.Errorf("%s carried session %q, want the one initialize minted", r.RPC, r.Session)
 		}
@@ -140,7 +142,9 @@ func TestDiscoverSendsNegotiatedProtocolVersion(t *testing.T) {
 	if got.ProtocolVersion != "2025-03-26" {
 		t.Errorf("protocol_version=%q, want the negotiated one", got.ProtocolVersion)
 	}
-	for _, r := range f.requests()[1:] {
+	// From the notification on: [0] is the era probe, which declares PoryMCP's
+	// own revision, and [1] is initialize, which has nothing to declare yet.
+	for _, r := range f.requests()[2:] {
 		if r.Protocol != "2025-03-26" {
 			t.Errorf("%s declared MCP-Protocol-Version %q, want the negotiated 2025-03-26", r.RPC, r.Protocol)
 		}
@@ -321,9 +325,9 @@ func TestDiscoverBoundsEmptyPageLoop(t *testing.T) {
 	if !got.OK || got.ToolCount != 0 || !got.Truncated {
 		t.Fatalf("ok=%v tool_count=%d truncated=%v, want an honest empty truncated catalogue", got.OK, got.ToolCount, got.Truncated)
 	}
-	// initialize + notification + maxPages + DELETE.
-	if n := len(f.requests()); n > maxPages+3 {
-		t.Errorf("%d requests, want at most %d", n, maxPages+3)
+	// The era probe + initialize + notification + maxPages + DELETE.
+	if n := len(f.requests()); n > maxPages+4 {
+		t.Errorf("%d requests, want at most %d", n, maxPages+4)
 	}
 }
 
@@ -688,10 +692,10 @@ func TestDiscoverRefusesAnOversizedBody(t *testing.T) {
 		if want := "upstream's answer to initialize is larger than discovery will read"; got.Error != want {
 			t.Errorf("error=%q, want %q", got.Error, want)
 		}
-		// One request: nothing was learned, and the upstream minted no session
-		// this could have ended.
-		if n := len(f.requests()); n != 1 {
-			t.Errorf("%d requests, want 1", n)
+		// The era probe and initialize, and nothing after: nothing was learned,
+		// and the upstream minted no session this could have ended.
+		if n := len(f.requests()); n != 2 {
+			t.Errorf("%d requests, want 2", n)
 		}
 	})
 
@@ -845,7 +849,7 @@ func TestDiscoverCancelledByCaller(t *testing.T) {
 	// has a session to end, and only the cancelled-context check stops it.
 	t.Run("after the session is open", func(t *testing.T) {
 		f := run(t, "tools/list")
-		if calls := f.rpcCalls(); len(calls) < 3 || calls[2] != "tools/list" {
+		if calls := f.rpcCalls(); len(calls) < 4 || calls[3] != "tools/list" {
 			t.Fatalf("calls=%v; the session was never opened, so this is the initialize case again", calls)
 		}
 	})
