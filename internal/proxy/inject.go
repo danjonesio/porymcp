@@ -16,9 +16,8 @@ import "net/http"
 // drop names allowlisted headers that must not cross on this request, because
 // they declare an era the member does not speak (memberHeaders.drop). It is
 // honoured here, and not by deleting from dst afterwards, so there is still
-// one place that decides which client headers leave. A dropped name is simply
-// never written; the Mcp-Param- family is not on the list and cannot be
-// dropped.
+// one place that decides which client headers leave. A dropped name is never
+// written. The Mcp-Param- family is not on the list and cannot be dropped.
 //
 // Mcp-Method and Mcp-Name are the 2026-07-28 revision's routing headers,
 // held to the body by checkRoutingHeaders before anything reaches here. The
