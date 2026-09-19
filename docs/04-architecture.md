@@ -13,9 +13,11 @@
   carries one comes from: one refusal to follow a redirect, one wrapped default
   transport, and a timeout and read cap each caller sizes for its own job (the
   proxy relays a client's call in 60 s and 16 MiB; discovery has 10 s and 2 MiB
-  for a whole handshake). The proxy's relay, the proxy's own catalogue request
-  and the dashboard's discovery call all go through it, so a rule added here
-  holds on all three rather than on the path someone remembered
+  for a whole handshake; the era probe, `server/discover`, has 5 s and 2 MiB
+  for its one round trip, on both planes). The proxy's relay, the proxy's own
+  catalogue request and era probe, and the dashboard's discovery call all go
+  through it, so a rule added here holds on all of them rather than on the path
+  someone remembered
 - Tool discovery (management plane): a real MCP handshake against one upstream,
   run for an **operator** rather than a virtual key, returning a fixed set of
   structured fields and persisting nothing
@@ -129,11 +131,13 @@ an unsaved body, carrying the admin key
 → Take one of four in-flight slots, so a request that makes no outbound call
   never holds one
 → Check the URL is an absolute http or https URL
-→ Inject the real credential and initialize against that URL, never a host it
-  names in a redirect
-→ notifications/initialized, then tools/list followed to the end of its
-  cursors, capped at 500 tools and 50 pages
-→ DELETE the session, so none is left open on the upstream
+→ Inject the real credential and ask server/discover on the 2026-07-28
+  revision, against that URL and never a host it names in a redirect
+→ A modern server: tools/list followed to the end of its cursors, each request
+  declaring its version and method and carrying _meta, capped at 500 tools and
+  50 pages; no session, so nothing to end
+→ Anything else: initialize, notifications/initialized, then tools/list the
+  same way, and DELETE the session, so none is left open on the upstream
 → On the saved route, stamp last_test_at and last_test_ok on that upstream's
   own row (a timestamp and a flag, never anything the upstream said) unless
   the caller has gone away or the row was edited or deleted while the handshake
@@ -145,8 +149,52 @@ an unsaved body, carrying the admin key
   naming the upstream id when that stamp could not be written
 ```
 
-The whole sequence is bounded at 10 s and the teardown at a further 2 s. The
-catalogue is not stored: it is read again on the next call.
+The whole sequence, the probe included, is bounded at 10 s and the teardown at
+a further 2 s. The catalogue is not stored: it is read again on the next call.
+`docs/03-api.md` has the rule that decides which era an answer means.
+
+### The era cache (data plane, group endpoints only)
+
+A group's aggregate endpoint lists every member to build its catalogue and to
+route a call, and it lists each member in the era that member speaks. The first
+time it meets an upstream it sends the same `server/discover` probe, through the
+same client, with the real credential and PoryMCP's own constants (nothing of
+the inbound request reaches it), and remembers the verdict in memory. A modern
+member is then listed with `MCP-Protocol-Version`, `Mcp-Method: tools/list` and
+`params._meta`; a legacy member gets the bare `tools/list` it always got; a
+modern member that cannot be spoken to is skipped with the usual
+`group member skipped` warning and no request. Nothing is persisted: a restart
+or a redeploy means one cold walk.
+
+One rule sets how long a verdict lasts. A verdict that listed lives ten
+minutes. Anything that did not list lives thirty seconds: an unusable verdict,
+a probe nothing answered, and any failure to list. That second figure is a
+floor and not an eviction, because the member walk runs on every `tools/call`
+as well as every `tools/list`: a member that is broken for good costs at most
+one probe per thirty seconds from callers arriving one after another. The
+lifetime is chosen when the probe returns and nothing lengthens it afterwards,
+so the thirty seconds also applies to a member that never answers
+`server/discover` and then lists perfectly well the legacy way: it is asked
+again every thirty seconds, and the group call that asks pays up to the 5 s
+probe budget each time. A verdict is remembered whether or not the caller
+waited for it; the one thing not remembered is a probe nothing answered
+because the caller had already gone. The cache holds one
+entry per upstream id (at most 1024, dropping the one that expires soonest),
+and an entry is a miss as soon as the upstream's `updated_at` differs from the
+one the probe saw, so saving the upstream makes the proxy ask again. Pressing
+Tools does not: a test is not an edit.
+
+What this does not bound, stated so nobody has to find out. Misses are not
+deduplicated, so K group calls arriving together on a cold or expired entry
+cost K probes, and every entry made at boot expires together. The member walk
+is sequential with no deadline of its own, a group's size is uncapped, and each
+member costs up to 5 s for the probe and 60 s for the listing; the member that
+costs the most is one that accepts the connection and never answers. A
+`server/discover` slower than 5 s reads as legacy; the `member era probed`
+DEBUG line (slug, upstream id, era, `reached`, latency) shows it as
+`reached=false`. A key bound to one upstream, and the
+`/{virtual_key_id}/{upstream_slug}/mcp` route, relay the client's own request
+and never list, so they are never probed.
 
 ## Tech stack (recommended)
 

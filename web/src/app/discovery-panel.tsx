@@ -1,11 +1,12 @@
 'use client'
 
+import { Badge } from '@/components/badge'
 import { Button } from '@/components/button'
 import { HelpDisclosure } from '@/components/help-disclosure'
 import { Code, Text } from '@/components/text'
 import type { DiscoveredTool, Discovery } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
-import { PLAIN_HTTP_NOTE, hostOf, plainHTTPCredential, scopedToolName } from '@/lib/discovery'
+import { PLAIN_HTTP_NOTE, hostOf, plainHTTPCredential, protocolSummary, scopedToolName } from '@/lib/discovery'
 import clsx from 'clsx'
 import { useEffect, useRef, useState } from 'react'
 
@@ -23,40 +24,86 @@ export const IDLE: DiscoveryState = { result: null, pending: false, error: '' }
  * so a caller can show what the handshake learned when the rest of the panel has
  * nothing to show. PORM-58 made this dialog the connection test rather than
  * building a second surface for it: there is no other place these belong.
+ *
+ * The Protocol row says which MCP era the server spoke as well as the version.
+ * What the server advertised beyond that (the versions it supports, the names
+ * of its capabilities) is detail, so it sits behind a disclosure, and the
+ * disclosure is left out when the server advertised neither.
  */
 export function DiscoverySummary({ result }: { result: Discovery }) {
   const info = result.server_info
   const server = info ? [info.name, info.version].filter(Boolean).join(' ') : ''
+  const protocol = protocolSummary(result)
+  const versions = result.supported_versions ?? []
+  const capabilities = result.capabilities ?? []
   return (
-    <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <div>
-        <dt className="text-base/7 font-medium sm:text-sm/6">Server</dt>
-        {/* Upstream-controlled text: React children, left-to-right, and it wraps. */}
-        <dd dir="ltr" className="mt-1 text-base/7 wrap-break-word text-zinc-500 sm:text-sm/6 dark:text-zinc-400">
-          {server || 'Not reported'}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-base/7 font-medium sm:text-sm/6">Tools</dt>
-        <dd className="mt-1 text-base/7 text-zinc-500 tabular-nums sm:text-sm/6 dark:text-zinc-400">
-          {result.tool_count}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-base/7 font-medium sm:text-sm/6">Latency</dt>
-        <dd className="mt-1 text-base/7 text-zinc-500 tabular-nums sm:text-sm/6 dark:text-zinc-400">
-          {result.latency_ms} ms
-        </dd>
-      </div>
-      {result.protocol_version ? (
+    <>
+      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
-          <dt className="text-base/7 font-medium sm:text-sm/6">Protocol</dt>
+          <dt className="text-base/7 font-medium sm:text-sm/6">Server</dt>
+          {/* Upstream-controlled text: React children, left-to-right, and it wraps. */}
           <dd dir="ltr" className="mt-1 text-base/7 wrap-break-word text-zinc-500 sm:text-sm/6 dark:text-zinc-400">
-            {result.protocol_version}
+            {server || 'Not reported'}
           </dd>
         </div>
+        <div>
+          <dt className="text-base/7 font-medium sm:text-sm/6">Tools</dt>
+          <dd className="mt-1 text-base/7 text-zinc-500 tabular-nums sm:text-sm/6 dark:text-zinc-400">
+            {result.tool_count}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-base/7 font-medium sm:text-sm/6">Latency</dt>
+          <dd className="mt-1 text-base/7 text-zinc-500 tabular-nums sm:text-sm/6 dark:text-zinc-400">
+            {result.latency_ms} ms
+          </dd>
+        </div>
+        {protocol ? (
+          <div>
+            <dt className="text-base/7 font-medium sm:text-sm/6">Protocol</dt>
+            {/* The version is upstream-controlled on a handshake server. */}
+            <dd dir="ltr" className="mt-1 text-base/7 wrap-break-word text-zinc-500 sm:text-sm/6 dark:text-zinc-400">
+              {protocol}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+      {versions.length > 0 || capabilities.length > 0 ? (
+        <div className="mt-4">
+          <HelpDisclosure label="Which versions and capabilities does this server report?">
+            <ReportedList label="Supported versions" items={versions} />
+            <ReportedList label="Capabilities" items={capabilities} />
+          </HelpDisclosure>
+        </div>
       ) : null}
-    </dl>
+    </>
+  )
+}
+
+/**
+ * One labelled row of what a server reported about itself, as badges. Every
+ * item is upstream-controlled text: a React child, left-to-right, allowed to
+ * break anywhere so a long extension name wraps on a phone, and never a title
+ * attribute. A real list, so its length and boundaries are announced. Renders
+ * nothing for an empty list.
+ */
+function ReportedList({ label, items }: { label: string; items: string[] }) {
+  if (items.length === 0) return null
+  return (
+    <div>
+      <p className="font-medium text-zinc-950 dark:text-white">{label}</p>
+      {/* Named, because two of these sit side by side and "list, 4 items"
+          says nothing about which one a screen reader has reached. */}
+      <ul role="list" aria-label={label} className="mt-2 flex flex-wrap gap-2">
+        {items.map((item, index) => (
+          <li key={index} className="max-w-full min-w-0">
+            <Badge color="zinc" dir="ltr" className="max-w-full break-all">
+              {item}
+            </Badge>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -165,7 +212,10 @@ export function DiscoveryPanel({
   // The server keeps what the handshake learned on a discovery that failed
   // later, because "initialize worked, tools/list did not" is the most useful
   // thing an operator can be told. Show it whenever it is there.
-  const learned = !!result && (!!result.protocol_version || !!result.server_info || result.latency_ms > 0)
+  // The era counts as learned: a modern server that refuses the probe has no
+  // version and no server info, and a fast refusal rounds to 0 ms.
+  const learned =
+    !!result && (!!result.protocol_version || !!result.server_info || !!result.era || result.latency_ms > 0)
   // Anything that prints above the summary needs a gap under it.
   const notes = !!failure || !!result?.upstream_message || (!!result && plainHTTPCredential(url, authType))
 

@@ -140,6 +140,16 @@ export type Discovery = {
   /** Always present: the server sends it on a failed discovery too. */
   latency_ms: number
   protocol_version?: string
+  /**
+   * Which MCP era the upstream spoke: `modern` is the stateless 2026-07-28
+   * revision, `legacy` the initialize handshake. Absent when nothing answered,
+   * and on a response from a PoryMCP that predates the field.
+   */
+  era?: 'modern' | 'legacy'
+  /** The versions the upstream said it supports. At most 8. Upstream-controlled text. */
+  supported_versions?: string[]
+  /** The names of what the upstream advertised. At most 16. Upstream-controlled text. */
+  capabilities?: string[]
   server_info?: { name: string; version?: string }
   /** The upstream's stored slug. Absent on the unsaved-payload route. */
   slug?: string

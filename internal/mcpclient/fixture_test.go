@@ -65,6 +65,7 @@ type request struct {
 	Protocol string
 	Accept   string
 	Header   http.Header
+	Body     string // the request body as sent, for a test that reads params
 }
 
 const (
@@ -149,6 +150,7 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			} `json:"params"`
 		}
 		_ = json.Unmarshal(body, &probe)
+		rq.Body = string(body)
 		rq.RPC = probe.Method
 		rq.HasID = len(probe.ID) > 0
 		rq.Cursor = probe.Params.Cursor

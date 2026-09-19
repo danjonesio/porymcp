@@ -55,11 +55,13 @@ const (
 // shorten it; TestDiscoverTimesOut pins the shipped value at 10s first.
 var discoverBudget = 10 * time.Second
 
-// The MCP revision PoryMCP asks for, and who it says it is. tools/list is
-// unchanged across every revision to date, so no fallback negotiation is
-// needed: what a server answers with is what later requests declare.
+// The handshake revision PoryMCP asks for, and who it says it is. It is the
+// newest revision that still has a handshake; a server on an older one answers
+// with its own, and what a server answers with is what later requests declare.
+// tools/list is unchanged across every handshake revision, so no further
+// negotiation is needed.
 const (
-	clientProtocolVersion = "2025-06-18"
+	clientProtocolVersion = "2025-11-25"
 	clientName            = "porymcp"
 	// clientVersion: the binary carries no build-stamped version today. When
 	// one lands it belongs here, so an upstream's own logs can tell which
@@ -67,13 +69,19 @@ const (
 	clientVersion = "dev"
 )
 
-// The JSON-RPC ids PoryMCP puts on its own two requests. They are named
-// because they are read back as well as written: a Streamable HTTP server may
-// put its own notifications and requests on the POST's stream, and the id is
-// what tells its answer to THIS request apart from the rest of the traffic.
+// The JSON-RPC ids PoryMCP puts on its own requests. They are named because
+// they are read back as well as written: a Streamable HTTP server may put its
+// own notifications and requests on the POST's stream, and the id is what
+// tells its answer to THIS request apart from the rest of the traffic.
+//
+// idDiscover is 3 and not 0 on purpose. The ids are raw JSON tokens, and a
+// server that tests `!request.id` reads 0 as "no id", treats the probe as a
+// notification and answers it with nothing, which would make a modern server
+// look like a legacy one.
 const (
 	idInitialize = "1"
 	idList       = "2"
+	idDiscover   = "3"
 )
 
 var initializeRequest = fmt.Sprintf(
@@ -85,13 +93,15 @@ var initializeRequest = fmt.Sprintf(
 // implementations answer 202 with an empty body.
 const notifyRequest = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
 
-// The three steps a failure can be attributed to. They are named in
+// The steps a request can belong to. The three handshake steps are named in
 // Discovery.Error, so they are fixed strings and never anything an upstream
-// chose.
+// chose. stepDiscover is the 2026-07-28 probe that now goes first; its
+// failures are a verdict (see classify) and never a sentence of their own.
 const (
 	stepInitialize = "initialize"
 	stepNotify     = "notifications/initialized"
 	stepList       = "tools/list"
+	stepDiscover   = "server/discover"
 )
 
 // Annotations is the MCP tool-annotation block, decoded into a fixed shape
@@ -158,9 +168,22 @@ type Discovery struct {
 	// caller to their names. A count and never a name: the reason they were
 	// dropped is that the name carries something a log or a page has no
 	// business reproducing.
-	Unnameable int    `json:"unnameable_tools"`
-	Truncated  bool   `json:"truncated"`
-	Error      string `json:"error,omitempty"`
+	Unnameable int  `json:"unnameable_tools"`
+	Truncated  bool `json:"truncated"`
+	// Era is which generation of MCP the upstream spoke: "modern" when it
+	// answered server/discover as a 2026-07-28 server, "legacy" when it
+	// answered that probe some other way or completed initialize. It is
+	// evidence and never a default, so it is absent when nothing came back.
+	Era string `json:"era,omitempty"`
+	// SupportedVersions is what the upstream said it supports, from its
+	// server/discover answer or a -32022's data. At most eight entries, each a
+	// plain token. Truncated is not touched by it: that flag is about the tool
+	// catalogue, and the dashboard says so in words.
+	SupportedVersions []string `json:"supported_versions,omitempty"`
+	// Capabilities is the names of what the upstream advertised, never the
+	// settings under them: see capabilityFamilies.
+	Capabilities []string `json:"capabilities,omitempty"`
+	Error        string   `json:"error,omitempty"`
 	// UpstreamMessage is a sanitised JSON-RPC error.message and the one place
 	// an upstream's own words are repeated. It is a separate field from Error
 	// on purpose: Error stays a closed set an operator and the dashboard can
@@ -243,9 +266,13 @@ func New() *Client {
 	return &Client{http: NewHTTPClient(Options{Timeout: discoverBudget})}
 }
 
-// Discover performs a real MCP handshake against one upstream and reports what
-// it advertises: initialize, notifications/initialized, tools/list following
-// every cursor, then DELETE to end the session it opened.
+// Discover asks one upstream what it advertises, in whichever era it speaks.
+// It sends server/discover first (see ProbeEra). A 2026-07-28 server is then
+// listed statelessly: tools/list following every cursor, each request carrying
+// its own version, method and _meta, with no session to open or end. Anything
+// else gets the handshake it always got: initialize,
+// notifications/initialized, tools/list following every cursor, then DELETE to
+// end the session it opened.
 //
 // It is a pure function of its arguments. plainAuth is the DECRYPTED
 // credential, this package holds no key and reads no config, which is what
@@ -295,6 +322,33 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	defer cancel()
 	start := time.Now()
 
+	// Step 0: which era. Inside the budget and after start, so latency_ms
+	// covers the whole call. The probe's value is read here and never stamped
+	// through fail on the path that falls back: a legacy verdict is not a
+	// failure, and the handshake below reports its own.
+	pr := ProbeEra(ctx, c.http, up, plainAuth)
+	if pr.Era == EraModern {
+		out.Era = string(EraModern)
+		out.SupportedVersions = pr.Supported
+		out.Capabilities = pr.Capabilities
+		out.ServerInfo = pr.Info
+		if pr.Fail != "" {
+			// A modern server that cannot be spoken to. No fallback: it has no
+			// handshake to fall back to.
+			out.LatencyMS = latencyMS(time.Since(start))
+			out.UpstreamMessage = pr.Message
+			return out.fail(pr.Fail)
+		}
+		out.ProtocolVersion = pr.Version
+		p := &probe{client: c.http, up: up, auth: plainAuth, host: host, modern: true, protocol: pr.Version}
+		return p.catalogue(ctx, start, out)
+	}
+	if pr.Reached {
+		// The upstream answered, and not as a modern server.
+		out.Era = string(EraLegacy)
+		out.SupportedVersions = pr.Supported
+	}
+
 	p := &probe{client: c.http, up: up, auth: plainAuth, host: host}
 
 	// Step 1: initialize.
@@ -330,23 +384,22 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	}
 
 	var initResult struct {
-		ProtocolVersion string `json:"protocolVersion"`
-		ServerInfo      *Info  `json:"serverInfo"`
+		ProtocolVersion string          `json:"protocolVersion"`
+		ServerInfo      *Info           `json:"serverInfo"`
+		Capabilities    json.RawMessage `json:"capabilities"`
 	}
 	if json.Unmarshal(res.result, &initResult) != nil || initResult.ProtocolVersion == "" {
 		return out.fail("upstream did not complete the MCP handshake")
 	}
+	// A completed initialize is evidence of the era on its own, which matters
+	// when the probe got nothing back inside its budget and the handshake did.
+	out.Era = string(EraLegacy)
+	out.Capabilities = capabilityFamilies(initResult.Capabilities)
 	// Scrub before Clamp on every one of these: the cap bounds the size, and
 	// the Scrub is what keeps an upstream's control characters out of an
 	// operator's terminal.
 	out.ProtocolVersion, _ = Clamp(Scrub(initResult.ProtocolVersion), maxProtocolVersionBytes)
-	if initResult.ServerInfo != nil {
-		name, _ := Clamp(Scrub(initResult.ServerInfo.Name), maxServerNameBytes)
-		version, _ := Clamp(Scrub(initResult.ServerInfo.Version), maxServerVersionBytes)
-		if name != "" || version != "" {
-			out.ServerInfo = &Info{Name: name, Version: version}
-		}
-	}
+	out.ServerInfo = boundInfo(initResult.ServerInfo)
 	// The NEGOTIATED version, not the one asked for: a strict 2025-06-18
 	// server answers 400 when the header disagrees with what it chose. It is
 	// only sent when it is a value a header can hold, so a server that
@@ -365,13 +418,25 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	}
 
 	// Step 3: the catalogue.
+	return p.catalogue(ctx, start, out)
+}
+
+// catalogue pages tools/list into out and returns the finished Discovery. Both
+// eras end here: what differs is the request, a bare one inside a session for
+// the handshake era and one that carries _meta and declares itself for the
+// modern one, and the probe knows which it is.
+func (p *probe) catalogue(ctx context.Context, start time.Time, out Discovery) Discovery {
 	cursor := ""
 	for page := 0; ; page++ {
 		if page >= maxPages {
 			out.Truncated = true
 			break
 		}
-		res := p.exchange(ctx, stepList, listRequest(cursor), true)
+		request := listRequest(cursor)
+		if p.modern {
+			request = ModernListRequest(idList, cursor)
+		}
+		res := p.exchange(ctx, stepList, request, true)
 		if res.fail != "" {
 			out.LatencyMS = latencyMS(time.Since(start))
 			out.UpstreamMessage = res.message
@@ -434,6 +499,22 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	return out
 }
 
+// boundInfo prepares an upstream's name for itself to be shown: Scrub then
+// Clamp on both halves, and nil when neither survives. Both eras learn it (the
+// handshake from initialize's serverInfo, a modern server from the _meta of its
+// server/discover answer) and both go through here, so the two cannot drift.
+func boundInfo(in *Info) *Info {
+	if in == nil {
+		return nil
+	}
+	name, _ := Clamp(Scrub(in.Name), maxServerNameBytes)
+	version, _ := Clamp(Scrub(in.Version), maxServerVersionBytes)
+	if name == "" && version == "" {
+		return nil
+	}
+	return &Info{Name: name, Version: version}
+}
+
 // upstreamTool is the catalogue entry as the upstream writes it, before any of
 // it is clamped.
 type upstreamTool struct {
@@ -469,16 +550,31 @@ type probe struct {
 	host     string
 	session  string
 	protocol string
+	// modern marks a request of the 2026-07-28 era: it declares its version
+	// and its method in headers, and protocol is PoryMCP's own constant from
+	// the first request rather than something an initialize negotiated.
+	modern bool
 }
 
 // stepResult is one request's outcome: either a JSON-RPC result to read, or a
 // sentence saying why there is none. message is the upstream's own words,
 // sanitised, and it can accompany either.
+//
+// status, id, code and data are what the era probe's verdict is read from.
+// status is recorded on every path that got an HTTP response and is zero only
+// when nothing came back. id, code and data are recorded on every such path
+// that was asked for a result: id is the raw id token of the document that was
+// picked, and code and data are its JSON-RPC error's, when it carried one. The
+// notification, which expects no document, records the status alone.
 type stepResult struct {
 	header  http.Header
 	result  json.RawMessage
 	fail    string
 	message string
+	status  int
+	id      string
+	code    int
+	data    json.RawMessage
 }
 
 // rpcEnvelope is a JSON-RPC document as far as this package reads one: which
@@ -487,8 +583,9 @@ type rpcEnvelope struct {
 	ID     json.RawMessage `json:"id"`
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	} `json:"error"`
 }
 
@@ -540,6 +637,18 @@ func pickResponse(payloads [][]byte, wantID string) (rpcEnvelope, bool) {
 // for the notification, where any 2xx is success and an empty body is the
 // expected answer.
 func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool) stepResult {
+	// The budget is judged by the clock as well as by the context. A deadline
+	// is a timer, and an overdue timer fires when the scheduler gets to it:
+	// on a busy machine the client's own timeout, set a moment after the
+	// context's and run by a different goroutine, can cancel a request while
+	// the context still reads as live. Before the era probe went first that
+	// was harmless, because the failed request was the last one. Now a probe
+	// that spent the whole budget is followed by a handshake, and without
+	// this the handshake could start, and even finish, after the budget had
+	// run out. Same sentence as the deadline itself, and nothing is sent.
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return stepResult{fail: p.transportFailure(step, context.DeadlineExceeded)}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.up.URL, strings.NewReader(body))
 	if err != nil {
 		// Unreachable: CheckTarget already parsed this URL. Classified rather
@@ -547,7 +656,7 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 		return stepResult{fail: "url must be an absolute http or https URL"}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if err := p.setHeaders(req); err != nil {
+	if err := p.setHeaders(req, step); err != nil {
 		return stepResult{fail: errNeedsCredential}
 	}
 
@@ -567,9 +676,21 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 		// news, for an operator, as a stream with no data event at all.
 		perr = errNoEvent
 	}
-	message := ""
-	if decoded && env.Error != nil {
-		message = sanitiseMessage(env.Error.Message)
+	// out is filled before any branch below returns, so every outcome that
+	// got an HTTP response says which status it was and which document was
+	// read, whatever sentence it goes on to choose.
+	out := stepResult{status: status}
+	if decoded {
+		out.id = strings.TrimSpace(string(env.ID))
+		if env.Error != nil {
+			out.message = sanitiseMessage(env.Error.Message)
+			out.code = env.Error.Code
+			out.data = env.Error.Data
+		}
+	}
+	failed := func(msg string) stepResult {
+		out.fail = msg
+		return out
 	}
 
 	if status < 200 || status >= 300 {
@@ -578,37 +699,39 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 		// and a server is free to attach a JSON-RPC body to either. The
 		// upstream's own message rides along in its own field.
 		if msg, ok := statusFailure(status, step); ok {
-			return stepResult{fail: msg, message: message}
+			return failed(msg)
 		}
 		if decoded && env.Error != nil {
-			return stepResult{fail: fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code), message: message}
+			return failed(fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code))
 		}
-		return stepResult{fail: fmt.Sprintf("upstream answered %d at %s", status, step)}
+		return failed(fmt.Sprintf("upstream answered %d at %s", status, step))
 	}
 
 	if !wantResult {
-		return stepResult{header: hdr}
+		return stepResult{header: hdr, status: status}
 	}
 	if perr != nil {
+		out.message = ""
 		switch {
 		case errors.Is(perr, errEmptyBody):
-			return stepResult{fail: "upstream answered " + step + " with an empty body"}
+			return failed("upstream answered " + step + " with an empty body")
 		case errors.Is(perr, errNoEvent):
-			return stepResult{fail: "upstream answered " + step + " with an event stream carrying no response"}
+			return failed("upstream answered " + step + " with an event stream carrying no response")
 		default:
-			return stepResult{fail: "upstream did not answer " + step + " with JSON-RPC"}
+			return failed("upstream did not answer " + step + " with JSON-RPC")
 		}
 	}
 	if !decoded {
-		return stepResult{fail: "upstream did not answer " + step + " with JSON-RPC"}
+		return failed("upstream did not answer " + step + " with JSON-RPC")
 	}
 	if env.Error != nil {
-		return stepResult{fail: fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code), message: message}
+		return failed(fmt.Sprintf("upstream refused %s (JSON-RPC error %d)", step, env.Error.Code))
 	}
 	if len(env.Result) == 0 || string(env.Result) == "null" {
-		return stepResult{fail: "upstream answered " + step + " with no result"}
+		return failed("upstream answered " + step + " with no result")
 	}
-	return stepResult{header: hdr, result: env.Result}
+	out.header, out.result = hdr, env.Result
+	return out
 }
 
 // setHeaders writes what every discovery request carries.
@@ -621,7 +744,12 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 // handed the upstream a session id PoryMCP never minted, on every request.
 // ApplyAuth clears the three header names a credential can arrive in before it
 // writes the real one, and it touches none of the three set here.
-func (p *probe) setHeaders(req *http.Request) error {
+//
+// step is the JSON-RPC method the request carries, which a modern request
+// declares in Mcp-Method; the teardown has none and passes "". The version has
+// exactly one writer per request: SetModernHeaders on a modern probe, the
+// negotiated value otherwise.
+func (p *probe) setHeaders(req *http.Request, step string) error {
 	if err := ApplyAuth(req, p.up.AuthType, p.auth); err != nil {
 		// Unreachable: Discover refused the credential before building the
 		// probe. Kept so the seam cannot regress silently.
@@ -631,7 +759,9 @@ func (p *probe) setHeaders(req *http.Request) error {
 	if p.session != "" {
 		req.Header.Set("Mcp-Session-Id", p.session)
 	}
-	if p.protocol != "" {
+	if p.modern {
+		SetModernHeaders(req.Header, p.protocol, step)
+	} else if p.protocol != "" {
 		// Not on initialize: there is nothing negotiated to declare yet.
 		req.Header.Set("MCP-Protocol-Version", p.protocol)
 	}
@@ -664,7 +794,7 @@ func (p *probe) endSession(ctx context.Context) {
 		return
 	}
 	// Every outcome of the teardown is ignored, this one included.
-	_ = p.setHeaders(req)
+	_ = p.setHeaders(req, "")
 	_, _, _, _ = Send(p.client, req, discoverBodyBytes)
 }
 
@@ -856,6 +986,8 @@ func rpcID(step string) string {
 		return idInitialize
 	case stepList:
 		return idList
+	case stepDiscover:
+		return idDiscover
 	}
 	return ""
 }

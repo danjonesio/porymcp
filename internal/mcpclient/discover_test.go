@@ -40,18 +40,20 @@ func TestDiscoverSendsInitializeFirst(t *testing.T) {
 		t.Errorf("latency_ms=%d, want it rounded to 10ms", got.LatencyMS)
 	}
 
-	want := []string{"initialize", "notifications/initialized", "tools/list", "DELETE"}
+	// The era probe goes first (PORM-151). This fixture refuses it the way a
+	// session-enforcing server does, so the handshake follows unchanged.
+	want := []string{"server/discover", "initialize", "notifications/initialized", "tools/list", "DELETE"}
 	if calls := f.rpcCalls(); !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v, want %v", calls, want)
 	}
 	reqs := f.requests()
-	if reqs[0].Session != "" || reqs[0].Protocol != "" {
-		t.Errorf("initialize carried session=%q protocol=%q; there is nothing negotiated to declare yet", reqs[0].Session, reqs[0].Protocol)
+	if reqs[1].Session != "" || reqs[1].Protocol != "" {
+		t.Errorf("initialize carried session=%q protocol=%q; there is nothing negotiated to declare yet", reqs[1].Session, reqs[1].Protocol)
 	}
-	if reqs[1].HasID {
+	if reqs[2].HasID {
 		t.Error("notifications/initialized carried an id; a notification has none, and a server that got one would owe a response")
 	}
-	for _, r := range reqs[1:] {
+	for _, r := range reqs[2:] {
 		if r.Session != fixtureSession {
 			t.Errorf("%s carried session %q, want the one initialize minted", r.RPC, r.Session)
 		}
@@ -140,9 +142,37 @@ func TestDiscoverSendsNegotiatedProtocolVersion(t *testing.T) {
 	if got.ProtocolVersion != "2025-03-26" {
 		t.Errorf("protocol_version=%q, want the negotiated one", got.ProtocolVersion)
 	}
-	for _, r := range f.requests()[1:] {
+	// From the notification on: [0] is the era probe, which declares PoryMCP's
+	// own revision, and [1] is initialize, which has nothing to declare yet.
+	for _, r := range f.requests()[2:] {
 		if r.Protocol != "2025-03-26" {
 			t.Errorf("%s declared MCP-Protocol-Version %q, want the negotiated 2025-03-26", r.RPC, r.Protocol)
+		}
+	}
+}
+
+// PORM-151 criterion 6. PoryMCP asks for the newest handshake revision, and a
+// server on an older one still decides what is spoken: its answer is what gets
+// recorded and what every later request declares.
+func TestDiscoverLegacyVersionRaised(t *testing.T) {
+	f := newFixture(t) // answers 2025-06-18
+	got := discover(t, f.upstream(), nil)
+	if !got.OK {
+		t.Fatalf("ok=false error=%q", got.Error)
+	}
+	if got.ProtocolVersion != fixtureProtocol {
+		t.Errorf("protocol_version=%q, want the %s the server answered", got.ProtocolVersion, fixtureProtocol)
+	}
+	for _, r := range f.requests() {
+		switch r.RPC {
+		case "initialize":
+			if !strings.Contains(r.Body, `"protocolVersion":"2025-11-25"`) {
+				t.Errorf("initialize asked for %s, want protocolVersion 2025-11-25", r.Body)
+			}
+		case "notifications/initialized", "tools/list":
+			if r.Protocol != fixtureProtocol {
+				t.Errorf("%s declared MCP-Protocol-Version %q, want the negotiated %s", r.RPC, r.Protocol, fixtureProtocol)
+			}
 		}
 	}
 }
@@ -321,9 +351,9 @@ func TestDiscoverBoundsEmptyPageLoop(t *testing.T) {
 	if !got.OK || got.ToolCount != 0 || !got.Truncated {
 		t.Fatalf("ok=%v tool_count=%d truncated=%v, want an honest empty truncated catalogue", got.OK, got.ToolCount, got.Truncated)
 	}
-	// initialize + notification + maxPages + DELETE.
-	if n := len(f.requests()); n > maxPages+3 {
-		t.Errorf("%d requests, want at most %d", n, maxPages+3)
+	// The era probe + initialize + notification + maxPages + DELETE.
+	if n := len(f.requests()); n > maxPages+4 {
+		t.Errorf("%d requests, want at most %d", n, maxPages+4)
 	}
 }
 
@@ -688,10 +718,10 @@ func TestDiscoverRefusesAnOversizedBody(t *testing.T) {
 		if want := "upstream's answer to initialize is larger than discovery will read"; got.Error != want {
 			t.Errorf("error=%q, want %q", got.Error, want)
 		}
-		// One request: nothing was learned, and the upstream minted no session
-		// this could have ended.
-		if n := len(f.requests()); n != 1 {
-			t.Errorf("%d requests, want 1", n)
+		// The era probe and initialize, and nothing after: nothing was learned,
+		// and the upstream minted no session this could have ended.
+		if n := len(f.requests()); n != 2 {
+			t.Errorf("%d requests, want 2", n)
 		}
 	})
 
@@ -845,8 +875,369 @@ func TestDiscoverCancelledByCaller(t *testing.T) {
 	// has a session to end, and only the cancelled-context check stops it.
 	t.Run("after the session is open", func(t *testing.T) {
 		f := run(t, "tools/list")
-		if calls := f.rpcCalls(); len(calls) < 3 || calls[2] != "tools/list" {
+		if calls := f.rpcCalls(); len(calls) < 4 || calls[3] != "tools/list" {
 			t.Fatalf("calls=%v; the session was never opened, so this is the initialize case again", calls)
 		}
 	})
+}
+
+// modernServer turns a fixture into a 2026-07-28 server: it answers
+// server/discover with result (echoing the probe's id, as a real server does),
+// lists tools only for a request that declares itself and carries _meta, and
+// has no handshake. result is the DiscoverResult as raw JSON.
+func modernServer(f *fixture, result string) {
+	f.sessionID = ""
+	f.on[stepDiscover] = func(w http.ResponseWriter, _ request) {
+		f.writeFramed(w, http.StatusOK, []byte(`{"jsonrpc":"2.0","id":`+idDiscover+`,"result":`+result+`}`))
+	}
+	f.on["tools/list"] = func(w http.ResponseWriter, rq request) {
+		var body struct {
+			Params struct {
+				Meta map[string]json.RawMessage `json:"_meta"`
+			} `json:"params"`
+		}
+		_ = json.Unmarshal([]byte(rq.Body), &body)
+		declared := rq.Protocol == RevisionModern && rq.Header.Get("Mcp-Method") == "tools/list"
+		if !declared || len(body.Params.Meta[metaProtocol]) == 0 || len(body.Params.Meta[metaClientInfo]) == 0 {
+			f.writeRPCError(w, http.StatusBadRequest, CodeHeaderMismatch, "header mismatch")
+			return
+		}
+		f.writeResult(w, f.page(rq.Cursor))
+	}
+	f.on["initialize"] = func(w http.ResponseWriter, _ request) {
+		f.writeRPCError(w, http.StatusBadRequest, -32601, "Method not found")
+	}
+}
+
+const modernResult = `{"supportedVersions":["2026-07-28"],"capabilities":{"tools":{},"extensions":{"io.example/search":{}}},` +
+	`"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"stateless-server","version":"2.0.0"}}}`
+
+// PORM-151 criterion 1. A server that has no handshake at all is discovered,
+// and is never sent the three things the modern era removed.
+func TestDiscoverModernServer(t *testing.T) {
+	f := newFixture(t, func(f *fixture) { modernServer(f, modernResult) })
+	got := discover(t, f.upstream(), nil)
+	if !got.OK {
+		t.Fatalf("ok=false error=%q", got.Error)
+	}
+	if got.Era != "modern" || got.ProtocolVersion != RevisionModern {
+		t.Errorf("era=%q protocol_version=%q, want modern and %s", got.Era, got.ProtocolVersion, RevisionModern)
+	}
+	if !reflect.DeepEqual(got.SupportedVersions, []string{"2026-07-28"}) {
+		t.Errorf("supported_versions=%v", got.SupportedVersions)
+	}
+	if !reflect.DeepEqual(got.Capabilities, []string{"tools", "io.example/search"}) {
+		t.Errorf("capabilities=%v", got.Capabilities)
+	}
+	if got.ServerInfo == nil || got.ServerInfo.Name != "stateless-server" || got.ServerInfo.Version != "2.0.0" {
+		t.Errorf("server_info=%+v, want what the server put in _meta", got.ServerInfo)
+	}
+	if got.ToolCount != 2 || got.Tools[0].ScopedName != "docs__echo" {
+		t.Errorf("tool_count=%d tools=%+v", got.ToolCount, got.Tools)
+	}
+	if want := []string{"server/discover", "tools/list"}; !reflect.DeepEqual(f.rpcCalls(), want) {
+		t.Errorf("calls=%v, want %v: no initialize, no notification and no DELETE in the modern era", f.rpcCalls(), want)
+	}
+	for _, r := range f.requests() {
+		if r.Session != "" {
+			t.Errorf("%s carried session %q; a modern server has none", r.RPC, r.Session)
+		}
+	}
+}
+
+// A modern catalogue pages like any other, and every page declares itself.
+func TestDiscoverModernServerPages(t *testing.T) {
+	f := newFixture(t, func(f *fixture) {
+		modernServer(f, modernResult)
+		f.pageSize = 1
+	})
+	got := discover(t, f.upstream(), nil)
+	if !got.OK || got.ToolCount != 2 {
+		t.Fatalf("ok=%v tool_count=%d error=%q, want both pages", got.OK, got.ToolCount, got.Error)
+	}
+	if want := []string{"server/discover", "tools/list", "tools/list"}; !reflect.DeepEqual(f.rpcCalls(), want) {
+		t.Errorf("calls=%v, want %v", f.rpcCalls(), want)
+	}
+}
+
+// PORM-151 criterion 2. Three ways a handshake server says it has never heard
+// of server/discover, and one host that says nothing at all. The probe's
+// outcome must leave no mark on a discovery the handshake then completes.
+func TestDiscoverLegacyServer(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		probe func(f *fixture) func(http.ResponseWriter, request)
+	}{
+		// The fixture's own session gate: 400 and -32000 "Server not initialized".
+		{"not initialized", nil},
+		{"method not found", func(f *fixture) func(http.ResponseWriter, request) {
+			return func(w http.ResponseWriter, _ request) {
+				f.writeRPCError(w, http.StatusOK, -32601, "Method not found")
+			}
+		}},
+		{"a 404 page", func(*fixture) func(http.ResponseWriter, request) {
+			return func(w http.ResponseWriter, _ request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, "<html>no such page</html>")
+			}
+		}},
+		{"a result that is not a DiscoverResult", func(f *fixture) func(http.ResponseWriter, request) {
+			return func(w http.ResponseWriter, _ request) {
+				f.writeFramed(w, http.StatusOK, []byte(`{"jsonrpc":"2.0","id":`+idDiscover+`,"result":{"ok":true}}`))
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tc.probe != nil {
+				f.on[stepDiscover] = tc.probe(f)
+			}
+			got := discover(t, f.upstream(), nil)
+			if !got.OK || got.Error != "" || got.UpstreamMessage != "" {
+				t.Fatalf("ok=%v error=%q upstream_message=%q, want a clean handshake after the fallback", got.OK, got.Error, got.UpstreamMessage)
+			}
+			if got.Era != "legacy" || got.ProtocolVersion != fixtureProtocol {
+				t.Errorf("era=%q protocol_version=%q, want legacy and the negotiated %s", got.Era, got.ProtocolVersion, fixtureProtocol)
+			}
+			if got.SupportedVersions != nil {
+				t.Errorf("supported_versions=%v; this server advertised none", got.SupportedVersions)
+			}
+			if !reflect.DeepEqual(got.Capabilities, []string{"tools"}) {
+				t.Errorf("capabilities=%v, want what initialize advertised", got.Capabilities)
+			}
+			if got.ServerInfo == nil || got.ServerInfo.Name != "fixture-everything" || got.ToolCount != 2 {
+				t.Errorf("server_info=%+v tool_count=%d", got.ServerInfo, got.ToolCount)
+			}
+			want := []string{"server/discover", "initialize", "notifications/initialized", "tools/list", "DELETE"}
+			if !reflect.DeepEqual(f.rpcCalls(), want) {
+				t.Errorf("calls=%v, want %v", f.rpcCalls(), want)
+			}
+		})
+	}
+
+	// era is evidence, never a default: a host that answered nothing has none.
+	t.Run("nothing answered", func(t *testing.T) {
+		up := &models.Upstream{URL: "https://example.test/mcp", Transport: models.TransportStreamableHTTP, AuthType: models.AuthNone}
+		got := clientWith(&countingTransport{}).Discover(t.Context(), up, nil)
+		if got.OK || got.Era != "" {
+			t.Errorf("ok=%v era=%q, want a failure that claims no era", got.OK, got.Era)
+		}
+		if strings.Contains(marshal(t, got), `"era"`) {
+			t.Errorf("era reached the response: %s", marshal(t, got))
+		}
+	})
+
+	// A probe that was answered and a handshake that then failed: the era is
+	// known, and the failure is the handshake's own sentence.
+	t.Run("answered, then the handshake fails", func(t *testing.T) {
+		f := newFixture(t)
+		f.on["initialize"] = func(w http.ResponseWriter, _ request) { w.WriteHeader(http.StatusInternalServerError) }
+		got := discover(t, f.upstream(), nil)
+		if got.Era != "legacy" || got.Error != "upstream answered 500 at initialize" {
+			t.Errorf("era=%q error=%q", got.Era, got.Error)
+		}
+	})
+}
+
+// PORM-151 criterion 3, and the configuration the spec's versioning page
+// describes: a server that answers both eras is spoken to the modern way, and
+// one that answers server/discover but lists only handshake revisions is
+// spoken to by the handshake, with the list it gave shown as the reason.
+func TestDiscoverDualEraServer(t *testing.T) {
+	t.Run("both eras", func(t *testing.T) {
+		f := newFixture(t, func(f *fixture) {
+			modernServer(f, `{"supportedVersions":["2025-11-25","2026-07-28"],"capabilities":{"tools":{}}}`)
+			delete(f.on, "initialize") // it has a working handshake too
+		})
+		got := discover(t, f.upstream(), nil)
+		if !got.OK || got.Era != "modern" {
+			t.Fatalf("ok=%v era=%q error=%q", got.OK, got.Era, got.Error)
+		}
+		for _, call := range f.rpcCalls() {
+			if call == "initialize" {
+				t.Errorf("calls=%v; a server that speaks the modern era is not sent initialize", f.rpcCalls())
+			}
+		}
+		if got.ServerInfo != nil {
+			t.Errorf("server_info=%+v; this server sent none, which is allowed", got.ServerInfo)
+		}
+	})
+
+	t.Run("configured for the handshake only", func(t *testing.T) {
+		f := newFixture(t)
+		f.on[stepDiscover] = func(w http.ResponseWriter, _ request) {
+			f.writeFramed(w, http.StatusOK, []byte(`{"jsonrpc":"2.0","id":`+idDiscover+`,"result":{"supportedVersions":["2025-11-25"]}}`))
+		}
+		got := discover(t, f.upstream(), nil)
+		if !got.OK || got.Era != "legacy" || got.ProtocolVersion != fixtureProtocol {
+			t.Fatalf("ok=%v era=%q protocol_version=%q error=%q", got.OK, got.Era, got.ProtocolVersion, got.Error)
+		}
+		if !reflect.DeepEqual(got.SupportedVersions, []string{"2025-11-25"}) {
+			t.Errorf("supported_versions=%v, want the list that caused the fallback", got.SupportedVersions)
+		}
+	})
+}
+
+// PORM-151 criterion 4, as amended: the sentence is fixed, the advertised
+// versions are data in supported_versions, upstream_message stays the server's
+// own words, and a modern server is never walked through a handshake.
+func TestDiscoverUnsupportedVersion(t *testing.T) {
+	f := newFixture(t)
+	f.on[stepDiscover] = func(w http.ResponseWriter, _ request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2027-01-01"]}}}`)
+	}
+	got := discover(t, f.upstream(), nil)
+	if got.OK || got.Error != "upstream supports no protocol version PoryMCP speaks" {
+		t.Fatalf("ok=%v error=%q", got.OK, got.Error)
+	}
+	if got.Era != "modern" || got.ProtocolVersion != "" {
+		t.Errorf("era=%q protocol_version=%q, want modern and no version agreed", got.Era, got.ProtocolVersion)
+	}
+	if !reflect.DeepEqual(got.SupportedVersions, []string{"2027-01-01"}) {
+		t.Errorf("supported_versions=%v, want what the server said it supports", got.SupportedVersions)
+	}
+	if got.UpstreamMessage != "Unsupported protocol version" {
+		t.Errorf("upstream_message=%q, want the server's own message", got.UpstreamMessage)
+	}
+	if want := []string{"server/discover"}; !reflect.DeepEqual(f.rpcCalls(), want) {
+		t.Errorf("calls=%v, want %v: no fallback", f.rpcCalls(), want)
+	}
+}
+
+// The other two recognised modern errors: their own sentences, no fallback.
+func TestDiscoverModernHeaderCodes(t *testing.T) {
+	for code, want := range map[int]string{
+		CodeHeaderMismatch:          "upstream refused the routing headers PoryMCP sent (-32020)",
+		CodeMissingClientCapability: "upstream requires a client capability PoryMCP does not offer (-32021)",
+	} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			f := newFixture(t)
+			f.on[stepDiscover] = func(w http.ResponseWriter, _ request) {
+				f.writeRPCError(w, http.StatusBadRequest, code, "no")
+			}
+			got := discover(t, f.upstream(), nil)
+			if got.OK || got.Error != want || got.Era != "modern" {
+				t.Errorf("ok=%v era=%q error=%q, want %q", got.OK, got.Era, got.Error, want)
+			}
+			if got.SupportedVersions != nil || got.Capabilities != nil || got.ServerInfo != nil {
+				t.Errorf("an error body carries nothing to report: %+v", got)
+			}
+			if calls := f.rpcCalls(); len(calls) != 1 {
+				t.Errorf("calls=%v, want the probe alone", calls)
+			}
+		})
+	}
+}
+
+// PORM-151 criterion 5, as amended: the new lists are bounded, a bad entry is
+// dropped, and none of it touches truncated, which is about the tool
+// catalogue and which the dashboard reports in words.
+func TestDiscoverModernFieldsBounded(t *testing.T) {
+	versions := []string{"2026-07-28", strings.Repeat("v", 33), "2026\x0107-29"}
+	for i := 0; i < 9; i++ {
+		versions = append(versions, fmt.Sprintf("2030-01-%02d", i+1))
+	}
+	extensions := map[string]any{}
+	for i := 0; i < 17; i++ {
+		extensions[fmt.Sprintf("io.example/ext-%02d", i)] = map[string]any{}
+	}
+	result, _ := json.Marshal(map[string]any{
+		"supportedVersions": versions,
+		"capabilities":      map[string]any{"extensions": extensions},
+	})
+	f := newFixture(t, func(f *fixture) { modernServer(f, string(result)) })
+	got := discover(t, f.upstream(), nil)
+	if !got.OK {
+		t.Fatalf("ok=false error=%q", got.Error)
+	}
+	if len(got.SupportedVersions) != 8 || got.SupportedVersions[0] != "2026-07-28" || got.SupportedVersions[1] != "2030-01-01" {
+		t.Errorf("supported_versions=%q, want eight, with the long one and the one carrying a control byte dropped", got.SupportedVersions)
+	}
+	if len(got.Capabilities) != 16 {
+		t.Errorf("%d capabilities, want 16 of the 17", len(got.Capabilities))
+	}
+	if got.Truncated {
+		t.Error("truncated=true; the whole tool catalogue was listed")
+	}
+
+	// A server that answers with no version PoryMCP speaks still named itself.
+	t.Run("unusable, and what it said is kept", func(t *testing.T) {
+		f := newFixture(t, func(f *fixture) {
+			modernServer(f, strings.Replace(modernResult, `["2026-07-28"]`, `[]`, 1))
+		})
+		got := discover(t, f.upstream(), nil)
+		if got.OK || got.Error != "upstream supports no protocol version PoryMCP speaks" || got.Era != "modern" {
+			t.Fatalf("ok=%v era=%q error=%q", got.OK, got.Era, got.Error)
+		}
+		if got.ServerInfo == nil || got.ServerInfo.Name != "stateless-server" || len(got.Capabilities) != 2 {
+			t.Errorf("server_info=%+v capabilities=%v, want both kept", got.ServerInfo, got.Capabilities)
+		}
+	})
+}
+
+// PORM-151 criterion 7, as amended: the probe spends the discovery budget and
+// does not add to it. The server never answers server/discover; no test here
+// sleeps, because httptest.Server.Close waits for the handler.
+func TestDiscoverBudgetIncludesProbe(t *testing.T) {
+	// The same package var TestDiscoverTimesOut shortens, under the same rule:
+	// nothing in this package calls t.Parallel. Set before New(), which reads it.
+	restore := discoverBudget
+	discoverBudget = 300 * time.Millisecond
+	t.Cleanup(func() { discoverBudget = restore })
+
+	f := newFixture(t)
+	f.on[stepDiscover] = func(http.ResponseWriter, request) { <-t.Context().Done() }
+
+	start := time.Now()
+	got := New().Discover(t.Context(), f.upstream(), nil)
+	elapsed := time.Since(start)
+
+	if want := "upstream did not answer within 300ms"; got.Error != want {
+		t.Errorf("error=%q, want %q", got.Error, want)
+	}
+	if got.OK || got.Era != "" {
+		t.Errorf("ok=%v era=%q against a server that never answered", got.OK, got.Era)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("took %v; the probe must sit inside the whole-sequence budget", elapsed)
+	}
+}
+
+// overdue is a context whose deadline has passed and whose Done channel has
+// not closed yet: what a context looks like in the moment between its deadline
+// and the scheduler running its timer. On a busy machine that moment is long
+// enough for a loopback handshake.
+type overdue struct {
+	context.Context
+	deadline time.Time
+}
+
+func (o overdue) Deadline() (time.Time, bool) { return o.deadline, true }
+
+// Nothing is sent once the budget has run out, judged by the clock and not
+// only by the context. Found by review as a flake in
+// TestDiscoverBudgetIncludesProbe under CPU load: the client's timeout
+// cancelled the probe a moment before the context's overdue timer fired, the
+// context still read as live, and the fallback handshake ran, and sometimes
+// completed, after the budget was spent. The server here answers everything
+// at once, so without the check in exchange this discovery succeeds.
+func TestDiscoverSendsNothingPastItsDeadline(t *testing.T) {
+	f := newFixture(t)
+	ctx := overdue{Context: t.Context(), deadline: time.Now().Add(-time.Millisecond)}
+	if ctx.Err() != nil {
+		t.Fatal("the context already reads as done; the test would prove nothing")
+	}
+	got := New().Discover(ctx, f.upstream(), nil)
+	if want := "upstream did not answer within " + discoverBudget.String(); got.Error != want {
+		t.Errorf("error=%q, want %q", got.Error, want)
+	}
+	if got.OK || got.Era != "" {
+		t.Errorf("ok=%v era=%q after the budget had run out", got.OK, got.Era)
+	}
+	if n := len(f.requests()); n != 0 {
+		t.Errorf("%d requests were sent after the deadline, want 0: %v", n, f.rpcCalls())
+	}
 }

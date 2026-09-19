@@ -4,6 +4,28 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Upstreams on the 2026-07-28 revision can be discovered and grouped (PORM-151)
+
+- **Discovery asks `server/discover` first.** An upstream that serves only the
+  2026-07-28 revision used to fail its Tools check with a handshake error and a
+  red dot, because `initialize` no longer exists there. It is now listed
+  statelessly, and the panel's protocol line reads "2026-07-28, stateless". A
+  handshake server sees one method it does not know and then exactly the
+  sequence it always saw. The discovery response gains `era`,
+  `supported_versions` and `capabilities`, and loses nothing.
+- **A legacy upstream is asked for `2025-11-25`.** `initialize` requested
+  `2025-06-18`. A server on an older revision still answers with its own, and
+  that answer is what is recorded and declared afterwards.
+- **A group lists each member in the era it speaks.** The aggregate endpoint
+  sends the same probe to a member the first time it meets it, remembers the
+  answer in memory for ten minutes (thirty seconds when the member did not
+  list), and asks again when the upstream is saved. A legacy member receives
+  the same catalogue request as before. Expect one extra request per member
+  after a restart or redeploy.
+- **A call to a modern-only member through a group is not bridged yet.** It is
+  the client's own request relayed as sent, so that member refuses it with
+  `-32020` unless the client is itself on 2026-07-28. PORM-153 has it.
+
 ### The 2026-07-28 routing headers cross the proxy, and are checked (PORM-150)
 
 - **`Mcp-Method`, `Mcp-Name` and the `Mcp-Param-` headers now reach the

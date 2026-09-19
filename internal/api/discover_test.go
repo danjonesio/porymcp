@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -42,6 +43,10 @@ type mcpStub struct {
 	// in flight and watch the concurrency cap turn the next one away.
 	started chan struct{}
 	release chan struct{}
+	// modern makes the stub a 2026-07-28 server: it answers server/discover,
+	// lists tools only for a request that declares its version and method,
+	// and has no handshake (initialize falls to the 404 below).
+	modern bool
 }
 
 type stubRequest struct {
@@ -87,6 +92,21 @@ func (s *mcpStub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case s.modern && rpc.Method == "server/discover":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":3,"result":{"supportedVersions":["2026-07-28"],`+
+			`"capabilities":{"tools":{},"extensions":{"io.example/search":{}}},`+
+			`"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"stub-stateless","version":"2.0.0"}}}}`)
+	case s.modern && rpc.Method == "tools/list":
+		if r.Header.Get("Mcp-Protocol-Version") != "2026-07-28" || r.Header.Get("Mcp-Method") != "tools/list" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":2,"error":{"code":-32020,"message":"header mismatch"}}`)
+			return
+		}
+		s.result(w, map[string]any{"tools": s.tools})
+	case s.modern:
+		w.WriteHeader(http.StatusNotFound)
 	case r.Method == http.MethodDelete:
 		w.WriteHeader(http.StatusMethodNotAllowed) // a normal answer; plenty of servers do this
 	case rpc.Method == "initialize":
@@ -160,6 +180,14 @@ func TestDiscoverSavedUpstream(t *testing.T) {
 	if d["protocol_version"] != "2025-06-18" {
 		t.Fatalf("protocol_version = %v", d["protocol_version"])
 	}
+	// PORM-151: the stub answers the era probe with a 404, so it is a
+	// handshake server and says so. It advertised no versions to list.
+	if d["era"] != "legacy" {
+		t.Fatalf("era = %v, want legacy", d["era"])
+	}
+	if _, present := d["supported_versions"]; present {
+		t.Fatalf("supported_versions = %v; a handshake server advertises none", d["supported_versions"])
+	}
 	// Rounded to 10 ms, which is the timing-oracle mitigation: the difference
 	// between a refused connection and a filtered port is exactly the signal
 	// that would make this route a port scanner's stopwatch.
@@ -184,6 +212,38 @@ func TestDiscoverSavedUpstream(t *testing.T) {
 	if last.Method != http.MethodDelete || last.Session != stubSession {
 		t.Fatalf("last request %+v, want a DELETE carrying the session", last)
 	}
+
+	// PORM-151 criterion 9: a 2026-07-28 server's era, versions and
+	// capabilities are on the wire, from the saved route and the unsaved one,
+	// and it is never sent a handshake or a teardown.
+	t.Run("a modern server", func(t *testing.T) {
+		modern := newMCPStub(t, func(s *mcpStub) { s.modern = true })
+		mid, _ := mustUpstream(t, h, "Stateless", map[string]any{"url": modern.srv.URL})
+		for name, rr := range map[string]*httptest.ResponseRecorder{
+			"saved":   doJSON(t, h, http.MethodPost, "/upstreams/"+mid+"/discover", "test-admin", nil),
+			"unsaved": doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin", map[string]any{"url": modern.srv.URL}),
+		} {
+			d := discovery(t, rr)
+			if d["ok"] != true || d["era"] != "modern" || d["protocol_version"] != "2026-07-28" {
+				t.Fatalf("%s: ok=%v era=%v protocol_version=%v: %v", name, d["ok"], d["era"], d["protocol_version"], d)
+			}
+			if got := fmt.Sprint(d["supported_versions"]); got != "[2026-07-28]" {
+				t.Fatalf("%s: supported_versions = %s", name, got)
+			}
+			if got := fmt.Sprint(d["capabilities"]); got != "[tools io.example/search]" {
+				t.Fatalf("%s: capabilities = %s", name, got)
+			}
+			info, _ := d["server_info"].(map[string]any)
+			if info["name"] != "stub-stateless" || d["tool_count"] != float64(2) {
+				t.Fatalf("%s: server_info = %v, tool_count = %v", name, d["server_info"], d["tool_count"])
+			}
+		}
+		for _, r := range modern.requests() {
+			if r.RPC == "initialize" || r.RPC == "notifications/initialized" || r.Method == http.MethodDelete {
+				t.Fatalf("a modern server was sent %s %s", r.Method, r.RPC)
+			}
+		}
+	})
 }
 
 func TestDiscoverUnsavedPayloadPersistsNothing(t *testing.T) {
@@ -346,6 +406,20 @@ func TestDiscoverSavedUpstreamRecordsTheTest(t *testing.T) {
 	if listAt != at || listOK != ok {
 		t.Fatalf("GET /upstreams carries at=%v ok=%v; GET /upstreams/{id} carries %v/%v", listAt, listOK, at, ok)
 	}
+
+	// PORM-151 criterion 9: a server with no handshake turns the dot green too.
+	t.Run("a modern server", func(t *testing.T) {
+		modern := newMCPStub(t, func(s *mcpStub) { s.modern = true })
+		mid, _ := mustUpstream(t, h, "Stateless", map[string]any{"url": modern.srv.URL})
+		if d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+mid+"/discover", "test-admin", nil)); d["ok"] != true {
+			t.Fatalf("discovery = %v", d)
+		}
+		at, ok, _ := upstreamTest(t, h, mid)
+		if ok != true {
+			t.Fatalf("last_test_ok = %v, want true for a modern server", ok)
+		}
+		wantRecentTest(t, at)
+	})
 }
 
 // TestDiscoverRecordsAFailedTest pins the half that matters most: a run that

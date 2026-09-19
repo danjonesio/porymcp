@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/auth"
 	"github.com/danjonesio/porymcp/internal/config"
 	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -62,6 +65,19 @@ type upstreamSpec struct {
 	RedirectStatus int
 	RedirectTo     string
 	RedirectOn     string
+	// Modern makes the stub a 2026-07-28 server with no handshake: it echoes
+	// the request's id, answers server/discover with a DiscoverResult, answers
+	// tools/list and tools/call only for a request that declares its version
+	// and method in headers and carries params._meta (400 and -32020
+	// otherwise, as the revision requires), and knows no other method.
+	Modern bool
+	// Dead closes the stub's listener as soon as it is built, so the upstream's
+	// URL refuses every connection: a member that answers nothing at all.
+	Dead bool
+	// DiscoverCode and DiscoverBody are a verbatim answer to server/discover,
+	// for a member that refuses the era probe in some particular way.
+	DiscoverCode int
+	DiscoverBody string
 	// Transport is the stored transport column; "" means streamable-http.
 	// The API refuses every other value on write (PORM-28), so this is how a
 	// test builds the row an operator saved before that change, or one whose
@@ -87,6 +103,62 @@ type stub struct {
 	counts map[[2]string]int
 	total  int
 	reqs   []recordedRequest
+	// listFails makes tools/list answer 500 from now on. It is the one thing
+	// about a stub a test changes while it runs, to watch a member whose
+	// listing starts failing; see failListing.
+	listFails atomic.Bool
+}
+
+// failListing switches the stub's tools/list between answering and a 500.
+func (s *stub) failListing(fail bool) { s.listFails.Store(fail) }
+
+// serveModern is the Modern arm of a stub: see upstreamSpec.Modern.
+func (s *stub) serveModern(w http.ResponseWriter, r *http.Request, body []byte, spec upstreamSpec) {
+	var req struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"params"`
+	}
+	_ = json.Unmarshal(body, &req)
+	id := string(req.ID)
+	if id == "" {
+		id = "null"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	rpcError := func(status, code int, msg string) {
+		w.WriteHeader(status)
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":%q}}`, id, code, msg)
+	}
+	switch req.Method {
+	case "server/discover":
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"supportedVersions":[%q],"capabilities":{"tools":{}}}}`, id, mcpclient.RevisionModern)
+	case "tools/list", "tools/call":
+		declared := r.Header.Get("Mcp-Protocol-Version") == mcpclient.RevisionModern &&
+			r.Header.Get("Mcp-Method") == req.Method &&
+			len(req.Params.Meta["io.modelcontextprotocol/protocolVersion"]) > 0
+		if !declared {
+			rpcError(http.StatusBadRequest, mcpclient.CodeHeaderMismatch, "header mismatch")
+			return
+		}
+		if req.Method == "tools/call" {
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"ok":true}}`, id)
+			return
+		}
+		if s.listFails.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		tools := make([]map[string]any, 0, len(spec.Tools))
+		for _, n := range spec.Tools {
+			tools = append(tools, map[string]any{"name": n})
+		}
+		out, _ := json.Marshal(map[string]any{"tools": tools, "resultType": "complete", "ttlMs": 60000, "cacheScope": "public"})
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, id, out)
+	default:
+		rpcError(http.StatusNotFound, -32601, "Method not found")
+	}
 }
 
 func (s *stub) bump(r *http.Request, body []byte, method, tool string) {
@@ -141,7 +213,26 @@ func newStub(spec upstreamSpec) *stub {
 			return
 		}
 
+		if spec.DiscoverBody != "" && req.Method == "server/discover" {
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", "application/json")
+			}
+			if spec.DiscoverCode != 0 {
+				w.WriteHeader(spec.DiscoverCode)
+			}
+			_, _ = io.WriteString(w, spec.DiscoverBody)
+			return
+		}
+		if spec.Modern {
+			s.serveModern(w, r, body, spec)
+			return
+		}
+
 		if req.Method == "tools/list" {
+			if s.listFails.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			ct := spec.ListCT
 			if ct == "" {
 				ct = "application/json"
@@ -230,6 +321,9 @@ func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter 
 	for i, slug := range slugs {
 		s := newStub(specs[slug])
 		t.Cleanup(s.srv.Close)
+		if specs[slug].Dead {
+			s.srv.Close() // the URL is kept; nothing listens on it any more
+		}
 		f.Stubs[slug] = s
 		id := "u" + strconv.Itoa(i+1)
 		ids = append(ids, id)

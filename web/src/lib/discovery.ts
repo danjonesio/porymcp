@@ -1,4 +1,5 @@
 import { ApiError } from './api.ts'
+import type { Discovery } from './api.ts'
 
 /** Mirrors models.ToolSeparator (internal/models/toolidentity.go). */
 export const TOOL_SEPARATOR = '__'
@@ -88,4 +89,19 @@ export function discoveryErrorMessage(err: unknown): string {
     return err.message
   }
   return 'Could not reach PoryMCP. Check that the server is still running.'
+}
+
+/**
+ * The value beside the panel's Protocol label: the version discovery ended up
+ * speaking, then how the server is spoken to. `stateless` is the 2026-07-28 era,
+ * where every request stands alone; `handshake` is the era that opens with
+ * initialize. A failure can know the era before any version is agreed, and says
+ * so. A response with no era (nothing answered, or an older PoryMCP) shows the
+ * version alone, and an empty string tells the caller to leave the row out.
+ */
+export function protocolSummary(result: Pick<Discovery, 'era' | 'protocol_version'>): string {
+  const version = result.protocol_version ?? ''
+  if (!result.era) return version
+  const how = result.era === 'modern' ? 'stateless' : 'handshake'
+  return version ? `${version}, ${how}` : `${how}, no version agreed`
 }

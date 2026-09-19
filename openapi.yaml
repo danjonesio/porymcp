@@ -90,10 +90,15 @@ paths:
     post:
       summary: Discover the tools an unsaved upstream would offer
       description: >-
-        Runs the handshake a client would run (initialize,
+        Asks the upstream which MCP era it speaks, then lists its tools that
+        way. server/discover on the 2026-07-28 revision goes first. A server
+        that answers it as a modern server is listed statelessly: tools/list
+        followed to the end of its cursors, each request declaring its version
+        and method and carrying _meta, with no session to open or end. Anything
+        else gets the handshake a client would run (initialize,
         notifications/initialized, tools/list followed to the end of its cursors,
-        then a DELETE of the session so none is left open on the upstream)
-        against the URL in the body, using the credential in the body, and
+        then a DELETE of the session so none is left open on the upstream).
+        Either way it runs against the URL in the body, using the credential in the body, and
         persists nothing. It exists so the Add upstream dialog can check a URL
         and a token before writing a row that does not work. Takes the same body
         as POST /upstreams, of which only `url` is required; `transport` defaults
@@ -130,7 +135,8 @@ paths:
     post:
       summary: Discover the tools a saved upstream offers
       description: >-
-        The same handshake as POST /upstreams/discover, made with the upstream's
+        The same sequence as POST /upstreams/discover (server/discover first,
+        the handshake as the fallback), made with the upstream's
         stored (encrypted) credential. The request body is ignored, as on rotate
         and revoke. A disabled upstream is still discovered: an operator who has
         turned one off is usually the operator diagnosing it. A stored credential
@@ -679,7 +685,7 @@ components:
           description: When the last Tools/Refresh press ran. null until the first; reset by a connection edit.
         last_test_ok:
           type: [boolean, "null"]
-          description: Whether that run completed the handshake and the catalogue. null until the first.
+          description: Whether that run reached the upstream and listed its catalogue, in whichever era it speaks. null until the first.
         created_at:
           type: string
           format: date-time
@@ -774,7 +780,8 @@ components:
         ok:
           type: boolean
           description: >-
-            Whether the upstream completed the handshake. The HTTP status
+            Whether the upstream answered and listed its catalogue, by the
+            stateless 2026-07-28 exchange or by the handshake. The HTTP status
             describes the request PoryMCP received; this describes the upstream.
         error:
           type: string
@@ -788,6 +795,11 @@ components:
             (401) at initialize`, `upstream's answer to <step> is larger than
             discovery will read` (the 2 MiB read cap: an answer over it is
             refused rather than decoded from a document that stops mid-object),
+            `upstream supports no protocol version PoryMCP speaks`, `upstream
+            refused the routing headers PoryMCP sent (-32020)` and `upstream
+            requires a client capability PoryMCP does not offer (-32021)` (the
+            three ways a 2026-07-28 server can refuse the era probe, after
+            which no handshake is attempted),
             `stored credential cannot be decrypted`, `stored credential is not
             usable for this auth type` (nothing stored, or a value that opens
             but holds nothing the auth type can send), `this auth type
@@ -806,12 +818,56 @@ components:
         latency_ms:
           type: integer
           description: >-
-            The whole handshake, rounded to 10 ms: enough to tell a slow server
-            from a fast one, blunt enough not to be a stopwatch on the network
-            PoryMCP sits in.
+            The whole call, the era probe included, rounded to 10 ms: enough to
+            tell a slow server from a fast one, blunt enough not to be a
+            stopwatch on the network PoryMCP sits in.
+        era:
+          type: string
+          enum: [modern, legacy]
+          description: >-
+            Which MCP era the upstream spoke. `modern` is the stateless
+            2026-07-28 revision, learned from its answer to server/discover,
+            whether or not PoryMCP could then speak to it. `legacy` is the
+            initialize handshake: the probe got an HTTP response that was not a
+            modern one, or initialize completed. It is evidence and never a
+            default, so it is absent when nothing came back, when the request
+            was refused before any I/O, and on a response from a PoryMCP that
+            predates the field.
         protocol_version:
           type: string
-          description: The MCP protocol version the upstream negotiated. Clamped to 32 bytes.
+          description: >-
+            The MCP protocol version discovery ended up speaking: `2026-07-28`
+            on a modern upstream, the version initialize negotiated on a legacy
+            one, clamped to 32 bytes. Absent when no version was agreed.
+        supported_versions:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+            maxLength: 32
+          description: >-
+            The versions the upstream said it supports, from its
+            server/discover answer or from the data of a -32022. Each entry is
+            visible ASCII; one that is not is dropped rather than repaired.
+            Absent on an upstream that advertised none, which is the usual
+            legacy case, because `protocol_version` already holds the one
+            version that was negotiated. It never sets `truncated`.
+        capabilities:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+            maxLength: 128
+          description: >-
+            The names of what the upstream advertised, never the settings under
+            them: `tools`, `resources`, `prompts` and `completions` in that
+            order when present, then the keys of its `extensions` object,
+            sorted. Those names and nothing else: it is not the server's whole
+            advertisement. A handshake server's `logging` and its `experimental`
+            bucket are never listed, so their absence says nothing about the
+            server. From server/discover on a modern upstream and from the
+            initialize result on a legacy one. Absent when none of those names
+            were advertised and on the three modern error answers.
         server_info:
           $ref: "#/components/schemas/ServerInfo"
         slug:
@@ -903,7 +959,9 @@ components:
     ServerInfo:
       type: object
       description: >-
-        What the upstream called itself in its initialize result, clamped to 128
+        What the upstream called itself: in its initialize result, or, on a
+        2026-07-28 upstream, in the _meta of its server/discover answer
+        (`io.modelcontextprotocol/serverInfo`). Clamped to 128
         and 64 bytes. Upstream-controlled text: it is rendered in an operator's
         browser as text, never as markup.
       required: [name]

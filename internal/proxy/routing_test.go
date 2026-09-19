@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 )
 
 // Building a group's catalogue means asking every member what it can do, and
@@ -52,7 +54,11 @@ func TestRoutingListsIgnoreClientHopHeaders(t *testing.T) {
 			t.Fatalf("%s was never asked for its catalogue, so the call was routed off an incomplete merge", slug)
 		}
 		for i, got := range reqs {
-			if got.RPCMethod != "tools/list" {
+			// The proxy composes two requests to a member for itself: the era
+			// probe (PORM-151) and the catalogue request. Both are held to the
+			// same rule, that nothing of the client's reaches them.
+			probe := got.RPCMethod == "server/discover"
+			if !probe && got.RPCMethod != "tools/list" {
 				t.Errorf("%s request %d was %q; a call that resolves to no tool must not reach any member", slug, i, got.RPCMethod)
 				continue
 			}
@@ -65,10 +71,19 @@ func TestRoutingListsIgnoreClientHopHeaders(t *testing.T) {
 			if v, want := got.Header.Get("Content-Type"), "application/json"; v != want {
 				t.Errorf("%s: Content-Type=%q want %q", slug, v, want)
 			}
-			for _, h := range []string{"Mcp-Session-Id", "Last-Event-ID", "Mcp-Protocol-Version"} {
+			for _, h := range []string{"Mcp-Session-Id", "Last-Event-ID"} {
 				if v := got.Header.Get(h); v != "" {
 					t.Errorf("%s: client %s reached the member as %q; a member that refuses it drops out of the merge and renames a tool", slug, h, v)
 				}
+			}
+			// The probe declares PoryMCP's own revision, which is not the
+			// client's; a handshake-era catalogue request declares none.
+			wantVersion := ""
+			if probe {
+				wantVersion = mcpclient.RevisionModern
+			}
+			if v := got.Header.Get("Mcp-Protocol-Version"); v != wantVersion {
+				t.Errorf("%s: %s declared Mcp-Protocol-Version %q, want %q: the client sent %q and must not choose it", slug, got.RPCMethod, v, wantVersion, clientHopHeaders["Mcp-Protocol-Version"])
 			}
 			var sent struct {
 				ID     json.RawMessage `json:"id"`
@@ -83,8 +98,8 @@ func TestRoutingListsIgnoreClientHopHeaders(t *testing.T) {
 			if len(sent.ID) == 0 {
 				t.Errorf("%s: catalogue request has no id, so its answer cannot be matched to it", slug)
 			}
-			if sent.Method != "tools/list" {
-				t.Errorf("%s: catalogue request method=%q", slug, sent.Method)
+			if sent.Method != got.RPCMethod {
+				t.Errorf("%s: request body method=%q, recorded as %q", slug, sent.Method, got.RPCMethod)
 			}
 		}
 	}
@@ -170,16 +185,23 @@ func TestGroupCallStillSkipsFailingMember(t *testing.T) {
 // and vanish from the merge, and a client's Mcp-Param- headers would steer
 // the request. None of them crosses. copyHopHeaders now copies a whole
 // prefix, and this is what keeps that loop from ever leaking into a request
-// the proxy composes: listTools never calls it. What that request declares
-// for itself (a version, an Mcp-Method of its own) is PORM-151's.
+// the proxy composes: listTools never calls it.
+//
+// Since PORM-151 the proxy declares a version and a method of its own on the
+// era probe, so "absent" no longer describes every request a member sees. The
+// client therefore declares a revision PoryMCP never composes, which keeps
+// "the client's value never crossed" falsifiable: a forwarded header and a
+// composed one can no longer be the same bytes. Mcp-Name and Mcp-Param- have
+// no composed counterpart and stay asserted absent everywhere.
 func TestRoutingListsIgnoreRoutingHeaders(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{
 		"alpha": {"search"},
 		"beta":  {"search"},
 	}, nil, nil, nil)
 
+	const clientVersion = "2099-01-01"
 	rr := f.postWith(memberList, map[string]string{
-		"MCP-Protocol-Version": "2026-07-28",
+		"MCP-Protocol-Version": clientVersion,
 		"Mcp-Method":           "tools/list",
 		"Mcp-Name":             "alpha__search",
 		"Mcp-Param-Region":     "x",
@@ -195,12 +217,40 @@ func TestRoutingListsIgnoreRoutingHeaders(t *testing.T) {
 		if len(reqs) == 0 {
 			t.Fatalf("%s was never asked for its catalogue", slug)
 		}
+		probes := 0
 		for _, got := range reqs {
-			for _, h := range []string{"Mcp-Method", "Mcp-Name", "Mcp-Param-Region", "Mcp-Protocol-Version"} {
+			for _, h := range []string{"Mcp-Name", "Mcp-Param-Region"} {
 				if v := got.Header.Get(h); v != "" {
-					t.Errorf("%s: the client's %s reached the member's catalogue request as %q", slug, h, v)
+					t.Errorf("%s: the client's %s reached the member's %s request as %q", slug, h, got.RPCMethod, v)
 				}
 			}
+			if v := got.Header.Get("Mcp-Protocol-Version"); v == clientVersion {
+				t.Errorf("%s: the client's Mcp-Protocol-Version reached the member's %s request", slug, got.RPCMethod)
+			}
+			// What each proxy-composed request declares for itself. These
+			// members are handshake servers, so their catalogue request
+			// declares nothing and the client's Mcp-Method: tools/list has
+			// nowhere to hide. That is a property of this fixture: a modern
+			// member's listing composes Mcp-Method: tools/list itself, and
+			// the client cannot send another value, because a strict request
+			// whose Mcp-Method disagrees with its body is refused before any
+			// member is reached. If a modern member is ever added here, the
+			// version half of this test still tells a leak from a composed
+			// header and the Mcp-Method half no longer does.
+			wantMethod, wantVersion := "", ""
+			if got.RPCMethod == "server/discover" {
+				probes++
+				wantMethod, wantVersion = "server/discover", mcpclient.RevisionModern
+			}
+			if v := got.Header.Get("Mcp-Method"); v != wantMethod {
+				t.Errorf("%s: %s request carried Mcp-Method %q, want %q", slug, got.RPCMethod, v, wantMethod)
+			}
+			if v := got.Header.Get("Mcp-Protocol-Version"); v != wantVersion {
+				t.Errorf("%s: %s request carried Mcp-Protocol-Version %q, want %q", slug, got.RPCMethod, v, wantVersion)
+			}
+		}
+		if probes != 1 {
+			t.Errorf("%s saw %d era probes, want 1", slug, probes)
 		}
 	}
 }

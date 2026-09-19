@@ -8,6 +8,8 @@ import (
 	"net/textproto"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 )
 
 // The 2026-07-28 revision mirrors three routing values out of the JSON-RPC
@@ -37,8 +39,10 @@ const (
 	// mcpParamPrefix is canonical too: a client's "mcp-param-region" reaches
 	// the handler as "Mcp-Param-Region", over HTTP/1.1 and HTTP/2 alike.
 	mcpParamPrefix = "Mcp-Param-"
-	// strictFrom is the revision that made the routing headers required.
-	strictFrom = "2026-07-28"
+	// strictFrom is the revision that made the routing headers required. It
+	// is mcpclient's constant because the era probe declares the same
+	// revision and the import runs from this package to that one.
+	strictFrom = mcpclient.RevisionModern
 	// maxParamHeaders and maxRoutingValueBytes bound what an intermediary is
 	// told to forward blind. The spec caps neither; a proxy must. Both are
 	// PoryMCP's own numbers and docs/07-security.md records them. The count
