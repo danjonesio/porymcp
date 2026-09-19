@@ -329,9 +329,9 @@ What remains on an aggregate URL:
 - A task handle a member hands out cannot be redeemed there, because
   `tasks/get` is refused. Use the member's own URL.
 - `subscriptions/listen` is refused with `404` and `-32601`.
-- A handshake-era client's call to a 2026-07-28 member carries no `Mcp-Param-`
-  headers. A member whose tool declares `x-mcp-header` parameters may refuse
-  the call or ignore the parameter.
+- PoryMCP composes no `Mcp-Param-` headers for a handshake-era client's call to
+  a 2026-07-28 member. A member whose tool declares `x-mcp-header` parameters
+  may refuse the call or ignore the parameter.
 - The merged catalogue carries each tool's name, title, description and input
   schema. A member's `annotations` (`readOnlyHint` and `destructiveHint`
   included), `outputSchema`, `icons` and tool `_meta` do not cross (PORM-73).

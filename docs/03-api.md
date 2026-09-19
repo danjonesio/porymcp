@@ -923,8 +923,8 @@ URL is recorded the same way, with an empty `upstream_id` and an
 
 On `POST /{virtual_key_id}/mcp` for a group key, PoryMCP is an MCP server in its
 own right, in both protocol eras. A request that declares `2026-07-28` in the
-`MCP-Protocol-Version` header is served statelessly; any other request is
-served as a handshake-era one. The header is the only way to declare it:
+`MCP-Protocol-Version` header is served statelessly; a request that declares
+an earlier version, or none, is served as a handshake-era one. The header is the only way to declare it:
 `params._meta` must carry the same version or none, and a body that declares
 `2026-07-28` with no header is refused with `-32020`, as on every endpoint. A
 single-upstream key on the same path is a 1:1 door and none of this applies to
