@@ -1,10 +1,12 @@
 'use client'
 
+import { ToolFilterFields } from '@/app/tool-filter-fields'
 import { Checkbox, CheckboxField, CheckboxGroup } from '@/components/checkbox'
 import { Description, Field, FieldGroup, Fieldset, Label, Legend } from '@/components/fieldset'
 import { Input } from '@/components/input'
 import { Text } from '@/components/text'
 import type { Upstream } from '@/lib/api'
+import { MEMBER_DISABLED, MEMBER_NOT_IMPLEMENTED, type Catalogue } from '@/lib/catalogue'
 import type { GroupForm } from '@/lib/group-form'
 import { transportUnsupported } from '@/lib/upstream-transport'
 
@@ -16,6 +18,12 @@ export type GroupFieldsProps = {
   onChange: (patch: Partial<GroupForm>) => void
   /** Every upstream the page has loaded; the member list is drawn from it. */
   upstreams: Upstream[]
+  /** The tool catalogue of the members ticked above, which the page owns (useCatalogue). */
+  catalogue: Catalogue
+  rateLimited: string
+  onLoadTools: (upstreamId?: string) => void
+  /** groupSaveBlocked's sentence; '' when Save may proceed. */
+  blocked: string
 }
 
 /**
@@ -24,7 +32,17 @@ export type GroupFieldsProps = {
  * list is a fieldset with a legend rather than a labelled field, because a
  * label names one control and this names a group of them.
  */
-export function GroupFields({ className, mode, form, onChange, upstreams }: GroupFieldsProps) {
+export function GroupFields({
+  className,
+  mode,
+  form,
+  onChange,
+  upstreams,
+  catalogue,
+  rateLimited,
+  onLoadTools,
+  blocked,
+}: GroupFieldsProps) {
   function toggle(id: string, checked: boolean) {
     onChange({
       upstream_ids: checked ? [...form.upstream_ids, id] : form.upstream_ids.filter((x) => x !== id),
@@ -69,20 +87,26 @@ export function GroupFields({ className, mode, form, onChange, upstreams }: Grou
                   onChange={(checked) => toggle(u.id, checked)}
                 />
                 <Label>{u.name}</Label>
-                {u.enabled ? null : <Description>Disabled. A virtual key on this group gets no endpoint for it.</Description>}
+                {u.enabled ? null : <Description>{MEMBER_DISABLED}</Description>}
                 {/* Only while enabled: a disabled sse member is off the proxy's
                     path and the Disabled line above is the whole story. */}
                 {u.enabled && transportUnsupported(u.transport) ? (
-                  <Description>
-                    Not implemented. This member&apos;s endpoint fails, and so does the group endpoint, until the
-                    transport is Streamable HTTP or the member is disabled.
-                  </Description>
+                  <Description>{MEMBER_NOT_IMPLEMENTED}</Description>
                 ) : null}
               </CheckboxField>
             ))}
           </CheckboxGroup>
         )}
       </Fieldset>
+      {/* Last, so Save is one Tab past the final tool row. */}
+      <ToolFilterFields
+        form={form}
+        onChange={onChange}
+        catalogue={catalogue}
+        rateLimited={rateLimited}
+        onLoad={onLoadTools}
+        blocked={blocked}
+      />
     </FieldGroup>
   )
 }

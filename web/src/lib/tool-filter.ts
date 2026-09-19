@@ -114,6 +114,10 @@ function sameSet(a: string[], b: string[]): boolean {
  * question sameMembers answers for a group's members.
  */
 export function sameFilter(a: FilterForm, b: FilterForm): boolean {
+  // Under No filter the lists are not sent (filterValue), so they are not
+  // meaning either. The form keeps them so that a mode picked again by mistake
+  // gets its entries back; a group with no filter must not be "changed" by that.
+  if (a.mode === '' && b.mode === '') return true
   return a.mode === b.mode && sameSet(a.tools, b.tools) && sameSet(a.prefixes, b.prefixes)
 }
 

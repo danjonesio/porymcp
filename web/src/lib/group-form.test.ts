@@ -5,6 +5,7 @@ import {
   blankGroupForm,
   formFromGroup,
   groupCreateBody,
+  groupFilterBadge,
   groupPatchBody,
   groupPolicyStale,
   groupSaveBlocked,
@@ -195,4 +196,12 @@ test('groupPolicyStale: true only when the stored filter changed in meaning', ()
   assert.equal(groupPolicyStale(group({ tool_filter: { mode: 'Deny' } }), group({ tool_filter: { mode: 'Deny' } })), false)
   assert.equal(groupPolicyStale(group({ tool_filter: { mode: 'Deny' } }), group({ tool_filter: { mode: 'DENY' } })), true)
   assert.equal(groupPolicyStale(group({ tool_filter: { mode: 'Deny' } }), group({ tool_filter: { mode: 'deny', tools: ['a__b'] } })), true)
+})
+
+test('groupFilterBadge: a filter, an unreadable one, or nothing', () => {
+  assert.equal(groupFilterBadge(group()), null)
+  assert.equal(groupFilterBadge(group({ tool_filter: {} })), null)
+  assert.deepEqual(groupFilterBadge(group({ tool_filter: apiWritten })), { label: 'Deny filter', tone: 'zinc' })
+  assert.deepEqual(groupFilterBadge(group({ tool_filter: { mode: 'allow', tools: ['gh__x'] } })), { label: 'Allow filter', tone: 'zinc' })
+  assert.deepEqual(groupFilterBadge(group({ tool_filter: '' })), { label: 'Filter unreadable', tone: 'pink' })
 })

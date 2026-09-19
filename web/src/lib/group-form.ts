@@ -128,3 +128,19 @@ export function groupPolicyStale(seed: Group, fresh: Group): boolean {
   if (a.kind === 'filter' && b.kind === 'filter') return !sameFilter(a.form, b.form)
   return false
 }
+
+/** Shown in the dialog when groupPolicyStale stopped a save. Nothing was sent. */
+export const GROUP_FILTER_STALE =
+  "This group's filter changed since you opened it. Close this dialog and open it again to see the current filter."
+
+/**
+ * The badge under a group's name in the table: that it has a filter, or that
+ * the proxy cannot read the one it has and is blocking every tool on the group.
+ * null when there is nothing to say, which is the ordinary case.
+ */
+export function groupFilterBadge(g: Group): { label: string; tone: 'zinc' | 'pink' } | null {
+  const stored = parseToolFilter(g.tool_filter)
+  if (stored.kind === 'unreadable') return { label: 'Filter unreadable', tone: 'pink' }
+  if (stored.kind === 'filter') return { label: stored.form.mode === 'allow' ? 'Allow filter' : 'Deny filter', tone: 'zinc' }
+  return null
+}

@@ -124,6 +124,8 @@ test('sameFilter: order is not meaning; mode and membership are', () => {
   // A tools entry and a prefixes entry with the same text are different rules.
   assert.equal(sameFilter(form({ mode: 'deny', tools: ['x'] }), form({ mode: 'deny', prefixes: ['x'] })), false)
   assert.equal(sameFilter(form(), form()), true)
+  // Entries kept in the form under No filter are not sent, so they are not a change.
+  assert.equal(sameFilter(form(), form({ tools: ['a__b'] })), true)
 })
 
 test('sameEntries: absent and empty are the same list', () => {
