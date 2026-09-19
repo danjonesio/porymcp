@@ -134,6 +134,10 @@ type routingFields struct {
 	Name json.RawMessage `json:"name"`
 	URI  json.RawMessage `json:"uri"`
 	Meta json.RawMessage `json:"_meta"`
+	// ProtocolVersion is initialize's params.protocolVersion. It is read on
+	// this pass, with the rest, so the group endpoint's negotiation judges the
+	// same bytes distinctKeys has already held to one spelling.
+	ProtocolVersion json.RawMessage `json:"protocolVersion"`
 }
 
 // decodeRoutingFields reads params once. Params that do not decode as an
@@ -170,6 +174,13 @@ func (f routingFields) toolName() (string, bool) {
 // toolName, kept as one call for the sites that need only the name.
 func toolNameFromParams(params json.RawMessage) (string, bool) {
 	return decodeRoutingFields(params).toolName()
+}
+
+// protocolVersion is the JSON string at params.protocolVersion, and "" for a
+// number, a null, an object or an absent member, none of which is a version.
+func (f routingFields) protocolVersion() string {
+	v, _ := jsonString(f.ProtocolVersion)
+	return v
 }
 
 // jsonString decodes raw when it is a JSON string and reports false for

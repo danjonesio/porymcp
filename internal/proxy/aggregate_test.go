@@ -1438,3 +1438,81 @@ func TestAggregateLocalAnswersNameNoUpstream(t *testing.T) {
 		t.Errorf("the members saw %d requests, want none", n)
 	}
 }
+
+// PORM-153. The group endpoint answered every initialize with 2024-11-05. It
+// now follows the handshake's rule, and the answer comes out of mcpclient's
+// closed set, never out of the client's string (security requirement 10).
+func TestAggregateInitializeNegotiates(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}, "beta": {"b"}}, nil, nil, nil)
+	for _, c := range []struct{ name, params, want string }{
+		{"2025-06-18", `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}`, "2025-06-18"},
+		{"2025-11-25", `{"protocolVersion":"2025-11-25"}`, "2025-11-25"},
+		{"2025-03-26", `{"protocolVersion":"2025-03-26"}`, "2025-03-26"},
+		{"2024-11-05", `{"protocolVersion":"2024-11-05"}`, "2024-11-05"},
+		{"a revision PoryMCP does not speak", `{"protocolVersion":"2030-01-01"}`, "2025-11-25"},
+		{"the stateless revision, which has no initialize", `{"protocolVersion":"2026-07-28"}`, "2025-11-25"},
+		{"no version", `{}`, "2025-11-25"},
+		{"a number", `{"protocolVersion":20250618}`, "2025-11-25"},
+		{"a string that is not a version", `{"protocolVersion":"<script>2025-06-18"}`, "2025-11-25"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rr := f.post(`{"jsonrpc":"2.0","id":9,"method":"initialize","params":` + c.params + `}`)
+			var env struct {
+				ID     json.RawMessage `json:"id"`
+				Result struct {
+					ProtocolVersion string `json:"protocolVersion"`
+					Capabilities    struct {
+						Tools *struct {
+							ListChanged *bool `json:"listChanged"`
+						} `json:"tools"`
+					} `json:"capabilities"`
+					ServerInfo struct{ Name, Version string } `json:"serverInfo"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil || rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d err=%v body=%s", rr.Code, err, rr.Body.String())
+			}
+			r := env.Result
+			if r.ProtocolVersion != c.want || string(env.ID) != "9" {
+				t.Errorf("protocolVersion=%q id=%s, want %q and 9", r.ProtocolVersion, env.ID, c.want)
+			}
+			if r.ServerInfo.Name != "porymcp" || r.ServerInfo.Version != "dev" {
+				t.Errorf("serverInfo=%+v, want porymcp and the build's version", r.ServerInfo)
+			}
+			if r.Capabilities.Tools == nil || r.Capabilities.Tools.ListChanged == nil || *r.Capabilities.Tools.ListChanged {
+				t.Errorf("capabilities in %s, want tools with listChanged false", rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), "script") {
+				t.Errorf("the client's string was echoed: %s", rr.Body.String())
+			}
+		})
+	}
+	if n := f.totalReqs("alpha") + f.totalReqs("beta"); n != 0 {
+		t.Errorf("the members saw %d requests, want none", n)
+	}
+}
+
+// PORM-153, amendment A3. ping is answered by the group endpoint in both eras
+// and no member is asked. The stateless revision removed ping and requires
+// resultType on every result, so its answer is not an empty object.
+func TestAggregatePing(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}, "beta": {"b"}}, nil, nil, nil)
+
+	rr := f.post(`{"jsonrpc":"2.0","id":11,"method":"ping"}`)
+	if rr.Code != http.StatusOK || rr.Body.String() != `{"jsonrpc":"2.0","id":11,"result":{}}` {
+		t.Errorf("handshake era: HTTP code=%d body=%s, want 200 and an empty result with the request's id", rr.Code, rr.Body.String())
+	}
+	body, hdr := modernRequest("12", "ping", mcpclient.RevisionModern)
+	rr = f.postWith(body, hdr)
+	if rr.Code != http.StatusOK || rr.Body.String() != `{"jsonrpc":"2.0","id":12,"result":{"resultType":"complete"}}` {
+		t.Errorf("stateless era: HTTP code=%d body=%s, want 200 and a result carrying resultType", rr.Code, rr.Body.String())
+	}
+	if n := f.totalReqs("alpha") + f.totalReqs("beta"); n != 0 {
+		t.Errorf("the members saw %d requests, want none", n)
+	}
+	for _, row := range f.waitAuditN(models.LogFilter{Method: "ping"}, 2) {
+		if row.UpstreamID != "" || row.Status != models.StatusSuccess {
+			t.Errorf("ping row: upstream=%q status=%q, want no upstream and success", row.UpstreamID, row.Status)
+		}
+	}
+}

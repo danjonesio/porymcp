@@ -935,7 +935,7 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 // itself. Everything else is relayed to the group's first member.
 func shouldAggregate(method string) bool {
 	switch method {
-	case "initialize", "tools/list", "tools/call", "notifications/initialized":
+	case "initialize", "tools/list", "tools/call", "notifications/initialized", "ping":
 		return true
 	case "subscriptions/listen", "tasks/get", "tasks/update":
 		// Refused here, not relayed: see aggregate.
@@ -983,12 +983,28 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// which credential a request presented, and none was.
 		return nil, http.StatusAccepted, nil, "", nil
 	case "initialize":
+		// The handshake's own rule: the version asked for when PoryMCP speaks
+		// it, the newest handshake revision otherwise. The answer comes out of
+		// mcpclient's closed set and never out of the client's string. The
+		// capabilities say the same thing server/discover says, so one sentence
+		// describes a group in either era: tools, and no list-changed
+		// notifications, because nothing here can send one.
 		result := map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "porymcp", "version": "0.1.0"},
+			"protocolVersion": mcpclient.NegotiateHandshake(fields.protocolVersion()),
+			"capabilities":    groupCapabilities(),
+			"serverInfo":      mcpclient.SelfInfo(),
 		}
-		return encodeRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+	case "ping":
+		// Answered here in both eras, and no member is asked. The stateless
+		// revision removed ping, so a member on it would refuse a relayed one,
+		// and every result in that revision carries resultType, so its empty
+		// result is not an empty object.
+		result := map[string]any{}
+		if clientModern {
+			result["resultType"] = "complete"
+		}
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
 	case "tools/list":
 		active, lists := h.memberCatalogues(ctx, ups)
 		merged, _ := h.buildRoutes(active, lists)
@@ -1145,6 +1161,13 @@ func answersSomething(doc []byte) bool {
 	}
 	present := func(v json.RawMessage) bool { return len(v) > 0 && string(v) != "null" }
 	return present(env.Result) || present(env.Error)
+}
+
+// groupCapabilities is what a group endpoint says it can do, in initialize and
+// in server/discover alike: exactly what it serves. Prompts and resources join
+// it when the group serves them (PORM-6).
+func groupCapabilities() map[string]any {
+	return map[string]any{"tools": map[string]any{"listChanged": false}}
 }
 
 // answerRPC is a JSON-RPC answer the group endpoint composes itself, a result

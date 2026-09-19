@@ -102,7 +102,9 @@ func TestPerUpstreamInitializeIsTheMembersOwn(t *testing.T) {
 	if got := rr.Body.String(); got != alphaInit {
 		t.Errorf("body=%s\nwant the member's own answer verbatim:\n%s", got, alphaInit)
 	}
-	for _, s := range []string{"porymcp", "2024-11-05"} {
+	// The two strings only the group endpoint's own initialize produces for this
+	// request: its name, and the version it answers when none is asked for.
+	for _, s := range []string{"porymcp", "2025-11-25"} {
 		if strings.Contains(rr.Body.String(), s) {
 			t.Errorf("body contains %q: the member endpoint answered initialize itself instead of forwarding it", s)
 		}
@@ -118,7 +120,7 @@ func TestPerUpstreamInitializeIsTheMembersOwn(t *testing.T) {
 	// that; this is the tripwire if it ever changes by accident.
 	t.Run("aggregate initialize is still synthesised", func(t *testing.T) {
 		body := f.post(`{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`).Body.String()
-		if !strings.Contains(body, `"porymcp"`) || !strings.Contains(body, "2024-11-05") {
+		if !strings.Contains(body, `"porymcp"`) || !strings.Contains(body, "2025-11-25") {
 			t.Errorf("aggregate initialize=%s want the proxy's own serverInfo", body)
 		}
 	})
