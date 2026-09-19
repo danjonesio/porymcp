@@ -5,6 +5,7 @@ import { Button } from '@/components/button'
 import { Checkbox, CheckboxField } from '@/components/checkbox'
 import { Field, Fieldset, Label, Legend } from '@/components/fieldset'
 import { Input } from '@/components/input'
+import { errorLine } from '@/components/primitives'
 import { Text } from '@/components/text'
 import {
   LOAD_RECORDS_A_TEST,
@@ -24,8 +25,6 @@ import {
 import { cleanEntry, tickEntry } from '@/lib/tool-entry'
 import { transportUnsupported } from '@/lib/upstream-transport'
 import { useState } from 'react'
-
-const pinkLine = 'text-base/6 text-pink-600 sm:text-sm/6 dark:text-pink-400'
 
 /** Past this many loaded rows the picker offers a Find a tool input. */
 const FIND_THRESHOLD = 20
@@ -61,7 +60,7 @@ export function ToolPickerLoad({
       </div>
       <Text>{LOAD_RECORDS_A_TEST}</Text>
       {rateLimited ? (
-        <p role="alert" className={pinkLine}>
+        <p role="alert" className={errorLine}>
           {rateLimited}
         </p>
       ) : null}
@@ -143,7 +142,7 @@ function MemberBlock({
         {member.state === 'loading' ? <Text>Loading…</Text> : null}
         {member.state === 'failed' ? (
           <div className="flex flex-wrap items-start gap-3">
-            <p dir="ltr" className={`min-w-0 flex-1 wrap-break-word ${pinkLine}`}>
+            <p dir="ltr" className={`min-w-0 flex-1 wrap-break-word ${errorLine}`}>
               {member.error}
             </p>
             {unsupported ? null : (

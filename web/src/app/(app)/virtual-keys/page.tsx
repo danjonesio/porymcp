@@ -363,7 +363,7 @@ export default function VirtualKeysPage() {
                       {a.status}
                     </Badge>
                   </TableCell>
-                  <TableCell className="tabular-nums text-zinc-500">
+                  <TableCell className="text-zinc-500 tabular-nums">
                     {a.last_used_at ? new Date(a.last_used_at).toLocaleString() : 'Never'}
                   </TableCell>
                   <TableCell className="text-right">

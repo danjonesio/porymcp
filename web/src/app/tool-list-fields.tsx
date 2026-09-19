@@ -5,13 +5,12 @@ import { ToolPicker, ToolPickerLoad } from '@/app/tool-picker'
 import { Button } from '@/components/button'
 import { Fieldset, Legend } from '@/components/fieldset'
 import { Subheading } from '@/components/heading'
+import { errorLine } from '@/components/primitives'
 import { Text } from '@/components/text'
 import { entryMark, unmatchedEntries, type Catalogue } from '@/lib/catalogue'
 import { toggleEntry } from '@/lib/tool-filter'
 import type { KeyForm } from '@/lib/virtual-key-form'
 import { useState } from 'react'
-
-const pinkLine = 'text-base/6 text-pink-600 sm:text-sm/6 dark:text-pink-400'
 
 export type ToolListFieldsProps = {
   form: KeyForm
@@ -108,7 +107,7 @@ export function ToolListFields({
     return (
       <Fieldset>
         <Legend>Tool rules</Legend>
-        <p role="status" className={pinkLine}>
+        <p role="status" className={errorLine}>
           This key&apos;s stored tool rules cannot be read, so every call on it is refused.
         </p>
         <div data-slot="control" className="space-y-3">

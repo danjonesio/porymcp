@@ -5,6 +5,7 @@ import { ToolPicker, ToolPickerLoad } from '@/app/tool-picker'
 import { Button } from '@/components/button'
 import { Description, Fieldset, Label, Legend } from '@/components/fieldset'
 import { HelpDisclosure } from '@/components/help-disclosure'
+import { errorLine } from '@/components/primitives'
 import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Code, Text } from '@/components/text'
 import { BLOCKS_EVERYTHING_NOW, blocksEverything, entryMark, unmatchedEntries, type Catalogue } from '@/lib/catalogue'
@@ -21,8 +22,6 @@ import {
   type FilterForm,
   type FilterMode,
 } from '@/lib/tool-filter'
-
-const pinkLine = 'text-base/6 text-pink-600 sm:text-sm/6 dark:text-pink-400'
 
 /** How much of an unreadable stored filter the dialog prints. The column can hold up to the API's 1 MiB body limit. */
 const UNREADABLE_SHOWN = 2000
@@ -54,7 +53,7 @@ export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoa
     return (
       <Fieldset>
         <Legend>Tool filter</Legend>
-        <p role="status" className={pinkLine}>
+        <p role="status" className={errorLine}>
           This group&apos;s stored filter cannot be read, so every tool on it is blocked.
         </p>
         <div data-slot="control" className="space-y-3">
@@ -141,7 +140,7 @@ export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoa
       {f.mode !== '' ? (
         <div data-slot="control" className="space-y-8">
           {standing ? (
-            <p role="status" className={pinkLine}>
+            <p role="status" className={errorLine}>
               {standing}
             </p>
           ) : null}
