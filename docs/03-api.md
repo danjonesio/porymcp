@@ -721,7 +721,11 @@ admin key.
   they are listed as `endpoints` on every virtual-key response.
 - Aggregate: `POST /{virtual_key_id}/mcp`: the single-connection view of the
   same key: one merged catalogue, a synthesised `initialize`, no upstream
-  session. On a single-upstream key this *is* the 1:1 endpoint.
+  session. A member's answer to a routed `tools/call` is sent on as
+  `application/json` whichever framing the member used; a member that answers
+  in a media type other than `application/json` or `text/event-stream` gets the
+  caller a `502` and an `error` row. On a single-upstream key this *is* the 1:1
+  endpoint, and the upstream's answer is relayed as it came.
 - Shared: `POST /mcp`: the same door without the id in the path; the key
   identifies the virtual key. `POST //{upstream_slug}/mcp` (the same door with
   the id left empty) is its per-member analogue, resolved against the caller's

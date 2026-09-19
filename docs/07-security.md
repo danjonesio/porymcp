@@ -593,12 +593,22 @@
   is PORM-71. The proxy re-lists members with its own request rather than
   replaying the client's headers, so a client cannot steer which members answer;
   a member that is down or session-gated still drops out of the catalogue, and
-  PoryMCP does not refuse the whole group when one member fails. Discovery reads
-  both of the shapes the aggregate path does not (a `text/event-stream` answer
-  and a catalogue spread over cursors), so
+  PoryMCP does not refuse the whole group when one member fails. A member that
+  answers as `text/event-stream` is read like one that answers as JSON, on its
+  catalogue and on a routed `tools/call`: the proxy reduces the answer to the
+  one document that answers its request, with the same reader discovery uses,
+  and sends a group's client that document as `application/json`. Reading a
+  member's answer this way runs for every member on every group call, so it is
+  bounded twice: the bytes by the 16 MiB body limit every upstream response
+  already had, and the documents considered by a fixed 4096, past which the
+  member is skipped with a fixed sentence. A call answer that is neither shape
+  is passed on only when the member labelled it `application/json` or
+  `text/event-stream`, and under that bare media type, which PoryMCP writes
+  itself; any other media type is a `502`, and no other header of a member's
+  reaches a group client. Discovery still reads the one shape the aggregate path
+  does not, a catalogue spread over cursors, so
   `POST /api/v1/upstreams/{id}/discover` is how an operator sees what a member
-  that has dropped out of the merged catalogue offers. That is a
-  diagnostic, not a fix: what the aggregate serves is unchanged, and making the
+  offers beyond its first page. That is a diagnostic, not a fix: making the
   proxy's own `tools/list` follow cursors is PORM-73.
 - Management API protected by separate admin key. Unknown API paths answer
   `404` before the admin key is checked, so the existence of an API path is
