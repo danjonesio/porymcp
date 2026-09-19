@@ -67,10 +67,15 @@ export function useCatalogue(
         discoverUpstream,
         (m) => setById((prev) => ({ ...prev, [m.upstream_id]: m })),
         stale,
-      ).then((out) => {
-        if (running.current === started) running.current = null
-        if (!stale()) setRateLimited(out.rateLimited)
-      })
+      )
+        .then((out) => {
+          if (!stale()) setRateLimited(out.rateLimited)
+        })
+        // In a finally: discoverMembers does not reject today, but a slot that
+        // was never freed would drop every later press in this dialog in silence.
+        .finally(() => {
+          if (running.current === started) running.current = null
+        })
     },
     [members, resetKey],
   )

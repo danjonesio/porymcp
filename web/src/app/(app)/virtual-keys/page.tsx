@@ -464,7 +464,9 @@ export default function VirtualKeysPage() {
                 rateLimited={rateLimited}
                 onLoad={loadTools}
                 emptyHint={
-                  !editing
+                  // On the target, not on the mode: a create can pick a group
+                  // that has no members, and the chosen target is then on screen.
+                  !targetId
                     ? 'Choose a target to see its tools.'
                     : groupTarget
                       ? 'This group has no upstreams, so there are no tools to tick.'
