@@ -12,11 +12,52 @@ var dataField = []byte("data:")
 // Why a response carried no JSON-RPC document. Each maps to one sentence in
 // Discovery.Error, and none of them reproduces a byte of the body or of the
 // Content-Type that produced it.
+//
+// errNoResponse is PickResponse's alone. Discovery reports the same condition
+// (documents arrived and none answered) as errNoEvent, a sentence its
+// operator-facing allowlist pins and one that reads wrongly for a JSON body,
+// so the proxy's skip warning gets words of its own.
 var (
 	errEmptyBody    = errors.New("empty body")
 	errNoEvent      = errors.New("event stream carried no data event")
 	errUnknownMedia = errors.New("media type is not a JSON-RPC response")
+	errNoResponse   = errors.New("response carried no answer to this request")
 )
+
+// maxPickDocuments is how many documents PickResponse will consider. A real
+// answer arrives after a handful of notifications at most; the bound is there
+// because the proxy reads a member's answer on every group call, and a stream
+// of millions of tiny events would otherwise cost a JSON decode apiece.
+const maxPickDocuments = 4096
+
+// PickResponse reduces one upstream response to the single JSON-RPC document
+// that answers the request carrying wantID (a raw JSON id token): the body when
+// it is JSON, the right event's data when it is an event stream. An empty
+// contentType asks the body which shape it is.
+//
+// When no document carries wantID it returns the first that carries a result or
+// an error, as discovery does for a catalogue; a caller that must not accept an
+// off-id answer checks the id itself, as classify does. A lone document is
+// returned when it is a JSON object, even with neither member: a server with no
+// tools is a legitimate state, and the distinction belongs to the caller's own
+// reader.
+//
+// Every error is a fixed sentence that reproduces no byte of the body or of the
+// Content-Type.
+func PickResponse(contentType string, body []byte, wantID string) ([]byte, error) {
+	payloads, err := rpcPayload(contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	if len(payloads) > maxPickDocuments {
+		return nil, errNoResponse
+	}
+	payload, ok := pickPayload(payloads, wantID)
+	if !ok {
+		return nil, errNoResponse
+	}
+	return payload, nil
+}
 
 // rpcPayload pulls the JSON-RPC documents out of an upstream response: the
 // body itself when it is JSON, and EVERY event's data when it is an event
