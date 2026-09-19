@@ -6,6 +6,7 @@ import { Badge } from '@/components/badge'
 import { Button } from '@/components/button'
 import { Dialog, DialogActions, DialogBody, DialogTitle } from '@/components/dialog'
 import { Heading } from '@/components/heading'
+import { errorLine } from '@/components/primitives'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { ApiError, api, type Group, type Upstream } from '@/lib/api'
 import { blocksEverything, type Member } from '@/lib/catalogue'
@@ -26,8 +27,6 @@ import { filterPermits } from '@/lib/tool-entry'
 import { useCatalogue } from '@/lib/use-catalogue'
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState } from 'react'
-
-const errorLine = 'text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400'
 
 export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([])

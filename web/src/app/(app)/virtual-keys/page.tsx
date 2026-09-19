@@ -9,6 +9,7 @@ import { Description, Field, FieldGroup, Fieldset, Label, Legend } from '@/compo
 import { Heading, Subheading } from '@/components/heading'
 import { HelpDisclosure } from '@/components/help-disclosure'
 import { Input } from '@/components/input'
+import { errorLine } from '@/components/primitives'
 import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Select } from '@/components/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
@@ -35,8 +36,6 @@ import {
 } from '@/lib/virtual-key-form'
 import clsx from 'clsx'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-
-const errorLine = 'text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400'
 
 /** How the dialog offers a key's endpoints: one server per upstream, or the single aggregate URL. */
 type ConnectionMode = 'per-server' | 'aggregate'
