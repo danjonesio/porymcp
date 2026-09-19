@@ -143,8 +143,10 @@ type VirtualKey struct {
 	// ListsMalformed reports that ToolAllowlist or ToolDenylist could not be
 	// decoded out of storage, so neither list is the rule its operator wrote.
 	//
-	// It is not stored and not serialised: it describes one read of one row,
-	// and there is nothing a client could do with it. The proxy reads it as
+	// It is not stored and not serialised from here: it describes one read of
+	// one row. The management API reports it as the response-only field
+	// lists_malformed (virtualKeyPublic in internal/api), so an operator can see
+	// that a key is blocked and replace both lists. The proxy reads it as
 	// "refuse everything on this key", an unreadable denylist that decoded to
 	// no denylist at all would otherwise permit exactly what it was written to
 	// refuse, and it would look identical to a key that never had one.

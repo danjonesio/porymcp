@@ -36,6 +36,13 @@ type virtualKeyPublic struct {
 	Status   string `json:"status"`
 	APIKey   string `json:"api_key,omitempty"`
 	ProxyURL string `json:"proxy_url,omitempty"`
+	// ListsUnreadable says this key's stored tool lists could not be decoded: the
+	// proxy refuses every call on it, and a PATCH must send both lists to replace
+	// them (see patchVirtualKey). Response only. It mirrors the embedded
+	// models.VirtualKey.ListsMalformed, whose tag stays json:"-" because that
+	// field travels back into the store meaning "leave both columns alone". The
+	// Go name differs from that field's so nothing is shadowed.
+	ListsUnreadable bool `json:"lists_malformed,omitempty"`
 	// Endpoints is never omitempty and never nil: an empty array means
 	// "nothing is reachable through this key right now", which the dashboard
 	// renders and an installer must see. A nil slice would marshal as null and
@@ -198,10 +205,11 @@ func (s *Server) presentVirtualKey(ctx context.Context, ix *endpointIndex, a *mo
 // minted key nobody can ever read again.
 func (s *Server) presentVirtualKeyWithEndpoints(a *models.VirtualKey, plaintext string, eps []virtualKeyEndpoint) virtualKeyPublic {
 	out := virtualKeyPublic{
-		VirtualKey: *a,
-		Status:     a.Status(),
-		ProxyURL:   s.proxyURL(a.ID, "mcp"),
-		Endpoints:  eps,
+		VirtualKey:      *a,
+		Status:          a.Status(),
+		ProxyURL:        s.proxyURL(a.ID, "mcp"),
+		ListsUnreadable: a.ListsMalformed,
+		Endpoints:       eps,
 	}
 	if plaintext != "" {
 		out.APIKey = plaintext
