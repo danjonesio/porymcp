@@ -816,8 +816,24 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 		// After ApplyAuth, so a stored auth_config cannot choose either header.
 		mcpclient.SetModernHeaders(req.Header, verdict.version, "tools/list")
 	}
-	body, status, _, err := mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
-	return body, status, err
+	body, status, hdr, err := mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
+	if err != nil {
+		// Before the reduction, not after it: a refused redirect arrives with
+		// no body, and reducing that would replace the sentence that names the
+		// redirect with one about an empty body.
+		return nil, status, err
+	}
+	// A member answers in whichever framing its SDK defaults to, and the
+	// reference SDKs default to an event stream. The answer is reduced here
+	// to the one document that answers this request, by the reader mcpclient
+	// already has, so memberCatalogues and parseToolsList see plain JSON and
+	// this package parses no frames of its own. A failure is one of
+	// mcpclient's fixed sentences and carries no byte of the body.
+	doc, err := mcpclient.PickResponse(hdr.Get("Content-Type"), body, listToolsID)
+	if err != nil {
+		return nil, status, err
+	}
+	return doc, status, nil
 }
 
 // upstreamTransport is a type alias, not a defined type: the identifier is
@@ -832,9 +848,10 @@ type upstreamTransport = mcpclient.UpstreamTransport
 // A member that fails is skipped rather than failing the whole request. That
 // is the behaviour this endpoint has always had and it is deliberately kept:
 // refusing every call while one member is unreachable would let a single
-// outage take a whole group offline, and a member answering over SSE (the
-// reference SDKs' default) is unreadable here today, so the outage would be
-// permanent rather than transient.
+// outage take a whole group offline. A member answering over SSE (the
+// reference SDKs' default) is read like any other since PORM-171; the member
+// that still cannot be listed is one that refuses a tools/list sent without a
+// session (PORM-23), and for that member the outage is permanent.
 //
 // What a dropout costs is now confined to the member that dropped out: its own
 // tools disappear from the catalogue and cannot be routed, and every other
@@ -847,10 +864,12 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 	// A dropout is otherwise invisible: the row belongs to the client's
 	// request, which succeeded on the survivors, so nothing anywhere says why
 	// a member's tools are missing. Warn rather than Debug because a member
-	// that cannot be listed stays unlistable (the commonest cause, a member
-	// answering tools/list over SSE, is permanent) and a group quietly
-	// serving fewer tools than it was built with is worth being loud about.
-	// The error is bounded because a redirect's is the upstream's own string.
+	// that cannot be listed tends to stay unlistable (one that wants a session
+	// before it will list, say) and a group quietly serving fewer tools than
+	// it was built with is worth being loud about. The error is bounded
+	// because a redirect's, and a member's own error.message, are the
+	// upstream's strings; the handler is slog's JSON one, so a control byte
+	// in either is escaped and cannot start a line of its own.
 	skip := func(up *models.Upstream, err error) {
 		if h.log == nil {
 			return
