@@ -765,10 +765,11 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 // out from under the rule written against it.
 //
 // Nothing legitimate is lost by composing the request here. A group endpoint
-// never hands the client a member's session id (aggregate returns no upstream
-// headers and answers initialize itself) so no working client holds a session
-// for a member to recognise, and there is no client header a member could
-// need. The Accept below is the one the reference servers require.
+// never hands the client a member's session id (aggregate answers initialize
+// itself, and the only header it ever returns is a Content-Type it chose) so
+// no working client holds a session for a member to recognise, and there is no
+// client header a member could need. The Accept below is the one the reference
+// servers require.
 //
 // An advertised name no longer moves at all: buildRoutes composes every one of
 // them from the member's own slug. What a client can still reach depends on
@@ -980,7 +981,14 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		if err != nil {
 			return out, status, nil, route.Upstream.ID, err
 		}
-		doc, media, err := reduceCallAnswer(rewritten, out, hdr.Get("Content-Type"))
+		doc, media, unreduced, err := reduceCallAnswer(rewritten, out, hdr.Get("Content-Type"))
+		if unreduced != nil && h.log != nil {
+			// The row for this call is judged by its HTTP status alone, because
+			// what the client is sent could not be read. This line is the only
+			// place that says so. unreduced is a fixed sentence.
+			h.log.Warn("group call answer relayed unreduced", "slug", route.Upstream.Slug,
+				"upstream_id", route.Upstream.ID, "err", unreduced.Error())
+		}
 		return doc, status, media, route.Upstream.ID, err
 	default:
 		out, status, _, err := h.forward(ctx, inbound, ups[0], body, nil)
@@ -993,6 +1001,10 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 // gets, and this sentence, which carries no byte of the answer, is the row's.
 var errUnrelayableAnswer = errors.New("upstream answered with a media type the proxy cannot relay")
 
+// errAnswersNothing is why a call answer that did decode is still passed on
+// unreduced: the one document in it carries neither a result nor an error.
+var errAnswersNothing = errors.New("answer carried neither a result nor an error")
+
 // reduceCallAnswer turns a member's answer to a routed tools/call into what the
 // group's client is sent. On the aggregate endpoint PoryMCP is the server, so
 // the answer is its own to frame, and the transport lets a server answer a POST
@@ -1000,7 +1012,7 @@ var errUnrelayableAnswer = errors.New("upstream answered with a media type the p
 //
 // A member answers in whichever framing its SDK defaults to, and the reference
 // SDKs default to an event stream. Relayed as it came, that stream reached the
-// client labelled application/json, because aggregate returns no member
+// client labelled application/json, because aggregate returned no member
 // headers, and serve read it as a success whatever it held, because rpcFailed
 // reads JSON. So the answer is reduced, by the one reader mcpclient has, to the
 // document that answers the request the member was sent. The client gets that
@@ -1015,30 +1027,65 @@ var errUnrelayableAnswer = errors.New("upstream answered with a media type the p
 // has only the one. Notifications the member interleaved are dropped; under a
 // buffered relay they could only ever have arrived along with the result.
 //
-// What cannot be reduced is passed on unchanged only when the member labelled
-// it with one of the two media types the transport allows a server, returned
-// here as the one header serve may copy back. An empty answer (a notification's
-// 202) needs no label. Anything else is an error: a third media type on a
-// response of PoryMCP's own is something no client can classify, and a
-// member's Content-Type is otherwise a string this endpoint never repeats.
-func reduceCallAnswer(sent, answer []byte, contentType string) ([]byte, http.Header, error) {
+// A lone document that answers nothing is read differently here than on the
+// catalogue path. There it is a member with no tools. Here it would hand the
+// client a notification as the answer to its call, so it counts as unreduced.
+//
+// What cannot be reduced is passed on as it came, and only under one of the two
+// media types the transport allows a server: the member's own label when it is
+// one of them, and what the body looks like when the member sent no label,
+// which is the same question the reader asks. The type is written here, as a
+// bare constant, and is the one header serve may copy back. unreduced says why,
+// in a fixed sentence, so aggregate can log a relay the row cannot describe:
+// serve judges those bytes by their HTTP status alone, as it always did. An
+// empty answer (a notification's 202) is passed on as no body at all, which is
+// what both eras of the transport require of a 202. Any other media type is an
+// error, empty or not: a third media type on a response of PoryMCP's own is
+// something no client can classify, and a member's Content-Type is otherwise a
+// string this endpoint never repeats.
+func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, media http.Header, unreduced, err error) {
 	var envelope struct {
 		ID json.RawMessage `json:"id"`
 	}
 	_ = json.Unmarshal(sent, &envelope)
-	doc, err := mcpclient.PickResponse(contentType, answer, strings.TrimSpace(string(envelope.ID)))
-	if err == nil {
-		return doc, nil, nil
+	doc, perr := mcpclient.PickResponse(contentType, answer, strings.TrimSpace(string(envelope.ID)))
+	if perr == nil && !answersSomething(doc) {
+		perr = errAnswersNothing
 	}
-	if len(bytes.TrimSpace(answer)) == 0 {
-		return answer, nil, nil
+	if perr == nil {
+		return doc, nil, nil, nil
 	}
-	switch media := mcpclient.MediaType(contentType); media {
-	case "application/json", "text/event-stream":
-		return answer, http.Header{"Content-Type": []string{media}}, nil
+	empty := len(bytes.TrimSpace(answer)) == 0
+	shape := mcpclient.MediaType(contentType)
+	if shape == "" && !empty {
+		shape = "application/json"
+		if mcpclient.LooksLikeSSE(answer) {
+			shape = "text/event-stream"
+		}
+	}
+	switch shape {
+	case "", "application/json", "text/event-stream":
+		if empty {
+			return nil, nil, nil, nil
+		}
+		return answer, http.Header{"Content-Type": []string{shape}}, perr, nil
 	default:
-		return nil, nil, errUnrelayableAnswer
+		return nil, nil, nil, errUnrelayableAnswer
 	}
+}
+
+// answersSomething reports whether a JSON-RPC document carries a result or an
+// error, a null one counting as absent.
+func answersSomething(doc []byte) bool {
+	var env struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(doc, &env) != nil {
+		return false
+	}
+	present := func(v json.RawMessage) bool { return len(v) > 0 && string(v) != "null" }
+	return present(env.Result) || present(env.Error)
 }
 
 func rewriteMethod(original []byte, method string, params json.RawMessage) []byte {

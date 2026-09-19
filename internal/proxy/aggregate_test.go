@@ -1179,24 +1179,67 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 		})
 	}
 
-	t.Run("a notification's empty 202 is passed on as it came", func(t *testing.T) {
+	// Both eras of the transport say a 202 carries no body. The stub cannot send
+	// an empty one (an empty CallBody means its default answer), so it sends a
+	// space, and the client must be sent nothing at all.
+	t.Run("a notification's 202 is passed on with no body", func(t *testing.T) {
 		f := group(t, upstreamSpec{Tools: []string{"scrape"}, CallCode: http.StatusAccepted, CallBody: " "})
 		rr := f.post(toolCall("", "beta__scrape"))
-		if rr.Code != http.StatusAccepted || strings.TrimSpace(rr.Body.String()) != "" {
-			t.Errorf("HTTP code=%d body=%q, want 202 and nothing", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusAccepted || rr.Body.Len() != 0 {
+			t.Errorf("HTTP code=%d body=%q, want 202 and zero bytes", rr.Code, rr.Body.String())
 		}
 	})
 
-	t.Run("an event stream with no answer in it is still an event stream", func(t *testing.T) {
-		const stream = ": keepalive\n\n"
-		f := group(t, upstreamSpec{Tools: []string{"scrape"}, CallCT: sse + "; charset=utf-8", CallBody: stream})
+	// What cannot be reduced is passed on as it came, under a media type PoryMCP
+	// writes itself. This is the one path where aggregate returns a header built
+	// from a member's response, so it is where a member's session id could
+	// cross if anything but that one name were copied. The row is judged by the
+	// HTTP status alone, and the warning is the only place that says why.
+	for _, c := range []struct {
+		name, callCT, body, wantCT, wantWhy string
+	}{
+		{"an event stream with no answer in it", sse + "; charset=utf-8", ": keepalive\n\n", sse, "event stream carried no data event"},
+		{"an event stream sent with no Content-Type", "-", ": keepalive\n\n", sse, "event stream carried no data event"},
+		{"a lone notification in answer to a call", sse, sseFrame(`{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"x"}}`), sse, "answer carried neither a result nor an error"},
+		{"JSON that is not a JSON-RPC envelope", "application/json", `"NOT-AN-ENVELOPE"`, "application/json", "response carried no answer to this request"},
+	} {
+		t.Run(c.name+" is relayed unreduced", func(t *testing.T) {
+			f := group(t, upstreamSpec{
+				Tools: []string{"scrape"}, CallCT: c.callCT, CallBody: c.body,
+				RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"},
+			})
+			logs := captureLogs(f)
+			rr := f.post(toolCall("2", "beta__scrape"))
+			if rr.Code != http.StatusOK || rr.Body.String() != c.body {
+				t.Errorf("HTTP code=%d body=%q, want 200 and the member's bytes", rr.Code, rr.Body.String())
+			}
+			// The bare media type PoryMCP chose, not the member's header value.
+			if got := rr.Header().Get("Content-Type"); got != c.wantCT {
+				t.Errorf("Content-Type=%q want %q", got, c.wantCT)
+			}
+			if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
+				t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
+			}
+			if row := callRow(t, f); row.Status != models.StatusSuccess || row.UpstreamID != "u2" {
+				t.Errorf("row status=%q upstream=%q: an unreduced answer is judged by its HTTP status, as it always was", row.Status, row.UpstreamID)
+			}
+			var warned []map[string]any
+			for _, r := range logRecords(t, logs) {
+				if r["msg"] == "group call answer relayed unreduced" {
+					warned = append(warned, r)
+				}
+			}
+			if len(warned) != 1 || warned[0]["slug"] != "beta" || warned[0]["err"] != c.wantWhy {
+				t.Errorf("warnings=%v, want one for beta with err %q", warned, c.wantWhy)
+			}
+		})
+	}
+
+	t.Run("an empty answer under a third media type is still a 502", func(t *testing.T) {
+		f := group(t, upstreamSpec{Tools: []string{"scrape"}, CallCT: "text/plain", CallBody: " "})
 		rr := f.post(toolCall("2", "beta__scrape"))
-		if rr.Code != http.StatusOK || rr.Body.String() != stream {
-			t.Errorf("HTTP code=%d body=%q, want the member's bytes", rr.Code, rr.Body.String())
-		}
-		// The bare media type PoryMCP chose, not the member's header value.
-		if got := rr.Header().Get("Content-Type"); got != sse {
-			t.Errorf("Content-Type=%q want %q", got, sse)
+		if rr.Code != http.StatusBadGateway {
+			t.Errorf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
 		}
 	})
 

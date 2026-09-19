@@ -167,8 +167,9 @@ func TestPerUpstreamSessionRoundTrips(t *testing.T) {
 		}
 	}
 
-	// The aggregate endpoint answers initialize itself and returns no upstream
-	// headers, so it hands out no session at all. PORM-23's tripwire.
+	// The aggregate endpoint answers initialize itself, and the only header it
+	// ever returns is a Content-Type it chose, so it hands out no session at all.
+	// PORM-23's tripwire.
 	t.Run("aggregate hands out no session", func(t *testing.T) {
 		agg := f.post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 		if got := agg.Header().Get("Mcp-Session-Id"); got != "" {
