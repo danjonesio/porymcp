@@ -5,6 +5,7 @@ import {
   blocksEverything,
   catalogueComplete,
   catalogueSummary,
+  coveredNote,
   coveringEntry,
   entryMark,
   idleMember,
@@ -166,4 +167,8 @@ test('entryMark: a problem wins, then Not advertised, then the kind of entry', (
   assert.deepEqual(entryMark('gh__', { ...o, kind: 'prefix' as const, unmatched: [] }), { badge: 'Prefix', note: '' })
   assert.deepEqual(entryMark('search', { ...o, side: 'deny', unmatched: [] }), { badge: 'Any member', note: '' })
   assert.deepEqual(entryMark('gh__search', { ...o, unmatched: [] }), { badge: '', note: '' })
+})
+
+test('coveredNote names the entry that covers the row', () => {
+  assert.equal(coveredNote('gh__'), 'Covered by gh__. Change it in the entries above.')
 })

@@ -109,6 +109,11 @@ export function blocksEverything(permits: (slug: string, name: string) => boolea
   return seen
 }
 
+/** The line under a row another entry already names. Such a row is changed from the Entries list, never by unticking it. */
+export function coveredNote(entry: string): string {
+  return `Covered by ${entry}. Change it in the entries above.`
+}
+
 /** The standing line for a filter that, against a complete catalogue, leaves nothing callable. */
 export const BLOCKS_EVERYTHING_NOW = 'As it stands, this filter blocks every tool on this group.'
 
@@ -141,6 +146,17 @@ export function unnameableNote(n: number): string {
     ? '1 tool is not listed: its name contains characters PoryMCP cannot hold a caller to.'
     : `${n} tools are not listed: their names contain characters PoryMCP cannot hold a caller to.`
 }
+
+/** Under a disabled member of a group. The discover route has no enabled check, so its tools still load and can still be ticked. */
+export const MEMBER_DISABLED = 'Disabled. A virtual key on this group gets no endpoint for it.'
+
+/** Under a member whose transport PoryMCP does not speak (PORM-28). Discovery fails before it dials, so there is nothing to try again. */
+export const MEMBER_NOT_IMPLEMENTED =
+  "Not implemented. This member's endpoint fails, and so does the group endpoint, until the transport is Streamable HTTP or the member is disabled."
+
+/** What a Load tools press does besides listing tools. Said before the press, because it is a write. */
+export const LOAD_RECORDS_A_TEST =
+  "Loading connects to each upstream with its stored credential and records the result as that upstream's last test."
 
 /** Under an allow rule a tool the picker cannot show cannot be ticked, so it stays blocked. Said once per affected member. */
 export const UNLISTED_STAYS_BLOCKED = 'A tool that is not listed cannot be ticked and stays blocked.'
