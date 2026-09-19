@@ -305,3 +305,27 @@ func TestProbeBudget(t *testing.T) {
 		t.Errorf("took %v; the probe's own budget did not fire", elapsed)
 	}
 }
+
+// TestNegotiateHandshake pins the version the group endpoint answers an
+// initialize with (PORM-153, security requirement 10): the revision asked for
+// when PoryMCP speaks it, the newest handshake revision otherwise, and never
+// the stateless revision, which has no initialize to answer.
+func TestNegotiateHandshake(t *testing.T) {
+	for asked, want := range map[string]string{
+		"2025-11-25":  "2025-11-25",
+		"2025-06-18":  "2025-06-18",
+		"2025-03-26":  "2025-03-26",
+		"2024-11-05":  "2024-11-05",
+		"2030-01-01":  "2025-11-25",
+		"":            "2025-11-25",
+		"2026-07-28":  "2025-11-25",
+		" 2025-06-18": "2025-11-25",
+	} {
+		if got := NegotiateHandshake(asked); got != want {
+			t.Errorf("NegotiateHandshake(%q) = %q, want %q", asked, got, want)
+		}
+	}
+	if got := SelfInfo(); got.Name != "porymcp" || got.Version == "" {
+		t.Errorf("SelfInfo() = %+v, want porymcp and a version both eras require", got)
+	}
+}
