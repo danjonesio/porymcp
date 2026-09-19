@@ -1516,3 +1516,56 @@ func TestAggregatePing(t *testing.T) {
 		}
 	}
 }
+
+// PORM-153. server/discover on a group used to be relayed to the first member,
+// so a modern client was told one upstream's name, version and capabilities as
+// if they were the group's. The group endpoint answers for itself, from
+// constants, and no member is contacted (security requirements 8 and 11).
+func TestAggregateServerDiscover(t *testing.T) {
+	f := newFixture(t, map[string]upstreamSpec{
+		"alpha": {Modern: true, Tools: []string{"a"}},
+		"beta":  {Tools: []string{"b"}},
+	}, true, nil, nil, nil)
+
+	body, hdr := modernRequest("21", "server/discover", mcpclient.RevisionModern)
+	rr := f.postWith(body, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	const want = `{"jsonrpc":"2.0","id":21,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"porymcp","version":"dev"}},` +
+		`"cacheScope":"private","capabilities":{"tools":{"listChanged":false}},"resultType":"complete",` +
+		`"supportedVersions":["2026-07-28"],"ttlMs":3600000}}`
+	if got := rr.Body.String(); got != want {
+		t.Errorf("result\n got %s\nwant %s", got, want)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type=%q want application/json", got)
+	}
+	if n := f.totalReqs("alpha") + f.totalReqs("beta"); n != 0 {
+		t.Errorf("the members saw %d requests, want none: the answer is PoryMCP's own", n)
+	}
+	row := f.waitAudit(models.LogFilter{Method: "server/discover"})[0]
+	if row.UpstreamID != "" || row.Status != models.StatusSuccess {
+		t.Errorf("row upstream=%q status=%q, want no upstream and success", row.UpstreamID, row.Status)
+	}
+
+	// PORM-150's check still runs first: a body that declares one version under
+	// a header that declares another never reaches the answer.
+	t.Run("a _meta version that disagrees with the header is refused", func(t *testing.T) {
+		body, hdr := modernRequest("22", "server/discover", mcpclient.RevisionModern)
+		hdr["MCP-Protocol-Version"] = "2025-11-25"
+		rr := f.postWith(body, hdr)
+		if code, _, _ := rpcErrorOf(t, rr.Body.Bytes()); rr.Code != http.StatusBadRequest || code != -32020 {
+			t.Errorf("HTTP code=%d rpc code=%d, want 400 and -32020", rr.Code, code)
+		}
+	})
+
+	// A key whose rules leave it no tools is still told the endpoint serves tools.
+	t.Run("a key with every tool filtered away", func(t *testing.T) {
+		g := newGroupFixture(t, map[string][]string{"alpha": {"a"}}, nil, []string{"alpha__nothing"}, nil)
+		body, hdr := modernRequest("23", "server/discover", mcpclient.RevisionModern)
+		if rr := g.postWith(body, hdr); !strings.Contains(rr.Body.String(), `"capabilities":{"tools":{"listChanged":false}}`) {
+			t.Errorf("body=%s, want the tools capability", rr.Body.String())
+		}
+	})
+}

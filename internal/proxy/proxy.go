@@ -935,7 +935,7 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 // itself. Everything else is relayed to the group's first member.
 func shouldAggregate(method string) bool {
 	switch method {
-	case "initialize", "tools/list", "tools/call", "notifications/initialized", "ping":
+	case "initialize", "tools/list", "tools/call", "notifications/initialized", "ping", "server/discover":
 		return true
 	case "subscriptions/listen", "tasks/get", "tasks/update":
 		// Refused here, not relayed: see aggregate.
@@ -993,6 +993,28 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			"protocolVersion": mcpclient.NegotiateHandshake(fields.protocolVersion()),
 			"capabilities":    groupCapabilities(),
 			"serverInfo":      mcpclient.SelfInfo(),
+		}
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+	case "server/discover":
+		// The stateless era's description of this server, and it is of THIS
+		// server: a group, under PoryMCP's name, speaking the one stateless
+		// revision PoryMCP speaks. Relayed to the first member, as it used to
+		// be, it described one upstream, under that upstream's name and
+		// version, to a client about to be shown composed names no member has.
+		// Every value is a constant of PoryMCP's. No member and no policy is
+		// read, so one call by any key holder cannot inventory a group's
+		// upstream software, and a key whose rules leave it no tools is still
+		// told the endpoint serves tools, which it does. private, because what
+		// the endpoint serves is composed per key; an hour, because nothing in
+		// it changes without a new build. No instructions: a member's are its
+		// own and PoryMCP has none.
+		result := map[string]any{
+			"resultType":        "complete",
+			"supportedVersions": []string{mcpclient.RevisionModern},
+			"capabilities":      groupCapabilities(),
+			"ttlMs":             discoverTTLMs,
+			"cacheScope":        "private",
+			"_meta":             selfMeta(),
 		}
 		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
 	case "ping":
@@ -1161,6 +1183,16 @@ func answersSomething(doc []byte) bool {
 	}
 	present := func(v json.RawMessage) bool { return len(v) > 0 && string(v) != "null" }
 	return present(env.Result) || present(env.Error)
+}
+
+// discoverTTLMs is how long a client may keep the group endpoint's
+// server/discover answer: an hour.
+const discoverTTLMs = 3600000
+
+// selfMeta is the _meta of a result the group endpoint composes as a server:
+// PoryMCP's own serverInfo and nothing of any member's.
+func selfMeta() map[string]any {
+	return map[string]any{mcpclient.MetaServerInfo: mcpclient.SelfInfo()}
 }
 
 // groupCapabilities is what a group endpoint says it can do, in initialize and
