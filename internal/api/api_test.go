@@ -1904,7 +1904,7 @@ func TestVirtualKeyWithUndecodableLists(t *testing.T) {
 
 	// reported says whether the management API tells a client the key's lists
 	// are unreadable. PORM-4 SR6: the dashboard cannot otherwise tell this key
-	// from one with no lists, because both lists read back absent.
+	// from a healthy one, because the list that did not decode reads back absent.
 	reported := func(t *testing.T) (get, list, present bool) {
 		t.Helper()
 		body := getJSON(t, h, "/virtual-keys/"+id)

@@ -221,9 +221,9 @@ export type VirtualKey = {
   /** Absent when empty, like tool_allowlist. The deny list is checked first. */
   tool_denylist?: string[]
   /**
-   * True when this key's stored lists could not be decoded. Both lists are then
-   * absent, which looks like a key with no rules, while the proxy refuses every
-   * call on it. A PATCH must send both lists to replace them. Response only.
+   * True when one of this key's stored lists could not be decoded. That list is
+   * then absent, which looks like a key with no such rule, while the proxy
+   * refuses every call on it. A PATCH must send both lists to replace them. Response only.
    */
   lists_malformed?: boolean
   /** Enabled members only, always an array. A single-upstream key has one entry mirroring proxy_url. */

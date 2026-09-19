@@ -43,8 +43,9 @@ export function formFromVirtualKey(vk: VirtualKey): KeyForm {
     target_id: vk.target_id,
     rate_limit: vk.rate_limit ? String(vk.rate_limit) : '',
     // Both lists are omitempty on the wire, so absent means empty. On a key
-    // whose stored lists cannot be read (lists_malformed) they are absent too,
-    // which is why that flag exists: these two empty arrays are not its rules.
+    // that reports lists_malformed, a list that did not decode is absent too
+    // (one that did is served as stored), which is why that flag exists: an
+    // empty array here is not necessarily the key's rule.
     tool_allowlist: [...(vk.tool_allowlist ?? [])],
     tool_denylist: [...(vk.tool_denylist ?? [])],
     listsReplace: false,
@@ -117,8 +118,9 @@ export function keySaveBlocked(before: VirtualKey | null, f: KeyForm, groupTarge
  * Asked of a fresh read just before a PATCH that carries a list: the API has no
  * 409 yet (PORM-119). Per field, because PATCH replaces only what it is sent:
  * another operator's edit to the allow list must not refuse a deny-list save.
- * The flag is compared because an unreadable key serves no lists, so a repair
- * made elsewhere would otherwise compare equal and be overwritten by Replace.
+ * The flag is compared because an undecodable list is served as absent, so a
+ * repair made elsewhere that ended with that list empty would otherwise compare
+ * equal and be overwritten by Replace.
  */
 export function keyPolicyStale(
   seed: VirtualKey,

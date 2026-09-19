@@ -1102,9 +1102,9 @@ components:
       description: >-
         Present and `true` on every virtual-key response when the key's stored
         `tool_allowlist` or `tool_denylist` could not be decoded; absent
-        otherwise. Both lists are then absent from the response, which is what a
-        key with no rules looks like, while the proxy blocks every call on the
-        key. Response only: a request that sends it changes nothing. A PATCH
+        otherwise. A list that did not decode is absent from the response, which
+        is what a key with no such list looks like, while the proxy blocks every
+        call on the key; a list that did decode is served as stored. Response only: a request that sends it changes nothing. A PATCH
         sending both lists replaces them and clears it.
     VirtualKeyEndpoint:
       type: object

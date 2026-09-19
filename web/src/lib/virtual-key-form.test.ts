@@ -133,7 +133,7 @@ test('keyPolicyStale: per field, so an edit to the other list does not refuse th
 })
 
 test('keyPolicyStale: a key that became unreadable, or was repaired, is always stale', () => {
-  // Both serve no lists, so only the flag can tell them apart.
+  // An undecodable list is served as absent, so only the flag can tell them apart.
   assert.equal(keyPolicyStale(key({ lists_malformed: true }), key(), ['tool_allowlist', 'tool_denylist']), true)
   assert.equal(keyPolicyStale(key(), key({ lists_malformed: true }), ['tool_denylist']), true)
   assert.equal(keyPolicyStale(key({ lists_malformed: true }), key({ lists_malformed: true }), ['tool_allowlist', 'tool_denylist']), false)
@@ -147,6 +147,6 @@ test('keyRulesBadge: counts, the unreadable mark, or nothing', () => {
     label: '3 allowed, 2 denied',
     tone: 'zinc',
   })
-  // Both lists are absent on such a key, so without the flag it would read as "no rules".
+  // The list that did not decode is absent on such a key, so without the flag it would read as "no rules".
   assert.deepEqual(keyRulesBadge(key({ lists_malformed: true })), { label: 'Rules unreadable', tone: 'pink' })
 })

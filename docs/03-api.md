@@ -473,9 +473,9 @@ clears on `""` or `null`; `upstream_ids` and `tool_filter` clear on `null`.
 
 Every virtual-key response carries `lists_malformed: true` when the key's
 stored tool lists could not be decoded, and leaves the member out otherwise.
-Both lists read back as absent on such a key, which is what a key with no rules
-looks like, while the proxy refuses every call on it; this is how a client
-tells the two apart. It is response only: a request that sends it changes
+A list that did not decode reads back as absent, which is what a key with no
+such list looks like, while the proxy refuses every call on the key; this is how
+a client tells the two apart. A list that did decode is served as stored. It is response only: a request that sends it changes
 nothing. Sending both lists in one `PATCH` replaces them and clears it (see
 Tool lists).
 
@@ -586,8 +586,9 @@ re-checked, so a key written before these rules existed stays renamable,
 expirable and revocable.
 
 A key whose **stored** lists cannot be decoded is the one place where leaving an
-unsent list alone is not enough. Both lists read back as absent on such a key,
-so the proxy blocks every call on it, and every write leaves the two columns
+unsent list alone is not enough. The list that did not decode reads back as
+absent on such a key, which would otherwise read as no rule at all, so the proxy
+blocks every call on it, and every write leaves the two columns
 exactly as they are: a rename, a `rotate` and a `revoke` all succeed and the key
 stays blocked, rather than replacing an unreadable rule with no rule at all. A
 `PATCH` carrying **both** `tool_allowlist` and `tool_denylist` (including as
