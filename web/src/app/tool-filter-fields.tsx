@@ -34,7 +34,7 @@ export type ToolFilterFieldsProps = {
   catalogue: Catalogue
   rateLimited: string
   onLoad: (upstreamId?: string) => void
-  /** groupSaveBlocked's sentence, so the section can say why Save is held back. */
+  /** groupSaveBlocked's sentence ('' when Save may proceed). The page prints it beside Save; here it only picks the empty-list note. */
   blocked: string
 }
 
@@ -91,7 +91,9 @@ export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoa
   const entries: EntryRow[] = [...f.tools.map((e) => mark(e, 'tool')), ...f.prefixes.map((e) => mark(e, 'prefix'))]
   const standing =
     filterAdmitsNothing(f) || (f.mode !== '' && blocksEverything(filterPermits(f), catalogue) ? BLOCKS_EVERYTHING_NOW : '')
-  const emptyNote = blocked === ZERO_ENTRIES ? ZERO_ENTRIES : filterListsNothing(f) || ZERO_ENTRIES
+  // A stored deny filter that lists nothing says what it does; once that empty
+  // mode is the operator's edit (Save is then held back), it says what to do.
+  const emptyNote = blocked ? ZERO_ENTRIES : filterListsNothing(f) || ZERO_ENTRIES
 
   return (
     <Fieldset>

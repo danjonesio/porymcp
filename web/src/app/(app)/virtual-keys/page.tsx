@@ -231,8 +231,9 @@ export default function VirtualKeysPage() {
     try {
       const fields = listsSent(row, form)
       if (fields.length > 0) {
-        const fresh = await api<VirtualKey>(`/virtual-keys/${row.id}`)
-        if (keyPolicyStale(row, fresh, fields)) {
+        const fresh = await api<VirtualKey | null>(`/virtual-keys/${row.id}`)
+        // No readable row is not a fresh row: refuse, as for a changed one.
+        if (!fresh || keyPolicyStale(row, fresh, fields)) {
           failed(KEY_RULES_STALE, mine)
           return
         }
@@ -462,7 +463,13 @@ export default function VirtualKeysPage() {
                 catalogue={catalogue}
                 rateLimited={rateLimited}
                 onLoad={loadTools}
-                emptyHint="Choose a target to see its tools."
+                emptyHint={
+                  !editing
+                    ? 'Choose a target to see its tools.'
+                    : groupTarget
+                      ? 'This group has no upstreams, so there are no tools to tick.'
+                      : 'This upstream is no longer there, so there are no tools to tick.'
+                }
               />
               {blocked ? <p className={errorLine}>{blocked}</p> : null}
             </FieldGroup>

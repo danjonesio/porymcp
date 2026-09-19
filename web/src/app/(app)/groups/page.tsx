@@ -225,8 +225,9 @@ export default function GroupsPage() {
     setSaving(true)
     try {
       if ('tool_filter' in body) {
-        const fresh = await api<Group>(`/groups/${row.id}`)
-        if (groupPolicyStale(row, fresh)) {
+        const fresh = await api<Group | null>(`/groups/${row.id}`)
+        // No readable row is not a fresh row: refuse, as for a changed one.
+        if (!fresh || groupPolicyStale(row, fresh)) {
           if (openRef.current && dialogSeq.current === mine) {
             setFormError(GROUP_FILTER_STALE)
             setFormErrorSeq((n) => n + 1)
@@ -371,6 +372,9 @@ export default function GroupsPage() {
               onLoadTools={loadTools}
               blocked={blocked}
             />
+            {/* Beside the button it disables: the entry that causes it can be a
+                long scroll up the dialog. */}
+            {blocked ? <p className={clsx('mt-8', errorLine)}>{blocked}</p> : null}
           </DialogBody>
           <DialogActions>
             <Button type="button" plain onClick={close}>

@@ -3,9 +3,10 @@
 import { ToolEntries, type EntryRow } from '@/app/tool-entries'
 import { ToolPicker, ToolPickerLoad } from '@/app/tool-picker'
 import { Button } from '@/components/button'
-import { Fieldset, Legend } from '@/components/fieldset'
+import { Fieldset, Label, Legend } from '@/components/fieldset'
 import { Subheading } from '@/components/heading'
 import { errorLine } from '@/components/primitives'
+import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Text } from '@/components/text'
 import { entryMark, unmatchedEntries, type Catalogue } from '@/lib/catalogue'
 import { toggleEntry } from '@/lib/tool-filter'
@@ -26,7 +27,7 @@ export type ToolListFieldsProps = {
   emptyHint: string
 }
 
-/** One of the key's two lists: its entries, an input to add one by hand, and the target's tools to tick. */
+/** One of the key's two lists: its entries and an input to add one by hand. The tools to tick are one picker, below both. */
 function RuleList({
   title,
   field,
@@ -35,7 +36,6 @@ function RuleList({
   onChange,
   groupTarget,
   catalogue,
-  onLoad,
 }: {
   title: string
   field: 'tool_allowlist' | 'tool_denylist'
@@ -44,9 +44,7 @@ function RuleList({
   onChange: (patch: Partial<KeyForm>) => void
   groupTarget: boolean
   catalogue: Catalogue
-  onLoad: (upstreamId?: string) => void
 }) {
-  const [showTools, setShowTools] = useState(false)
   const list = form[field]
   const set = (next: string[]) => onChange({ [field]: next })
   const unmatched = unmatchedEntries(list, catalogue, { prefix: false })
@@ -54,7 +52,6 @@ function RuleList({
     const m = entryMark(text, { kind: 'tool', side, groupTarget, keyList: true, unmatched })
     return { text, kind: 'tool', badge: m.badge, note: m.note }
   })
-  const loaded = catalogue.members.some((m) => m.state !== 'idle')
   return (
     <div data-slot="control" className="space-y-6">
       <Subheading level={3}>{title}</Subheading>
@@ -66,32 +63,18 @@ function RuleList({
         onRemove={(row) => set(toggleEntry(list, row.text, false))}
         onAddTool={(entry) => set(toggleEntry(list, entry, true))}
       />
-      {loaded ? (
-        <Button type="button" plain aria-expanded={showTools} onClick={() => setShowTools((v) => !v)}>
-          {showTools ? 'Hide the tools' : `Tick tools for the ${title.toLowerCase()}`}
-        </Button>
-      ) : null}
-      {loaded && showTools ? (
-        <ToolPicker
-          catalogue={catalogue}
-          side={side}
-          groupTarget={groupTarget}
-          tools={list}
-          prefixes={[]}
-          name={field}
-          onTick={(entry, on) => set(toggleEntry(list, entry, on))}
-          onLoad={(id) => onLoad(id)}
-        />
-      ) : null}
     </div>
   )
 }
 
 /**
  * The Tool rules section of the Create and Edit virtual key dialogs: a deny
- * list and an allow list over one catalogue of the target's tools. Fields and
- * copy only; the rules are in web/src/lib. A key has no prefixes, so there is no
- * prefix input and no whole-member checkbox here.
+ * list and an allow list over ONE picker of the target's tools. A radio says
+ * which list a tick writes to, and the rows show that list's ticks. One picker,
+ * so each member's state (not loaded, failed with Try again, truncated, no
+ * tools) is on screen once, straight after the Load press, and no tool row is
+ * drawn twice. Fields and copy only; the rules are in web/src/lib. A key has no
+ * prefixes, so there is no prefix input and no whole-member checkbox here.
  */
 export function ToolListFields({
   form,
@@ -103,6 +86,8 @@ export function ToolListFields({
   onLoad,
   emptyHint,
 }: ToolListFieldsProps) {
+  const [ticking, setTicking] = useState<'deny' | 'allow'>('deny')
+  const field = ticking === 'allow' ? 'tool_allowlist' : 'tool_denylist'
   if (unreadable && !form.listsReplace) {
     return (
       <Fieldset>
@@ -123,18 +108,17 @@ export function ToolListFields({
     <Fieldset>
       <Legend>Tool rules</Legend>
       <Text>
-        The deny list is checked first, then the allow list, then the group&apos;s filter. Each one can only take tools
-        away.
+        {groupTarget
+          ? "The deny list is checked first, then the allow list, then the group's filter. Each one can only take tools away."
+          : 'The deny list is checked first, then the allow list. Each one can only take tools away.'}
       </Text>
       {form.listsReplace ? (
         <Text>
-          Saving replaces both lists. With both empty, this key has no rules of its own. Closing this dialog keeps the
-          stored rules.
+          Saving replaces both lists. At least one of them could not be read, and a list that could not be read is
+          shown empty here, so check both before saving. With both empty, this key has no rules of its own. Closing
+          this dialog keeps the stored rules.
         </Text>
       ) : null}
-      <div data-slot="control">
-        <ToolPickerLoad catalogue={catalogue} rateLimited={rateLimited} emptyHint={emptyHint} onLoad={() => onLoad()} />
-      </div>
       <RuleList
         title="Deny list"
         field="tool_denylist"
@@ -143,7 +127,6 @@ export function ToolListFields({
         onChange={onChange}
         groupTarget={groupTarget}
         catalogue={catalogue}
-        onLoad={onLoad}
       />
       <RuleList
         title="Allow list"
@@ -153,8 +136,39 @@ export function ToolListFields({
         onChange={onChange}
         groupTarget={groupTarget}
         catalogue={catalogue}
-        onLoad={onLoad}
       />
+      <div data-slot="control" className="space-y-8">
+        <ToolPickerLoad catalogue={catalogue} rateLimited={rateLimited} emptyHint={emptyHint} onLoad={() => onLoad()} />
+        {catalogue.members.length > 0 ? (
+          <>
+            <RadioGroup
+              name="tool_rules_ticking"
+              aria-label="Which list a tick writes to"
+              value={ticking}
+              onChange={(v: 'deny' | 'allow') => setTicking(v)}
+            >
+              <RadioField>
+                <Radio value="deny" color="cyan" />
+                <Label>Ticks go to the deny list</Label>
+              </RadioField>
+              <RadioField>
+                <Radio value="allow" color="cyan" />
+                <Label>Ticks go to the allow list</Label>
+              </RadioField>
+            </RadioGroup>
+            <ToolPicker
+              catalogue={catalogue}
+              side={ticking}
+              groupTarget={groupTarget}
+              tools={form[field]}
+              prefixes={[]}
+              name={field}
+              onTick={(entry, on) => onChange({ [field]: toggleEntry(form[field], entry, on) })}
+              onLoad={(id) => onLoad(id)}
+            />
+          </>
+        ) : null}
+      </div>
       <Text>
         Clients cache the tool list. Reconnect a client after this changes, or it keeps offering tools it can no longer
         call.
