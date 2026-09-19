@@ -5,6 +5,7 @@ import {
   blankVirtualKeyForm,
   formFromVirtualKey,
   keyPolicyStale,
+  keyRulesBadge,
   keySaveBlocked,
   virtualKeyCreateBody,
   virtualKeyPatchBody,
@@ -136,4 +137,16 @@ test('keyPolicyStale: a key that became unreadable, or was repaired, is always s
   assert.equal(keyPolicyStale(key({ lists_malformed: true }), key(), ['tool_allowlist', 'tool_denylist']), true)
   assert.equal(keyPolicyStale(key(), key({ lists_malformed: true }), ['tool_denylist']), true)
   assert.equal(keyPolicyStale(key({ lists_malformed: true }), key({ lists_malformed: true }), ['tool_allowlist', 'tool_denylist']), false)
+})
+
+test('keyRulesBadge: counts, the unreadable mark, or nothing', () => {
+  assert.equal(keyRulesBadge(key()), null)
+  assert.deepEqual(keyRulesBadge(key({ tool_allowlist: ['a', 'b', 'c'] })), { label: '3 allowed', tone: 'zinc' })
+  assert.deepEqual(keyRulesBadge(key({ tool_denylist: ['a', 'b'] })), { label: '2 denied', tone: 'zinc' })
+  assert.deepEqual(keyRulesBadge(key({ tool_allowlist: ['a', 'b', 'c'], tool_denylist: ['a', 'b'] })), {
+    label: '3 allowed, 2 denied',
+    tone: 'zinc',
+  })
+  // Both lists are absent on such a key, so without the flag it would read as "no rules".
+  assert.deepEqual(keyRulesBadge(key({ lists_malformed: true })), { label: 'Rules unreadable', tone: 'pink' })
 })

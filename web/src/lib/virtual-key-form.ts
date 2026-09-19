@@ -128,3 +128,22 @@ export function keyPolicyStale(
   if (!!seed.lists_malformed !== !!fresh.lists_malformed) return true
   return fields.some((field) => !sameEntries(seed[field], fresh[field]))
 }
+
+/** Shown in the dialog when keyPolicyStale stopped a save. Nothing was sent. */
+export const KEY_RULES_STALE =
+  "This key's tool rules changed since you opened it. Close this dialog and open it again to see the current rules."
+
+/**
+ * The badge under a key's target in the table: how many rules it carries, or
+ * that the proxy cannot read them and refuses every call. null for a key with no
+ * rules, which is the ordinary case and needs no mark.
+ */
+export function keyRulesBadge(vk: VirtualKey): { label: string; tone: 'zinc' | 'pink' } | null {
+  if (vk.lists_malformed) return { label: 'Rules unreadable', tone: 'pink' }
+  const parts: string[] = []
+  const allowed = vk.tool_allowlist?.length ?? 0
+  const denied = vk.tool_denylist?.length ?? 0
+  if (allowed > 0) parts.push(`${allowed} allowed`)
+  if (denied > 0) parts.push(`${denied} denied`)
+  return parts.length > 0 ? { label: parts.join(', '), tone: 'zinc' } : null
+}
