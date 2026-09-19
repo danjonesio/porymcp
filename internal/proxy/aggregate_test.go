@@ -839,6 +839,13 @@ func TestAggregateModernClientLegacyMember(t *testing.T) {
 		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
 			t.Fatalf("HTTP code=%d body=%s, want the member's answer", rr.Code, rr.Body.String())
 		}
+		// To this client the group endpoint is a 2026-07-28 server, and the
+		// revision requires resultType on every result such a server sends. The
+		// handshake member sent none, and the reference SDK refuses a result
+		// without one from a server that declared the stateless revision.
+		if !strings.Contains(rr.Body.String(), `"resultType":"complete"`) {
+			t.Errorf("body=%s, want the result completed with a resultType", rr.Body.String())
+		}
 		got := theCallTo(t, f, "alpha")
 		if v, sent := got.Header["Mcp-Protocol-Version"]; sent {
 			t.Errorf("the member was sent MCP-Protocol-Version %q; a handshake server must refuse a version it does not speak", v)
@@ -1990,4 +1997,27 @@ func TestAggregateRelayDropsNegotiatedVersion(t *testing.T) {
 			t.Errorf("single upstream: Mcp-Protocol-Version=%q, want the client's own", v)
 		}
 	})
+}
+
+// completeResult adds one member to one kind of document and leaves every
+// other byte a member sent alone.
+func TestCompleteResult(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		{"a handshake member's result", `{"jsonrpc":"2.0","id":9007199254740993,"result":{"content":[{"type":"text","text":"a <b> & c"}],"isError":false}}`,
+			`{"id":9007199254740993,"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"a <b> & c"}],"isError":false,"resultType":"complete"}}`},
+		{"a modern member's own resultType is left alone", `{"jsonrpc":"2.0","id":1,"result":{"resultType":"input_required","inputRequests":{}}}`, ""},
+		{"an error answer", `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"no"}}`, ""},
+		{"a result that is not an object", `{"jsonrpc":"2.0","id":1,"result":"ok"}`, ""},
+		{"not JSON", `<html>`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			want := c.want
+			if want == "" {
+				want = c.in
+			}
+			if got := string(completeResult([]byte(c.in))); got != want {
+				t.Errorf("got  %s\nwant %s", got, want)
+			}
+		})
+	}
 }

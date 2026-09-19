@@ -1150,6 +1150,9 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			h.log.Warn("group call answer relayed unreduced", "slug", route.Upstream.Slug,
 				"upstream_id", route.Upstream.ID, "err", unreduced.Error())
 		}
+		if err == nil && unreduced == nil && clientModern {
+			doc = completeResult(doc)
+		}
 		return doc, status, media, route.Upstream.ID, err
 	default:
 		// Unreachable: serve calls aggregate only for a method shouldAggregate
@@ -1244,6 +1247,53 @@ func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, medi
 	default:
 		return nil, nil, nil, errUnrelayableAnswer
 	}
+}
+
+// completeResult gives a member's result the resultType the stateless revision
+// requires of every result, when the member sent none. It is called only for a
+// client that declared that revision.
+//
+// A handshake-era member's result has no resultType, and the revision does say
+// a client reads an absent one as "complete", but only of a server on an
+// EARLIER revision. To a modern client this endpoint IS a 2026-07-28 server:
+// its server/discover says so. The reference SDK holds it to that and refuses
+// the result ("missing required resultType: servers implementing protocol
+// revision 2026-07-28 MUST include it"), which is what the MCP Inspector did to
+// a DeepWiki call through a group before this existed. "complete" is the true
+// value: a handshake server has no way to ask for more input inside a result.
+//
+// Only that one member is added, and only to a result that is an object and
+// lacks it. The id, the error of an error answer, and every byte of what the
+// member put in its result are carried as raw JSON and cross unchanged; a
+// modern member's own resultType, "input_required" included, is left alone. A
+// document that does not decode is returned as it came.
+func completeResult(doc []byte) []byte {
+	var env map[string]json.RawMessage
+	if json.Unmarshal(doc, &env) != nil {
+		return doc
+	}
+	raw := bytes.TrimSpace(env["result"])
+	if len(raw) == 0 || raw[0] != '{' {
+		return doc
+	}
+	var result map[string]json.RawMessage
+	if json.Unmarshal(raw, &result) != nil {
+		return doc
+	}
+	if _, has := result["resultType"]; has {
+		return doc
+	}
+	result["resultType"] = json.RawMessage(`"complete"`)
+	patched, err := marshalRaw(result)
+	if err != nil {
+		return doc
+	}
+	env["result"] = patched
+	out, err := marshalRaw(env)
+	if err != nil {
+		return doc
+	}
+	return out
 }
 
 // answersSomething reports whether a JSON-RPC document carries a result or an
