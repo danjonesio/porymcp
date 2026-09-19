@@ -263,9 +263,11 @@ func TestGroupAllowFilterDoesNotBlockListOrInitialize(t *testing.T) {
 		json.RawMessage(`{"mode":"allow","prefixes":["gh__gh_"]}`), nil, nil)
 
 	assertNotBlocked(t, f.post(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`), "initialize")
+	// Since PORM-153 the group endpoint answers ping itself, as it does
+	// initialize, so the filter still must not block it and no member sees it.
 	assertNotBlocked(t, f.post(`{"jsonrpc":"2.0","id":1,"method":"ping"}`), "ping")
-	if got := f.count("gh", "ping", ""); got != 1 {
-		t.Errorf("upstream saw %d ping requests, want 1", got)
+	if got := f.count("gh", "ping", ""); got != 0 {
+		t.Errorf("upstream saw %d ping requests, want none", got)
 	}
 	if rr := f.post(`{"jsonrpc":"2.0","method":"notifications/initialized"}`); rr.Code != http.StatusAccepted {
 		t.Errorf("notifications/initialized code=%d want 202; body=%s", rr.Code, rr.Body.String())

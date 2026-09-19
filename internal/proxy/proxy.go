@@ -293,6 +293,18 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError, rpcErr.Message, start, n, boundedParams(req.Params))
 		return
 	}
+	// Which era the client speaks, by the version it declared. Asked of the
+	// same function the check above used, so for a request with a method the
+	// two cannot disagree and the error, already refused above, is nil. A
+	// request with no method (a DELETE, a body that names none) is one the
+	// check above returns on before it asks, as it always has, so here an
+	// unreadable declaration can still come back: it is read as no declaration,
+	// which is the handshake era, and the request goes on as it did before this
+	// function existed. The group endpoint is a server in both eras and answers
+	// each in its own shape; a request with no method is relayed, under the
+	// same two rules below as any other relayed request.
+	declared, _ := declaredVersion(r.Header, fields)
+	clientModern := strictRevision(declared)
 
 	var (
 		upstreams []*models.Upstream
@@ -418,6 +430,25 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// onAggregate is the group's own endpoint: the one place a client names a
 	// tool by its identity rather than by the name its upstream advertises.
 	onAggregate := member == nil && group != nil
+	// On the group endpoint PoryMCP is the server, and its server/discover says
+	// which stateless revision it speaks: one. strictRevision accepts any date
+	// from that one onward, so a request declaring a later revision would
+	// otherwise be served as if PoryMCP spoke it. The revision makes this
+	// refusal a MUST and names its data. requested is written back only because
+	// strictRevision has just proved it a ten-byte date. Header validation has
+	// already run and the method is not looked at yet, which is the order a
+	// client can observe. No member is contacted and the row names none. A
+	// single-upstream key and a member endpoint relay, and the upstream
+	// answers for itself.
+	if onAggregate && clientModern && declared != mcpclient.RevisionModern {
+		out := answerRPC(req.ID, nil, &rpcError{
+			Code: codeUnsupportedVersion, Message: msgUnsupportedVersion,
+			Data: map[string]any{"supported": []string{mcpclient.RevisionModern}, "requested": declared},
+		})
+		n := writeRPCBody(w, http.StatusBadRequest, out)
+		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError, msgUnsupportedVersion, start, n, boundedParams(req.Params))
+		return
+	}
 	blockedUpstream := "" // nothing is contacted on a group block, so nothing to name
 	if group == nil || member != nil {
 		// A member endpoint names its upstream in the URL, so the row can say
@@ -486,11 +517,28 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// member's own names, and its Mcp-Session-Id reaches the client.
 	aggregated := onAggregate && shouldAggregate(method)
 	if aggregated {
-		respBody, statusCode, headers, usedID, err = h.aggregate(r.Context(), r, pol, upstreams, req, body)
+		respBody, statusCode, headers, usedID, err = h.aggregate(r.Context(), r, pol, upstreams, req, fields, clientModern, body)
 	} else {
 		up := upstreams[0]
 		usedID = up.ID
-		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body, nil)
+		// A method the group endpoint neither answers nor refuses goes to the
+		// group's first member, as it always has. One header of a handshake-era
+		// client's does not go with it. The version such a client declares on
+		// every request is the one this endpoint's initialize agreed to, and it
+		// agreed for itself: no member was asked. It used to answer 2024-11-05
+		// whatever was requested; it now answers up to 2025-11-25, and the
+		// handshake transport says a member MUST refuse a version it does not
+		// support, so a first member on an older revision would start refusing
+		// logging/setLevel the day this shipped. Without the header the member
+		// reads the request as it reads the proxy's own catalogue request. A
+		// modern client's request crosses as it came, and so does everything on
+		// a member endpoint and a single-upstream key, where the client and the
+		// upstream negotiated with each other.
+		var relay *memberHeaders
+		if onAggregate && !clientModern {
+			relay = &memberHeaders{drop: []string{hdrProtocol}}
+		}
+		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body, relay)
 		// Trim the catalogue to what the gate above would let this key call,
 		// before the classification below, so the row records the size of the
 		// body the client is actually sent.
@@ -542,7 +590,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 
 	copyResponseHeaders(w.Header(), headers)
-	if w.Header().Get("Content-Type") == "" {
+	// A label on no bytes is a claim about nothing: the group endpoint's 202 to
+	// a notification has no body in either era, and gets no media type.
+	if w.Header().Get("Content-Type") == "" && len(respBody) > 0 {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(statusCode)
@@ -713,13 +763,18 @@ const (
 // upstream, which is exactly what makes it the wrong thing to use for a
 // request the proxy makes on its own behalf. See listTools.
 //
-// override is the aggregate's rewrite of the routing headers (the Mcp-Name
-// carrying the member's own tool name, memberRoutingHeaders) and nil on every
-// other path. It is applied through the same allowlist as the client's
-// headers, after them and before ApplyAuth, so copyHopHeaders stays the one
-// writer of outbound client headers: an override cannot introduce a name
-// that is not on the list, and the credential is still written last.
-func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, override http.Header) ([]byte, int, http.Header, error) {
+// hdr is what the aggregate decided about this request's headers (see
+// memberHeaders) and nil on every path that relays the client's request as it
+// was sent. Both halves go through copyHopHeaders, so the allowlist stays the
+// one writer of outbound client headers and the aggregate cannot introduce a
+// name that is not on it. drop is honoured on the way in. set is written after
+// ApplyAuth, the one thing here that is: a routing header the aggregate
+// composed is what the member must read, and a stored auth_config that names
+// one (the API has refused to save such a config since PORM-150, but a row
+// saved before that still holds it) would otherwise replace it, so a member
+// that routes on Mcp-Name would run the name the stored config chose and not
+// the one the policy gate judged.
+func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, hdr *memberHeaders) ([]byte, int, http.Header, error) {
 	// Before the request exists: a transport this client cannot speak, or a
 	// credential that cannot be presented, means nothing is dialled, not a
 	// request with the virtual key stripped and nothing put back, which is
@@ -737,8 +792,14 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	copyHopHeaders(req.Header, inbound.Header)
-	copyHopHeaders(req.Header, override)
+	var (
+		set  http.Header
+		drop []string
+	)
+	if hdr != nil {
+		set, drop = hdr.set, hdr.drop
+	}
+	copyHopHeaders(req.Header, inbound.Header, drop...)
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", mcpclient.AcceptMCP)
 	}
@@ -749,7 +810,21 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 		// Unreachable after credential(); kept so the seam cannot regress.
 		return nil, 0, nil, errCredentialUnreadable
 	}
+	copyHopHeaders(req.Header, set)
 	return mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
+}
+
+// memberHeaders is what the aggregate decides about the headers of a request
+// it sends one member on a client's behalf. nil relays the client's request as
+// it was sent.
+type memberHeaders struct {
+	// set holds the routing headers the aggregate composes for the member. It
+	// crosses copyHopHeaders after ApplyAuth, so a stored auth_config cannot
+	// replace it.
+	set http.Header
+	// drop names allowlisted client headers that must not cross, because they
+	// declare an era the member does not speak.
+	drop []string
 }
 
 // listTools asks one upstream what tools it advertises, using a request the
@@ -859,9 +934,12 @@ type upstreamTransport = mcpclient.UpstreamTransport
 // member's names are exactly what they were, because each is composed from its
 // own slug. Routability is the part still tied to this walk, PORM-32 routes a
 // call by the slug the name carries and takes the catalogue off the call path.
-func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) ([]*models.Upstream, [][]mcpTool) {
+func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) ([]*models.Upstream, [][]mcpTool, []int64) {
 	active := make([]*models.Upstream, 0, len(ups))
 	lists := make([][]mcpTool, 0, len(ups))
+	// ttls is each listed member's cache hint, paired index for index with the
+	// other two: what it reported, or the default when it reported nothing.
+	ttls := make([]int64, 0, len(ups))
 	// A dropout is otherwise invisible: the row belongs to the client's
 	// request, which succeeded on the survivors, so nothing anywhere says why
 	// a member's tools are missing. Warn rather than Debug because a member
@@ -900,44 +978,115 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 			skip(up, err)
 			continue
 		}
+		ttl, reported := listTTLMs(listBody)
+		if !reported {
+			ttl = defaultListTTLMs
+		}
 		active = append(active, up)
 		lists = append(lists, tools)
+		ttls = append(ttls, ttl)
 	}
-	return active, lists
+	return active, lists, ttls
 }
 
+// shouldAggregate names the methods the group endpoint answers or refuses
+// itself. Everything else is relayed to the group's first member.
 func shouldAggregate(method string) bool {
 	switch method {
-	case "initialize", "tools/list", "tools/call", "notifications/initialized":
+	case "initialize", "tools/list", "tools/call", "notifications/initialized", "ping", "server/discover":
+		return true
+	case "subscriptions/listen", "tasks/get", "tasks/update":
+		// Refused here, not relayed: see aggregate.
 		return true
 	default:
 		return false
 	}
 }
 
-// aggregate answers the four methods a group endpoint handles itself. It takes
-// the already-parsed request rather than re-decoding the body: two decoders
-// over the same bytes are two chances to disagree about which call this is,
-// and the gate in ServeHTTP has already made its decision from the first one.
+// The messages the group endpoint writes as a server. Fixed strings, in the
+// reply and on the row.
+const (
+	msgMethodNotFound     = "method not found"
+	msgUnsupportedVersion = "unsupported protocol version"
+)
+
+// aggregate answers the methods a group endpoint handles itself. It takes the
+// already-parsed request, and the routing fields and the client's era that
+// serve read from it, rather than re-decoding the body: two decoders over the
+// same bytes are two chances to disagree about which call this is, and the
+// gate in ServeHTTP has already made its decision from the first one.
 //
 // The http.Header it returns is not a member's header set. It is nil on every
 // arm but tools/call, and there it holds at most a Content-Type the aggregate
 // chose itself (see reduceCallAnswer), so serve's one writer of response
 // headers stays the one writer and no member's Mcp-Session-Id can reach a
 // group client through it.
-func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, body []byte) ([]byte, int, http.Header, string, error) {
+func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, fields routingFields, clientModern bool, body []byte) ([]byte, int, http.Header, string, error) {
 	switch req.Method {
+	case "subscriptions/listen", "tasks/get", "tasks/update":
+		// Methods the group endpoint cannot serve, refused the way the
+		// revision's transport prescribes for a method a server does not
+		// implement: 404 and -32601. subscriptions/listen needs a stream held
+		// open, which a buffered relay cannot give (PORM-5), and relayed to the
+		// first member it held that member's stream until the client timed out
+		// and tried again. A task handle belongs to the one member that issued
+		// it and the group has no way to know which; tasks are an extension
+		// this endpoint does not advertise. No member is contacted, so the row
+		// names none. A member endpoint relays all three to its member.
+		return answerRPC(req.ID, nil, &rpcError{Code: codeMethodNotFound, Message: msgMethodNotFound}), http.StatusNotFound, nil, "", nil
 	case "notifications/initialized":
-		return []byte(`{}`), http.StatusAccepted, nil, ups[0].ID, nil
+		// Both eras of the transport say an accepted notification is a 202 with
+		// no body. Nothing is dialled for this or for initialize below, so
+		// neither row names an upstream: upstream_id is how an operator reads
+		// which credential a request presented, and none was.
+		return nil, http.StatusAccepted, nil, "", nil
 	case "initialize":
+		// The handshake's own rule: the version asked for when PoryMCP speaks
+		// it, the newest handshake revision otherwise. The answer comes out of
+		// mcpclient's closed set and never out of the client's string. The
+		// capabilities say the same thing server/discover says, so one sentence
+		// describes a group in either era: tools, and no list-changed
+		// notifications, because nothing here can send one.
 		result := map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "porymcp", "version": "0.1.0"},
+			"protocolVersion": mcpclient.NegotiateHandshake(fields.protocolVersion()),
+			"capabilities":    groupCapabilities(),
+			"serverInfo":      mcpclient.SelfInfo(),
 		}
-		return encodeRPC(req.ID, result, nil), http.StatusOK, nil, ups[0].ID, nil
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+	case "server/discover":
+		// The stateless era's description of this server, and it is of THIS
+		// server: a group, under PoryMCP's name, speaking the one stateless
+		// revision PoryMCP speaks. Relayed to the first member, as it used to
+		// be, it described one upstream, under that upstream's name and
+		// version, to a client about to be shown composed names no member has.
+		// Every value is a constant of PoryMCP's. No member and no policy is
+		// read, so one call by any key holder cannot inventory a group's
+		// upstream software, and a key whose rules leave it no tools is still
+		// told the endpoint serves tools, which it does. private, because what
+		// the endpoint serves is composed per key; an hour, because nothing in
+		// it changes without a new build. No instructions: a member's are its
+		// own and PoryMCP has none.
+		result := map[string]any{
+			"resultType":        "complete",
+			"supportedVersions": []string{mcpclient.RevisionModern},
+			"capabilities":      groupCapabilities(),
+			"ttlMs":             discoverTTLMs,
+			"cacheScope":        "private",
+			"_meta":             selfMeta(),
+		}
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+	case "ping":
+		// Answered here in both eras, and no member is asked. The stateless
+		// revision removed ping, so a member on it would refuse a relayed one,
+		// and every result in that revision carries resultType, so its empty
+		// result is not an empty object.
+		result := map[string]any{}
+		if clientModern {
+			result["resultType"] = "complete"
+		}
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
 	case "tools/list":
-		active, lists := h.memberCatalogues(ctx, ups)
+		active, lists, ttls := h.memberCatalogues(ctx, ups)
 		merged, _ := h.buildRoutes(active, lists)
 		// The same policy the gate would apply to a call on each of these
 		// names, so the catalogue and the call agree by construction.
@@ -947,16 +1096,27 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// revision's cacheScope member. resultType is the revision's retry
 		// protocol field: complete means no client input is needed to finish
 		// the result, and says nothing about a member skipped at catalogue
-		// time, which memberCatalogues logs. ttlMs and the _meta server info
-		// are PORM-153's.
-		return encodeRPC(req.ID, map[string]any{"tools": merged, "cacheScope": "private", "resultType": "complete"}, nil), http.StatusOK, nil, "", nil
+		// time, which memberCatalogues logs. ttlMs is required of a list by the
+		// revision, and a client that validates what it is sent rejects a list
+		// without it; it is the one value here a member has a say in, and
+		// mergedTTLMs bounds that say. _meta is PoryMCP's own serverInfo and
+		// nothing of a member's. There is never a nextCursor: whole catalogues
+		// are merged (PORM-73 owns paging).
+		result := map[string]any{
+			"tools":      merged,
+			"cacheScope": "private",
+			"resultType": "complete",
+			"ttlMs":      mergedTTLMs(ttls),
+			"_meta":      selfMeta(),
+		}
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
 	case "tools/call":
 		// ok is not checked: ServeHTTP refuses a tools/call without a usable
 		// name before it gets here.
 		name, _ := toolNameFromParams(req.Params)
 		// The catalogues that decide where this call goes are the proxy's own
 		// requests, not replays of the client's: see listTools.
-		active, lists := h.memberCatalogues(ctx, ups)
+		active, lists, _ := h.memberCatalogues(ctx, ups)
 		_, routes := h.buildRoutes(active, lists)
 		route, ok := routes[name]
 		if !ok {
@@ -976,8 +1136,17 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// one identity and are rewritten together, so the member compares a
 		// header and a body that agree; the client's Mcp-Method is already
 		// tools/call and crosses as it is.
-		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original))
-		out, status, hdr, err := h.forward(ctx, inbound, route.Upstream, rewritten, memberRoutingHeaders(inbound.Header, route.Original))
+		//
+		// The member is also told its own era, whichever era the client spoke
+		// to this endpoint: see memberCallHeaders. The verdict is read from the
+		// cache and never asked for. The catalogue walk above has just stored
+		// it, and a call must not cost a probe, nor put a second caller behind
+		// memberEra, whose entries correct themselves only because every probe
+		// is followed by that caller's own listing.
+		verdict, known := h.eras.get(route.Upstream.ID, route.Upstream.UpdatedAt)
+		composed, meta := memberCallHeaders(inbound.Header, route.Original, verdict, known, clientModern)
+		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original, meta))
+		out, status, hdr, err := h.forward(ctx, inbound, route.Upstream, rewritten, composed)
 		if err != nil {
 			return out, status, nil, route.Upstream.ID, err
 		}
@@ -989,8 +1158,20 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			h.log.Warn("group call answer relayed unreduced", "slug", route.Upstream.Slug,
 				"upstream_id", route.Upstream.ID, "err", unreduced.Error())
 		}
+		// Not for a member known to speak the stateless revision: it sends its
+		// own resultType, and a second decode of up to 16 MiB to change nothing
+		// is a cost on every call.
+		memberModern := known && verdict.era == mcpclient.EraModern
+		if err == nil && unreduced == nil && clientModern && !memberModern {
+			doc = completeResult(doc)
+		}
 		return doc, status, media, route.Upstream.ID, err
 	default:
+		// Unreachable: serve calls aggregate only for a method shouldAggregate
+		// names, and every one of those has an arm above. A method that is
+		// relayed is relayed by serve, which also decides its headers. Kept as
+		// a relay, not a panic, so a method added to one list and not the other
+		// fails towards the old behaviour.
 		out, status, _, err := h.forward(ctx, inbound, ups[0], body, nil)
 		return out, status, nil, ups[0].ID, err
 	}
@@ -1080,6 +1261,58 @@ func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, medi
 	}
 }
 
+// completeResult gives a routed tools/call result the resultType the stateless
+// revision requires of every result, when the member sent none. It is called
+// only for a client that declared that revision and a member not known to
+// speak it. It is the routed call's alone: a method the group endpoint relays
+// to its first member still returns that member's result as it came (a
+// follow-up, named in docs/09-clients.md).
+//
+// A handshake-era member's result has no resultType, and the revision does say
+// a client reads an absent one as "complete", but only of a server on an
+// EARLIER revision. To a modern client this endpoint IS a 2026-07-28 server:
+// its server/discover says so. The reference SDK holds it to that and refuses
+// the result ("missing required resultType: servers implementing protocol
+// revision 2026-07-28 MUST include it"), which is what the MCP Inspector did to
+// a DeepWiki call through a group before this existed. "complete" is the true
+// value: a handshake server has no way to ask for more input inside a result.
+//
+// Only that one member is added, and only to a result that is an object and
+// lacks it, a null counting as lacking it. The id, the error of an error
+// answer, and every VALUE the member put in its result are carried as raw JSON
+// and cross unchanged; the members of the envelope and of the result come back
+// in sorted order, which JSON gives no meaning to. A member's own resultType,
+// "input_required" included, is left alone. A document that does not decode is
+// returned as it came.
+func completeResult(doc []byte) []byte {
+	var env map[string]json.RawMessage
+	if json.Unmarshal(doc, &env) != nil {
+		return doc
+	}
+	raw := bytes.TrimSpace(env["result"])
+	if len(raw) == 0 || raw[0] != '{' {
+		return doc
+	}
+	var result map[string]json.RawMessage
+	if json.Unmarshal(raw, &result) != nil {
+		return doc
+	}
+	if v, has := result["resultType"]; has && string(bytes.TrimSpace(v)) != "null" {
+		return doc
+	}
+	result["resultType"] = json.RawMessage(`"complete"`)
+	patched, err := marshalRaw(result)
+	if err != nil {
+		return doc
+	}
+	env["result"] = patched
+	out, err := marshalRaw(env)
+	if err != nil {
+		return doc
+	}
+	return out
+}
+
 // answersSomething reports whether a JSON-RPC document carries a result or an
 // error, a null one counting as absent.
 func answersSomething(doc []byte) bool {
@@ -1094,6 +1327,67 @@ func answersSomething(doc []byte) bool {
 	return present(env.Result) || present(env.Error)
 }
 
+// discoverTTLMs is how long a client may keep the group endpoint's
+// server/discover answer: an hour.
+const discoverTTLMs = 3600000
+
+// selfMeta is the _meta of a result the group endpoint composes as a server:
+// PoryMCP's own serverInfo and nothing of any member's.
+func selfMeta() map[string]any {
+	return map[string]any{mcpclient.MetaServerInfo: mcpclient.SelfInfo()}
+}
+
+// groupCapabilities is what a group endpoint says it can do, in initialize and
+// in server/discover alike: exactly what it serves. Prompts and resources join
+// it when the group serves them (PORM-6).
+func groupCapabilities() map[string]any {
+	return map[string]any{"tools": map[string]any{"listChanged": false}}
+}
+
+// answerRPC is a JSON-RPC answer the group endpoint composes itself, a result
+// or an error. The id follows writeRPCError's rule and for its reason: echoed
+// as the raw bytes the client sent, and null when there were none or they are
+// not a scalar, so a notification is not handed an id it never had and an
+// integer past 2^53 comes back as it was written.
+func answerRPC(id json.RawMessage, result any, rpcErr *rpcError) []byte {
+	if len(bytes.TrimSpace(id)) == 0 || !scalarRPCID(id) {
+		id = json.RawMessage("null")
+	}
+	var (
+		out json.RawMessage
+		err error
+	)
+	if rpcErr != nil {
+		out, err = marshalRaw(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Error   *rpcError       `json:"error"`
+		}{"2.0", id, rpcErr})
+	} else {
+		out, err = marshalRaw(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Result  any             `json:"result"`
+		}{"2.0", id, result})
+	}
+	if err != nil {
+		// Unreachable with the results composed here, which are maps of strings,
+		// numbers and mcpclient.Info. Said out loud and not sent as a success
+		// with no body: a client waiting on an id gets an answer it can read.
+		return []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"internal error"}}`)
+	}
+	return out
+}
+
+// writeRPCBody sends a JSON-RPC document serve has already composed, and
+// returns the bytes written for the row.
+func writeRPCBody(w http.ResponseWriter, status int, body []byte) int {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	n, _ := w.Write(body)
+	return n
+}
+
 func rewriteMethod(original []byte, method string, params json.RawMessage) []byte {
 	var req map[string]any
 	if err := json.Unmarshal(original, &req); err != nil {
@@ -1106,24 +1400,6 @@ func rewriteMethod(original []byte, method string, params json.RawMessage) []byt
 		req["params"] = p
 	}
 	b, _ := json.Marshal(req)
-	return b
-}
-
-func encodeRPC(id json.RawMessage, result any, rpcErr any) []byte {
-	m := map[string]any{"jsonrpc": "2.0"}
-	if len(id) > 0 {
-		var v any
-		_ = json.Unmarshal(id, &v)
-		m["id"] = v
-	} else {
-		m["id"] = 1
-	}
-	if rpcErr != nil {
-		m["error"] = rpcErr
-	} else {
-		m["result"] = result
-	}
-	b, _ := json.Marshal(m)
 	return b
 }
 

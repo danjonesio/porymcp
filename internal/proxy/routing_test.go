@@ -193,13 +193,19 @@ func TestGroupCallStillSkipsFailingMember(t *testing.T) {
 // "the client's value never crossed" falsifiable: a forwarded header and a
 // composed one can no longer be the same bytes. Mcp-Name and Mcp-Param- have
 // no composed counterpart and stay asserted absent everywhere.
+//
+// Since PORM-153 that revision has to be a handshake one. The group endpoint
+// is a server in its own right and refuses a stateless revision it does not
+// speak with -32022, so the 2099-01-01 this test used to send no longer
+// reaches the listing at all (TestAggregateUnsupportedVersion pins that).
+// 2025-03-26 is a version a real client sends and nothing in PoryMCP writes.
 func TestRoutingListsIgnoreRoutingHeaders(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{
 		"alpha": {"search"},
 		"beta":  {"search"},
 	}, nil, nil, nil)
 
-	const clientVersion = "2099-01-01"
+	const clientVersion = "2025-03-26"
 	rr := f.postWith(memberList, map[string]string{
 		"MCP-Protocol-Version": clientVersion,
 		"Mcp-Method":           "tools/list",

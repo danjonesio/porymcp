@@ -45,7 +45,7 @@ const (
 	metaProtocol   = "io.modelcontextprotocol/protocolVersion"
 	metaClientInfo = "io.modelcontextprotocol/clientInfo"
 	metaClientCaps = "io.modelcontextprotocol/clientCapabilities"
-	metaServerInfo = "io.modelcontextprotocol/serverInfo"
+	MetaServerInfo = "io.modelcontextprotocol/serverInfo"
 )
 
 // What a server/discover answer is allowed to cost a response.
@@ -62,6 +62,27 @@ const (
 	// of them, so it is bounded by the body cap (discoverBodyBytes) alone.
 	maxVersionListBytes = 4 << 10
 )
+
+// SelfInfo is who PoryMCP says it is, on a request it composes and on a result
+// it answers with as a server (the group endpoint's initialize, server/discover
+// and merged tools/list). Info.Version is omitempty and both eras require an
+// implementation's version, so whatever replaces clientVersion (PORM-59) must
+// never hand this an empty string.
+func SelfInfo() Info { return Info{Name: clientName, Version: clientVersion} }
+
+// NegotiateHandshake is the protocol version PoryMCP answers an initialize
+// with when it is the server: the one asked for when it is a revision PoryMCP
+// speaks, and clientProtocolVersion, the newest, otherwise. That is the
+// handshake's own rule. The answer always comes out of handshakeRevisions or
+// the constant, never out of asked, so a client's bytes are not echoed into a
+// result. RevisionModern is not a handshake revision and is answered like any
+// other stranger.
+func NegotiateHandshake(asked string) string {
+	if handshakeRevisions[asked] {
+		return asked
+	}
+	return clientProtocolVersion
+}
 
 // handshakeRevisions is every revision that is spoken through initialize. A
 // server that answers server/discover and lists only these is still one PoryMCP
@@ -143,7 +164,7 @@ func ProbeEra(ctx context.Context, hc *http.Client, up *models.Upstream, plainAu
 	// host stays empty on purpose: it is only ever read by transportFailure,
 	// and a transport failure here is a verdict, never a sentence.
 	p := &probe{client: hc, up: up, auth: plainAuth, modern: true, protocol: RevisionModern}
-	body := fmt.Sprintf(discoverRequestTemplate, idDiscover, modernMeta())
+	body := fmt.Sprintf(discoverRequestTemplate, idDiscover, ModernMeta())
 	out := classify(p.exchange(ctx, stepDiscover, body, true))
 	out.LatencyMS = latencyMS(time.Since(start))
 	return out
@@ -217,7 +238,7 @@ func classify(res stepResult) Probe {
 		Capabilities: capabilityFamilies(body.Capabilities),
 	}
 	var info *Info
-	if raw := body.Meta[metaServerInfo]; len(raw) > 0 && json.Unmarshal(raw, &info) == nil {
+	if raw := body.Meta[MetaServerInfo]; len(raw) > 0 && json.Unmarshal(raw, &info) == nil {
 		out.Info = boundInfo(info)
 	}
 	for _, v := range versions {
@@ -331,10 +352,13 @@ func capabilityFamilies(raw json.RawMessage) []string {
 	return out
 }
 
-// modernMeta is the _meta object every 2026-07-28 request carries, composed in
-// one place so the probe and the listing that follows it cannot disagree about
-// who PoryMCP says it is.
-func modernMeta() string {
+// ModernMeta is the _meta object every 2026-07-28 request carries, composed in
+// one place so the probe, the listing that follows it, and a call the proxy
+// composes for a modern group member cannot disagree about who PoryMCP says it
+// is. It is the object's JSON text: a caller that puts it into a map it will
+// marshal wraps it in json.RawMessage, or it goes out as a quoted string and
+// the member reads a request with no _meta at all.
+func ModernMeta() string {
 	return fmt.Sprintf(`{%q:%q,%q:{"name":%q,"version":%q},%q:{}}`,
 		metaProtocol, RevisionModern, metaClientInfo, clientName, clientVersion, metaClientCaps)
 }
@@ -344,7 +368,7 @@ func modernMeta() string {
 // the proxy's own. The two legacy composers are deliberately left alone, so the
 // bytes a legacy upstream receives cannot move.
 func ModernListRequest(id, cursor string) string {
-	params := `{"_meta":` + modernMeta()
+	params := `{"_meta":` + ModernMeta()
 	if cursor != "" {
 		if quoted, err := json.Marshal(cursor); err == nil {
 			params += `,"cursor":` + string(quoted)

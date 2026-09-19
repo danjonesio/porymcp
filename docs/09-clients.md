@@ -43,7 +43,7 @@ Authorization: Bearer pory_…
 
 Keep PoryMCP running while the client is connected. Copy the plaintext key when it is shown: it is not displayed again.
 
-Clients cache the tool catalogue they fetch on connect. After an operator changes a group's tool filter or a key's allow/deny lists, reconnect the client so it picks up the new catalogue; until then it may still offer tools the proxy now refuses. Reconnect after upgrading PoryMCP itself, too, if the client is on an aggregate URL: v0.1 renamed every tool there to `{upstream_slug}__{tool}`, and a cached old name now answers `-32602 unknown tool` (see [CHANGELOG.md](../CHANGELOG.md)). A refused tool call comes back as a failed tool call (a JSON-RPC error against that one request), not as a transport or connection error. Removing a member from a group, or disabling it, makes that member's URL answer `404` on the next request: the client shows that one server as failed and the others as healthy.
+Clients cache the tool catalogue they fetch on connect. After an operator changes a group's tool filter or a key's allow/deny lists, reconnect the client so it picks up the new catalogue; until then it may still offer tools the proxy now refuses. Reconnect after upgrading PoryMCP itself, too, if the client is on an aggregate URL: v0.1 renamed every tool there to `{upstream_slug}__{tool}`, and a cached old name now answers `-32602 unknown tool` (see [CHANGELOG.md](../CHANGELOG.md)). An aggregate URL also now answers `server/discover` itself and answers `initialize` with the version the client asked for, so a client that connected before that change holds the old handshake: `/mcp` in Claude Code, reload MCP servers in Cursor. A refused tool call comes back as a failed tool call (a JSON-RPC error against that one request), not as a transport or connection error. Removing a member from a group, or disabling it, makes that member's URL answer `404` on the next request: the client shows that one server as failed and the others as healthy.
 
 A client on the 2026-07-28 revision needs no setting (PORM-150). PoryMCP forwards `Mcp-Method`, `Mcp-Name` and the `Mcp-Param-` headers a tool's schema asks for, and compares the first two with the body before forwarding, so a request whose headers and body disagree is answered `400` with `{"code":-32020,"message":"header mismatch: Mcp-Name"}` and reaches no upstream. On an aggregate URL, send the composed name you were shown, `github__create_issue`, in `params.name` and in `Mcp-Name` alike: PoryMCP rewrites both to the member's own name on the way to that member. At most 32 `Mcp-Param-` headers cross and none over 4096 bytes; a request over either bound is answered `431` and reaches no upstream, and a browser whose preflight asks for more than 32, or lists more than 64 header names in all, is refused them at the preflight. A client on an earlier revision that sends none of these headers is unaffected.
 
@@ -313,11 +313,33 @@ recognised; checked against `2026.8.18`.)
 An upstream that serves only the 2026-07-28 revision has no `initialize` at
 all. PoryMCP asks every upstream `server/discover` first, so such a server
 discovers with a protocol line reading "2026-07-28, stateless", and a group
-lists its tools beside everyone else's. One boundary remains until PORM-153: a
-call to one of those tools through the group's aggregate URL is still the
-client's own request, relayed as sent, so it works only from a client that is
-itself on 2026-07-28. A handshake-era client's call is refused by that member
-with `-32020`, and the Logs page shows it as an `error` row.
+lists its tools beside everyone else's. A call through the group's aggregate
+URL is composed for the era the member speaks, so a handshake-era client can
+call a 2026-07-28 member and a 2026-07-28 client can call a handshake-era one.
+
+What remains on an aggregate URL:
+
+- A handshake-era member that needs a real session still refuses a call, or is
+  missing from the catalogue (PORM-23).
+- A call to a handshake-era member is sent without a protocol version, so that
+  member may serve it under 2025-03-26 and leave out `structuredContent`.
+- A 2026-07-28 member may answer with `resultType: "input_required"`, from
+  `tools/call` or from a relayed `resources/read` or `prompts/get`. It reaches a
+  handshake-era client unchanged, and that client cannot act on it.
+- A task handle a member hands out cannot be redeemed there, because
+  `tasks/get` is refused. Use the member's own URL.
+- `subscriptions/listen` is refused with `404` and `-32601`.
+- PoryMCP composes no `Mcp-Param-` headers for a handshake-era client's call to
+  a 2026-07-28 member. A member whose tool declares `x-mcp-header` parameters
+  may refuse the call or ignore the parameter.
+- The merged catalogue carries each tool's name, title, description and input
+  schema. A member's `annotations` (`readOnlyHint` and `destructiveHint`
+  included), `outputSchema`, `icons` and tool `_meta` do not cross (PORM-73).
+  The member's own URL lists them.
+- A method the group relays to its first member (`resources/read`,
+  `prompts/get`, `logging/setLevel`) returns that member's answer as it came.
+  From a handshake-era first member a 2026-07-28 client receives a result with
+  no `resultType`, which a strict client refuses.
 
 Thirteen, not sixteen. That server registers three further tools
 (`get-roots-list`, `trigger-sampling-request` and `trigger-elicitation-request`)

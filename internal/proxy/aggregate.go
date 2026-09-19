@@ -4,15 +4,113 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 )
 
 type mcpTool struct {
-	Name        string          `json:"name"`
-	Title       string          `json:"title,omitempty"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	// InputSchema is always emitted on the merged list, and buildRoutes makes
+	// it one the 2026-07-28 schema accepts: see conformingInputSchema. The rest
+	// of a tool's metadata is PORM-73's.
+	InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+// emptyObjectSchema is the least a tool's inputSchema may be.
+var emptyObjectSchema = json.RawMessage(`{"type":"object"}`)
+
+// conformingInputSchema makes a member's inputSchema one the 2026-07-28 schema
+// accepts, which requires of every tool a JSON object whose type is the string
+// "object". The group endpoint now says it speaks that revision, and a client
+// that validates what it is sent rejects the WHOLE list for one tool that does
+// not conform, so one careless member would cost the group every tool it has.
+//
+// A schema that is a JSON object is repaired, not replaced: type is set to
+// "object" on the member's own object and everything else it declared stays,
+// because a schema with properties and no type, or with type ["object","null"],
+// is common, and replacing it would hand a client a tool with every parameter
+// erased. A conforming schema crosses byte for byte. Only a value that is not an
+// object at all (absent, null, an array, a string) becomes the empty schema.
+func conformingInputSchema(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return emptyObjectSchema
+	}
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &schema); err != nil || schema == nil {
+		return emptyObjectSchema
+	}
+	if t, ok := jsonString(schema["type"]); ok && t == "object" {
+		return raw
+	}
+	schema["type"] = json.RawMessage(`"object"`)
+	repaired, err := marshalRaw(schema)
+	if err != nil {
+		return emptyObjectSchema
+	}
+	return repaired
+}
+
+// The cache hint on the merged list, in milliseconds.
+const (
+	// defaultListTTLMs stands in for a member that reports no ttlMs, which is
+	// every handshake-era member: how fresh its catalogue is cannot be known.
+	defaultListTTLMs = 60000
+	// minListTTLMs is the floor. A member may legally report 0, "re-fetch every
+	// time", and hosted servers do; under a bare minimum that would make every
+	// polite client re-list a group on every use, and each re-list walks every
+	// member with its real credential. Ten seconds of list staleness costs
+	// nothing, because every tools/call walks the catalogues anyway.
+	minListTTLMs = 10000
+	// maxListTTLMs matches what the endpoint says of its own server/discover.
+	maxListTTLMs = discoverTTLMs
+)
+
+// listTTLMs reads result.ttlMs off a member's reduced tools/list answer: the
+// one member-sourced value that reaches the merged list, and it is a number
+// the member chose, so it is read strictly. The schema types it as a number,
+// not an integer, so 3600000.0 is a legal spelling and is accepted; a string, a
+// null, a negative, a fraction and anything too large to hold exactly are not
+// a report at all. It is a reader of its own, beside parseToolsList and not
+// inside it, because PORM-73 rewrites that function.
+func listTTLMs(doc []byte) (int64, bool) {
+	var env struct {
+		Result struct {
+			TTL json.RawMessage `json:"ttlMs"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(doc, &env) != nil {
+		return 0, false
+	}
+	raw := bytes.TrimSpace(env.Result.TTL)
+	if len(raw) == 0 || raw[0] == '"' || raw[0] == 'n' {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(string(raw), 64)
+	if err != nil || f < 0 || f != math.Trunc(f) || f > 1<<53 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// mergedTTLMs is the merged list's ttlMs: the smallest of the members' values,
+// because the merged list is stale as soon as any member's is, held between the
+// floor and the ceiling. With no member listed it is the default.
+func mergedTTLMs(ttls []int64) int64 {
+	if len(ttls) == 0 {
+		return defaultListTTLMs
+	}
+	least := ttls[0]
+	for _, v := range ttls[1:] {
+		least = min(least, v)
+	}
+	return min(max(least, minListTTLMs), maxListTTLMs)
 }
 
 type toolRoute struct {
@@ -42,6 +140,11 @@ type toolRoute struct {
 // names. Two entries for one name can still only come from one member
 // advertising a tool twice, where last-one-wins is the upstream's own
 // ambiguity and both entries route to the same credential.
+//
+// The merged order is part of the contract: members in the order the group
+// stores them, and each member's tools in the order that member listed them.
+// memberCatalogues walks the members one after another in that order, so the
+// order does not depend on which member answered first.
 func (h *Handler) buildRoutes(upstreams []*models.Upstream, lists [][]mcpTool) (merged []mcpTool, routes map[string]toolRoute) {
 	routes = map[string]toolRoute{}
 	for i, tools := range lists {
@@ -57,6 +160,7 @@ func (h *Handler) buildRoutes(upstreams []*models.Upstream, lists [][]mcpTool) (
 				continue
 			}
 			cp := t
+			cp.InputSchema = conformingInputSchema(t.InputSchema)
 			// The stored slug, with no derive-from-name fallback: deriving would
 			// silently reinstate rename-changes-every-tool-name, which is the
 			// defect PORM-48 exists to remove. An empty slug is unreachable,
@@ -99,16 +203,86 @@ func parseToolsList(body []byte) ([]mcpTool, error) {
 	return envelope.Result.Tools, nil
 }
 
-func rewriteToolCallParams(params json.RawMessage, original string) json.RawMessage {
-	if len(params) == 0 {
-		b, _ := json.Marshal(map[string]string{"name": original})
-		return b
+// metaAction is what a routed call's params._meta needs for the member it is
+// going to: see memberCallHeaders, which decides it with the headers, because
+// the two declare the same thing and have to move together.
+type metaAction int
+
+const (
+	// metaKeep leaves _meta as the client sent it. The client and the member
+	// speak the same era, or the member's era is not known.
+	metaKeep metaAction = iota
+	// metaCompose writes the three members a 2026-07-28 request must carry, for
+	// a handshake-era client calling a modern member.
+	metaCompose
+	// metaStrip removes those three, for a modern client calling a
+	// handshake-era member.
+	metaStrip
+)
+
+// modernMetaMembers is mcpclient.ModernMeta as a map: the three reserved
+// members a stateless request declares itself with, and the one spelling of
+// their names this package uses.
+func modernMetaMembers() map[string]json.RawMessage {
+	var m map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(mcpclient.ModernMeta()), &m)
+	return m
+}
+
+// dropReservedMeta removes the three reserved members from a _meta object,
+// under ANY spelling that folds onto their names. metaProtocolVersion reads the
+// declared version through a struct tag, and encoding/json matches a tag
+// without regard to case, so a client that spells the member
+// IO.ModelContextProtocol/ProtocolVersion passes the version check. Deleting
+// the exact key alone would leave that spelling in the body: a handshake-era
+// member would be sent a request that still declares the stateless revision,
+// with no header beside it, and a modern member one object declaring two
+// versions. What the check can read, this removes.
+func dropReservedMeta(meta map[string]any) {
+	reserved := modernMetaMembers()
+	for k := range meta {
+		for name := range reserved {
+			if strings.EqualFold(k, name) {
+				delete(meta, k)
+				break
+			}
+		}
 	}
-	var m map[string]any
-	if err := json.Unmarshal(params, &m); err != nil {
-		return params
+}
+
+// rewriteToolCallParams rebuilds a routed call's params for the member it is
+// going to: the member's own tool name for the composed one, always, and the
+// _meta the member's era expects. Only the three reserved members are written
+// or removed. Anything else the client put in _meta, a progressToken say, is
+// the client's and crosses as it came; _meta itself goes only when stripping
+// leaves it empty.
+func rewriteToolCallParams(params json.RawMessage, original string, meta metaAction) json.RawMessage {
+	m := map[string]any{}
+	if len(params) != 0 {
+		if err := json.Unmarshal(params, &m); err != nil || m == nil {
+			return params
+		}
 	}
 	m["name"] = original
+	switch meta {
+	case metaCompose:
+		existing, _ := m["_meta"].(map[string]any)
+		if existing == nil {
+			existing = map[string]any{}
+		}
+		dropReservedMeta(existing)
+		for k, v := range modernMetaMembers() {
+			existing[k] = v
+		}
+		m["_meta"] = existing
+	case metaStrip:
+		if existing, ok := m["_meta"].(map[string]any); ok {
+			dropReservedMeta(existing)
+			if len(existing) == 0 {
+				delete(m, "_meta")
+			}
+		}
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return params
@@ -134,6 +308,10 @@ type routingFields struct {
 	Name json.RawMessage `json:"name"`
 	URI  json.RawMessage `json:"uri"`
 	Meta json.RawMessage `json:"_meta"`
+	// ProtocolVersion is initialize's params.protocolVersion. It is read on
+	// this pass, with the rest, so the group endpoint's negotiation judges the
+	// same bytes distinctKeys has already held to one spelling.
+	ProtocolVersion json.RawMessage `json:"protocolVersion"`
 }
 
 // decodeRoutingFields reads params once. Params that do not decode as an
@@ -170,6 +348,13 @@ func (f routingFields) toolName() (string, bool) {
 // toolName, kept as one call for the sites that need only the name.
 func toolNameFromParams(params json.RawMessage) (string, bool) {
 	return decodeRoutingFields(params).toolName()
+}
+
+// protocolVersion is the JSON string at params.protocolVersion, and "" for a
+// number, a null, an object or an absent member, none of which is a version.
+func (f routingFields) protocolVersion() string {
+	v, _ := jsonString(f.ProtocolVersion)
+	return v
 }
 
 // jsonString decodes raw when it is a JSON string and reports false for

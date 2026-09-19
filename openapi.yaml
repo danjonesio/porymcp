@@ -433,10 +433,15 @@ paths:
           in: query
           description: >-
             `success` and `error` describe a request that reached an upstream,
-            with one exception: on the aggregate endpoint of a group, a
-            `tools/call` naming a tool the endpoint never advertised is recorded
-            as `error` and reached no upstream at all: no rule fired, so it is
-            not a policy decision. `blocked` is a request refused by tool policy
+            except on the aggregate endpoint of a group, where PoryMCP is the
+            server and some rows reached no upstream at all and carry no
+            `upstream_id`. Those are: a `tools/call` naming a tool the endpoint
+            never advertised (`error`; no rule fired, so it is not a policy
+            decision); a method the endpoint refuses (`subscriptions/listen`,
+            `tasks/get`, `tasks/update`) or a stateless protocol revision it
+            does not speak (`error`); and the methods it answers itself
+            (`server/discover`, `initialize`, `notifications/initialized`,
+            `ping`, `tools/list`), which are `success`. `blocked` is a request refused by tool policy
             (the group `tool_filter` or the key's
             `tool_denylist`/`tool_allowlist`) before any upstream was
             contacted; `error_message` names the rule that rejected it.

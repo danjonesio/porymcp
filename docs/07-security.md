@@ -613,7 +613,25 @@
   audit row for an answer passed on this way is judged by its HTTP status
   alone, as every row was before the reduction existed, so the server log says
   `group call answer relayed unreduced`, with the member's slug and a fixed
-  reason. Discovery still reads the one shape the aggregate path
+  reason. A routed call is composed for the member's era from the cached era
+  verdict and PoryMCP's own constants, never from the client's request, and
+  when no verdict is held the client's request is sent as it came: a
+  handshake-era client calling a `2026-07-28` member has the version, `Mcp-Method`,
+  `Mcp-Name` and the three reserved `_meta` members added, and a `2026-07-28`
+  client calling a handshake-era member has its `MCP-Protocol-Version` header
+  and those three members left out under any spelling the version check would
+  read, with `Mcp-Method`, `Mcp-Name` and the `Mcp-Param-` family still
+  crossing. Those composed headers are written after
+  the stored credential, so an `auth_config` saved before PORM-150 that names
+  `Mcp-Name` no longer replaces the name the policy gate judged. A stored
+  `auth_config` is still the last writer for every other header. The group
+  endpoint's own `server/discover` is built from constants and reads no member,
+  so it cannot be used to list a group's upstream software. On the merged list
+  the tool entries are the members' own (each tool's name after the slug, its
+  title, its description and its input schema, which is where a hostile
+  upstream's text reaches a key holder), and among the result's own fields the
+  only member-sourced value is `ttlMs`, read as a non-negative whole number and
+  held between 10000 and 3600000. Discovery still reads the one shape the aggregate path
   does not, a catalogue spread over cursors, so
   `POST /api/v1/upstreams/{id}/discover` is how an operator sees what a member
   offers beyond its first page. That is a diagnostic, not a fix: making the

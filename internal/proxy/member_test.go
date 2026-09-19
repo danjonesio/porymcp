@@ -102,7 +102,9 @@ func TestPerUpstreamInitializeIsTheMembersOwn(t *testing.T) {
 	if got := rr.Body.String(); got != alphaInit {
 		t.Errorf("body=%s\nwant the member's own answer verbatim:\n%s", got, alphaInit)
 	}
-	for _, s := range []string{"porymcp", "2024-11-05"} {
+	// The two strings only the group endpoint's own initialize produces for this
+	// request: its name, and the version it answers when none is asked for.
+	for _, s := range []string{"porymcp", "2025-11-25"} {
 		if strings.Contains(rr.Body.String(), s) {
 			t.Errorf("body contains %q: the member endpoint answered initialize itself instead of forwarding it", s)
 		}
@@ -118,7 +120,7 @@ func TestPerUpstreamInitializeIsTheMembersOwn(t *testing.T) {
 	// that; this is the tripwire if it ever changes by accident.
 	t.Run("aggregate initialize is still synthesised", func(t *testing.T) {
 		body := f.post(`{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`).Body.String()
-		if !strings.Contains(body, `"porymcp"`) || !strings.Contains(body, "2024-11-05") {
+		if !strings.Contains(body, `"porymcp"`) || !strings.Contains(body, "2025-11-25") {
 			t.Errorf("aggregate initialize=%s want the proxy's own serverInfo", body)
 		}
 	})
@@ -459,8 +461,8 @@ func TestUnscopedEntryMatchesOnEveryPath(t *testing.T) {
 	})
 }
 
-// N1. notifications/initialized is one of the four methods the aggregate
-// endpoint answers itself. On a member endpoint it is a message for that
+// N1. notifications/initialized is one of the methods the aggregate endpoint
+// answers itself. On a member endpoint it is a message for that
 // server, so it goes through and the member's own answer comes back.
 func TestPerUpstreamNotificationIsForwarded(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}, "beta": {"b"}}, nil, nil, nil)
@@ -482,8 +484,9 @@ func TestPerUpstreamNotificationIsForwarded(t *testing.T) {
 
 	t.Run("the aggregate still answers it itself", func(t *testing.T) {
 		agg := f.post(notif)
-		if agg.Code != http.StatusAccepted || agg.Body.String() != `{}` {
-			t.Errorf("aggregate code=%d body=%s want 202 {}", agg.Code, agg.Body.String())
+		// A 202 carries no body in either era of the transport (PORM-153).
+		if agg.Code != http.StatusAccepted || agg.Body.Len() != 0 {
+			t.Errorf("aggregate code=%d body=%q want 202 and no body", agg.Code, agg.Body.String())
 		}
 	})
 }
