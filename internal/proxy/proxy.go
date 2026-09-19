@@ -515,7 +515,24 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	} else {
 		up := upstreams[0]
 		usedID = up.ID
-		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body, nil)
+		// A method the group endpoint neither answers nor refuses goes to the
+		// group's first member, as it always has. One header of a handshake-era
+		// client's does not go with it. The version such a client declares on
+		// every request is the one this endpoint's initialize agreed to, and it
+		// agreed for itself: no member was asked. It used to answer 2024-11-05
+		// whatever was requested; it now answers up to 2025-11-25, and the
+		// handshake transport says a member MUST refuse a version it does not
+		// support, so a first member on an older revision would start refusing
+		// logging/setLevel the day this shipped. Without the header the member
+		// reads the request as it reads the proxy's own catalogue request. A
+		// modern client's request crosses as it came, and so does everything on
+		// a member endpoint and a single-upstream key, where the client and the
+		// upstream negotiated with each other.
+		var relay *memberHeaders
+		if onAggregate && !clientModern {
+			relay = &memberHeaders{drop: []string{hdrProtocol}}
+		}
+		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body, relay)
 		// Trim the catalogue to what the gate above would let this key call,
 		// before the classification below, so the row records the size of the
 		// body the client is actually sent.
@@ -1135,6 +1152,11 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		}
 		return doc, status, media, route.Upstream.ID, err
 	default:
+		// Unreachable: serve calls aggregate only for a method shouldAggregate
+		// names, and every one of those has an arm above. A method that is
+		// relayed is relayed by serve, which also decides its headers. Kept as
+		// a relay, not a panic, so a method added to one list and not the other
+		// fails towards the old behaviour.
 		out, status, _, err := h.forward(ctx, inbound, ups[0], body, nil)
 		return out, status, nil, ups[0].ID, err
 	}

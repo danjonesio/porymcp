@@ -1931,3 +1931,63 @@ func TestAggregateNameBeatsStoredAuthConfig(t *testing.T) {
 		t.Errorf("the stored credential did not cross: X-Stored-Key=%q", got)
 	}
 }
+
+// PORM-153, amendment A9. The version a handshake-era client declares on every
+// request is the one the group endpoint's initialize agreed to, for itself. A
+// method the endpoint relays to the group's first member must not carry it: a
+// member on an older revision MUST refuse a version it does not support, and
+// initialize used to answer 2024-11-05 where it now answers up to 2025-11-25.
+func TestAggregateRelayDropsNegotiatedVersion(t *testing.T) {
+	const setLevel = `{"jsonrpc":"2.0","id":5,"method":"logging/setLevel","params":{"level":"info"}}`
+	relayed := func(t *testing.T, f *fixture, slug, method string) recordedRequest {
+		t.Helper()
+		for _, r := range f.requestsTo(slug) {
+			if r.RPCMethod == method {
+				return r
+			}
+		}
+		t.Fatalf("%s saw no %s", slug, method)
+		return recordedRequest{}
+	}
+
+	t.Run("a handshake-era client on a group", func(t *testing.T) {
+		f := newGroupFixture(t, map[string][]string{"alpha": {"a"}, "beta": {"b"}}, nil, nil, nil)
+		rr := f.postWith(setLevel, map[string]string{"MCP-Protocol-Version": "2025-11-25", "Mcp-Session-Id": "client-session"})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		got := relayed(t, f, "alpha", "logging/setLevel")
+		if v, sent := got.Header["Mcp-Protocol-Version"]; sent {
+			t.Errorf("the first member was sent MCP-Protocol-Version %q, a version only the group endpoint agreed to", v)
+		}
+		// Only that one header: the rest of the client's request still crosses.
+		if v := got.Header.Get("Mcp-Session-Id"); v != "client-session" {
+			t.Errorf("Mcp-Session-Id=%q, want the client's own", v)
+		}
+		if n := f.totalReqs("beta"); n != 0 {
+			t.Errorf("beta saw %d requests", n)
+		}
+	})
+
+	t.Run("a modern client on a group is relayed as it came", func(t *testing.T) {
+		f := newGroupFixture(t, map[string][]string{"alpha": {"a"}}, nil, nil, nil)
+		body, hdr := modernRequest("6", "resources/list", mcpclient.RevisionModern)
+		f.postWith(body, hdr)
+		if v := relayed(t, f, "alpha", "resources/list").Header.Get("Mcp-Protocol-Version"); v != mcpclient.RevisionModern {
+			t.Errorf("Mcp-Protocol-Version=%q, want the client's own", v)
+		}
+	})
+
+	t.Run("a member endpoint and a single-upstream key still forward it", func(t *testing.T) {
+		f := newGroupFixture(t, map[string][]string{"alpha": {"a"}}, nil, nil, nil)
+		f.postMemberWith("alpha", setLevel, map[string]string{"MCP-Protocol-Version": "2025-11-25"})
+		if v := relayed(t, f, "alpha", "logging/setLevel").Header.Get("Mcp-Protocol-Version"); v != "2025-11-25" {
+			t.Errorf("member endpoint: Mcp-Protocol-Version=%q, want the client's own", v)
+		}
+		single := newSingleFixture(t, upstreamSpec{Tools: []string{"a"}}, nil, nil)
+		single.postWith(setLevel, map[string]string{"MCP-Protocol-Version": "2025-11-25"})
+		if v := relayed(t, single, "solo", "logging/setLevel").Header.Get("Mcp-Protocol-Version"); v != "2025-11-25" {
+			t.Errorf("single upstream: Mcp-Protocol-Version=%q, want the client's own", v)
+		}
+	})
+}
