@@ -727,8 +727,8 @@ admin key.
   member's JSON-RPC error therefore reaches the caller unchanged, a protocol
   error such as `-32022` included, and describes the member and not the group.
   An answer with no such document in it is passed on as it came when it is
-  `application/json` or `text/event-stream`, under that media type; any other
-  media type gets the caller a `502` and an `error` row. On a single-upstream
+  `application/json` or `text/event-stream`, under that media type; a body in
+  any other media type gets the caller a `502` and an `error` row. On a single-upstream
   key this *is* the 1:1 endpoint, and the upstream's answer is relayed as it
   came.
 - Shared: `POST /mcp`: the same door without the id in the path; the key

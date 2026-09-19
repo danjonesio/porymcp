@@ -19,7 +19,7 @@ Behaviour changes that affect a running deployment. Newest first.
   its outcome. An answer with no such document in it is passed on as it came
   when it is JSON or an event stream; its row is still judged by the HTTP status
   alone, and the server log says `group call answer relayed unreduced`. A member
-  that answers in any other media type is a `502`.
+  that answers with a body in any other media type is a `502`.
 - A member can still be missing from a group when it refuses a `tools/list` sent
   without a session, answers with a redirect, or answers something the proxy
   cannot read. The `group member skipped` log line says which.

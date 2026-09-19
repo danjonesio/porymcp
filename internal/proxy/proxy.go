@@ -1033,16 +1033,21 @@ var errAnswersNothing = errors.New("answer carried neither a result nor an error
 //
 // What cannot be reduced is passed on as it came, and only under one of the two
 // media types the transport allows a server: the member's own label when it is
-// one of them, and what the body looks like when the member sent no label,
-// which is the same question the reader asks. The type is written here, as a
-// bare constant, and is the one header serve may copy back. unreduced says why,
-// in a fixed sentence, so aggregate can log a relay the row cannot describe:
-// serve judges those bytes by their HTTP status alone, as it always did. An
-// empty answer (a notification's 202) is passed on as no body at all, which is
-// what both eras of the transport require of a 202. Any other media type is an
-// error, empty or not: a third media type on a response of PoryMCP's own is
-// something no client can classify, and a member's Content-Type is otherwise a
-// string this endpoint never repeats.
+// one of them, and what the body is when the member sent no label (an event
+// stream by the reader's own test, or JSON only if it parses as JSON, so an
+// unlabelled HTML error page is never sent out under a type it does not have).
+// The type is written here, as a bare constant, and is the one header serve may
+// copy back. unreduced says why, in a fixed sentence, so aggregate can log a
+// relay the row cannot describe: serve judges those bytes by their HTTP status
+// alone, as it always did. A body in any other media type is an error: a third
+// media type on a response of PoryMCP's own is something no client can
+// classify, and a member's Content-Type is otherwise a string this endpoint
+// never repeats.
+//
+// An answer with no body (a notification's 202) is passed on as no body at
+// all, which is what both eras of the transport require of a 202, and whatever
+// Content-Type came with it: a gateway in front of a member may add one, and a
+// label on zero bytes is a claim about nothing.
 func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, media http.Header, unreduced, err error) {
 	var envelope struct {
 		ID json.RawMessage `json:"id"`
@@ -1055,19 +1060,20 @@ func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, medi
 	if perr == nil {
 		return doc, nil, nil, nil
 	}
-	empty := len(bytes.TrimSpace(answer)) == 0
+	if len(bytes.TrimSpace(answer)) == 0 {
+		return nil, nil, nil, nil
+	}
 	shape := mcpclient.MediaType(contentType)
-	if shape == "" && !empty {
-		shape = "application/json"
-		if mcpclient.LooksLikeSSE(answer) {
+	if shape == "" {
+		switch {
+		case mcpclient.LooksLikeSSE(answer):
 			shape = "text/event-stream"
+		case json.Valid(answer):
+			shape = "application/json"
 		}
 	}
 	switch shape {
-	case "", "application/json", "text/event-stream":
-		if empty {
-			return nil, nil, nil, nil
-		}
+	case "application/json", "text/event-stream":
 		return answer, http.Header{"Content-Type": []string{shape}}, perr, nil
 	default:
 		return nil, nil, nil, errUnrelayableAnswer

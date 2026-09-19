@@ -566,8 +566,9 @@
   group member the proxy cannot read when it re-lists it is skipped,
   so it contributes nothing to the aggregate catalogue: that is a member
   requiring an MCP session, one whose answer is neither JSON nor an event
-  stream or carries no answer to the proxy's request, and one that answers the
-  catalogue request with a redirect, which is refused rather than followed.
+  stream, one whose answer holds nothing the proxy can read as an answer, and
+  one that answers the catalogue request with a redirect, which is refused
+  rather than followed.
   That skip is
   written to the server log as `group member skipped`, naming the member's slug
   and its upstream id (once per aggregate request, so a member that stays
@@ -605,12 +606,14 @@
   fixed sentence, and on a call the answer is treated as the next sentence says.
   A call answer the proxy cannot reduce (no document in it answers the call) is
   passed on as it came only under `application/json` or `text/event-stream`,
-  the member's own label or, with no label, what the body looks like. PoryMCP
-  writes that bare media type itself; any other media type is a `502`, and no
-  other header of a member's reaches a group client. The audit row for an answer
-  passed on this way is judged by its HTTP status alone, as every row was before
-  the reduction existed, so the server log says `group call answer relayed
-  unreduced` with the member's slug and a fixed reason. Discovery still reads the one shape the aggregate path
+  the member's own label or, with no label, what the body is (an event stream,
+  or JSON only if it parses). PoryMCP writes that bare media type itself; a
+  body in any other media type is a `502`, an answer with no body is passed on
+  as no body, and no other header of a member's reaches a group client. The
+  audit row for an answer passed on this way is judged by its HTTP status
+  alone, as every row was before the reduction existed, so the server log says
+  `group call answer relayed unreduced`, with the member's slug and a fixed
+  reason. Discovery still reads the one shape the aggregate path
   does not, a catalogue spread over cursors, so
   `POST /api/v1/upstreams/{id}/discover` is how an operator sees what a member
   offers beyond its first page. That is a diagnostic, not a fix: making the

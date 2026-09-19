@@ -1235,11 +1235,27 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 		})
 	}
 
-	t.Run("an empty answer under a third media type is still a 502", func(t *testing.T) {
-		f := group(t, upstreamSpec{Tools: []string{"scrape"}, CallCT: "text/plain", CallBody: " "})
+	// A gateway in front of a member may label a bodyless 202. The member still
+	// accepted the notification exactly as the transport requires, and a label
+	// on zero bytes mislabels nothing.
+	t.Run("a bodyless 202 with a stray Content-Type is still a 202", func(t *testing.T) {
+		f := group(t, upstreamSpec{Tools: []string{"scrape"}, CallCode: http.StatusAccepted, CallCT: "text/plain", CallBody: " "})
+		rr := f.post(toolCall("", "beta__scrape"))
+		if rr.Code != http.StatusAccepted || rr.Body.Len() != 0 {
+			t.Errorf("HTTP code=%d body=%q, want 202 and zero bytes", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Content-Type"); strings.Contains(got, "text/plain") {
+			t.Errorf("Content-Type=%q: the member's label crossed", got)
+		}
+	})
+
+	// The same third media type, reached by sending no label at all: a body that
+	// is neither an event stream nor JSON is not sent out as JSON.
+	t.Run("an unlabelled body that is not JSON is a failed upstream request", func(t *testing.T) {
+		f := group(t, upstreamSpec{Tools: []string{"scrape"}, CallCT: "-", CallBody: "<html>SECRET-FROM-UPSTREAM</html>"})
 		rr := f.post(toolCall("2", "beta__scrape"))
-		if rr.Code != http.StatusBadGateway {
-			t.Errorf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusBadGateway || strings.Contains(rr.Body.String(), "SECRET-FROM-UPSTREAM") {
+			t.Errorf("HTTP code=%d body=%s, want 502 and none of the member's bytes", rr.Code, rr.Body.String())
 		}
 	})
 

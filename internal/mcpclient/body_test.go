@@ -74,6 +74,18 @@ func TestPickResponse(t *testing.T) {
 		})
 	}
 
+	// The bound is on the splitter, not only on the search: past it no further
+	// event is joined or kept, which is the cost a member could otherwise choose.
+	t.Run("the splitter stops one event past its bound", func(t *testing.T) {
+		body := []byte(strings.Repeat(event(note), 50))
+		if got, err := eventData(body, 10); err != nil || len(got) != 11 {
+			t.Errorf("bounded at 10: %d events, err %v, want 11", len(got), err)
+		}
+		if got, err := eventData(body, 0); err != nil || len(got) != 50 {
+			t.Errorf("unbounded: %d events, err %v, want all 50", len(got), err)
+		}
+	})
+
 	t.Run("more documents than will be considered", func(t *testing.T) {
 		// The answer is there, past the bound: it is not looked for.
 		body := strings.Repeat(event(note), maxPickDocuments) + event(answer)
