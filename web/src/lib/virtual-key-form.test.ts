@@ -74,6 +74,14 @@ test('virtualKeyPatchBody: neither list when neither changed, whatever else did'
   })
 })
 
+// SR3: a stored 0 is a value the operator did not touch.
+test('virtualKeyPatchBody: a stored rate limit of 0 is not re-sent as a clear', () => {
+  const before = key({ rate_limit: 0 })
+  assert.equal(formFromVirtualKey(before).rate_limit, '0')
+  assert.deepEqual(virtualKeyPatchBody(before, formFromVirtualKey(before)), {})
+  assert.deepEqual(virtualKeyPatchBody(before, { ...formFromVirtualKey(before), rate_limit: '' }), { rate_limit: null })
+})
+
 test('virtualKeyPatchBody: only the list whose set changed; an emptied list is []', () => {
   const before = key({ tool_allowlist: ['gh__a', 'gh__b'], tool_denylist: ['gh__x'] })
   const f = formFromVirtualKey(before)

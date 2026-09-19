@@ -41,7 +41,10 @@ export function formFromVirtualKey(vk: VirtualKey): KeyForm {
     name: vk.name,
     target_type: vk.target_type === 'group' ? 'group' : 'upstream',
     target_id: vk.target_id,
-    rate_limit: vk.rate_limit ? String(vk.rate_limit) : '',
+    // From presence, not truthiness: a stored 0 (unlimited, like null) read as
+    // '' would make an untouched Save send rate_limit: null, a recorded clear
+    // nobody asked for.
+    rate_limit: vk.rate_limit === undefined || vk.rate_limit === null ? '' : String(vk.rate_limit),
     // Both lists are omitempty on the wire, so absent means empty. On a key
     // that reports lists_malformed, a list that did not decode is absent too
     // (one that did is served as stored), which is why that flag exists: an
@@ -91,7 +94,7 @@ export function virtualKeyPatchBody(before: VirtualKey, f: KeyForm): Record<stri
   const body: Record<string, unknown> = {}
   const name = f.name.trim()
   if (name !== before.name) body.name = name
-  const limit = f.rate_limit ? Number(f.rate_limit) : null
+  const limit = f.rate_limit === '' ? null : Number(f.rate_limit)
   if (limit !== (before.rate_limit ?? null)) body.rate_limit = limit
   for (const field of listsSent(before, f)) body[field] = f[field]
   return body

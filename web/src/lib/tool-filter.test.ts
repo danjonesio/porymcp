@@ -52,6 +52,12 @@ test('parseToolFilter: accepts what the proxy enforces', () => {
     kind: 'filter',
     form: { mode: 'deny', tools: ['gh__x'], prefixes: [] },
   })
+  // A null mode is a no-op in Go's decoder, so an earlier spelling keeps its value.
+  assert.deepEqual(parseToolFilter({ mode: 'deny', tools: ['gh__x'], Mode: null }), {
+    kind: 'filter',
+    form: { mode: 'deny', tools: ['gh__x'], prefixes: [] },
+  })
+  assert.deepEqual(parseToolFilter({ mode: null }), { kind: 'none' })
   // An empty deny is accepted and blocks nothing.
   assert.deepEqual(parseToolFilter({ mode: 'deny' }), { kind: 'filter', form: form({ mode: 'deny' }) })
   // A legacy unscoped allow entry passes the read side. It is a write-side problem only.

@@ -51,18 +51,24 @@ function unique(list: string[]): string[] {
  */
 export function parseToolFilter(raw: unknown): ParsedFilter {
   if (raw === undefined || raw === null) return { kind: 'none' }
-  const unreadable: ParsedFilter = { kind: 'unreadable', text: JSON.stringify(raw) ?? String(raw) }
-  if (typeof raw !== 'object' || Array.isArray(raw)) return unreadable
+  // Built only when it is returned: this runs per table row and per keystroke
+  // while a dialog is open, and the stored value can be large.
+  const unreadable = (): ParsedFilter => ({ kind: 'unreadable', text: JSON.stringify(raw) ?? String(raw) })
+  if (typeof raw !== 'object' || Array.isArray(raw)) return unreadable()
 
   const folded: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const k = key.toLowerCase()
-    if (k !== 'mode' && k !== 'tools' && k !== 'prefixes') return unreadable
+    if (k !== 'mode' && k !== 'tools' && k !== 'prefixes') return unreadable()
+    // Go decodes a JSON null into a string as a no-op, so `"Mode": null` after
+    // `"mode": "deny"` leaves the mode at deny. Into a slice, null is an empty
+    // list, which the list loop below already reads it as.
+    if (k === 'mode' && value === null) continue
     folded[k] = value
   }
 
   const mode = folded.mode ?? ''
-  if (mode !== '' && mode !== 'allow' && mode !== 'deny') return unreadable
+  if (mode !== '' && mode !== 'allow' && mode !== 'deny') return unreadable()
 
   const lists: string[][] = []
   for (const value of [folded.tools, folded.prefixes]) {
@@ -70,17 +76,17 @@ export function parseToolFilter(raw: unknown): ParsedFilter {
       lists.push([])
       continue
     }
-    if (!Array.isArray(value)) return unreadable
+    if (!Array.isArray(value)) return unreadable()
     for (const e of value) {
-      if (typeof e !== 'string' || !cleanEntry(e)) return unreadable
+      if (typeof e !== 'string' || !cleanEntry(e)) return unreadable()
     }
     lists.push(unique(value as string[]))
   }
   const [tools, prefixes] = lists
   const entries = tools.length + prefixes.length
 
-  if (mode === '') return entries === 0 ? { kind: 'none' } : unreadable
-  if (mode === 'allow' && entries === 0) return unreadable
+  if (mode === '') return entries === 0 ? { kind: 'none' } : unreadable()
+  if (mode === 'allow' && entries === 0) return unreadable()
   return { kind: 'filter', form: { mode, tools, prefixes } }
 }
 
@@ -137,7 +143,7 @@ export function toggleEntry(list: string[], entry: string, on: boolean): string[
 }
 
 /** Shown under a mode that lists nothing, and the reason Save is held back once that was the operator's edit. */
-export const ZERO_ENTRIES = 'List at least one tool, or choose No filter.'
+export const ZERO_ENTRIES = 'List at least one tool or prefix, or choose No filter.'
 
 /**
  * '' when the API would accept this filter, otherwise one sentence. `allow` with
