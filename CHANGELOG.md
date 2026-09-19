@@ -15,10 +15,14 @@ Behaviour changes that affect a running deployment. Newest first.
 - **A call through a group is answered as JSON.** A member's event-stream answer
   to a `tools/call` used to reach a group's client labelled `application/json`,
   and a failed call was logged as a success. The client now gets the one
-  answering document, and the Logs row records its outcome. A member that
-  answers in any other media type is a `502`.
+  answering document, with the member's HTTP status, and the Logs row records
+  its outcome. An answer with no such document in it is passed on as it came
+  when it is JSON or an event stream; its row is still judged by the HTTP status
+  alone, and the server log says `group call answer relayed unreduced`. A member
+  that answers in any other media type is a `502`.
 - A member can still be missing from a group when it refuses a `tools/list` sent
-  without a session. The `group member skipped` log line says which.
+  without a session, answers with a redirect, or answers something the proxy
+  cannot read. The `group member skipped` log line says which.
 
 ### Upstreams on the 2026-07-28 revision can be discovered and grouped (PORM-151)
 
