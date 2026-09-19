@@ -24,6 +24,7 @@ import {
 } from '@/lib/catalogue'
 import { cleanEntry, tickEntry } from '@/lib/tool-entry'
 import { transportUnsupported } from '@/lib/upstream-transport'
+import clsx from 'clsx'
 import { useState } from 'react'
 
 /** Past this many loaded rows the picker offers a Find a tool input. */
@@ -54,7 +55,10 @@ export function ToolPickerLoad({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" outline disabled={loading} onClick={onLoad}>
+        {/* aria-disabled, not disabled: a disabled button drops focus to the
+            dialog, and the next Tab starts from the top. A press while a run is
+            in flight is dropped by useCatalogue. */}
+        <Button type="button" outline aria-disabled={loading} className="aria-disabled:opacity-50" onClick={onLoad}>
           {loading ? 'Loading…' : loadedAny ? 'Reload tools' : 'Load tools'}
         </Button>
       </div>
@@ -80,6 +84,7 @@ function NoControl() {
 
 function MemberBlock({
   member,
+  busy,
   find,
   side,
   groupTarget,
@@ -91,6 +96,8 @@ function MemberBlock({
   wholeMember,
 }: {
   member: MemberCatalogue
+  /** Some member of this catalogue is loading: no other load may start (useCatalogue drops it). */
+  busy: boolean
   find: string
   side: 'allow' | 'deny'
   groupTarget: boolean
@@ -101,7 +108,14 @@ function MemberBlock({
   onLoad: (upstreamId: string) => void
   wholeMember?: WholeMember
 }) {
-  const unsupported = member.enabled && transportUnsupported(member.transport)
+  // On the transport alone. The group form hides this line for a disabled
+  // member because a disabled member is off the proxy's path; it is not off the
+  // picker's, since the discover route has no enabled check, and a Load there
+  // would spend a token on a call that fails before it dials.
+  const unsupported = transportUnsupported(member.transport)
+  const status = member.state === 'idle' ? 'Not loaded.' : member.state === 'loading' ? 'Loading…' : member.error
+  const action =
+    member.state === 'idle' ? 'Load' : member.state === 'failed' ? 'Try again' : member.state === 'loading' ? 'Loading…' : 'Reload'
   const shown = find ? member.tools.filter((t) => t.name.toLowerCase().includes(find.toLowerCase())) : member.tools
   const unlisted = side === 'allow' && (member.truncated || member.unnameable > 0)
   return (
@@ -129,29 +143,32 @@ function MemberBlock({
       ) : null}
 
       <div data-slot="control" aria-busy={member.state === 'loading'} className="space-y-3">
-        {member.state === 'idle' ? (
-          <div className="flex flex-wrap items-center gap-3">
-            <Text>Not loaded.</Text>
-            {unsupported ? null : (
-              <Button type="button" plain onClick={() => onLoad(member.upstream_id)}>
-                Load
-              </Button>
+        {/* One row and one button in every state, so the button a press landed
+            on is still there, and still focused, when the state changes. */}
+        <div className="flex flex-wrap items-start gap-3">
+          <p
+            dir="ltr"
+            role={member.state === 'failed' ? 'status' : undefined}
+            className={clsx(
+              'min-w-0 flex-1 wrap-break-word',
+              member.state === 'failed' ? errorLine : 'text-base/6 text-zinc-500 sm:text-sm/6 dark:text-zinc-400'
             )}
-          </div>
-        ) : null}
-        {member.state === 'loading' ? <Text>Loading…</Text> : null}
-        {member.state === 'failed' ? (
-          <div className="flex flex-wrap items-start gap-3">
-            <p dir="ltr" className={`min-w-0 flex-1 wrap-break-word ${errorLine}`}>
-              {member.error}
-            </p>
-            {unsupported ? null : (
-              <Button type="button" plain className="shrink-0" onClick={() => onLoad(member.upstream_id)}>
-                Try again
-              </Button>
-            )}
-          </div>
-        ) : null}
+          >
+            {member.state === 'ok' ? '' : status}
+          </p>
+          {unsupported ? null : (
+            <Button
+              type="button"
+              plain
+              className="shrink-0 aria-disabled:opacity-50"
+              aria-disabled={busy}
+              aria-label={`${action} ${member.name}`}
+              onClick={() => onLoad(member.upstream_id)}
+            >
+              {action}
+            </Button>
+          )}
+        </div>
         {member.state === 'ok' ? (
           <>
             {member.tools.length === 0 ? <Text>No tools. This server answered, and its catalogue is empty.</Text> : null}
@@ -168,9 +185,13 @@ function MemberBlock({
                   // alike and still be different entries.
                   const entry = tickEntry(member.slug, tool)
                   const nameable = cleanEntry(entry)
-                  const covered = nameable ? coveringEntry(member.slug, tool.name, { tools, prefixes, side, groupTarget }) : ''
+                  // Asked of every row. A name no tools entry can hold is still
+                  // reached by a prefix, and under allow that prefix PERMITS it:
+                  // a row that went on saying "it stays blocked" would state the
+                  // opposite of the rule.
+                  const covered = coveringEntry(member.slug, tool.name, { tools, prefixes, side, groupTarget })
                   const notes: string[] = []
-                  if (!nameable) notes.push(unnameableRowNote(side, !!wholeMember))
+                  if (!nameable) notes.push(unnameableRowNote(side, !!wholeMember, !!covered))
                   if (covered) notes.push(coveredNote(covered))
                   return (
                     <ToolRow
@@ -250,6 +271,7 @@ export function ToolPicker({
 }) {
   const [find, setFind] = useState('')
   const rows = catalogue.members.reduce((n, m) => n + m.tools.length, 0)
+  const busy = catalogue.members.some((m) => m.state === 'loading')
   return (
     <div className="space-y-8">
       {rows > FIND_THRESHOLD ? (
@@ -272,6 +294,7 @@ export function ToolPicker({
         <MemberBlock
           key={member.upstream_id}
           member={member}
+          busy={busy}
           find={find.trim()}
           side={side}
           groupTarget={groupTarget}

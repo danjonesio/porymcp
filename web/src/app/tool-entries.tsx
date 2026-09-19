@@ -5,7 +5,7 @@ import { Button } from '@/components/button'
 import { Field, Label } from '@/components/fieldset'
 import { Input } from '@/components/input'
 import { Text } from '@/components/text'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 /** One row of the list: the entry as stored, what kind it is, and what the lib said about it. */
 export type EntryRow = { text: string; kind: 'tool' | 'prefix'; badge: string; note: string }
@@ -80,10 +80,18 @@ export function ToolEntries({
   /** Only a group's tool_filter has prefixes. */
   onAddPrefix?: (entry: string) => void
 }) {
+  // Remove unmounts the button that was pressed. Without this the focus falls
+  // back to the dialog and the next Tab starts from the top; the heading is the
+  // nearest thing that is always there, and it carries the new count.
+  const heading = useRef<HTMLParagraphElement>(null)
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-base/6 font-medium text-zinc-950 tabular-nums sm:text-sm/6 dark:text-white">
+        <p
+          ref={heading}
+          tabIndex={-1}
+          className="text-base/6 font-medium text-zinc-950 tabular-nums focus:outline-hidden sm:text-sm/6 dark:text-white"
+        >
           {label} ({entries.length})
         </p>
         {entries.length === 0 ? (
@@ -112,7 +120,10 @@ export function ToolEntries({
                   plain
                   className="shrink-0"
                   aria-label={`Remove ${row.text}`}
-                  onClick={() => onRemove(row)}
+                  onClick={() => {
+                    onRemove(row)
+                    heading.current?.focus()
+                  }}
                 >
                   Remove
                 </Button>

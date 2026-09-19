@@ -119,10 +119,14 @@ export const BLOCKS_EVERYTHING_NOW = 'As it stands, this filter blocks every too
 
 /** The polite live-region summary of a load: what arrived, without reading fifty rows aloud. */
 export function catalogueSummary(c: Catalogue): string {
-  return c.members
+  const failed = c.members.filter((m) => m.state === 'failed').length
+  const ok = c.members
     .filter((m) => m.state === 'ok')
     .map((m) => `${m.name}, ${m.tools.length} ${m.tools.length === 1 ? 'tool' : 'tools'}.`)
-    .join(' ')
+  // A load in which nothing answered must still be announced: silence after a
+  // press reads as "still working" to someone who cannot see the pink lines.
+  if (failed > 0) ok.push(`${failed} ${failed === 1 ? 'upstream' : 'upstreams'} could not be loaded.`)
+  return ok.join(' ')
 }
 
 /** Why no entry carries a Not advertised badge right now. '' before any load and on a complete catalogue. */
@@ -168,8 +172,11 @@ export const UNLISTED_STAYS_BLOCKED = 'A tool that is not listed cannot be ticke
  * still reaches it, and the sentence says so, or an operator under deny
  * concludes the tool cannot be blocked.
  */
-export function unnameableRowNote(side: 'allow' | 'deny', prefixes: boolean): string {
+export function unnameableRowNote(side: 'allow' | 'deny', prefixes: boolean, covered: boolean): string {
   const base = 'This name holds a space or a control character, so no tool entry can name it.'
+  // Once a prefix does reach it, the row says which one (coveredNote) and must
+  // not go on claiming the tool is blocked: under allow that prefix permits it.
+  if (covered) return base
   const route = prefixes ? ' A prefix that stops before that character can.' : ''
   const allow = side === 'allow' ? ' It stays blocked, because it is not on the list.' : ''
   return base + route + allow
@@ -198,6 +205,7 @@ export function entryMark(
   if (problem) return { badge: 'Cannot be saved', note: problem }
   if (o.unmatched.includes(entry)) return { badge: 'Not advertised', note: notAdvertisedNote(o.side, o.keyList) }
   if (o.kind === 'prefix') return { badge: 'Prefix', note: '' }
-  if (!splitEntry(entry).scoped) return { badge: 'Any member', note: '' }
+  // Only where there is more than one member for a bare name to reach.
+  if (o.groupTarget && !splitEntry(entry).scoped) return { badge: 'Any member', note: '' }
   return { badge: '', note: '' }
 }

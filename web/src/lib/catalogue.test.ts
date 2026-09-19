@@ -136,21 +136,36 @@ test('blocksEverything: disabled members are left out, and a target that adverti
   assert.equal(blocksEverything(denyGh, cat(loaded('gh', []))), false)
 })
 
-test('catalogueSummary reads the loaded members only', () => {
+test('catalogueSummary reads the loaded members, and says so when some or all could not be loaded', () => {
   assert.equal(
     catalogueSummary(cat(loaded('gh', ['a', 'b']), loaded('linear', ['c']), idleMember(member('docs')))),
     'GH, 2 tools. LINEAR, 1 tool.',
   )
+  const down: MemberCatalogue = { ...idleMember(member('docs')), state: 'failed', error: 'x' }
+  assert.equal(catalogueSummary(cat(loaded('gh', ['a']), down)), 'GH, 1 tool. 1 upstream could not be loaded.')
+  assert.equal(catalogueSummary(cat(down, { ...down, upstream_id: 'other' })), '2 upstreams could not be loaded.')
+})
+
+// PORM-4 SR8, SR11: a tool no entry can name is still reached by a prefix, and the row must say so.
+test('coveringEntry answers for a name that holds a space', () => {
+  const o = { tools: [] as string[], prefixes: ['gh__my'], side: 'allow' as const, groupTarget: true }
+  assert.equal(coveringEntry('gh', 'my tool', o), 'gh__my')
+  assert.equal(coveringEntry('gh', 'other tool', o), '')
 })
 
 // PORM-4 SR11.
 test('unnameableRowNote names the prefix route where there are prefixes, and the allow consequence', () => {
   assert.equal(
-    unnameableRowNote('deny', true),
+    unnameableRowNote('deny', true, false),
     'This name holds a space or a control character, so no tool entry can name it. A prefix that stops before that character can.',
   )
-  assert.match(unnameableRowNote('allow', true), /It stays blocked, because it is not on the list\.$/)
-  assert.doesNotMatch(unnameableRowNote('deny', false), /prefix/)
+  assert.match(unnameableRowNote('allow', true, false), /It stays blocked, because it is not on the list\.$/)
+  assert.doesNotMatch(unnameableRowNote('deny', false, false), /prefix/)
+  // Once a prefix reaches it, the row must not go on saying it is blocked: under allow it is permitted.
+  assert.equal(
+    unnameableRowNote('allow', true, true),
+    'This name holds a space or a control character, so no tool entry can name it.',
+  )
 })
 
 test('entryMark: a problem wins, then Not advertised, then the kind of entry', () => {
@@ -166,6 +181,8 @@ test('entryMark: a problem wins, then Not advertised, then the kind of entry', (
   assert.equal(entryMark('gh__gone', { ...o, keyList: true }).note, 'No tool advertised right now carries this name. The rule is kept.')
   assert.deepEqual(entryMark('gh__', { ...o, kind: 'prefix' as const, unmatched: [] }), { badge: 'Prefix', note: '' })
   assert.deepEqual(entryMark('search', { ...o, side: 'deny', unmatched: [] }), { badge: 'Any member', note: '' })
+  // On a single-upstream key a bare name reaches one member only, so the badge says nothing.
+  assert.deepEqual(entryMark('search', { ...o, side: 'deny', groupTarget: false, unmatched: [] }), { badge: '', note: '' })
   assert.deepEqual(entryMark('gh__search', { ...o, unmatched: [] }), { badge: '', note: '' })
 })
 

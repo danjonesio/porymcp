@@ -16,6 +16,13 @@ import { discoverMembers } from '@/lib/discover-many'
  * `resetKey` (the dialog's open count) drops everything and makes every answer
  * still in flight stale.
  *
+ * One run at a time: a press that arrives while a run is in flight is dropped.
+ * discoverMembers bounds ONE run to two calls, so a second concurrent run would
+ * double that against the server's gate of four, and could discover a member
+ * the first run had not reached yet a second time: two credential-carrying
+ * handshakes and two last-test stamps for one intent. The picker draws its
+ * buttons as unavailable meanwhile; this is the guard that does not depend on it.
+ *
  * The catalogue returned is narrowed to `members`, in their order: a verdict
  * must never weigh a member the target no longer has.
  */
@@ -37,6 +44,10 @@ export function useCatalogue(
   useEffect(() => {
     current.current = resetKey
   }, [resetKey])
+  // The reset key of the run in flight, or null. Keyed, so a run left over from
+  // a dialog that closed neither blocks the next dialog's press nor, when it
+  // settles late, frees the slot a newer run is holding.
+  const running = useRef<number | null>(null)
 
   const catalogue = useMemo<Catalogue>(
     () => ({ members: members.map((m) => (byId[m.upstream_id] ? { ...byId[m.upstream_id], ...m } : idleMember(m))) }),
@@ -46,6 +57,8 @@ export function useCatalogue(
   const load = useCallback(
     (upstreamId?: string) => {
       const started = resetKey
+      if (running.current === started) return
+      running.current = started
       const stale = () => current.current !== started
       const targets = upstreamId ? members.filter((m) => m.upstream_id === upstreamId) : members
       setRateLimited('')
@@ -55,6 +68,7 @@ export function useCatalogue(
         (m) => setById((prev) => ({ ...prev, [m.upstream_id]: m })),
         stale,
       ).then((out) => {
+        if (running.current === started) running.current = null
         if (!stale()) setRateLimited(out.rateLimited)
       })
     },
