@@ -482,8 +482,9 @@ func TestPerUpstreamNotificationIsForwarded(t *testing.T) {
 
 	t.Run("the aggregate still answers it itself", func(t *testing.T) {
 		agg := f.post(notif)
-		if agg.Code != http.StatusAccepted || agg.Body.String() != `{}` {
-			t.Errorf("aggregate code=%d body=%s want 202 {}", agg.Code, agg.Body.String())
+		// A 202 carries no body in either era of the transport (PORM-153).
+		if agg.Code != http.StatusAccepted || agg.Body.Len() != 0 {
+			t.Errorf("aggregate code=%d body=%q want 202 and no body", agg.Code, agg.Body.String())
 		}
 	})
 }

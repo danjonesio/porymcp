@@ -977,14 +977,18 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// names none. A member endpoint relays all three to its member.
 		return answerRPC(req.ID, nil, &rpcError{Code: codeMethodNotFound, Message: msgMethodNotFound}), http.StatusNotFound, nil, "", nil
 	case "notifications/initialized":
-		return []byte(`{}`), http.StatusAccepted, nil, ups[0].ID, nil
+		// Both eras of the transport say an accepted notification is a 202 with
+		// no body. Nothing is dialled for this or for initialize below, so
+		// neither row names an upstream: upstream_id is how an operator reads
+		// which credential a request presented, and none was.
+		return nil, http.StatusAccepted, nil, "", nil
 	case "initialize":
 		result := map[string]any{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "porymcp", "version": "0.1.0"},
 		}
-		return encodeRPC(req.ID, result, nil), http.StatusOK, nil, ups[0].ID, nil
+		return encodeRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
 	case "tools/list":
 		active, lists := h.memberCatalogues(ctx, ups)
 		merged, _ := h.buildRoutes(active, lists)

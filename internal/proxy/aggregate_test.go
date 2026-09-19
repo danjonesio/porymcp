@@ -1416,3 +1416,25 @@ func TestAggregateUnsupportedVersion(t *testing.T) {
 		t.Errorf("single upstream, server/discover: HTTP code=%d, upstream saw %d, want 200 and 1", rr.Code, single.count("solo", "server/discover", ""))
 	}
 }
+
+// PORM-153, amendment A12 and security requirement 9. upstream_id is how an
+// operator reads which credential a request presented. The group endpoint
+// answers initialize and notifications/initialized itself and dials nobody, so
+// their rows name no upstream, as a group's tools/list row never has.
+func TestAggregateLocalAnswersNameNoUpstream(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}, "beta": {"b"}}, nil, nil, nil)
+	f.post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	f.post(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	rows := f.waitAuditN(models.LogFilter{}, 2)
+	if len(rows) != 2 {
+		t.Fatalf("%d rows, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if row.UpstreamID != "" || row.Status != models.StatusSuccess {
+			t.Errorf("%s row: upstream=%q status=%q, want no upstream and success", row.Method, row.UpstreamID, row.Status)
+		}
+	}
+	if n := f.totalReqs("alpha") + f.totalReqs("beta"); n != 0 {
+		t.Errorf("the members saw %d requests, want none", n)
+	}
+}

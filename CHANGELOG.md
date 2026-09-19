@@ -4,6 +4,15 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The group endpoint is a server in both protocol eras (PORM-153)
+
+- **`initialize` and `notifications/initialized` rows on a group no longer name
+  an upstream.** The group endpoint answers both itself and contacts nobody, but
+  their audit rows carried the id of the group's first member. `upstream_id` is
+  now empty on them, as it always was for a group's `tools/list`. Filtering the
+  Logs page by that upstream no longer shows these rows. `notifications/initialized`
+  is also answered `202` with no body, where it used to send `{}`.
+
 ### A group lists and calls members that answer as an event stream (PORM-171)
 
 - **A group can serve more tools after this upgrade.** A member that answered
