@@ -884,9 +884,12 @@ type upstreamTransport = mcpclient.UpstreamTransport
 // member's names are exactly what they were, because each is composed from its
 // own slug. Routability is the part still tied to this walk, PORM-32 routes a
 // call by the slug the name carries and takes the catalogue off the call path.
-func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) ([]*models.Upstream, [][]mcpTool) {
+func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) ([]*models.Upstream, [][]mcpTool, []int64) {
 	active := make([]*models.Upstream, 0, len(ups))
 	lists := make([][]mcpTool, 0, len(ups))
+	// ttls is each listed member's cache hint, paired index for index with the
+	// other two: what it reported, or the default when it reported nothing.
+	ttls := make([]int64, 0, len(ups))
 	// A dropout is otherwise invisible: the row belongs to the client's
 	// request, which succeeded on the survivors, so nothing anywhere says why
 	// a member's tools are missing. Warn rather than Debug because a member
@@ -925,10 +928,15 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 			skip(up, err)
 			continue
 		}
+		ttl, reported := listTTLMs(listBody)
+		if !reported {
+			ttl = defaultListTTLMs
+		}
 		active = append(active, up)
 		lists = append(lists, tools)
+		ttls = append(ttls, ttl)
 	}
-	return active, lists
+	return active, lists, ttls
 }
 
 // shouldAggregate names the methods the group endpoint answers or refuses
@@ -1028,7 +1036,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		}
 		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
 	case "tools/list":
-		active, lists := h.memberCatalogues(ctx, ups)
+		active, lists, ttls := h.memberCatalogues(ctx, ups)
 		merged, _ := h.buildRoutes(active, lists)
 		// The same policy the gate would apply to a call on each of these
 		// names, so the catalogue and the call agree by construction.
@@ -1038,16 +1046,27 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// revision's cacheScope member. resultType is the revision's retry
 		// protocol field: complete means no client input is needed to finish
 		// the result, and says nothing about a member skipped at catalogue
-		// time, which memberCatalogues logs. ttlMs and the _meta server info
-		// are PORM-153's.
-		return encodeRPC(req.ID, map[string]any{"tools": merged, "cacheScope": "private", "resultType": "complete"}, nil), http.StatusOK, nil, "", nil
+		// time, which memberCatalogues logs. ttlMs is required of a list by the
+		// revision, and a client that validates what it is sent rejects a list
+		// without it; it is the one value here a member has a say in, and
+		// mergedTTLMs bounds that say. _meta is PoryMCP's own serverInfo and
+		// nothing of a member's. There is never a nextCursor: whole catalogues
+		// are merged (PORM-73 owns paging).
+		result := map[string]any{
+			"tools":      merged,
+			"cacheScope": "private",
+			"resultType": "complete",
+			"ttlMs":      mergedTTLMs(ttls),
+			"_meta":      selfMeta(),
+		}
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
 	case "tools/call":
 		// ok is not checked: ServeHTTP refuses a tools/call without a usable
 		// name before it gets here.
 		name, _ := toolNameFromParams(req.Params)
 		// The catalogues that decide where this call goes are the proxy's own
 		// requests, not replays of the client's: see listTools.
-		active, lists := h.memberCatalogues(ctx, ups)
+		active, lists, _ := h.memberCatalogues(ctx, ups)
 		_, routes := h.buildRoutes(active, lists)
 		route, ok := routes[name]
 		if !ok {
@@ -1249,24 +1268,6 @@ func rewriteMethod(original []byte, method string, params json.RawMessage) []byt
 		req["params"] = p
 	}
 	b, _ := json.Marshal(req)
-	return b
-}
-
-func encodeRPC(id json.RawMessage, result any, rpcErr any) []byte {
-	m := map[string]any{"jsonrpc": "2.0"}
-	if len(id) > 0 {
-		var v any
-		_ = json.Unmarshal(id, &v)
-		m["id"] = v
-	} else {
-		m["id"] = 1
-	}
-	if rpcErr != nil {
-		m["error"] = rpcErr
-	} else {
-		m["result"] = result
-	}
-	b, _ := json.Marshal(m)
 	return b
 }
 

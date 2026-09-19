@@ -1569,3 +1569,126 @@ func TestAggregateServerDiscover(t *testing.T) {
 		}
 	})
 }
+
+// modernList is a verbatim tools/list answer for a Modern stub: the named tools
+// (each a raw JSON object) and, when ttl is not empty, a ttlMs written exactly
+// as given, so a test can send 3600000.0, "60" or -5.
+func modernList(ttl string, tools ...string) string {
+	member := ""
+	if ttl != "" {
+		member = `,"ttlMs":` + ttl
+	}
+	return `{"jsonrpc":"2.0","id":1,"result":{"tools":[` + strings.Join(tools, ",") + `],"resultType":"complete","cacheScope":"public"` + member + `}}`
+}
+
+// PORM-153, amendments A6, A7 and A8; security requirement 8. The merged list is
+// PoryMCP's own document. The revision requires ttlMs on it, and a client that
+// validates what it is sent rejects a list without one, which is what Claude
+// Code did to a group. ttlMs is the one value on it a member has a say in.
+func TestAggregateListFields(t *testing.T) {
+	type listResult struct {
+		TTL        *int64          `json:"ttlMs"`
+		CacheScope string          `json:"cacheScope"`
+		ResultType string          `json:"resultType"`
+		Cursor     json.RawMessage `json:"nextCursor"`
+		Meta       map[string]struct {
+			Name, Version string
+		} `json:"_meta"`
+		Tools []struct {
+			Name        string          `json:"name"`
+			InputSchema json.RawMessage `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	list := func(t *testing.T, specs map[string]upstreamSpec) listResult {
+		t.Helper()
+		f := newFixture(t, specs, true, nil, nil, nil)
+		body, hdr := modernRequest("1", "tools/list", mcpclient.RevisionModern)
+		rr := f.postWith(body, hdr)
+		var env struct {
+			Result listResult `json:"result"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil || rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d err=%v body=%s", rr.Code, err, rr.Body.String())
+		}
+		return env.Result
+	}
+	modern := func(ttl string) upstreamSpec {
+		return upstreamSpec{Modern: true, RawList: modernList(ttl, `{"name":"t","inputSchema":{"type":"object"}}`)}
+	}
+	legacy := upstreamSpec{Tools: []string{"t"}}
+
+	for _, c := range []struct {
+		name  string
+		specs map[string]upstreamSpec
+		want  int64
+	}{
+		{"the smaller of two modern members", map[string]upstreamSpec{"a": modern("30000"), "b": modern("90000")}, 30000},
+		{"two handshake members report nothing", map[string]upstreamSpec{"a": legacy, "b": legacy}, 60000},
+		{"a handshake member counts as the default beside a larger value", map[string]upstreamSpec{"a": modern("90000"), "b": legacy}, 60000},
+		{"zero is held at the floor", map[string]upstreamSpec{"a": modern("0"), "b": legacy}, 10000},
+		{"a whole number written as a float is a report", map[string]upstreamSpec{"a": modern("3600000.0")}, 3600000},
+		{"a huge value is held at the ceiling", map[string]upstreamSpec{"a": modern("99999999")}, 3600000},
+		{"a negative is not a report", map[string]upstreamSpec{"a": modern("-5")}, 60000},
+		{"a fraction is not a report", map[string]upstreamSpec{"a": modern("1.5")}, 60000},
+		{"a string is not a report", map[string]upstreamSpec{"a": modern(`"60"`)}, 60000},
+		{"a number too large to hold is not a report", map[string]upstreamSpec{"a": modern("1e30")}, 60000},
+		{"a null is not a report", map[string]upstreamSpec{"a": modern("null")}, 60000},
+		{"an absent member is not a report", map[string]upstreamSpec{"a": modern("")}, 60000},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := list(t, c.specs)
+			if got.TTL == nil || *got.TTL != c.want {
+				t.Fatalf("ttlMs=%v want %d", got.TTL, c.want)
+			}
+			if got.CacheScope != "private" || got.ResultType != "complete" || len(got.Cursor) != 0 {
+				t.Errorf("cacheScope=%q resultType=%q nextCursor=%s, want private, complete and no cursor: a member's public scope must not cross", got.CacheScope, got.ResultType, got.Cursor)
+			}
+			if si := got.Meta["io.modelcontextprotocol/serverInfo"]; si.Name != "porymcp" || si.Version != "dev" || len(got.Meta) != 1 {
+				t.Errorf("_meta=%v, want PoryMCP's serverInfo and nothing else", got.Meta)
+			}
+		})
+	}
+
+	// A8: members in stored order, each member's tools in its own order, read
+	// unsorted. listedNames sorts, so it cannot see this.
+	t.Run("the merged order is the stored order", func(t *testing.T) {
+		got := list(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"zebra", "apple"}},
+			"beta":  {Tools: []string{"mango", "banana"}},
+		})
+		var names []string
+		for _, tl := range got.Tools {
+			names = append(names, tl.Name)
+		}
+		if s := strings.Join(names, ","); s != "alpha__zebra,alpha__apple,beta__mango,beta__banana" {
+			t.Errorf("order %q, want members in stored order and each member's own order", s)
+		}
+	})
+
+	// A7: the revision requires inputSchema on every tool, an object whose type
+	// is "object". One tool that does not conform would cost a validating
+	// client the whole list, so the merge supplies the least a schema may be.
+	t.Run("every merged tool carries an object schema", func(t *testing.T) {
+		const conforming = `{"type":"object","properties":{"q":{"type":"string","description":"a <b> & c"}},"required":["q"]}`
+		got := list(t, map[string]upstreamSpec{"a": {Modern: true, RawList: modernList("60000",
+			`{"name":"none"}`,
+			`{"name":"null","inputSchema":null}`,
+			`{"name":"untyped","inputSchema":{"properties":{}}}`,
+			`{"name":"string","inputSchema":{"type":"string"}}`,
+			`{"name":"array","inputSchema":["object"]}`,
+			`{"name":"good","inputSchema":`+conforming+`}`,
+		)}})
+		if len(got.Tools) != 6 {
+			t.Fatalf("%d tools, want 6", len(got.Tools))
+		}
+		for _, tl := range got.Tools {
+			want := `{"type":"object"}`
+			if tl.Name == "a__good" {
+				want = conforming
+			}
+			if string(tl.InputSchema) != want {
+				t.Errorf("%s inputSchema=%s want %s", tl.Name, tl.InputSchema, want)
+			}
+		}
+	})
+}

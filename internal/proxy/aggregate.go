@@ -4,15 +4,104 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 
 	"github.com/danjonesio/porymcp/internal/models"
 )
 
 type mcpTool struct {
-	Name        string          `json:"name"`
-	Title       string          `json:"title,omitempty"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	// InputSchema is always emitted on the merged list, and buildRoutes makes
+	// it one the 2026-07-28 schema accepts: see conformingInputSchema. The rest
+	// of a tool's metadata is PORM-73's.
+	InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+// emptyObjectSchema is the least a tool's inputSchema may be.
+var emptyObjectSchema = json.RawMessage(`{"type":"object"}`)
+
+// conformingInputSchema returns the member's inputSchema when it is what the
+// 2026-07-28 schema requires of every tool, a JSON object whose type is the
+// string "object", and the empty object schema otherwise: for a tool that sent
+// none, a null, something that is not an object, or an object of another type.
+// The group endpoint now says it speaks that revision, and a client that
+// validates what it is sent rejects the WHOLE list for one tool that does not
+// conform, so one careless member would cost the group every tool it has. A
+// conforming schema crosses byte for byte.
+func conformingInputSchema(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return emptyObjectSchema
+	}
+	var schema struct {
+		Type json.RawMessage `json:"type"`
+	}
+	if err := json.Unmarshal(trimmed, &schema); err != nil {
+		return emptyObjectSchema
+	}
+	if t, ok := jsonString(schema.Type); !ok || t != "object" {
+		return emptyObjectSchema
+	}
+	return raw
+}
+
+// The cache hint on the merged list, in milliseconds.
+const (
+	// defaultListTTLMs stands in for a member that reports no ttlMs, which is
+	// every handshake-era member: how fresh its catalogue is cannot be known.
+	defaultListTTLMs = 60000
+	// minListTTLMs is the floor. A member may legally report 0, "re-fetch every
+	// time", and hosted servers do; under a bare minimum that would make every
+	// polite client re-list a group on every use, and each re-list walks every
+	// member with its real credential. Ten seconds of list staleness costs
+	// nothing, because every tools/call walks the catalogues anyway.
+	minListTTLMs = 10000
+	// maxListTTLMs matches what the endpoint says of its own server/discover.
+	maxListTTLMs = discoverTTLMs
+)
+
+// listTTLMs reads result.ttlMs off a member's reduced tools/list answer: the
+// one member-sourced value that reaches the merged list, and it is a number
+// the member chose, so it is read strictly. The schema types it as a number,
+// not an integer, so 3600000.0 is a legal spelling and is accepted; a string, a
+// null, a negative, a fraction and anything too large to hold exactly are not
+// a report at all. It is a reader of its own, beside parseToolsList and not
+// inside it, because PORM-73 rewrites that function.
+func listTTLMs(doc []byte) (int64, bool) {
+	var env struct {
+		Result struct {
+			TTL json.RawMessage `json:"ttlMs"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(doc, &env) != nil {
+		return 0, false
+	}
+	raw := bytes.TrimSpace(env.Result.TTL)
+	if len(raw) == 0 || raw[0] == '"' || raw[0] == 'n' {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(string(raw), 64)
+	if err != nil || f < 0 || f != math.Trunc(f) || f > 1<<53 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// mergedTTLMs is the merged list's ttlMs: the smallest of the members' values,
+// because the merged list is stale as soon as any member's is, held between the
+// floor and the ceiling. With no member listed it is the default.
+func mergedTTLMs(ttls []int64) int64 {
+	if len(ttls) == 0 {
+		return defaultListTTLMs
+	}
+	least := ttls[0]
+	for _, v := range ttls[1:] {
+		least = min(least, v)
+	}
+	return min(max(least, minListTTLMs), maxListTTLMs)
 }
 
 type toolRoute struct {
@@ -42,6 +131,11 @@ type toolRoute struct {
 // names. Two entries for one name can still only come from one member
 // advertising a tool twice, where last-one-wins is the upstream's own
 // ambiguity and both entries route to the same credential.
+//
+// The merged order is part of the contract: members in the order the group
+// stores them, and each member's tools in the order that member listed them.
+// memberCatalogues walks the members one after another in that order, so the
+// order does not depend on which member answered first.
 func (h *Handler) buildRoutes(upstreams []*models.Upstream, lists [][]mcpTool) (merged []mcpTool, routes map[string]toolRoute) {
 	routes = map[string]toolRoute{}
 	for i, tools := range lists {
@@ -57,6 +151,7 @@ func (h *Handler) buildRoutes(upstreams []*models.Upstream, lists [][]mcpTool) (
 				continue
 			}
 			cp := t
+			cp.InputSchema = conformingInputSchema(t.InputSchema)
 			// The stored slug, with no derive-from-name fallback: deriving would
 			// silently reinstate rename-changes-every-tool-name, which is the
 			// defect PORM-48 exists to remove. An empty slug is unreachable,
