@@ -77,3 +77,20 @@ test('editErrorMessage: anything but an ApiError means PoryMCP itself was unreac
     'Could not reach PoryMCP. Check that the server is still running.'
   )
 })
+
+// PORM-4 step 6: the Virtual keys page's Edit dialog uses the same mapper.
+test('editErrorMessage: a 404 on a virtual key names it', () => {
+  assert.equal(
+    editErrorMessage(new ApiError(404, 'not found'), 'virtual key', 'save'),
+    'This virtual key no longer exists. Close this dialog to see the current list.',
+  )
+})
+
+test('editErrorMessage: a virtual key has no 409 sentence of its own and never borrows the group one', () => {
+  assert.equal(editErrorMessage(new ApiError(409, 'resource is still referenced'), 'virtual key', 'delete'), 'resource is still referenced')
+})
+
+test('editErrorMessage: the both-lists 400 on a virtual key reaches the operator verbatim', () => {
+  const said = "this key's stored tool_allowlist and tool_denylist could not be decoded; send both fields to replace them"
+  assert.equal(editErrorMessage(new ApiError(400, said), 'virtual key', 'save'), said)
+})
