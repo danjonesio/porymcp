@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 )
 
@@ -194,16 +195,66 @@ func parseToolsList(body []byte) ([]mcpTool, error) {
 	return envelope.Result.Tools, nil
 }
 
-func rewriteToolCallParams(params json.RawMessage, original string) json.RawMessage {
-	if len(params) == 0 {
-		b, _ := json.Marshal(map[string]string{"name": original})
-		return b
-	}
-	var m map[string]any
-	if err := json.Unmarshal(params, &m); err != nil {
-		return params
+// metaAction is what a routed call's params._meta needs for the member it is
+// going to: see memberCallHeaders, which decides it with the headers, because
+// the two declare the same thing and have to move together.
+type metaAction int
+
+const (
+	// metaKeep leaves _meta as the client sent it. The client and the member
+	// speak the same era, or the member's era is not known.
+	metaKeep metaAction = iota
+	// metaCompose writes the three members a 2026-07-28 request must carry, for
+	// a handshake-era client calling a modern member.
+	metaCompose
+	// metaStrip removes those three, for a modern client calling a
+	// handshake-era member.
+	metaStrip
+)
+
+// modernMetaMembers is mcpclient.ModernMeta as a map: the three reserved
+// members a stateless request declares itself with, and the one spelling of
+// their names this package uses.
+func modernMetaMembers() map[string]json.RawMessage {
+	var m map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(mcpclient.ModernMeta()), &m)
+	return m
+}
+
+// rewriteToolCallParams rebuilds a routed call's params for the member it is
+// going to: the member's own tool name for the composed one, always, and the
+// _meta the member's era expects. Only the three reserved members are written
+// or removed. Anything else the client put in _meta, a progressToken say, is
+// the client's and crosses as it came; _meta itself goes only when stripping
+// leaves it empty.
+func rewriteToolCallParams(params json.RawMessage, original string, meta metaAction) json.RawMessage {
+	m := map[string]any{}
+	if len(params) != 0 {
+		if err := json.Unmarshal(params, &m); err != nil || m == nil {
+			return params
+		}
 	}
 	m["name"] = original
+	switch meta {
+	case metaCompose:
+		existing, _ := m["_meta"].(map[string]any)
+		if existing == nil {
+			existing = map[string]any{}
+		}
+		for k, v := range modernMetaMembers() {
+			existing[k] = v
+		}
+		m["_meta"] = existing
+	case metaStrip:
+		if existing, ok := m["_meta"].(map[string]any); ok {
+			for k := range modernMetaMembers() {
+				delete(existing, k)
+			}
+			if len(existing) == 0 {
+				delete(m, "_meta")
+			}
+		}
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return params

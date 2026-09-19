@@ -408,7 +408,7 @@ func TestAggregateRouteMissIsBounded(t *testing.T) {
 // Acceptance criterion 4; security requirement 8. On a group's aggregate
 // endpoint the client names a tool by its identity, and both halves of that
 // identity are rewritten together on the way to the member: params.name by
-// rewriteToolCallParams and Mcp-Name by memberRoutingHeaders, so the member
+// rewriteToolCallParams and Mcp-Name by memberCallHeaders, so the member
 // compares a header and a body that agree. A member's own name that is not
 // header-safe crosses sentinel-encoded, and a client that sent no Mcp-Name
 // leaves the member seeing none.
@@ -724,42 +724,238 @@ func TestListToolsEraCache(t *testing.T) {
 	}
 }
 
-// The boundary PORM-151 ships with, pinned so it is a named fact and not a
-// surprise: a group lists a modern-only member's tools, and a call to one is
-// still the CLIENT's request, relayed with the client's headers and body. A
-// handshake-era client sends neither the routing headers nor _meta, so the
-// member refuses the call with -32020. Composing a modern call on a legacy
-// client's behalf belongs to PORM-153.
-func TestGroupCallToModernMemberFromLegacyClient(t *testing.T) {
-	// Its own group, with no stored credential: eraGroup's modern member holds
-	// a custom auth_config naming Mcp-Method, which the relay path writes onto
-	// the client's call as it always has, and that is not what is under test.
-	f := newFixture(t, map[string]upstreamSpec{
-		"alpha":  {Tools: []string{"search"}},
-		"modern": {Tools: []string{"lookup"}, Modern: true},
-	}, true, nil, nil, nil)
-	rr := f.post(toolCall("7", "modern__lookup"))
+// theCallTo is the one tools/call a member received; the catalogue requests and
+// probes the aggregate composes for itself are not it.
+func theCallTo(t *testing.T, f *fixture, slug string) recordedRequest {
+	t.Helper()
+	var calls []recordedRequest
+	for _, r := range f.requestsTo(slug) {
+		if r.RPCMethod == "tools/call" {
+			calls = append(calls, r)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("%s saw %d tools/call requests, want 1", slug, len(calls))
+	}
+	return calls[0]
+}
 
-	calls := 0
-	for _, r := range f.requestsTo("modern") {
-		if r.RPCMethod != "tools/call" {
-			continue
+// callMeta is params._meta of a recorded tools/call, member by member.
+func callMeta(t *testing.T, r recordedRequest) (name string, meta map[string]json.RawMessage) {
+	t.Helper()
+	var body struct {
+		Params struct {
+			Name string                     `json:"name"`
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(r.Body, &body); err != nil {
+		t.Fatalf("the member's request body is not JSON: %v (%s)", err, r.Body)
+	}
+	return body.Params.Name, body.Params.Meta
+}
+
+var reservedMeta = []string{
+	"io.modelcontextprotocol/protocolVersion",
+	"io.modelcontextprotocol/clientInfo",
+	"io.modelcontextprotocol/clientCapabilities",
+}
+
+// PORM-153. The boundary PORM-151 shipped with, removed: a group listed a
+// modern-only member's tools, and a call to one was the client's own request
+// relayed as sent, which a handshake-era client's is refused for with -32020.
+// The group endpoint now composes that call for the member's era.
+//
+// Security requirements 3 and 5. It is eraGroup's modern member on purpose: its
+// stored custom auth_config names Mcp-Method and MCP-Protocol-Version, and what
+// the member reads has to be PoryMCP's values and not the stored ones.
+func TestAggregateLegacyClientModernMember(t *testing.T) {
+	f := eraGroup(t)
+	rr := f.post(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"modern__lookup","arguments":{"q":"x"},"_meta":{"progressToken":"tok-1"}}}`)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
+		t.Fatalf("HTTP code=%d body=%s, want the member's answer", rr.Code, rr.Body.String())
+	}
+
+	call := theCallTo(t, f, "modern")
+	for name, want := range map[string]string{
+		"Mcp-Protocol-Version": mcpclient.RevisionModern,
+		"Mcp-Method":           "tools/call",
+		"Mcp-Name":             "lookup",
+		"X-Stored-Key":         "REAL-CUSTOM-SECRET",
+	} {
+		if got := call.Header.Get(name); got != want {
+			t.Errorf("the member read %s %q, want %q", name, got, want)
 		}
-		calls++
-		if v := r.Header.Get("Mcp-Method"); v != "" {
-			t.Errorf("the relayed call carried Mcp-Method %q; the proxy composed nothing for the client", v)
+	}
+	name, meta := callMeta(t, call)
+	if name != "lookup" {
+		t.Errorf("params.name=%q want the member's own name", name)
+	}
+	for _, k := range reservedMeta {
+		if len(meta[k]) == 0 {
+			t.Errorf("params._meta lacks %s: %s", k, call.Body)
 		}
 	}
-	if calls != 1 {
-		t.Fatalf("modern saw %d tools/call, want the one relayed call", calls)
+	if v, _ := jsonString(meta["io.modelcontextprotocol/protocolVersion"]); v != mcpclient.RevisionModern {
+		t.Errorf("_meta version %q, want the same constant the header carries", v)
 	}
-	code, _, _ := rpcErrorOf(t, rr.Body.Bytes())
-	if code != mcpclient.CodeHeaderMismatch {
-		t.Errorf("client got JSON-RPC code %d, want the member's own %d; body=%s", code, mcpclient.CodeHeaderMismatch, rr.Body.String())
+	// _meta is an object, not the object's text in a string, and what the
+	// client put there is still there.
+	if string(meta["progressToken"]) != `"tok-1"` {
+		t.Errorf("the client's progressToken did not cross: %s", call.Body)
 	}
-	row := f.waitAudit(models.LogFilter{})[0]
-	if row.Status != models.StatusError || row.ToolName != "modern__lookup" {
-		t.Errorf("audit row status=%q tool=%q, want an error row naming the tool", row.Status, row.ToolName)
+	row := f.waitAudit(models.LogFilter{Method: "tools/call"})[0]
+	if row.Status != models.StatusSuccess || row.ToolName != "modern__lookup" || row.UpstreamID != "u3" {
+		t.Errorf("row status=%q tool=%q upstream=%q, want a normal success row against the member", row.Status, row.ToolName, row.UpstreamID)
+	}
+}
+
+// PORM-153, amendment A1. Once the group endpoint answers server/discover, a
+// modern client speaks 2026-07-28 for every call, and a handshake-era member
+// MUST refuse a version header it does not support: hosted Firecrawl answered
+// one with -32000. So the call is composed for that member's era too.
+func TestAggregateModernClientLegacyMember(t *testing.T) {
+	const call = `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"alpha__search","arguments":{"q":"x"},"_meta":{` +
+		`"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"claude-code","version":"2"},` +
+		`"io.modelcontextprotocol/clientCapabilities":{},"progressToken":"tok-2"}}}`
+	headers := map[string]string{
+		"MCP-Protocol-Version": "2026-07-28",
+		"Mcp-Method":           "tools/call",
+		"Mcp-Name":             "alpha__search",
+		"Mcp-Param-Region":     "eu",
+	}
+	probes := func(f *fixture) int { return f.count("alpha", "server/discover", "") }
+
+	t.Run("the member is sent a handshake-era call", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha":  {Tools: []string{"search"}},
+			"modern": {Tools: []string{"lookup"}, Modern: true},
+		}, true, nil, nil, nil)
+		body, hdr := modernRequest("1", "tools/list", mcpclient.RevisionModern)
+		f.postWith(body, hdr)
+		before := probes(f)
+
+		rr := f.postWith(call, headers)
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
+			t.Fatalf("HTTP code=%d body=%s, want the member's answer", rr.Code, rr.Body.String())
+		}
+		got := theCallTo(t, f, "alpha")
+		if v, sent := got.Header["Mcp-Protocol-Version"]; sent {
+			t.Errorf("the member was sent MCP-Protocol-Version %q; a handshake server must refuse a version it does not speak", v)
+		}
+		// What still crosses, stated so it reads as a decision: a handshake
+		// server ignores names it does not know, and the revision tells an
+		// intermediary to forward Mcp-Param-.
+		for name, want := range map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "search", "Mcp-Param-Region": "eu"} {
+			if v := got.Header.Get(name); v != want {
+				t.Errorf("the member read %s %q, want %q", name, v, want)
+			}
+		}
+		name, meta := callMeta(t, got)
+		if name != "search" {
+			t.Errorf("params.name=%q want the member's own name", name)
+		}
+		for _, k := range reservedMeta {
+			if _, present := meta[k]; present {
+				t.Errorf("params._meta still declares %s to a handshake member: %s", k, got.Body)
+			}
+		}
+		if string(meta["progressToken"]) != `"tok-2"` {
+			t.Errorf("the client's progressToken did not cross: %s", got.Body)
+		}
+		// Security requirement 12: the era came from the cache. The call sent
+		// no probe of its own.
+		if after := probes(f); after != before {
+			t.Errorf("alpha saw %d probes before the call and %d after it", before, after)
+		}
+		row := f.waitAudit(models.LogFilter{Method: "tools/call"})[0]
+		if row.Status != models.StatusSuccess || row.UpstreamID != "u1" {
+			t.Errorf("row status=%q upstream=%q, want success against alpha", row.Status, row.UpstreamID)
+		}
+	})
+
+	t.Run("a _meta of nothing but the reserved members goes altogether", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{"alpha": {Tools: []string{"search"}}}, true, nil, nil, nil)
+		f.postWith(strings.Replace(call, `,"progressToken":"tok-2"`, "", 1), headers)
+		if _, meta := callMeta(t, theCallTo(t, f, "alpha")); meta != nil {
+			t.Errorf("an empty _meta was left behind: %v", meta)
+		}
+	})
+
+	t.Run("a member that still refuses is relayed as it answers", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{"alpha": {
+			Tools: []string{"search"}, CallCode: http.StatusBadRequest,
+			CallBody: `{"jsonrpc":"2.0","id":8,"error":{"code":-32000,"message":"Bad Request: Server not initialized"}}`,
+		}}, true, nil, nil, nil)
+		rr := f.postWith(call, headers)
+		if code, msg, _ := rpcErrorOf(t, rr.Body.Bytes()); rr.Code != http.StatusBadRequest || code != -32000 || msg != "Bad Request: Server not initialized" {
+			t.Errorf("HTTP code=%d rpc code=%d message=%q, want the member's own refusal", rr.Code, code, msg)
+		}
+		row := f.waitAudit(models.LogFilter{Method: "tools/call"})[0]
+		if row.Status != models.StatusError || row.ErrorMessage != "Bad Request: Server not initialized" {
+			t.Errorf("row status=%q error=%q, want an error row with the member's message", row.Status, row.ErrorMessage)
+		}
+	})
+}
+
+// memberCallHeaders, row by row, the cache miss included. Within one request
+// the catalogue walk has just stored the verdict, so a miss needs an eviction
+// at the bound under concurrent load; it cannot be staged through serve, and
+// it must still relay the client's request as it came and never probe.
+func TestMemberCallHeaders(t *testing.T) {
+	modern := eraVerdict{era: mcpclient.EraModern, version: mcpclient.RevisionModern}
+	unusable := eraVerdict{era: mcpclient.EraModern, fail: "upstream supports no protocol version PoryMCP speaks"}
+	legacy := eraVerdict{era: mcpclient.EraLegacy}
+	named := http.Header{"Mcp-Name": {"alpha__search"}, "Mcp-Protocol-Version": {"2026-07-28"}}
+	unnamed := http.Header{}
+
+	for _, c := range []struct {
+		name         string
+		src          http.Header
+		v            eraVerdict
+		known        bool
+		clientModern bool
+		wantSet      map[string]string
+		wantDrop     string
+		wantMeta     metaAction
+	}{
+		{"legacy client, modern member", unnamed, modern, true, false,
+			map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "search"}, "", metaCompose},
+		{"modern client, legacy member, name sent", named, legacy, true, true, map[string]string{"Mcp-Name": "search"}, "Mcp-Protocol-Version", metaStrip},
+		{"modern client, legacy member, no name sent", unnamed, legacy, true, true, nil, "Mcp-Protocol-Version", metaStrip},
+		{"modern client, modern member", named, modern, true, true, map[string]string{"Mcp-Name": "search"}, "", metaKeep},
+		{"legacy client, legacy member, name sent", named, legacy, true, false, map[string]string{"Mcp-Name": "search"}, "", metaKeep},
+		{"legacy client, legacy member, no name sent", unnamed, legacy, true, false, nil, "", metaKeep},
+		{"legacy client, a modern member that cannot be spoken to", unnamed, unusable, true, false, nil, "", metaKeep},
+		{"cache miss, modern client", named, eraVerdict{}, false, true, map[string]string{"Mcp-Name": "search"}, "", metaKeep},
+		{"cache miss, legacy client", unnamed, modern, false, false, nil, "", metaKeep},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, meta := memberCallHeaders(c.src, "search", c.v, c.known, c.clientModern)
+			if meta != c.wantMeta {
+				t.Errorf("meta action %d, want %d", meta, c.wantMeta)
+			}
+			if c.wantSet == nil && c.wantDrop == "" {
+				if got != nil {
+					t.Errorf("got %+v, want nil: the client's request relayed as it came", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("got nil")
+			}
+			if len(got.set) != len(c.wantSet) {
+				t.Errorf("set=%v want %v", got.set, c.wantSet)
+			}
+			for k, v := range c.wantSet {
+				if got.set.Get(k) != v {
+					t.Errorf("set %s=%q want %q", k, got.set.Get(k), v)
+				}
+			}
+			if strings.Join(got.drop, ",") != c.wantDrop {
+				t.Errorf("drop=%v want %q", got.drop, c.wantDrop)
+			}
+		})
 	}
 }
 

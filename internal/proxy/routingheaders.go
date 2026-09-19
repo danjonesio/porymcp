@@ -440,26 +440,75 @@ func declaredVersion(h http.Header, f routingFields) (string, *rpcError) {
 	return declared, nil
 }
 
-// memberRoutingHeaders is the aggregate's half of the rewrite that
-// rewriteToolCallParams makes on the body. When the client sent an Mcp-Name,
+// memberCallHeaders decides how a routed tools/call is dressed for the member
+// it is going to: the headers to set and to drop, and what its params._meta
+// needs. It is the aggregate's half of the rewrite rewriteToolCallParams makes
+// on the body.
+//
+// Mcp-Name first, which is the same in every era. When the client sent one,
 // which checkRoutingHeaders has already held to the composed name, the member
 // receives one carrying its own tool name instead, sentinel-encoded when that
-// name is not header-safe; the member then compares it with the params.name
-// it was sent and the two agree. nil when the client sent none, so a legacy
-// client's member sees none. forward applies it through copyHopHeaders, after
-// the inbound copy and after ApplyAuth, so the allowlist stays the one writer
-// of outbound client headers and a stored auth_config cannot put another name
-// in the member's way. The value is not held to
-// maxRoutingValueBytes: base64 grows a name by a third, so a member name near
-// that bound leaves larger than it. The client's inbound header, which is
-// bounded, is what the comparison read; the member bounds its own request
-// headers, and Go's transport refuses a value it cannot send before dialling,
-// which surfaces as the existing 502 path.
-func memberRoutingHeaders(src http.Header, memberTool string) http.Header {
-	if len(src.Values(hdrName)) == 0 {
-		return nil
+// name is not header-safe; the member then compares it with the params.name it
+// was sent and the two agree. A client that sent none leaves a same-era member
+// seeing none. The value is not held to maxRoutingValueBytes: base64 grows a
+// name by a third, so a member name near that bound leaves larger than it. The
+// client's inbound header, which is bounded, is what the comparison read; the
+// member bounds its own request headers, and Go's transport refuses a value it
+// cannot send before dialling, which surfaces as the existing 502 path.
+//
+// Then the era. On the group endpoint PoryMCP is a server in both eras, so the
+// era a client speaks to it says nothing about the era the member speaks, and
+// the member is told its own. v is the member's cached verdict and known
+// whether there was one; clientModern is the era the client declared.
+//
+//   - A handshake-era client calling a modern member: the member must be told
+//     the version and the method in headers and in _meta, or it answers -32020.
+//     PoryMCP writes all of it, Mcp-Name included, from its own constants. The
+//     header and the _meta version are the same constant, so they cannot
+//     disagree, which a modern member also refuses.
+//   - A modern client calling a handshake-era member: the client's
+//     MCP-Protocol-Version does not cross. The handshake transport says a
+//     member MUST refuse a version it does not support, and reads an absent
+//     header as an older revision it does. Nothing is sent in its place: the
+//     verdict holds no handshake revision, and the proxy's own catalogue
+//     request to the same member has always gone without one. The three _meta
+//     members go with the header, because a request that declares the
+//     stateless revision in its body and not in a header is the mismatch that
+//     revision says to refuse. Mcp-Method, Mcp-Name and the Mcp-Param- family
+//     still cross: a handshake server ignores names it does not know, and the
+//     revision tells an intermediary to forward the last of them.
+//   - The same era on both sides, or a member whose era is not known: the
+//     client's request as it came, as before. known is false only if the entry
+//     was evicted between the catalogue walk and this call; the walk has just
+//     stored it, and the call path never probes to find out.
+//
+// Nothing here reads the client's request beyond whether it sent an Mcp-Name:
+// what a member is told about the era comes from the verdict and PoryMCP's
+// constants. forward applies set through copyHopHeaders after ApplyAuth, and
+// drop inside it.
+func memberCallHeaders(src http.Header, memberTool string, v eraVerdict, known, clientModern bool) (*memberHeaders, metaAction) {
+	memberModern := known && v.era == mcpclient.EraModern && v.fail == ""
+	memberLegacy := known && v.era == mcpclient.EraLegacy
+
+	if memberModern && !clientModern {
+		set := http.Header{}
+		mcpclient.SetModernHeaders(set, mcpclient.RevisionModern, "tools/call")
+		set.Set(hdrName, encodeHeaderValue(memberTool))
+		return &memberHeaders{set: set}, metaCompose
 	}
-	override := http.Header{}
-	override.Set(hdrName, encodeHeaderValue(memberTool))
-	return override
+
+	var out *memberHeaders
+	if len(src.Values(hdrName)) != 0 {
+		set := http.Header{}
+		set.Set(hdrName, encodeHeaderValue(memberTool))
+		out = &memberHeaders{set: set}
+	}
+	if memberLegacy && clientModern {
+		if out == nil {
+			out = &memberHeaders{}
+		}
+		out.drop = []string{hdrProtocol}
+		return out, metaStrip
+	}
+	return out, metaKeep
 }

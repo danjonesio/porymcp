@@ -1111,11 +1111,16 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// one identity and are rewritten together, so the member compares a
 		// header and a body that agree; the client's Mcp-Method is already
 		// tools/call and crosses as it is.
-		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original))
-		var composed *memberHeaders
-		if set := memberRoutingHeaders(inbound.Header, route.Original); set != nil {
-			composed = &memberHeaders{set: set}
-		}
+		//
+		// The member is also told its own era, whichever era the client spoke
+		// to this endpoint: see memberCallHeaders. The verdict is read from the
+		// cache and never asked for. The catalogue walk above has just stored
+		// it, and a call must not cost a probe, nor put a second caller behind
+		// memberEra, whose entries correct themselves only because every probe
+		// is followed by that caller's own listing.
+		verdict, known := h.eras.get(route.Upstream.ID, route.Upstream.UpdatedAt)
+		composed, meta := memberCallHeaders(inbound.Header, route.Original, verdict, known, clientModern)
+		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original, meta))
 		out, status, hdr, err := h.forward(ctx, inbound, route.Upstream, rewritten, composed)
 		if err != nil {
 			return out, status, nil, route.Upstream.ID, err
