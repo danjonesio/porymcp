@@ -294,9 +294,15 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 	// Which era the client speaks, by the version it declared. Asked of the
-	// same function the check above used, after that check passed, so the two
-	// cannot disagree and the error is nil. The group endpoint is a server in
-	// both eras and answers each in its own shape.
+	// same function the check above used, so for a request with a method the
+	// two cannot disagree and the error, already refused above, is nil. A
+	// request with no method (a DELETE, a body that names none) is one the
+	// check above returns on before it asks, as it always has, so here an
+	// unreadable declaration can still come back: it is read as no declaration,
+	// which is the handshake era, and the request goes on as it did before this
+	// function existed. The group endpoint is a server in both eras and answers
+	// each in its own shape; a request with no method is relayed, under the
+	// same two rules below as any other relayed request.
 	declared, _ := declaredVersion(r.Header, fields)
 	clientModern := strictRevision(declared)
 
@@ -584,7 +590,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 
 	copyResponseHeaders(w.Header(), headers)
-	if w.Header().Get("Content-Type") == "" {
+	// A label on no bytes is a claim about nothing: the group endpoint's 202 to
+	// a notification has no body in either era, and gets no media type.
+	if w.Header().Get("Content-Type") == "" && len(respBody) > 0 {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(statusCode)
@@ -1150,7 +1158,11 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			h.log.Warn("group call answer relayed unreduced", "slug", route.Upstream.Slug,
 				"upstream_id", route.Upstream.ID, "err", unreduced.Error())
 		}
-		if err == nil && unreduced == nil && clientModern {
+		// Not for a member known to speak the stateless revision: it sends its
+		// own resultType, and a second decode of up to 16 MiB to change nothing
+		// is a cost on every call.
+		memberModern := known && verdict.era == mcpclient.EraModern
+		if err == nil && unreduced == nil && clientModern && !memberModern {
 			doc = completeResult(doc)
 		}
 		return doc, status, media, route.Upstream.ID, err
@@ -1249,9 +1261,12 @@ func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, medi
 	}
 }
 
-// completeResult gives a member's result the resultType the stateless revision
-// requires of every result, when the member sent none. It is called only for a
-// client that declared that revision.
+// completeResult gives a routed tools/call result the resultType the stateless
+// revision requires of every result, when the member sent none. It is called
+// only for a client that declared that revision and a member not known to
+// speak it. It is the routed call's alone: a method the group endpoint relays
+// to its first member still returns that member's result as it came (a
+// follow-up, named in docs/09-clients.md).
 //
 // A handshake-era member's result has no resultType, and the revision does say
 // a client reads an absent one as "complete", but only of a server on an
@@ -1263,10 +1278,12 @@ func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, medi
 // value: a handshake server has no way to ask for more input inside a result.
 //
 // Only that one member is added, and only to a result that is an object and
-// lacks it. The id, the error of an error answer, and every byte of what the
-// member put in its result are carried as raw JSON and cross unchanged; a
-// modern member's own resultType, "input_required" included, is left alone. A
-// document that does not decode is returned as it came.
+// lacks it, a null counting as lacking it. The id, the error of an error
+// answer, and every VALUE the member put in its result are carried as raw JSON
+// and cross unchanged; the members of the envelope and of the result come back
+// in sorted order, which JSON gives no meaning to. A member's own resultType,
+// "input_required" included, is left alone. A document that does not decode is
+// returned as it came.
 func completeResult(doc []byte) []byte {
 	var env map[string]json.RawMessage
 	if json.Unmarshal(doc, &env) != nil {
@@ -1280,7 +1297,7 @@ func completeResult(doc []byte) []byte {
 	if json.Unmarshal(raw, &result) != nil {
 		return doc
 	}
-	if _, has := result["resultType"]; has {
+	if v, has := result["resultType"]; has && string(bytes.TrimSpace(v)) != "null" {
 		return doc
 	}
 	result["resultType"] = json.RawMessage(`"complete"`)
@@ -1336,20 +1353,29 @@ func answerRPC(id json.RawMessage, result any, rpcErr *rpcError) []byte {
 	if len(bytes.TrimSpace(id)) == 0 || !scalarRPCID(id) {
 		id = json.RawMessage("null")
 	}
-	var out []byte
+	var (
+		out json.RawMessage
+		err error
+	)
 	if rpcErr != nil {
-		out, _ = marshalRaw(struct {
+		out, err = marshalRaw(struct {
 			JSONRPC string          `json:"jsonrpc"`
 			ID      json.RawMessage `json:"id"`
 			Error   *rpcError       `json:"error"`
 		}{"2.0", id, rpcErr})
-		return out
+	} else {
+		out, err = marshalRaw(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Result  any             `json:"result"`
+		}{"2.0", id, result})
 	}
-	out, _ = marshalRaw(struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Result  any             `json:"result"`
-	}{"2.0", id, result})
+	if err != nil {
+		// Unreachable with the results composed here, which are maps of strings,
+		// numbers and mcpclient.Info. Said out loud and not sent as a success
+		// with no body: a client waiting on an id gets an answer it can read.
+		return []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"internal error"}}`)
+	}
 	return out
 }
 

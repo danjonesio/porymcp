@@ -461,8 +461,8 @@ func TestUnscopedEntryMatchesOnEveryPath(t *testing.T) {
 	})
 }
 
-// N1. notifications/initialized is one of the four methods the aggregate
-// endpoint answers itself. On a member endpoint it is a message for that
+// N1. notifications/initialized is one of the methods the aggregate endpoint
+// answers itself. On a member endpoint it is a message for that
 // server, so it goes through and the member's own answer comes back.
 func TestPerUpstreamNotificationIsForwarded(t *testing.T) {
 	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}, "beta": {"b"}}, nil, nil, nil)

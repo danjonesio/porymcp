@@ -810,6 +810,66 @@ func TestAggregateLegacyClientModernMember(t *testing.T) {
 	}
 }
 
+// The issue's own case, and the one the merge cannot reach: a handshake-era
+// client that sends no _meta at all. And the case a merge invites: a client
+// whose _meta spells a reserved member another way, which the version check
+// reads and an exact-key write would leave beside PoryMCP's own.
+func TestAggregateComposedMeta(t *testing.T) {
+	group := func(t *testing.T) *fixture {
+		t.Helper()
+		return newFixture(t, map[string]upstreamSpec{
+			"alpha":  {Tools: []string{"search"}},
+			"modern": {Tools: []string{"lookup"}, Modern: true},
+		}, true, nil, nil, nil)
+	}
+	t.Run("no _meta at all", func(t *testing.T) {
+		f := group(t)
+		rr := f.post(toolCall("7", "modern__lookup"))
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
+			t.Fatalf("HTTP code=%d body=%s, want the member's answer", rr.Code, rr.Body.String())
+		}
+		_, meta := callMeta(t, theCallTo(t, f, "modern"))
+		if len(meta) != len(reservedMeta) {
+			t.Errorf("_meta=%v, want exactly the three reserved members", meta)
+		}
+		if string(meta["io.modelcontextprotocol/clientCapabilities"]) != "{}" {
+			t.Errorf("clientCapabilities=%s want an empty object", meta["io.modelcontextprotocol/clientCapabilities"])
+		}
+		var info struct{ Name, Version string }
+		if json.Unmarshal(meta["io.modelcontextprotocol/clientInfo"], &info) != nil || info.Name != "porymcp" || info.Version == "" {
+			t.Errorf("clientInfo=%s want PoryMCP's own", meta["io.modelcontextprotocol/clientInfo"])
+		}
+	})
+	t.Run("a handshake client's case-variant version does not sit beside PoryMCP's", func(t *testing.T) {
+		f := group(t)
+		f.post(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"modern__lookup","_meta":{"IO.ModelContextProtocol/ProtocolVersion":"2025-11-25","progressToken":1}}}`)
+		_, meta := callMeta(t, theCallTo(t, f, "modern"))
+		for k := range meta {
+			if strings.EqualFold(k, "io.modelcontextprotocol/protocolVersion") && k != "io.modelcontextprotocol/protocolVersion" {
+				t.Errorf("_meta still carries %q beside the composed version: %v", k, meta)
+			}
+		}
+		if string(meta["progressToken"]) != "1" {
+			t.Errorf("the client's progressToken did not cross: %v", meta)
+		}
+	})
+	t.Run("a modern client's case-variant members do not reach a handshake member", func(t *testing.T) {
+		f := group(t)
+		f.postWith(
+			`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"alpha__search","_meta":{"IO.ModelContextProtocol/ProtocolVersion":"2026-07-28","Io.Modelcontextprotocol/ClientInfo":{"name":"c","version":"1"},"progressToken":2}}}`,
+			map[string]string{"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "alpha__search"})
+		_, meta := callMeta(t, theCallTo(t, f, "alpha"))
+		for k := range meta {
+			if strings.HasPrefix(strings.ToLower(k), "io.modelcontextprotocol/") {
+				t.Errorf("the handshake member was sent the reserved member %q: %v", k, meta)
+			}
+		}
+		if string(meta["progressToken"]) != "2" {
+			t.Errorf("the client's progressToken did not cross: %v", meta)
+		}
+	})
+}
+
 // PORM-153, amendment A1. Once the group endpoint answers server/discover, a
 // modern client speaks 2026-07-28 for every call, and a handshake-era member
 // MUST refuse a version header it does not support: hosted Firecrawl answered
@@ -1876,21 +1936,29 @@ func TestAggregateListFields(t *testing.T) {
 		got := list(t, map[string]upstreamSpec{"a": {Modern: true, RawList: modernList("60000",
 			`{"name":"none"}`,
 			`{"name":"null","inputSchema":null}`,
-			`{"name":"untyped","inputSchema":{"properties":{}}}`,
+			`{"name":"untyped","inputSchema":{"properties":{"q":{"type":"string"}},"required":["q"]}}`,
+			`{"name":"nullable","inputSchema":{"type":["object","null"],"properties":{"q":{"type":"string"}}}}`,
 			`{"name":"string","inputSchema":{"type":"string"}}`,
 			`{"name":"array","inputSchema":["object"]}`,
 			`{"name":"good","inputSchema":`+conforming+`}`,
 		)}})
-		if len(got.Tools) != 6 {
-			t.Fatalf("%d tools, want 6", len(got.Tools))
+		// A schema that is an object is repaired and keeps what it declared: a
+		// tool whose parameters were erased can be called and cannot be used.
+		want := map[string]string{
+			"a__none":     `{"type":"object"}`,
+			"a__null":     `{"type":"object"}`,
+			"a__untyped":  `{"properties":{"q":{"type":"string"}},"required":["q"],"type":"object"}`,
+			"a__nullable": `{"properties":{"q":{"type":"string"}},"type":"object"}`,
+			"a__string":   `{"type":"object"}`,
+			"a__array":    `{"type":"object"}`,
+			"a__good":     conforming,
+		}
+		if len(got.Tools) != len(want) {
+			t.Fatalf("%d tools, want %d", len(got.Tools), len(want))
 		}
 		for _, tl := range got.Tools {
-			want := `{"type":"object"}`
-			if tl.Name == "a__good" {
-				want = conforming
-			}
-			if string(tl.InputSchema) != want {
-				t.Errorf("%s inputSchema=%s want %s", tl.Name, tl.InputSchema, want)
+			if string(tl.InputSchema) != want[tl.Name] {
+				t.Errorf("%s inputSchema=%s want %s", tl.Name, tl.InputSchema, want[tl.Name])
 			}
 		}
 	})
@@ -2005,6 +2073,8 @@ func TestCompleteResult(t *testing.T) {
 	for _, c := range []struct{ name, in, want string }{
 		{"a handshake member's result", `{"jsonrpc":"2.0","id":9007199254740993,"result":{"content":[{"type":"text","text":"a <b> & c"}],"isError":false}}`,
 			`{"id":9007199254740993,"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"a <b> & c"}],"isError":false,"resultType":"complete"}}`},
+		{"a null resultType counts as none", `{"jsonrpc":"2.0","id":1,"result":{"content":[],"resultType":null}}`,
+			`{"id":1,"jsonrpc":"2.0","result":{"content":[],"resultType":"complete"}}`},
 		{"a modern member's own resultType is left alone", `{"jsonrpc":"2.0","id":1,"result":{"resultType":"input_required","inputRequests":{}}}`, ""},
 		{"an error answer", `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"no"}}`, ""},
 		{"a result that is not an object", `{"jsonrpc":"2.0","id":1,"result":"ok"}`, ""},
@@ -2019,5 +2089,51 @@ func TestCompleteResult(t *testing.T) {
 				t.Errorf("got  %s\nwant %s", got, want)
 			}
 		})
+	}
+}
+
+// A request with no method on a group URL (a DELETE, a body that names none) is
+// relayed to the first member under the same two rules as any relayed request,
+// because on that URL the version a client declares is the group endpoint's
+// own: a handshake-era version does not cross, and a stateless revision the
+// endpoint does not speak is refused. Pinned because checkRoutingHeaders
+// returns before it reads the version of such a request.
+func TestAggregateRequestWithNoMethod(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}}, nil, nil, nil)
+
+	rr := f.doPath(http.MethodDelete, "http://localhost:8080/mcp", "", map[string]string{"MCP-Protocol-Version": "2025-11-25", "Mcp-Session-Id": "s1"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE: HTTP code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var del *recordedRequest
+	for _, r := range f.requestsTo("alpha") {
+		if r.HTTPMethod == http.MethodDelete {
+			r := r
+			del = &r
+		}
+	}
+	if del == nil {
+		t.Fatal("alpha saw no DELETE")
+	}
+	if v, sent := del.Header["Mcp-Protocol-Version"]; sent {
+		t.Errorf("the relayed DELETE carried MCP-Protocol-Version %q", v)
+	}
+	if v := del.Header.Get("Mcp-Session-Id"); v != "s1" {
+		t.Errorf("Mcp-Session-Id=%q, want the client's own", v)
+	}
+
+	before := f.totalReqs("alpha")
+	rr = f.doPath(http.MethodDelete, "http://localhost:8080/mcp", "", map[string]string{"MCP-Protocol-Version": "2027-01-01"})
+	if code, _, _ := rpcErrorOf(t, rr.Body.Bytes()); rr.Code != http.StatusBadRequest || code != -32022 {
+		t.Errorf("DELETE declaring 2027-01-01: HTTP code=%d rpc code=%d, want 400 and -32022", rr.Code, code)
+	}
+	if after := f.totalReqs("alpha"); after != before {
+		t.Errorf("alpha saw %d more requests for a refused DELETE", after-before)
+	}
+
+	// The same later revision on a member endpoint is the member's to answer.
+	body, hdr := modernRequest("9", "tools/list", "2027-01-01")
+	if mr := f.postMemberWith("alpha", body, hdr); mr.Code != http.StatusOK || f.count("alpha", "tools/list", "") == 0 {
+		t.Errorf("member endpoint, 2027-01-01: HTTP code=%d, want it relayed", mr.Code)
 	}
 }

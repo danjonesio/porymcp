@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
@@ -24,29 +25,36 @@ type mcpTool struct {
 // emptyObjectSchema is the least a tool's inputSchema may be.
 var emptyObjectSchema = json.RawMessage(`{"type":"object"}`)
 
-// conformingInputSchema returns the member's inputSchema when it is what the
-// 2026-07-28 schema requires of every tool, a JSON object whose type is the
-// string "object", and the empty object schema otherwise: for a tool that sent
-// none, a null, something that is not an object, or an object of another type.
-// The group endpoint now says it speaks that revision, and a client that
-// validates what it is sent rejects the WHOLE list for one tool that does not
-// conform, so one careless member would cost the group every tool it has. A
-// conforming schema crosses byte for byte.
+// conformingInputSchema makes a member's inputSchema one the 2026-07-28 schema
+// accepts, which requires of every tool a JSON object whose type is the string
+// "object". The group endpoint now says it speaks that revision, and a client
+// that validates what it is sent rejects the WHOLE list for one tool that does
+// not conform, so one careless member would cost the group every tool it has.
+//
+// A schema that is a JSON object is repaired, not replaced: type is set to
+// "object" on the member's own object and everything else it declared stays,
+// because a schema with properties and no type, or with type ["object","null"],
+// is common, and replacing it would hand a client a tool with every parameter
+// erased. A conforming schema crosses byte for byte. Only a value that is not an
+// object at all (absent, null, an array, a string) becomes the empty schema.
 func conformingInputSchema(raw json.RawMessage) json.RawMessage {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return emptyObjectSchema
 	}
-	var schema struct {
-		Type json.RawMessage `json:"type"`
-	}
-	if err := json.Unmarshal(trimmed, &schema); err != nil {
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &schema); err != nil || schema == nil {
 		return emptyObjectSchema
 	}
-	if t, ok := jsonString(schema.Type); !ok || t != "object" {
+	if t, ok := jsonString(schema["type"]); ok && t == "object" {
+		return raw
+	}
+	schema["type"] = json.RawMessage(`"object"`)
+	repaired, err := marshalRaw(schema)
+	if err != nil {
 		return emptyObjectSchema
 	}
-	return raw
+	return repaired
 }
 
 // The cache hint on the merged list, in milliseconds.
@@ -221,6 +229,27 @@ func modernMetaMembers() map[string]json.RawMessage {
 	return m
 }
 
+// dropReservedMeta removes the three reserved members from a _meta object,
+// under ANY spelling that folds onto their names. metaProtocolVersion reads the
+// declared version through a struct tag, and encoding/json matches a tag
+// without regard to case, so a client that spells the member
+// IO.ModelContextProtocol/ProtocolVersion passes the version check. Deleting
+// the exact key alone would leave that spelling in the body: a handshake-era
+// member would be sent a request that still declares the stateless revision,
+// with no header beside it, and a modern member one object declaring two
+// versions. What the check can read, this removes.
+func dropReservedMeta(meta map[string]any) {
+	reserved := modernMetaMembers()
+	for k := range meta {
+		for name := range reserved {
+			if strings.EqualFold(k, name) {
+				delete(meta, k)
+				break
+			}
+		}
+	}
+}
+
 // rewriteToolCallParams rebuilds a routed call's params for the member it is
 // going to: the member's own tool name for the composed one, always, and the
 // _meta the member's era expects. Only the three reserved members are written
@@ -241,15 +270,14 @@ func rewriteToolCallParams(params json.RawMessage, original string, meta metaAct
 		if existing == nil {
 			existing = map[string]any{}
 		}
+		dropReservedMeta(existing)
 		for k, v := range modernMetaMembers() {
 			existing[k] = v
 		}
 		m["_meta"] = existing
 	case metaStrip:
 		if existing, ok := m["_meta"].(map[string]any); ok {
-			for k := range modernMetaMembers() {
-				delete(existing, k)
-			}
+			dropReservedMeta(existing)
 			if len(existing) == 0 {
 				delete(m, "_meta")
 			}

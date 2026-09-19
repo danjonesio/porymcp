@@ -418,8 +418,11 @@ func checkRoutingHeaders(h http.Header, method string, f routingFields) *rpcErro
 // the header is absent, with a disagreement between the two refused. It is a
 // function of its own because two callers need the one answer. serve asks it
 // again, once checkRoutingHeaders has passed, to learn which era the client
-// speaks; the refusals are already behind it by then, so the second call
-// cannot disagree with the first and its error is nil.
+// speaks. For a request with a method the refusals are already behind it by
+// then, so the second call cannot disagree with the first and its error is
+// nil. For a request with no method, checkRoutingHeaders returns before it
+// asks at all, as it did before this function existed, so serve can still be
+// handed an error there; it reads that as no declaration.
 func declaredVersion(h http.Header, f routingFields) (string, *rpcError) {
 	headerVersion, headerPresent := headerLine(h, hdrProtocol)
 	metaVersion, metaPresent, metaBad := metaProtocolVersion(f.Meta)
