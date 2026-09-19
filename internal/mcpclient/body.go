@@ -12,11 +12,54 @@ var dataField = []byte("data:")
 // Why a response carried no JSON-RPC document. Each maps to one sentence in
 // Discovery.Error, and none of them reproduces a byte of the body or of the
 // Content-Type that produced it.
+//
+// errNoResponse is PickResponse's alone. Discovery reports the same condition
+// (documents arrived and none answered) as errNoEvent, a sentence its
+// operator-facing allowlist pins and one that reads wrongly for a JSON body,
+// so the proxy's skip warning gets words of its own.
 var (
 	errEmptyBody    = errors.New("empty body")
 	errNoEvent      = errors.New("event stream carried no data event")
 	errUnknownMedia = errors.New("media type is not a JSON-RPC response")
+	errNoResponse   = errors.New("response carried no answer to this request")
 )
+
+// maxPickDocuments is how many documents PickResponse will consider. A real
+// answer arrives after a handful of notifications at most; the bound is there
+// because the proxy reads a member's answer on every group call, and a body of
+// millions of tiny events would otherwise cost an allocation apiece to split
+// and a JSON decode apiece to search. The splitter stops one event past the
+// bound, so neither cost is paid beyond it.
+const maxPickDocuments = 4096
+
+// PickResponse reduces one upstream response to the single JSON-RPC document
+// that answers the request carrying wantID (a raw JSON id token): the body when
+// it is JSON, the right event's data when it is an event stream. An empty
+// contentType asks the body which shape it is.
+//
+// When no document carries wantID it returns the first that carries a result or
+// an error, as discovery does for a catalogue; a caller that must not accept an
+// off-id answer checks the id itself, as classify does. A lone document is
+// returned when it is a JSON object, even with neither member: a server with no
+// tools is a legitimate state, and the distinction belongs to the caller's own
+// reader.
+//
+// Every error is a fixed sentence that reproduces no byte of the body or of the
+// Content-Type.
+func PickResponse(contentType string, body []byte, wantID string) ([]byte, error) {
+	payloads, err := rpcPayloadN(contentType, body, maxPickDocuments)
+	if err != nil {
+		return nil, err
+	}
+	if len(payloads) > maxPickDocuments {
+		return nil, errNoResponse
+	}
+	payload, ok := pickPayload(payloads, wantID)
+	if !ok {
+		return nil, errNoResponse
+	}
+	return payload, nil
+}
 
 // rpcPayload pulls the JSON-RPC documents out of an upstream response: the
 // body itself when it is JSON, and EVERY event's data when it is an event
@@ -37,6 +80,14 @@ var (
 // event-stream grammar says to, so a server that wraps a long catalogue across
 // several data: lines is read rather than reported as broken.
 func rpcPayload(contentType string, body []byte) ([][]byte, error) {
+	return rpcPayloadN(contentType, body, 0)
+}
+
+// rpcPayloadN is rpcPayload with a bound on how many events of a stream are
+// split out: limit+1 at most, so the caller can tell a stream at the bound from
+// one past it without the rest being read. Zero means no bound, which is what
+// discovery, reading under its own 2 MiB body limit, has always had.
+func rpcPayloadN(contentType string, body []byte, limit int) ([][]byte, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, errEmptyBody
 	}
@@ -51,7 +102,7 @@ func rpcPayload(contentType string, body []byte) ([][]byte, error) {
 	case "application/json":
 		return [][]byte{body}, nil
 	case "text/event-stream":
-		return eventData(body)
+		return eventData(body, limit)
 	default:
 		return nil, errUnknownMedia
 	}
@@ -66,7 +117,9 @@ func rpcPayload(contentType string, body []byte) ([][]byte, error) {
 // notifications/message or a progress notification before it answers the POST
 // is behaving correctly, and reading only the first event reports it as a
 // server that answered with no result.
-func eventData(body []byte) ([][]byte, error) {
+//
+// limit, when positive, stops the walk once limit+1 events have been kept.
+func eventData(body []byte, limit int) ([][]byte, error) {
 	var out [][]byte
 	var data [][]byte
 	flush := func() {
@@ -85,6 +138,9 @@ func eventData(body []byte) ([][]byte, error) {
 		rest = next
 		if len(bytes.TrimSpace(line)) == 0 { // a blank line ends an event
 			flush()
+			if limit > 0 && len(out) > limit {
+				return out, nil
+			}
 			continue
 		}
 		if !bytes.HasPrefix(line, dataField) {

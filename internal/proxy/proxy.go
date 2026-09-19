@@ -486,7 +486,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// member's own names, and its Mcp-Session-Id reaches the client.
 	aggregated := onAggregate && shouldAggregate(method)
 	if aggregated {
-		respBody, statusCode, usedID, err = h.aggregate(r.Context(), r, pol, upstreams, req, body)
+		respBody, statusCode, headers, usedID, err = h.aggregate(r.Context(), r, pol, upstreams, req, body)
 	} else {
 		up := upstreams[0]
 		usedID = up.ID
@@ -765,10 +765,11 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 // out from under the rule written against it.
 //
 // Nothing legitimate is lost by composing the request here. A group endpoint
-// never hands the client a member's session id (aggregate returns no upstream
-// headers and answers initialize itself) so no working client holds a session
-// for a member to recognise, and there is no client header a member could
-// need. The Accept below is the one the reference servers require.
+// never hands the client a member's session id (aggregate answers initialize
+// itself, and the only header it ever returns is a Content-Type it chose) so
+// no working client holds a session for a member to recognise, and there is no
+// client header a member could need. The Accept below is the one the reference
+// servers require.
 //
 // An advertised name no longer moves at all: buildRoutes composes every one of
 // them from the member's own slug. What a client can still reach depends on
@@ -816,8 +817,24 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 		// After ApplyAuth, so a stored auth_config cannot choose either header.
 		mcpclient.SetModernHeaders(req.Header, verdict.version, "tools/list")
 	}
-	body, status, _, err := mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
-	return body, status, err
+	body, status, hdr, err := mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
+	if err != nil {
+		// Before the reduction, not after it: a refused redirect arrives with
+		// no body, and reducing that would replace the sentence that names the
+		// redirect with one about an empty body.
+		return nil, status, err
+	}
+	// A member answers in whichever framing its SDK defaults to, and the
+	// reference SDKs default to an event stream. The answer is reduced here
+	// to the one document that answers this request, by the reader mcpclient
+	// already has, so memberCatalogues and parseToolsList see plain JSON and
+	// this package parses no frames of its own. A failure is one of
+	// mcpclient's fixed sentences and carries no byte of the body.
+	doc, err := mcpclient.PickResponse(hdr.Get("Content-Type"), body, listToolsID)
+	if err != nil {
+		return nil, status, err
+	}
+	return doc, status, nil
 }
 
 // upstreamTransport is a type alias, not a defined type: the identifier is
@@ -832,9 +849,10 @@ type upstreamTransport = mcpclient.UpstreamTransport
 // A member that fails is skipped rather than failing the whole request. That
 // is the behaviour this endpoint has always had and it is deliberately kept:
 // refusing every call while one member is unreachable would let a single
-// outage take a whole group offline, and a member answering over SSE (the
-// reference SDKs' default) is unreadable here today, so the outage would be
-// permanent rather than transient.
+// outage take a whole group offline. A member answering over SSE (the
+// reference SDKs' default) is read like any other since PORM-171; the member
+// that still cannot be listed is one that refuses a tools/list sent without a
+// session (PORM-23), and for that member the outage is permanent.
 //
 // What a dropout costs is now confined to the member that dropped out: its own
 // tools disappear from the catalogue and cannot be routed, and every other
@@ -847,10 +865,12 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 	// A dropout is otherwise invisible: the row belongs to the client's
 	// request, which succeeded on the survivors, so nothing anywhere says why
 	// a member's tools are missing. Warn rather than Debug because a member
-	// that cannot be listed stays unlistable (the commonest cause, a member
-	// answering tools/list over SSE, is permanent) and a group quietly
-	// serving fewer tools than it was built with is worth being loud about.
-	// The error is bounded because a redirect's is the upstream's own string.
+	// that cannot be listed tends to stay unlistable (one that wants a session
+	// before it will list, say) and a group quietly serving fewer tools than
+	// it was built with is worth being loud about. The error is bounded
+	// because a redirect's, and a member's own error.message, are the
+	// upstream's strings; the handler is slog's JSON one, so a control byte
+	// in either is escaped and cannot start a line of its own.
 	skip := func(up *models.Upstream, err error) {
 		if h.log == nil {
 			return
@@ -899,17 +919,23 @@ func shouldAggregate(method string) bool {
 // the already-parsed request rather than re-decoding the body: two decoders
 // over the same bytes are two chances to disagree about which call this is,
 // and the gate in ServeHTTP has already made its decision from the first one.
-func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, body []byte) ([]byte, int, string, error) {
+//
+// The http.Header it returns is not a member's header set. It is nil on every
+// arm but tools/call, and there it holds at most a Content-Type the aggregate
+// chose itself (see reduceCallAnswer), so serve's one writer of response
+// headers stays the one writer and no member's Mcp-Session-Id can reach a
+// group client through it.
+func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, body []byte) ([]byte, int, http.Header, string, error) {
 	switch req.Method {
 	case "notifications/initialized":
-		return []byte(`{}`), http.StatusAccepted, ups[0].ID, nil
+		return []byte(`{}`), http.StatusAccepted, nil, ups[0].ID, nil
 	case "initialize":
 		result := map[string]any{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "porymcp", "version": "0.1.0"},
 		}
-		return encodeRPC(req.ID, result, nil), http.StatusOK, ups[0].ID, nil
+		return encodeRPC(req.ID, result, nil), http.StatusOK, nil, ups[0].ID, nil
 	case "tools/list":
 		active, lists := h.memberCatalogues(ctx, ups)
 		merged, _ := h.buildRoutes(active, lists)
@@ -923,7 +949,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// the result, and says nothing about a member skipped at catalogue
 		// time, which memberCatalogues logs. ttlMs and the _meta server info
 		// are PORM-153's.
-		return encodeRPC(req.ID, map[string]any{"tools": merged, "cacheScope": "private", "resultType": "complete"}, nil), http.StatusOK, "", nil
+		return encodeRPC(req.ID, map[string]any{"tools": merged, "cacheScope": "private", "resultType": "complete"}, nil), http.StatusOK, nil, "", nil
 	case "tools/call":
 		// ok is not checked: ServeHTTP refuses a tools/call without a usable
 		// name before it gets here.
@@ -939,7 +965,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			// gone, a member that could not be listed, or a slug belonging to no
 			// member of this group. serve answers it, so that the reply and the
 			// row are bounded there exactly as the gate's are.
-			return nil, 0, "", errUnknownTool
+			return nil, 0, nil, "", errUnknownTool
 		}
 		// No policy check here. ServeHTTP gated this call on the same
 		// advertised name before any upstream was contacted, so a check on
@@ -951,12 +977,121 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// header and a body that agree; the client's Mcp-Method is already
 		// tools/call and crosses as it is.
 		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original))
-		out, status, _, err := h.forward(ctx, inbound, route.Upstream, rewritten, memberRoutingHeaders(inbound.Header, route.Original))
-		return out, status, route.Upstream.ID, err
+		out, status, hdr, err := h.forward(ctx, inbound, route.Upstream, rewritten, memberRoutingHeaders(inbound.Header, route.Original))
+		if err != nil {
+			return out, status, nil, route.Upstream.ID, err
+		}
+		doc, media, unreduced, err := reduceCallAnswer(rewritten, out, hdr.Get("Content-Type"))
+		if unreduced != nil && h.log != nil {
+			// The row for this call is judged by its HTTP status alone, because
+			// what the client is sent could not be read. This line is the only
+			// place that says so. unreduced is a fixed sentence.
+			h.log.Warn("group call answer relayed unreduced", "slug", route.Upstream.Slug,
+				"upstream_id", route.Upstream.ID, "err", unreduced.Error())
+		}
+		return doc, status, media, route.Upstream.ID, err
 	default:
 		out, status, _, err := h.forward(ctx, inbound, ups[0], body, nil)
-		return out, status, ups[0].ID, err
+		return out, status, nil, ups[0].ID, err
 	}
+}
+
+// errUnrelayableAnswer is a member's tools/call answer the aggregate can neither
+// read nor pass on. serve turns it into the 502 every failed upstream request
+// gets, and this sentence, which carries no byte of the answer, is the row's.
+var errUnrelayableAnswer = errors.New("upstream answered with a media type the proxy cannot relay")
+
+// errAnswersNothing is why a call answer that did decode is still passed on
+// unreduced: the one document in it carries neither a result nor an error.
+var errAnswersNothing = errors.New("answer carried neither a result nor an error")
+
+// reduceCallAnswer turns a member's answer to a routed tools/call into what the
+// group's client is sent. On the aggregate endpoint PoryMCP is the server, so
+// the answer is its own to frame, and the transport lets a server answer a POST
+// with application/json every time.
+//
+// A member answers in whichever framing its SDK defaults to, and the reference
+// SDKs default to an event stream. Relayed as it came, that stream reached the
+// client labelled application/json, because aggregate returned no member
+// headers, and serve read it as a success whatever it held, because rpcFailed
+// reads JSON. So the answer is reduced, by the one reader mcpclient has, to the
+// document that answers the request the member was sent. The client gets that
+// document as JSON and the audit row is judged from the same bytes.
+//
+// The wanted id is read back off sent and not taken from the client's request:
+// rewriteMethod re-marshals the envelope, so an integer id too large for a
+// float64 reaches the member in another spelling, and the member echoes what it
+// received. Where even that does not match (a member that reformats the id
+// again, or a notification, which has none) PickResponse falls back to the
+// first document that answers anything, and one member answering one request
+// has only the one. Notifications the member interleaved are dropped; under a
+// buffered relay they could only ever have arrived along with the result.
+//
+// A lone document that answers nothing is read differently here than on the
+// catalogue path. There it is a member with no tools. Here it would hand the
+// client a notification as the answer to its call, so it counts as unreduced.
+//
+// What cannot be reduced is passed on as it came, and only under one of the two
+// media types the transport allows a server: the member's own label when it is
+// one of them, and what the body is when the member sent no label (an event
+// stream by the reader's own test, or JSON only if it parses as JSON, so an
+// unlabelled HTML error page is never sent out under a type it does not have).
+// The type is written here, as a bare constant, and is the one header serve may
+// copy back. unreduced says why, in a fixed sentence, so aggregate can log a
+// relay the row cannot describe: serve judges those bytes by their HTTP status
+// alone, as it always did. A body in any other media type is an error: a third
+// media type on a response of PoryMCP's own is something no client can
+// classify, and a member's Content-Type is otherwise a string this endpoint
+// never repeats.
+//
+// An answer with no body (a notification's 202) is passed on as no body at
+// all, which is what both eras of the transport require of a 202, and whatever
+// Content-Type came with it: a gateway in front of a member may add one, and a
+// label on zero bytes is a claim about nothing.
+func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, media http.Header, unreduced, err error) {
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(sent, &envelope)
+	doc, perr := mcpclient.PickResponse(contentType, answer, strings.TrimSpace(string(envelope.ID)))
+	if perr == nil && !answersSomething(doc) {
+		perr = errAnswersNothing
+	}
+	if perr == nil {
+		return doc, nil, nil, nil
+	}
+	if len(bytes.TrimSpace(answer)) == 0 {
+		return nil, nil, nil, nil
+	}
+	shape := mcpclient.MediaType(contentType)
+	if shape == "" {
+		switch {
+		case mcpclient.LooksLikeSSE(answer):
+			shape = "text/event-stream"
+		case json.Valid(answer):
+			shape = "application/json"
+		}
+	}
+	switch shape {
+	case "application/json", "text/event-stream":
+		return answer, http.Header{"Content-Type": []string{shape}}, perr, nil
+	default:
+		return nil, nil, nil, errUnrelayableAnswer
+	}
+}
+
+// answersSomething reports whether a JSON-RPC document carries a result or an
+// error, a null one counting as absent.
+func answersSomething(doc []byte) bool {
+	var env struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(doc, &env) != nil {
+		return false
+	}
+	present := func(v json.RawMessage) bool { return len(v) > 0 && string(v) != "null" }
+	return present(env.Result) || present(env.Error)
 }
 
 func rewriteMethod(original []byte, method string, params json.RawMessage) []byte {

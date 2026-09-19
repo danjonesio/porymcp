@@ -606,8 +606,26 @@ type rpcEnvelope struct {
 // with JSON-RPC"; when several did, the caller reports a stream that carried
 // no response.
 func pickResponse(payloads [][]byte, wantID string) (rpcEnvelope, bool) {
-	var best rpcEnvelope
-	found := false
+	payload, ok := pickPayload(payloads, wantID)
+	if !ok {
+		return rpcEnvelope{}, false
+	}
+	// Decoded, then returned: a return statement that both reads env and calls
+	// the function that fills it leaves the order of the two to the compiler.
+	var env rpcEnvelope
+	if json.Unmarshal(payload, &env) != nil {
+		return rpcEnvelope{}, false
+	}
+	return env, true
+}
+
+// pickPayload is pickResponse's rule over the raw documents, returning the
+// chosen one undecoded. It is the one place that rule lives: discovery decodes
+// what it returns, and PickResponse hands the bytes to a caller that has its
+// own reader. The bool is false for a lone document that is not a JSON-RPC
+// envelope at all, exactly as pickResponse has always reported it.
+func pickPayload(payloads [][]byte, wantID string) ([]byte, bool) {
+	var best []byte
 	for _, payload := range payloads {
 		var env rpcEnvelope
 		if json.Unmarshal(payload, &env) != nil {
@@ -617,20 +635,20 @@ func pickResponse(payloads [][]byte, wantID string) (rpcEnvelope, bool) {
 			continue
 		}
 		if wantID != "" && strings.TrimSpace(string(env.ID)) == wantID {
-			return env, true
+			return payload, true
 		}
-		if !found {
-			best, found = env, true
+		if best == nil {
+			best = payload
 		}
 	}
-	if found {
+	if best != nil {
 		return best, true
 	}
 	if len(payloads) == 1 {
 		var env rpcEnvelope
-		return env, json.Unmarshal(payloads[0], &env) == nil
+		return payloads[0], json.Unmarshal(payloads[0], &env) == nil
 	}
-	return rpcEnvelope{}, false
+	return nil, false
 }
 
 // exchange makes one request and classifies its answer. wantResult is false

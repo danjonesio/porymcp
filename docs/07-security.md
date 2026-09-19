@@ -565,10 +565,11 @@
 - Two gaps remain, tracked with the aggregate re-listing work in PORM-23: a
   group member the proxy cannot read when it re-lists it is skipped,
   so it contributes nothing to the aggregate catalogue: that is a member
-  requiring an MCP session, one answering `tools/list` over
-  `text/event-stream`, which the reference SDK does by default and which the
-  aggregate path does not parse, and one that answers the catalogue request
-  with a redirect, which is refused rather than followed. That skip is
+  requiring an MCP session, one whose answer is neither JSON nor an event
+  stream, one whose answer holds nothing the proxy can read as an answer, and
+  one that answers the catalogue request with a redirect, which is refused
+  rather than followed.
+  That skip is
   written to the server log as `group member skipped`, naming the member's slug
   and its upstream id (once per aggregate request, so a member that stays
   broken stays loud), but **no audit row names it**: the row belongs to the
@@ -593,12 +594,29 @@
   is PORM-71. The proxy re-lists members with its own request rather than
   replaying the client's headers, so a client cannot steer which members answer;
   a member that is down or session-gated still drops out of the catalogue, and
-  PoryMCP does not refuse the whole group when one member fails. Discovery reads
-  both of the shapes the aggregate path does not (a `text/event-stream` answer
-  and a catalogue spread over cursors), so
+  PoryMCP does not refuse the whole group when one member fails. A member that
+  answers as `text/event-stream` is read like one that answers as JSON, on its
+  catalogue and on a routed `tools/call`: the proxy reduces the answer to the
+  one document that answers its request, with the same reader discovery uses,
+  and sends a group's client that document as `application/json`. Reading a
+  member's answer this way runs for every member on every group call, so it is
+  bounded twice: the bytes by the 16 MiB body limit every upstream response
+  already had, and the events split out of a stream by a fixed 4096, past which
+  the answer counts as unreadable: on the catalogue the member is skipped with a
+  fixed sentence, and on a call the answer is treated as the next sentence says.
+  A call answer the proxy cannot reduce (no document in it answers the call) is
+  passed on as it came only under `application/json` or `text/event-stream`,
+  the member's own label or, with no label, what the body is (an event stream,
+  or JSON only if it parses). PoryMCP writes that bare media type itself; a
+  body in any other media type is a `502`, an answer with no body is passed on
+  as no body, and no other header of a member's reaches a group client. The
+  audit row for an answer passed on this way is judged by its HTTP status
+  alone, as every row was before the reduction existed, so the server log says
+  `group call answer relayed unreduced`, with the member's slug and a fixed
+  reason. Discovery still reads the one shape the aggregate path
+  does not, a catalogue spread over cursors, so
   `POST /api/v1/upstreams/{id}/discover` is how an operator sees what a member
-  that has dropped out of the merged catalogue offers. That is a
-  diagnostic, not a fix: what the aggregate serves is unchanged, and making the
+  offers beyond its first page. That is a diagnostic, not a fix: making the
   proxy's own `tools/list` follow cursors is PORM-73.
 - Management API protected by separate admin key. Unknown API paths answer
   `404` before the admin key is checked, so the existence of an API path is

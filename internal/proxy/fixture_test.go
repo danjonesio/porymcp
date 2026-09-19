@@ -37,9 +37,15 @@ import (
 type upstreamSpec struct {
 	Tools    []string // advertised tool names; ignored when RawList != ""
 	RawList  string   // verbatim tools/list response body
-	ListCT   string   // Content-Type for tools/list (default application/json)
+	ListCT   string   // Content-Type for tools/list (default application/json); "-" sends none at all
 	ListCode int      // HTTP status for tools/list (default 200)
 	CallBody string   // response to anything else (default a bare ok result)
+	CallCode int      // HTTP status for a tools/call answer (default 200)
+	// CallCT is the Content-Type of a tools/call answer alone ("-" sends
+	// none). RespHeaders labels every reply, the catalogue included, so it
+	// cannot build the member whose listing reads and whose call answer does
+	// not.
+	CallCT string
 	// RespHeaders are extra response headers the stub writes on every reply,
 	// tools/list and the redirect arm included. Each arm sets its own
 	// Content-Type only when RespHeaders did not, so a test can put a
@@ -69,7 +75,10 @@ type upstreamSpec struct {
 	// the request's id, answers server/discover with a DiscoverResult, answers
 	// tools/list and tools/call only for a request that declares its version
 	// and method in headers and carries params._meta (400 and -32020
-	// otherwise, as the revision requires), and knows no other method.
+	// otherwise, as the revision requires), and knows no other method. RawList,
+	// ListCT, CallBody and CallCode shape its answers as they do the legacy
+	// stub's, and only AFTER that check, so a verbatim answer still proves the
+	// member was told its era.
 	Modern bool
 	// Dead closes the stub's listener as soon as it is built, so the upstream's
 	// URL refuses every connection: a member that answers nothing at all.
@@ -126,13 +135,14 @@ func (s *stub) serveModern(w http.ResponseWriter, r *http.Request, body []byte, 
 	if id == "" {
 		id = "null"
 	}
-	w.Header().Set("Content-Type", "application/json")
 	rpcError := func(status, code int, msg string) {
+		setContentType(w, "")
 		w.WriteHeader(status)
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":%q}}`, id, code, msg)
 	}
 	switch req.Method {
 	case "server/discover":
+		setContentType(w, "")
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"supportedVersions":[%q],"capabilities":{"tools":{}}}}`, id, mcpclient.RevisionModern)
 	case "tools/list", "tools/call":
 		declared := r.Header.Get("Mcp-Protocol-Version") == mcpclient.RevisionModern &&
@@ -143,11 +153,24 @@ func (s *stub) serveModern(w http.ResponseWriter, r *http.Request, body []byte, 
 			return
 		}
 		if req.Method == "tools/call" {
+			setContentType(w, spec.CallCT)
+			if spec.CallCode != 0 {
+				w.WriteHeader(spec.CallCode)
+			}
+			if spec.CallBody != "" {
+				_, _ = io.WriteString(w, spec.CallBody)
+				return
+			}
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"ok":true}}`, id)
 			return
 		}
 		if s.listFails.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		setContentType(w, spec.ListCT)
+		if spec.RawList != "" {
+			_, _ = io.WriteString(w, spec.RawList)
 			return
 		}
 		tools := make([]map[string]any, 0, len(spec.Tools))
@@ -158,6 +181,25 @@ func (s *stub) serveModern(w http.ResponseWriter, r *http.Request, body []byte, 
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, id, out)
 	default:
 		rpcError(http.StatusNotFound, -32601, "Method not found")
+	}
+}
+
+// setContentType labels a stub's reply. RespHeaders has already been applied by
+// the time an arm calls this, so a Content-Type it set is left alone, ct is
+// used otherwise, and "" means application/json. "-" removes the header
+// altogether, RespHeaders' value included: assigning nil is what stops net/http
+// sniffing one from the body, and an upstream that sends no Content-Type at all
+// is a different case from one that sends the wrong one.
+func setContentType(w http.ResponseWriter, ct string) {
+	if ct == "-" {
+		w.Header()["Content-Type"] = nil
+		return
+	}
+	if ct == "" {
+		ct = "application/json"
+	}
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", ct)
 	}
 }
 
@@ -233,13 +275,7 @@ func newStub(spec upstreamSpec) *stub {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			ct := spec.ListCT
-			if ct == "" {
-				ct = "application/json"
-			}
-			if w.Header().Get("Content-Type") == "" {
-				w.Header().Set("Content-Type", ct)
-			}
+			setContentType(w, spec.ListCT)
 			if spec.ListCode != 0 {
 				w.WriteHeader(spec.ListCode)
 			}
@@ -258,8 +294,15 @@ func newStub(spec upstreamSpec) *stub {
 			_, _ = w.Write(out)
 			return
 		}
-		if w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", "application/json")
+		// Labelled once: a second call would put application/json back over
+		// the nil that "-" assigns.
+		if req.Method == "tools/call" {
+			setContentType(w, spec.CallCT)
+			if spec.CallCode != 0 {
+				w.WriteHeader(spec.CallCode)
+			}
+		} else {
+			setContentType(w, "")
 		}
 		if spec.CallBody != "" {
 			_, _ = io.WriteString(w, spec.CallBody)

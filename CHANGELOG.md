@@ -4,6 +4,26 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### A group lists and calls members that answer as an event stream (PORM-171)
+
+- **A group can serve more tools after this upgrade.** A member that answered
+  `tools/list` as `text/event-stream`, which is what the reference SDKs and most
+  hosted servers do, was dropped from the group's merged catalogue while it
+  listed everywhere else. It is now listed like any other member. A key's allow
+  and deny rules already apply to the recovered `{upstream_slug}__{tool}` names.
+  Reconnect clients on a group URL so they fetch the longer catalogue.
+- **A call through a group is answered as JSON.** A member's event-stream answer
+  to a `tools/call` used to reach a group's client labelled `application/json`,
+  and a failed call was logged as a success. The client now gets the one
+  answering document, with the member's HTTP status, and the Logs row records
+  its outcome. An answer with no such document in it is passed on as it came
+  when it is JSON or an event stream; its row is still judged by the HTTP status
+  alone, and the server log says `group call answer relayed unreduced`. A member
+  that answers with a body in any other media type is a `502`.
+- A member can still be missing from a group when it refuses a `tools/list` sent
+  without a session, answers with a redirect, or answers something the proxy
+  cannot read. The `group member skipped` log line says which.
+
 ### Upstreams on the 2026-07-28 revision can be discovered and grouped (PORM-151)
 
 - **Discovery asks `server/discover` first.** An upstream that serves only the

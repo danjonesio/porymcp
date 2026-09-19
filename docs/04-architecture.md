@@ -84,7 +84,12 @@ Agent → /{virtual_key_id}/mcp (or shared /mcp) with its virtual key
 
 On a group target, `initialize`, `tools/list`, `tools/call` and
 `notifications/initialized` are answered by the aggregator; everything else goes
-to the first member, and no upstream session reaches the client.
+to the first member, and no upstream session reaches the client. A member is
+listed whether it answers `tools/list` as JSON or as an event stream, and the
+answer to a routed `tools/call` is reduced to its one JSON document before the
+client sees it, so the audit row is judged from the bytes the client is sent.
+An answer with no such document in it is passed on as it came when it is JSON
+or an event stream, and is a `502` otherwise.
 
 ### Sessions and response headers
 The proxy is stateless: it holds no session table. Each member URL carries its

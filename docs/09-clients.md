@@ -328,7 +328,9 @@ them, connected straight to the server, sees all sixteen. That is the server
 being accommodating, not PoryMCP hiding anything.
 
 It is also a good way to see the aggregate gap `docs/07-security.md` describes
-from both sides at once. This server refuses a `tools/list` that arrives without
+from both sides at once. The gap is the session and not the framing: a member
+that answers as an event stream, as this server does, is listed in a group like
+any other. This server also refuses a `tools/list` that arrives without
 an initialized session, so a group whose member it is serves that member's tools
 on the member's own `/{virtual_key_id}/{upstream_slug}/mcp` URL and omits them
 from the merged catalogue at `/{virtual_key_id}/mcp`, while **Discover tools**,
