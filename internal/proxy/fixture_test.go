@@ -41,6 +41,10 @@ type upstreamSpec struct {
 	ListCode int      // HTTP status for tools/list (default 200)
 	CallBody string   // response to anything else (default a bare ok result)
 	CallCode int      // HTTP status for a tools/call answer (default 200)
+	// CallCT is the Content-Type of a tools/call answer alone. RespHeaders
+	// labels every reply, the catalogue included, so it cannot build the member
+	// whose listing reads and whose call answer does not.
+	CallCT string
 	// RespHeaders are extra response headers the stub writes on every reply,
 	// tools/list and the redirect arm included. Each arm sets its own
 	// Content-Type only when RespHeaders did not, so a test can put a
@@ -148,7 +152,7 @@ func (s *stub) serveModern(w http.ResponseWriter, r *http.Request, body []byte, 
 			return
 		}
 		if req.Method == "tools/call" {
-			setContentType(w, "")
+			setContentType(w, spec.CallCT)
 			if spec.CallCode != 0 {
 				w.WriteHeader(spec.CallCode)
 			}
@@ -289,10 +293,13 @@ func newStub(spec upstreamSpec) *stub {
 			_, _ = w.Write(out)
 			return
 		}
-		setContentType(w, "")
-		if spec.CallCode != 0 && req.Method == "tools/call" {
-			w.WriteHeader(spec.CallCode)
+		if req.Method == "tools/call" {
+			setContentType(w, spec.CallCT)
+			if spec.CallCode != 0 {
+				w.WriteHeader(spec.CallCode)
+			}
 		}
+		setContentType(w, "")
 		if spec.CallBody != "" {
 			_, _ = io.WriteString(w, spec.CallBody)
 			return
