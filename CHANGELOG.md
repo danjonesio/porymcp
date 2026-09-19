@@ -6,6 +6,26 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ### The group endpoint is a server in both protocol eras (PORM-153)
 
+- **A 2026-07-28 client can use a group.** Claude Code showed a group as
+  connected with "tools fetch failed, INVALID_RESULT": the merged tool list had
+  no `ttlMs`, which that revision requires. The list now carries `ttlMs` (the
+  smallest value a member reported, between 10000 and 3600000), PoryMCP's
+  `serverInfo`, and an `inputSchema` on every tool. `server/discover` on a group
+  is answered by PoryMCP, where it used to be relayed to the group's first
+  member and describe that one upstream.
+- **A call through a group works across eras.** The request is composed for the
+  era the member speaks, so a 2026-07-28 client can call a handshake-era member
+  and a handshake-era client can call a 2026-07-28 one. Both used to be refused
+  by the member.
+- **`initialize` on a group answers the version the client asked for**, where it
+  answered `2024-11-05` whatever was asked. Reconnect clients on a group URL.
+- **`subscriptions/listen`, `tasks/get` and `tasks/update` are refused on a
+  group** with `404` and `-32601`, and reach no member. `ping` is answered by
+  PoryMCP. A group request that declares a stateless revision other than
+  `2026-07-28` is answered `400` with `-32022`.
+- A stored `auth_config` that names `Mcp-Name` no longer replaces the name
+  PoryMCP rewrites on a group call. The API has refused to save such a config
+  since PORM-150.
 - **`initialize` and `notifications/initialized` rows on a group no longer name
   an upstream.** The group endpoint answers both itself and contacts nobody, but
   their audit rows carried the id of the group's first member. `upstream_id` is
