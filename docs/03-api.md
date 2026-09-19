@@ -922,9 +922,11 @@ URL is recorded the same way, with an empty `upstream_id` and an
 ## The group endpoint as a server
 
 On `POST /{virtual_key_id}/mcp` for a group key, PoryMCP is an MCP server in its
-own right, in both protocol eras. A request that declares `2026-07-28` (in the
-`MCP-Protocol-Version` header, or in `params._meta` with no header) is served
-statelessly; any other request is served as a handshake-era one. A
+own right, in both protocol eras. A request that declares `2026-07-28` in the
+`MCP-Protocol-Version` header is served statelessly; any other request is
+served as a handshake-era one. The header is the only way to declare it:
+`params._meta` must carry the same version or none, and a body that declares
+`2026-07-28` with no header is refused with `-32020`, as on every endpoint. A
 single-upstream key on the same path is a 1:1 door and none of this applies to
 it: every method, `server/discover` and `initialize` included, reaches the
 upstream.
@@ -945,7 +947,10 @@ upstream:
 - `notifications/initialized`: `202` with no body.
 - `ping`: an empty result for a handshake-era request, and
   `{"resultType":"complete"}` for a `2026-07-28` one. That revision removed
-  `ping` and requires `resultType` on every result.
+  `ping` and requires `resultType` on every result. It is answered and not
+  refused on purpose: a client that still sends it gets an answer it can use,
+  where a `404` might mark the whole server as failed. The refusals below are
+  for methods the endpoint cannot serve.
 - `tools/list`: the merged catalogue. Members come in the order the group
   stores them, and each member's tools in the order that member listed them.
   The result also carries `resultType: "complete"`, `cacheScope: "private"`
@@ -954,9 +959,11 @@ upstream:
   value any listed member reported, a member that reports none counting as
   `60000`, held between `10000` and `3600000`. Only a non-negative whole number
   counts as a report. There is never a `nextCursor`. Every tool carries an
-  `inputSchema` that is a JSON object of type `object`: a member's own when it
-  is one, and `{"type":"object"}` otherwise. `resultType` says nothing about a
-  member skipped at catalogue time.
+  `inputSchema` that is a JSON object of type `object`, which the revision
+  requires. A member's conforming schema crosses unchanged. One that is an
+  object without that `type` has `type` set to `object` and keeps everything
+  else it declared. A value that is not an object becomes `{"type":"object"}`.
+  `resultType` says nothing about a member skipped at catalogue time.
 
 Refused by PoryMCP, with no member contacted and an `error` row that names no
 upstream:
@@ -970,12 +977,21 @@ upstream:
   `400` with `-32022`, the message `unsupported protocol version`, and
   `data: {"supported":["2026-07-28"],"requested":"<the version>"}`.
 
-The order is fixed, because a client can observe it: the routing headers are
-checked first (`400`, `-32020`), then the version (`400`, `-32022`), then the
-method.
+The order of these refusals is fixed, because a client can observe it: the
+routing headers are checked first (`400`, `-32020`), then the version (`400`,
+`-32022`), then the method. The checks that already existed sit around them: a
+group with an enabled `sse` member answers `502` before the version is looked
+at, and the tool gate (`-32602`, a blocked call) runs after the version and
+before the method. So a blocked tool called with a revision the endpoint does
+not speak is recorded as a version error and not as a block; nothing is
+forwarded either way. A request with no method at all (a `DELETE`) is held to
+the version rule too.
 
 `tools/call` is routed to the member that owns the tool, and the request is
-composed for the era that member speaks, whichever era the client spoke:
+composed for the era that member speaks, whichever era the client spoke. The
+member's era is what PoryMCP learned when it listed the member for this same
+request. If that is not known, the client's request is sent as it came, with
+the tool name rewritten.
 
 - A handshake-era client calling a `2026-07-28` member: PoryMCP adds
   `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` and the three
@@ -988,7 +1004,11 @@ composed for the era that member speaks, whichever era the client spoke:
   result is given `resultType: "complete"` when it has none, because the
   revision requires one on every result a `2026-07-28` server sends.
 - The same era on both sides: the client's request, with the tool name
-  rewritten, as before.
+  rewritten, and the member's answer, as before.
+
+The three reserved `_meta` members are matched without regard to case, as the
+version check reads them, so another spelling of one neither survives the
+removal nor sits beside the one PoryMCP writes.
 
 The headers PoryMCP composes are written after the stored credential, so an
 upstream's stored `auth_config` cannot replace them.
@@ -997,7 +1017,8 @@ Every other method is relayed to the group's first member and audited against
 it. A handshake-era client's `MCP-Protocol-Version` is not sent with it: that
 version was agreed by the group endpoint's `initialize`, for itself, and a
 member on an older revision would refuse it. A `2026-07-28` client's relayed
-request is sent as it came.
+request is sent as it came, and so is the member's answer: a handshake-era
+first member's result reaches that client without a `resultType`.
 
 ## Unknown tools on the aggregate endpoint
 

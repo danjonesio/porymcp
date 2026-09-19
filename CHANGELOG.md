@@ -10,15 +10,24 @@ Behaviour changes that affect a running deployment. Newest first.
   connected with "tools fetch failed, INVALID_RESULT": the merged tool list had
   no `ttlMs`, which that revision requires. The list now carries `ttlMs` (the
   smallest value a member reported, between 10000 and 3600000), PoryMCP's
-  `serverInfo`, and an `inputSchema` on every tool. `server/discover` on a group
+  `serverInfo`, and a conforming `inputSchema` on every tool. A member that
+  reports no `ttlMs`, as every handshake-era member does, counts as 60000. `server/discover` on a group
   is answered by PoryMCP, where it used to be relayed to the group's first
   member and describe that one upstream.
 - **A call through a group works across eras.** The request is composed for the
   era the member speaks, so a 2026-07-28 client can call a handshake-era member
   and a handshake-era client can call a 2026-07-28 one. Both used to be refused
   by the member.
-- **`initialize` on a group answers the version the client asked for**, where it
-  answered `2024-11-05` whatever was asked. Reconnect clients on a group URL.
+- **`initialize` on a group answers the version the client asked for** when it
+  is `2024-11-05`, `2025-03-26`, `2025-06-18` or `2025-11-25`, and `2025-11-25`
+  otherwise. It used to answer `2024-11-05` whatever was asked. Reconnect
+  clients on a group URL.
+- **A method a group relays to its first member no longer carries a
+  handshake-era client's `MCP-Protocol-Version`.** That version is the one the
+  group endpoint agreed to, for itself, and a member on an older revision would
+  refuse it. `logging/setLevel`, `prompts/*`, `resources/*` and the rest reach
+  the first member with no version header, which a handshake server reads as
+  `2025-03-26`. A 2026-07-28 client's relayed request is unchanged.
 - **`subscriptions/listen`, `tasks/get` and `tasks/update` are refused on a
   group** with `404` and `-32601`, and reach no member. `ping` is answered by
   PoryMCP. A group request that declares a stateless revision other than
