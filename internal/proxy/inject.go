@@ -6,9 +6,19 @@ import "net/http"
 // upstream may need to act on. The credential the request is made with is not
 // among them, mcpclient.ApplyAuth writes that, after this, from the stored
 // upstream config. src may be nil: forward calls this a second time with the
-// aggregate's override, which is nil for every request but a group's
-// tools/call, so the allowlist stays the one writer of outbound client
-// headers and an override cannot introduce a name that is not on it.
+// headers the aggregate composes for a member (memberHeaders.set), which is
+// nil for every request but a group's, so the allowlist stays the one writer
+// of outbound client headers and the aggregate cannot introduce a name that is
+// not on it. That second call runs after ApplyAuth, not before it: what the
+// aggregate decided about a routing header has to be what the member reads,
+// and a stored auth_config that names one would otherwise replace it.
+//
+// drop names allowlisted headers that must not cross on this request, because
+// they declare an era the member does not speak (memberHeaders.drop). It is
+// honoured here, and not by deleting from dst afterwards, so there is still
+// one place that decides which client headers leave. A dropped name is simply
+// never written; the Mcp-Param- family is not on the list and cannot be
+// dropped.
 //
 // Mcp-Method and Mcp-Name are the 2026-07-28 revision's routing headers,
 // held to the body by checkRoutingHeaders before anything reaches here. The
@@ -19,7 +29,15 @@ import "net/http"
 // it, so every value crosses, copied whole rather than through Get, which
 // reads one; serve bounds the count and the size before the body is read
 // (checkParamHeaders) and the character set after it (checkRoutingHeaders).
-func copyHopHeaders(dst, src http.Header) {
+func copyHopHeaders(dst, src http.Header, drop ...string) {
+	dropped := func(key string) bool {
+		for _, d := range drop {
+			if http.CanonicalHeaderKey(d) == http.CanonicalHeaderKey(key) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, key := range []string{
 		"Accept",
 		"Accept-Language",
@@ -30,6 +48,9 @@ func copyHopHeaders(dst, src http.Header) {
 		hdrMethod,
 		hdrName,
 	} {
+		if dropped(key) {
+			continue
+		}
 		if v := src.Get(key); v != "" {
 			dst.Set(key, v)
 		}

@@ -738,13 +738,18 @@ const (
 // upstream, which is exactly what makes it the wrong thing to use for a
 // request the proxy makes on its own behalf. See listTools.
 //
-// override is the aggregate's rewrite of the routing headers (the Mcp-Name
-// carrying the member's own tool name, memberRoutingHeaders) and nil on every
-// other path. It is applied through the same allowlist as the client's
-// headers, after them and before ApplyAuth, so copyHopHeaders stays the one
-// writer of outbound client headers: an override cannot introduce a name
-// that is not on the list, and the credential is still written last.
-func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, override http.Header) ([]byte, int, http.Header, error) {
+// hdr is what the aggregate decided about this request's headers (see
+// memberHeaders) and nil on every path that relays the client's request as it
+// was sent. Both halves go through copyHopHeaders, so the allowlist stays the
+// one writer of outbound client headers and the aggregate cannot introduce a
+// name that is not on it. drop is honoured on the way in. set is written after
+// ApplyAuth, the one thing here that is: a routing header the aggregate
+// composed is what the member must read, and a stored auth_config that names
+// one (the API has refused to save such a config since PORM-150, but a row
+// saved before that still holds it) would otherwise replace it, so a member
+// that routes on Mcp-Name would run the name the stored config chose and not
+// the one the policy gate judged.
+func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, hdr *memberHeaders) ([]byte, int, http.Header, error) {
 	// Before the request exists: a transport this client cannot speak, or a
 	// credential that cannot be presented, means nothing is dialled, not a
 	// request with the virtual key stripped and nothing put back, which is
@@ -762,8 +767,14 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	copyHopHeaders(req.Header, inbound.Header)
-	copyHopHeaders(req.Header, override)
+	var (
+		set  http.Header
+		drop []string
+	)
+	if hdr != nil {
+		set, drop = hdr.set, hdr.drop
+	}
+	copyHopHeaders(req.Header, inbound.Header, drop...)
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", mcpclient.AcceptMCP)
 	}
@@ -774,7 +785,21 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 		// Unreachable after credential(); kept so the seam cannot regress.
 		return nil, 0, nil, errCredentialUnreadable
 	}
+	copyHopHeaders(req.Header, set)
 	return mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
+}
+
+// memberHeaders is what the aggregate decides about the headers of a request
+// it sends one member on a client's behalf. nil relays the client's request as
+// it was sent.
+type memberHeaders struct {
+	// set holds the routing headers the aggregate composes for the member. It
+	// crosses copyHopHeaders after ApplyAuth, so a stored auth_config cannot
+	// replace it.
+	set http.Header
+	// drop names allowlisted client headers that must not cross, because they
+	// declare an era the member does not speak.
+	drop []string
 }
 
 // listTools asks one upstream what tools it advertises, using a request the
@@ -1087,7 +1112,11 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// header and a body that agree; the client's Mcp-Method is already
 		// tools/call and crosses as it is.
 		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original))
-		out, status, hdr, err := h.forward(ctx, inbound, route.Upstream, rewritten, memberRoutingHeaders(inbound.Header, route.Original))
+		var composed *memberHeaders
+		if set := memberRoutingHeaders(inbound.Header, route.Original); set != nil {
+			composed = &memberHeaders{set: set}
+		}
+		out, status, hdr, err := h.forward(ctx, inbound, route.Upstream, rewritten, composed)
 		if err != nil {
 			return out, status, nil, route.Upstream.ID, err
 		}

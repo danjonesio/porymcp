@@ -446,9 +446,10 @@ func declaredVersion(h http.Header, f routingFields) (string, *rpcError) {
 // receives one carrying its own tool name instead, sentinel-encoded when that
 // name is not header-safe; the member then compares it with the params.name
 // it was sent and the two agree. nil when the client sent none, so a legacy
-// client's member sees none. forward applies it through copyHopHeaders,
-// after the inbound copy and before ApplyAuth, so the allowlist stays the
-// one writer of outbound client headers. The value is not held to
+// client's member sees none. forward applies it through copyHopHeaders, after
+// the inbound copy and after ApplyAuth, so the allowlist stays the one writer
+// of outbound client headers and a stored auth_config cannot put another name
+// in the member's way. The value is not held to
 // maxRoutingValueBytes: base64 grows a name by a third, so a member name near
 // that bound leaves larger than it. The client's inbound header, which is
 // bounded, is what the comparison read; the member bounds its own request

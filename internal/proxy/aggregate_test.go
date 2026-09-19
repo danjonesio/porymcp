@@ -1692,3 +1692,46 @@ func TestAggregateListFields(t *testing.T) {
 		}
 	})
 }
+
+// PORM-153, security requirements 4 and 5. What the aggregate decides about a
+// routing header is what the member must read. The override used to be written
+// before the stored credential, so a custom auth_config that names Mcp-Name
+// (the API has refused to save one since PORM-150; a row saved before that
+// still holds it) replaced the rewritten name, and a member that routes on the
+// header would have run the stored name, not the one the policy gate judged.
+func TestAggregateNameBeatsStoredAuthConfig(t *testing.T) {
+	f := newFixture(t, map[string]upstreamSpec{
+		"alpha": {Tools: []string{"search"}},
+		"beta": {
+			Tools:    []string{"scrape"},
+			AuthType: models.AuthCustom,
+			AuthConfig: models.AuthConfig{Headers: map[string]string{
+				"X-Stored-Key": "REAL-CUSTOM-SECRET",
+				"Mcp-Name":     "delete_everything",
+			}},
+		},
+	}, true, nil, nil, nil)
+
+	rr := f.postWith(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"beta__scrape","arguments":{}}}`,
+		map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "beta__scrape"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var call *recordedRequest
+	for _, r := range f.requestsTo("beta") {
+		if r.RPCMethod == "tools/call" {
+			r := r
+			call = &r
+		}
+	}
+	if call == nil {
+		t.Fatal("beta saw no tools/call")
+	}
+	if got := call.Header.Get("Mcp-Name"); got != "scrape" {
+		t.Errorf("the member read Mcp-Name %q, want the name the aggregate rewrote, scrape", got)
+	}
+	if got := call.Header.Get("X-Stored-Key"); got != "REAL-CUSTOM-SECRET" {
+		t.Errorf("the stored credential did not cross: X-Stored-Key=%q", got)
+	}
+}
