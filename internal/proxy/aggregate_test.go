@@ -872,3 +872,221 @@ func TestMemberEraAndACallerWhoWentAway(t *testing.T) {
 		t.Errorf("%d member era probed lines, want 3: one per probe, whether or not it was remembered", n)
 	}
 }
+
+// sseFrame frames one JSON-RPC document the way the reference SDKs do.
+func sseFrame(doc string) string { return "event: message\ndata: " + doc + "\n\n" }
+
+// sseCatalogue is a tools/list answer to the proxy's own request (id 1) naming
+// the given tools, as one JSON document.
+func sseCatalogue(id string, names ...string) string {
+	tools := make([]string, 0, len(names))
+	for _, n := range names {
+		tools = append(tools, `{"name":"`+n+`"}`)
+	}
+	return `{"jsonrpc":"2.0","id":` + id + `,"result":{"tools":[` + strings.Join(tools, ",") + `]}}`
+}
+
+// skipWarnings is the "group member skipped" records in what captureLogs kept.
+func skipWarnings(t *testing.T, logs *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, r := range logRecords(t, logs) {
+		if r["msg"] == "group member skipped" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// PORM-171. A group used to drop any member that answered tools/list as an
+// event stream, which is what the reference SDKs do by default: the member's
+// tools never appeared on the aggregate endpoint and could not be called
+// through it, while the same upstream listed everywhere else. The answer is now
+// reduced to the one document that answers the proxy's request, by mcpclient's
+// reader, whichever framing the member chose.
+func TestGroupListsMemberAnsweringInSSE(t *testing.T) {
+	const notification = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"warming up"}}`
+	const sse = "text/event-stream"
+
+	t.Run("a JSON member and an SSE member both list, and a call routes to the SSE member", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"search_docs"}},
+			"beta":  {ListCT: sse, RawList: sseFrame(sseCatalogue("1", "scrape", "crawl"))},
+		}, true, nil, nil, nil)
+		logs := captureLogs(f)
+
+		rr := f.post(listRequest)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		if got, want := strings.Join(listedNames(t, rr.Body.Bytes()), ","), "alpha__search_docs,beta__crawl,beta__scrape"; got != want {
+			t.Errorf("listed %q want %q", got, want)
+		}
+		if w := skipWarnings(t, logs); len(w) != 0 {
+			t.Errorf("a member was skipped: %v", w)
+		}
+
+		rr = f.post(toolCall("2", "beta__scrape"))
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
+			t.Fatalf("call: HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if n := f.count("beta", "tools/call", "scrape"); n != 1 {
+			t.Errorf("beta saw %d calls of scrape, want 1", n)
+		}
+		if n := f.count("alpha", "tools/call", "scrape") + f.count("alpha", "tools/call", "beta__scrape"); n != 0 {
+			t.Errorf("alpha saw %d calls meant for beta", n)
+		}
+	})
+
+	// Each row is one SSE member beside a JSON one, and what the group lists.
+	for _, c := range []struct {
+		name string
+		spec upstreamSpec
+		want string
+	}{
+		{
+			name: "a notification ahead of the answer",
+			spec: upstreamSpec{ListCT: sse, RawList: sseFrame(notification) + sseFrame(sseCatalogue("1", "scrape"))},
+			want: "alpha__search_docs,beta__scrape",
+		},
+		{
+			name: "another id's document ahead of the proxy's own",
+			spec: upstreamSpec{ListCT: sse, RawList: sseFrame(sseCatalogue("9", "not_this")) + sseFrame(sseCatalogue("1", "scrape"))},
+			want: "alpha__search_docs,beta__scrape",
+		},
+		{
+			// The documented fallback: nothing carries the proxy's id, so the one
+			// answering document is read. It cannot reach another member's names,
+			// because every name is prefixed with this member's own slug.
+			name: "a single document under another id",
+			spec: upstreamSpec{ListCT: sse, RawList: sseFrame(sseCatalogue("9", "scrape"))},
+			want: "alpha__search_docs,beta__scrape",
+		},
+		{
+			name: "an event stream sent with no Content-Type at all",
+			spec: upstreamSpec{ListCT: "-", RawList: sseFrame(sseCatalogue("1", "scrape"))},
+			want: "alpha__search_docs,beta__scrape",
+		},
+		{
+			name: "CRLF line endings and a data field over two lines",
+			spec: upstreamSpec{ListCT: sse, RawList: "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\r\ndata: \"result\":{\"tools\":[{\"name\":\"scrape\"}]}}\r\n\r\n"},
+			want: "alpha__search_docs,beta__scrape",
+		},
+		{
+			// A lone document that answers nothing is a member with no tools, not
+			// a member that failed: it lists nothing and nothing is logged.
+			name: "one notification and nothing else",
+			spec: upstreamSpec{ListCT: sse, RawList: sseFrame(notification)},
+			want: "alpha__search_docs",
+		},
+		{
+			name: "a modern member answering in an event stream",
+			spec: upstreamSpec{Modern: true, ListCT: sse, RawList: sseFrame(
+				`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"scrape"}],"resultType":"complete","ttlMs":60000,"cacheScope":"public"}}`)},
+			want: "alpha__search_docs,beta__scrape",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, map[string]upstreamSpec{
+				"alpha": {Tools: []string{"search_docs"}},
+				"beta":  c.spec,
+			}, true, nil, nil, nil)
+			logs := captureLogs(f)
+			rr := f.post(listRequest)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d want 200; body=%s", rr.Code, rr.Body.String())
+			}
+			if got := strings.Join(listedNames(t, rr.Body.Bytes()), ","); got != c.want {
+				t.Errorf("listed %q want %q", got, c.want)
+			}
+			if w := skipWarnings(t, logs); len(w) != 0 {
+				t.Errorf("a member was skipped: %v", w)
+			}
+			if c.spec.Modern {
+				// The verbatim answer sits behind the stub's era check, so the
+				// member was still told its version and method.
+				last := f.requestsTo("beta")[len(f.requestsTo("beta"))-1]
+				if last.RPCMethod != "tools/list" || last.Header.Get("Mcp-Method") != "tools/list" ||
+					last.Header.Get("Mcp-Protocol-Version") != mcpclient.RevisionModern {
+					t.Errorf("the modern member's listing was not declared: %s %v", last.RPCMethod, last.Header)
+				}
+			}
+		})
+	}
+
+	// What cannot be read skips the member, once, and the warning's err is one
+	// of mcpclient's fixed sentences: compared with ==, because an event stream
+	// is upstream-controlled text and none of it may reach a log line.
+	for _, c := range []struct {
+		name    string
+		spec    upstreamSpec
+		wantErr string
+	}{
+		{
+			name:    "two notifications and no answer",
+			spec:    upstreamSpec{ListCT: sse, RawList: sseFrame(notification) + sseFrame(notification)},
+			wantErr: "response carried no answer to this request",
+		},
+		{
+			name:    "a lone data line that is not JSON",
+			spec:    upstreamSpec{ListCT: sse, RawList: "data: <b>SECRET-FROM-UPSTREAM</b>\n\n"},
+			wantErr: "response carried no answer to this request",
+		},
+		{
+			name:    "neither JSON nor an event stream",
+			spec:    upstreamSpec{ListCT: "text/html", RawList: "<html>SECRET-FROM-UPSTREAM</html>"},
+			wantErr: "media type is not a JSON-RPC response",
+		},
+		{
+			name:    "an event stream with no data event",
+			spec:    upstreamSpec{ListCT: sse, RawList: ": SECRET-FROM-UPSTREAM\n\n"},
+			wantErr: "event stream carried no data event",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, map[string]upstreamSpec{
+				"alpha": {Tools: []string{"search_docs"}},
+				"beta":  c.spec,
+			}, true, nil, nil, nil)
+			logs := captureLogs(f)
+			rr := f.post(listRequest)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d want 200; body=%s", rr.Code, rr.Body.String())
+			}
+			if got, want := strings.Join(listedNames(t, rr.Body.Bytes()), ","), "alpha__search_docs"; got != want {
+				t.Errorf("listed %q want %q: one member's unreadable answer must cost only that member", got, want)
+			}
+			w := skipWarnings(t, logs)
+			if len(w) != 1 {
+				t.Fatalf("%d skip warnings, want exactly 1: %s", len(w), logs.String())
+			}
+			if w[0]["slug"] != "beta" || w[0]["err"] != c.wantErr {
+				t.Errorf("warning slug=%v err=%q, want beta and %q", w[0]["slug"], w[0]["err"], c.wantErr)
+			}
+			if strings.Contains(logs.String(), "SECRET-FROM-UPSTREAM") {
+				t.Errorf("an upstream byte reached the log: %s", logs.String())
+			}
+		})
+	}
+
+	// A JSON-RPC error inside a frame is read as the error it is, and skips the
+	// member with the upstream's own message, bounded, as the JSON path does.
+	t.Run("a JSON-RPC error inside a frame", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"search_docs"}},
+			"beta":  {ListCT: sse, RawList: sseFrame(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Bad Request: Server not initialized"}}`)},
+		}, true, nil, nil, nil)
+		logs := captureLogs(f)
+		rr := f.post(listRequest)
+		if got, want := strings.Join(listedNames(t, rr.Body.Bytes()), ","), "alpha__search_docs"; got != want {
+			t.Errorf("listed %q want %q", got, want)
+		}
+		w := skipWarnings(t, logs)
+		if len(w) != 1 {
+			t.Fatalf("%d skip warnings, want exactly 1: %s", len(w), logs.String())
+		}
+		if errText, _ := w[0]["err"].(string); !strings.Contains(errText, "Server not initialized") || len(errText) > auditFieldBytes {
+			t.Errorf("warning err=%q, want the member's own message, bounded", errText)
+		}
+	})
+}
