@@ -1280,3 +1280,139 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 		}
 	})
 }
+
+// modernRequest is a 2026-07-28 request for method with no name to route on,
+// and the headers that declare it, for version.
+func modernRequest(id, method, version string) (string, map[string]string) {
+	idPart := ""
+	if id != "" {
+		idPart = `"id":` + id + `,`
+	}
+	body := `{"jsonrpc":"2.0",` + idPart + `"method":"` + method + `","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"` + version + `","io.modelcontextprotocol/clientInfo":{"name":"test","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	return body, map[string]string{"MCP-Protocol-Version": version, "Mcp-Method": method}
+}
+
+// PORM-153. Three methods the group endpoint cannot serve used to be relayed to
+// whichever member came first. subscriptions/listen held that member's stream
+// open until the client gave up and tried again. They are refused the way the
+// revision's transport prescribes, 404 and -32601, and no member is contacted.
+// Security requirement 9: the row names no upstream and the id is echoed by
+// writeRPCError's rule.
+func TestAggregateRefusesUnservableModernMethods(t *testing.T) {
+	for _, method := range []string{"subscriptions/listen", "tasks/get", "tasks/update"} {
+		t.Run(method, func(t *testing.T) {
+			f := newGroupFixture(t, map[string][]string{"alpha": {"a"}, "beta": {"b"}}, nil, nil, nil)
+			body, hdr := modernRequest("7", method, mcpclient.RevisionModern)
+			rr := f.postWith(body, hdr)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("HTTP code=%d want 404; body=%s", rr.Code, rr.Body.String())
+			}
+			code, msg, id := rpcErrorOf(t, rr.Body.Bytes())
+			if code != -32601 || msg != "method not found" || id != float64(7) {
+				t.Errorf("code=%d message=%q id=%v, want -32601, method not found, 7", code, msg, id)
+			}
+			if n := f.totalReqs("alpha") + f.totalReqs("beta"); n != 0 {
+				t.Errorf("the members saw %d requests, want none", n)
+			}
+			row := f.waitAudit(models.LogFilter{})[0]
+			if row.Status != models.StatusError || row.ErrorMessage != "method not found" || row.UpstreamID != "" || row.Method != method {
+				t.Errorf("row method=%q status=%q error=%q upstream=%q, want %s, error, method not found, no upstream", row.Method, row.Status, row.ErrorMessage, row.UpstreamID, method)
+			}
+
+			// A member endpoint is a 1:1 door: the same method reaches the member.
+			if mr := f.postMemberWith("alpha", body, hdr); mr.Code != http.StatusOK || f.count("alpha", method, "") != 1 {
+				t.Errorf("member endpoint: HTTP code=%d, alpha saw %d %s, want 200 and 1", mr.Code, f.count("alpha", method, ""), method)
+			}
+		})
+	}
+
+	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}}, nil, nil, nil)
+	t.Run("a handshake-era client is refused the same way", func(t *testing.T) {
+		rr := f.post(`{"jsonrpc":"2.0","id":3,"method":"tasks/get","params":{"taskId":"x"}}`)
+		if code, _, _ := rpcErrorOf(t, rr.Body.Bytes()); rr.Code != http.StatusNotFound || code != -32601 {
+			t.Errorf("HTTP code=%d rpc code=%d, want 404 and -32601", rr.Code, code)
+		}
+	})
+	t.Run("a notification is answered with a null id, not an invented one", func(t *testing.T) {
+		body, hdr := modernRequest("", "subscriptions/listen", mcpclient.RevisionModern)
+		rr := f.postWith(body, hdr)
+		if !strings.Contains(rr.Body.String(), `"id":null`) {
+			t.Errorf("body=%s, want an id of null", rr.Body.String())
+		}
+	})
+	t.Run("an id past 2^53 comes back byte for byte", func(t *testing.T) {
+		body, hdr := modernRequest("9007199254740993", "subscriptions/listen", mcpclient.RevisionModern)
+		rr := f.postWith(body, hdr)
+		if !strings.Contains(rr.Body.String(), `"id":9007199254740993,`) {
+			t.Errorf("body=%s, want the id as it was sent", rr.Body.String())
+		}
+	})
+	// The order a client can observe: the headers are judged before the method.
+	t.Run("a strict request with no Mcp-Method is still a header mismatch", func(t *testing.T) {
+		body, hdr := modernRequest("1", "subscriptions/listen", mcpclient.RevisionModern)
+		delete(hdr, "Mcp-Method")
+		rr := f.postWith(body, hdr)
+		if code, _, _ := rpcErrorOf(t, rr.Body.Bytes()); rr.Code != http.StatusBadRequest || code != -32020 {
+			t.Errorf("HTTP code=%d rpc code=%d, want 400 and -32020", rr.Code, code)
+		}
+	})
+	if n := f.totalReqs("alpha"); n != 0 {
+		t.Errorf("alpha saw %d requests across the refusals, want none", n)
+	}
+}
+
+// PORM-153, amendment A10. The group endpoint's server/discover says it speaks
+// one stateless revision, and strictRevision accepts any date from that one
+// onward, so a request declaring a later revision was served as if PoryMCP
+// spoke it. The revision makes the refusal a MUST and names its data.
+func TestAggregateUnsupportedVersion(t *testing.T) {
+	f := newGroupFixture(t, map[string][]string{"alpha": {"a"}}, nil, nil, nil)
+	body, hdr := modernRequest("4", "tools/list", "2027-01-01")
+	rr := f.postWith(body, hdr)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("HTTP code=%d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	var env struct {
+		ID    json.RawMessage `json:"id"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Supported []string `json:"supported"`
+				Requested string   `json:"requested"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body is not JSON: %v (%s)", err, rr.Body.String())
+	}
+	if env.Error.Code != -32022 || env.Error.Message != "unsupported protocol version" || string(env.ID) != "4" ||
+		len(env.Error.Data.Supported) != 1 || env.Error.Data.Supported[0] != "2026-07-28" || env.Error.Data.Requested != "2027-01-01" {
+		t.Errorf("answer=%s, want -32022 with data.supported [2026-07-28] and data.requested 2027-01-01", rr.Body.String())
+	}
+	if n := f.totalReqs("alpha"); n != 0 {
+		t.Errorf("alpha saw %d requests, want none", n)
+	}
+	row := f.waitAudit(models.LogFilter{})[0]
+	if row.Status != models.StatusError || row.ErrorMessage != "unsupported protocol version" || row.UpstreamID != "" {
+		t.Errorf("row status=%q error=%q upstream=%q, want error, the fixed message, no upstream", row.Status, row.ErrorMessage, row.UpstreamID)
+	}
+
+	// The revision the endpoint does speak is served.
+	body, hdr = modernRequest("5", "tools/list", mcpclient.RevisionModern)
+	if rr := f.postWith(body, hdr); rr.Code != http.StatusOK {
+		t.Errorf("2026-07-28: HTTP code=%d want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	// A single-upstream key on the same path is a 1:1 door: the upstream answers
+	// for itself, for a later revision and for server/discover alike.
+	single := newSingleFixture(t, upstreamSpec{Tools: []string{"a"}}, nil, nil)
+	body, hdr = modernRequest("6", "tools/list", "2027-01-01")
+	if rr := single.postWith(body, hdr); rr.Code != http.StatusOK || single.count("solo", "tools/list", "") != 1 {
+		t.Errorf("single upstream, 2027-01-01: HTTP code=%d, upstream saw %d tools/list, want 200 and 1", rr.Code, single.count("solo", "tools/list", ""))
+	}
+	body, hdr = modernRequest("7", "server/discover", mcpclient.RevisionModern)
+	if rr := single.postWith(body, hdr); rr.Code != http.StatusOK || single.count("solo", "server/discover", "") != 1 {
+		t.Errorf("single upstream, server/discover: HTTP code=%d, upstream saw %d, want 200 and 1", rr.Code, single.count("solo", "server/discover", ""))
+	}
+}

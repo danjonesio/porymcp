@@ -15,6 +15,9 @@ import (
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	// Data is set on the one refusal whose code requires it, the group
+	// endpoint's unsupported-version answer, and is absent everywhere else.
+	Data any `json:"data,omitempty"`
 }
 
 // JSON-RPC 2.0 error codes the request parser can return.
@@ -29,6 +32,15 @@ const (
 	// has one spelling in the tree, mcpclient's, because the discovery probe
 	// reads the same code off an upstream that this proxy writes to a client.
 	codeHeaderMismatch = mcpclient.CodeHeaderMismatch
+	// codeUnsupportedVersion is the revision's UnsupportedProtocolVersionError,
+	// written by the group endpoint, where PoryMCP is the server, to a request
+	// that declares a stateless revision it does not speak. Borrowed for the
+	// same reason as codeHeaderMismatch: a client on that revision reads it,
+	// takes data.supported, and retries.
+	codeUnsupportedVersion = mcpclient.CodeUnsupportedVersion
+	// codeMethodNotFound is JSON-RPC's own, which the revision's transport
+	// requires, with a 404, for a method the server does not implement.
+	codeMethodNotFound = -32601
 )
 
 // auditFieldBytes caps a client-controlled string before it is stored on an

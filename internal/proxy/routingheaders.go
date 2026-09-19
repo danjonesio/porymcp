@@ -368,21 +368,9 @@ func checkRoutingHeaders(h http.Header, method string, f routingFields) *rpcErro
 		return nil
 	}
 
-	headerVersion, headerPresent := headerLine(h, hdrProtocol)
-	metaVersion, metaPresent, metaBad := metaProtocolVersion(f.Meta)
-	if metaBad {
-		return mismatchFor(hdrProtocol)
-	}
-	declared := headerVersion
-	if metaPresent {
-		if !headerPresent {
-			if strictRevision(metaVersion) {
-				return mismatchFor(hdrProtocol)
-			}
-			declared = metaVersion
-		} else if headerVersion != metaVersion {
-			return mismatchFor(hdrProtocol)
-		}
+	declared, rpcErr := declaredVersion(h, f)
+	if rpcErr != nil {
+		return rpcErr
 	}
 	strict := strictRevision(declared)
 
@@ -423,6 +411,33 @@ func checkRoutingHeaders(h http.Header, method string, f routingFields) *rpcErro
 		return mismatchFor(hdrName)
 	}
 	return nil
+}
+
+// declaredVersion is the protocol version a request declares, by the rule in
+// checkRoutingHeaders' comment: the header, or the body's _meta version when
+// the header is absent, with a disagreement between the two refused. It is a
+// function of its own because two callers need the one answer. serve asks it
+// again, once checkRoutingHeaders has passed, to learn which era the client
+// speaks; the refusals are already behind it by then, so the second call
+// cannot disagree with the first and its error is nil.
+func declaredVersion(h http.Header, f routingFields) (string, *rpcError) {
+	headerVersion, headerPresent := headerLine(h, hdrProtocol)
+	metaVersion, metaPresent, metaBad := metaProtocolVersion(f.Meta)
+	if metaBad {
+		return "", mismatchFor(hdrProtocol)
+	}
+	declared := headerVersion
+	if metaPresent {
+		if !headerPresent {
+			if strictRevision(metaVersion) {
+				return "", mismatchFor(hdrProtocol)
+			}
+			declared = metaVersion
+		} else if headerVersion != metaVersion {
+			return "", mismatchFor(hdrProtocol)
+		}
+	}
+	return declared, nil
 }
 
 // memberRoutingHeaders is the aggregate's half of the rewrite that

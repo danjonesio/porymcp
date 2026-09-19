@@ -293,6 +293,12 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError, rpcErr.Message, start, n, boundedParams(req.Params))
 		return
 	}
+	// Which era the client speaks, by the version it declared. Asked of the
+	// same function the check above used, after that check passed, so the two
+	// cannot disagree and the error is nil. The group endpoint is a server in
+	// both eras and answers each in its own shape.
+	declared, _ := declaredVersion(r.Header, fields)
+	clientModern := strictRevision(declared)
 
 	var (
 		upstreams []*models.Upstream
@@ -418,6 +424,25 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// onAggregate is the group's own endpoint: the one place a client names a
 	// tool by its identity rather than by the name its upstream advertises.
 	onAggregate := member == nil && group != nil
+	// On the group endpoint PoryMCP is the server, and its server/discover says
+	// which stateless revision it speaks: one. strictRevision accepts any date
+	// from that one onward, so a request declaring a later revision would
+	// otherwise be served as if PoryMCP spoke it. The revision makes this
+	// refusal a MUST and names its data. requested is written back only because
+	// strictRevision has just proved it a ten-byte date. Header validation has
+	// already run and the method is not looked at yet, which is the order a
+	// client can observe. No member is contacted and the row names none. A
+	// single-upstream key and a member endpoint relay, and the upstream
+	// answers for itself.
+	if onAggregate && clientModern && declared != mcpclient.RevisionModern {
+		out := answerRPC(req.ID, nil, &rpcError{
+			Code: codeUnsupportedVersion, Message: msgUnsupportedVersion,
+			Data: map[string]any{"supported": []string{mcpclient.RevisionModern}, "requested": declared},
+		})
+		n := writeRPCBody(w, http.StatusBadRequest, out)
+		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError, msgUnsupportedVersion, start, n, boundedParams(req.Params))
+		return
+	}
 	blockedUpstream := "" // nothing is contacted on a group block, so nothing to name
 	if group == nil || member != nil {
 		// A member endpoint names its upstream in the URL, so the row can say
@@ -486,7 +511,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// member's own names, and its Mcp-Session-Id reaches the client.
 	aggregated := onAggregate && shouldAggregate(method)
 	if aggregated {
-		respBody, statusCode, headers, usedID, err = h.aggregate(r.Context(), r, pol, upstreams, req, body)
+		respBody, statusCode, headers, usedID, err = h.aggregate(r.Context(), r, pol, upstreams, req, fields, clientModern, body)
 	} else {
 		up := upstreams[0]
 		usedID = up.ID
@@ -906,27 +931,51 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 	return active, lists
 }
 
+// shouldAggregate names the methods the group endpoint answers or refuses
+// itself. Everything else is relayed to the group's first member.
 func shouldAggregate(method string) bool {
 	switch method {
 	case "initialize", "tools/list", "tools/call", "notifications/initialized":
+		return true
+	case "subscriptions/listen", "tasks/get", "tasks/update":
+		// Refused here, not relayed: see aggregate.
 		return true
 	default:
 		return false
 	}
 }
 
-// aggregate answers the four methods a group endpoint handles itself. It takes
-// the already-parsed request rather than re-decoding the body: two decoders
-// over the same bytes are two chances to disagree about which call this is,
-// and the gate in ServeHTTP has already made its decision from the first one.
+// The messages the group endpoint writes as a server. Fixed strings, in the
+// reply and on the row.
+const (
+	msgMethodNotFound     = "method not found"
+	msgUnsupportedVersion = "unsupported protocol version"
+)
+
+// aggregate answers the methods a group endpoint handles itself. It takes the
+// already-parsed request, and the routing fields and the client's era that
+// serve read from it, rather than re-decoding the body: two decoders over the
+// same bytes are two chances to disagree about which call this is, and the
+// gate in ServeHTTP has already made its decision from the first one.
 //
 // The http.Header it returns is not a member's header set. It is nil on every
 // arm but tools/call, and there it holds at most a Content-Type the aggregate
 // chose itself (see reduceCallAnswer), so serve's one writer of response
 // headers stays the one writer and no member's Mcp-Session-Id can reach a
 // group client through it.
-func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, body []byte) ([]byte, int, http.Header, string, error) {
+func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, fields routingFields, clientModern bool, body []byte) ([]byte, int, http.Header, string, error) {
 	switch req.Method {
+	case "subscriptions/listen", "tasks/get", "tasks/update":
+		// Methods the group endpoint cannot serve, refused the way the
+		// revision's transport prescribes for a method a server does not
+		// implement: 404 and -32601. subscriptions/listen needs a stream held
+		// open, which a buffered relay cannot give (PORM-5), and relayed to the
+		// first member it held that member's stream until the client timed out
+		// and tried again. A task handle belongs to the one member that issued
+		// it and the group has no way to know which; tasks are an extension
+		// this endpoint does not advertise. No member is contacted, so the row
+		// names none. A member endpoint relays all three to its member.
+		return answerRPC(req.ID, nil, &rpcError{Code: codeMethodNotFound, Message: msgMethodNotFound}), http.StatusNotFound, nil, "", nil
 	case "notifications/initialized":
 		return []byte(`{}`), http.StatusAccepted, nil, ups[0].ID, nil
 	case "initialize":
@@ -1092,6 +1141,41 @@ func answersSomething(doc []byte) bool {
 	}
 	present := func(v json.RawMessage) bool { return len(v) > 0 && string(v) != "null" }
 	return present(env.Result) || present(env.Error)
+}
+
+// answerRPC is a JSON-RPC answer the group endpoint composes itself, a result
+// or an error. The id follows writeRPCError's rule and for its reason: echoed
+// as the raw bytes the client sent, and null when there were none or they are
+// not a scalar, so a notification is not handed an id it never had and an
+// integer past 2^53 comes back as it was written.
+func answerRPC(id json.RawMessage, result any, rpcErr *rpcError) []byte {
+	if len(bytes.TrimSpace(id)) == 0 || !scalarRPCID(id) {
+		id = json.RawMessage("null")
+	}
+	var out []byte
+	if rpcErr != nil {
+		out, _ = marshalRaw(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Error   *rpcError       `json:"error"`
+		}{"2.0", id, rpcErr})
+		return out
+	}
+	out, _ = marshalRaw(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  any             `json:"result"`
+	}{"2.0", id, result})
+	return out
+}
+
+// writeRPCBody sends a JSON-RPC document serve has already composed, and
+// returns the bytes written for the row.
+func writeRPCBody(w http.ResponseWriter, status int, body []byte) int {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	n, _ := w.Write(body)
+	return n
 }
 
 func rewriteMethod(original []byte, method string, params json.RawMessage) []byte {
