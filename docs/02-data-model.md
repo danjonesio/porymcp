@@ -154,6 +154,10 @@ a bot); PoryMCP does not store agents.
   unlimited; removed with `null` on `PATCH`)
 - `expires_at` (optional; removed with `null` on `PATCH`, after which the key is
   active again)
+- `lists_malformed` (response only, never stored): `true` when the two list
+  columns below could not be decoded on this read. Both lists are then absent
+  from the response and the proxy refuses every call on the key. See
+  `docs/03-api.md`, Virtual keys.
 - `tool_allowlist` / `tool_denylist` (optional): per-key overrides applied to
   every target. Precedence is **key denylist, then key allowlist, then group
   `tool_filter`**: a name in the denylist is rejected outright, a non-empty

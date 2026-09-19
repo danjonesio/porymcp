@@ -274,6 +274,8 @@ paths:
                           type: array
                           items:
                             $ref: "#/components/schemas/VirtualKeyEndpoint"
+                        lists_malformed:
+                          $ref: "#/components/schemas/ListsMalformed"
     post:
       summary: Create a virtual key and return the plaintext key once
       requestBody:
@@ -315,6 +317,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
     patch:
@@ -1092,6 +1096,16 @@ components:
             type: string
         metadata:
           type: [object, "null"]
+    ListsMalformed:
+      type: boolean
+      readOnly: true
+      description: >-
+        Present and `true` on every virtual-key response when the key's stored
+        `tool_allowlist` or `tool_denylist` could not be decoded; absent
+        otherwise. Both lists are then absent from the response, which is what a
+        key with no rules looks like, while the proxy blocks every call on the
+        key. Response only: a request that sends it changes nothing. A PATCH
+        sending both lists replaces them and clears it.
     VirtualKeyEndpoint:
       type: object
       description: >-

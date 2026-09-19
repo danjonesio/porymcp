@@ -37,8 +37,9 @@
   `GET /api/v1/logs` returns a `next_cursor` for them (PORM-20).
 
 ## Nice-to-have (post-MVP)
-- Tool-level filtering UI (PORM-4). The proxy and the management API enforce
-  group and virtual key tool filters today; the dashboard has no form for them
+- Tool-level filtering UI ships (PORM-4): a group's filter and a virtual key's
+  allow and deny lists are set from the dashboard, from a list of the target's
+  tools
 - Log export as JSONL (PORM-7)
 - Prometheus metrics (PORM-8)
 - Key expiry enforcement ships: a key past its `expires_at` reports `expired`
