@@ -610,8 +610,13 @@ func pickResponse(payloads [][]byte, wantID string) (rpcEnvelope, bool) {
 	if !ok {
 		return rpcEnvelope{}, false
 	}
+	// Decoded, then returned: a return statement that both reads env and calls
+	// the function that fills it leaves the order of the two to the compiler.
 	var env rpcEnvelope
-	return env, json.Unmarshal(payload, &env) == nil
+	if json.Unmarshal(payload, &env) != nil {
+		return rpcEnvelope{}, false
+	}
+	return env, true
 }
 
 // pickPayload is pickResponse's rule over the raw documents, returning the
