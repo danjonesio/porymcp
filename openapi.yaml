@@ -298,6 +298,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
   /virtual-keys/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -348,6 +350,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
     delete:
@@ -376,6 +380,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
   /virtual-keys/{id}/revoke:
@@ -397,6 +403,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
   /logs:

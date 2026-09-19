@@ -1690,9 +1690,10 @@ func TestCorruptKeyListFailsClosed(t *testing.T) {
 }
 
 // TestCorruptKeyListSurvivesAnUpdate is the write side of the same argument.
-// The scan answers nil for both lists on a key it has marked, so an update that
-// wrote them back would store "null" in both columns, which decodes cleanly,
-// clears the mark on the next read, and leaves the key with no policy at all.
+// The scan answers nil for a list that did not decode on a key it has marked,
+// so an update that wrote it back would store "null" in that column, which
+// decodes cleanly, clears the mark on the next read, and drops the rule the
+// column held.
 // Every mutating handler in the management API reads a key and writes it
 // straight back, so that would make a rename, a rotation or a revocation the
 // way to turn a key the proxy blocks on every call into a fully permissive one:

@@ -480,9 +480,10 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 		a.ToolDenylist = list
 	}
 	// A key whose stored lists did not decode is the one case where a patch of
-	// a single list cannot do what it says. The scan answers nil for BOTH lists
-	// on such a key, so the merged key here carries the sent list beside a nil
-	// the operator never wrote, and the store refuses to touch either column
+	// a single list cannot do what it says. The scan answers nil for the list
+	// that did not decode (and keeps one that did), so the merged key here can
+	// carry the sent list beside a nil the operator never wrote, and the store
+	// refuses to touch either column
 	// while the flag is set, which would make this request a silent no-op
 	// answered 200 with the new list echoed back. Saying so is better than
 	// either half-truth, and it names the request that works.

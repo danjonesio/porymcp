@@ -141,7 +141,8 @@ type VirtualKey struct {
 	RevokedAt     *time.Time      `json:"revoked_at,omitempty"`
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
 	// ListsMalformed reports that ToolAllowlist or ToolDenylist could not be
-	// decoded out of storage, so neither list is the rule its operator wrote.
+	// decoded out of storage. The list that did not decode is nil here, which
+	// is not the rule its operator wrote; one that did decode is kept.
 	//
 	// It is not stored and not serialised from here: it describes one read of
 	// one row. The management API reports it as the response-only field

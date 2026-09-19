@@ -154,8 +154,8 @@ a bot); PoryMCP does not store agents.
   unlimited; removed with `null` on `PATCH`)
 - `expires_at` (optional; removed with `null` on `PATCH`, after which the key is
   active again)
-- `lists_malformed` (response only, never stored): `true` when the two list
-  columns below could not be decoded on this read. A list that did not decode
+- `lists_malformed` (response only, never stored): `true` when either of the
+  two list columns below could not be decoded on this read. A list that did not decode
   is absent from the response, a list that did is served as stored, and the
   proxy refuses every call on the key either way. See `docs/03-api.md`, Virtual
   keys.
