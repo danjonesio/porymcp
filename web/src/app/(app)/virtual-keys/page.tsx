@@ -17,6 +17,7 @@ import { Textarea } from '@/components/textarea'
 import { api, type Endpoint, type Group, type Upstream, type VirtualKey } from '@/lib/api'
 import { clientHint, clientLabels, clientSnippet, slugName, type ClientKind, type SnippetServer } from '@/lib/clients'
 import { ABSENT } from '@/lib/placeholder'
+import { blankVirtualKeyForm, virtualKeyCreateBody, type KeyForm } from '@/lib/virtual-key-form'
 import { Fragment, useEffect, useState } from 'react'
 
 /** How the dialog offers a key's endpoints: one server per upstream, or the single aggregate URL. */
@@ -62,12 +63,7 @@ export default function VirtualKeysPage() {
   const [copied, setCopied] = useState<string | null>(null)
   const [client, setClient] = useState<ClientKind>('claude-code')
   const [mode, setMode] = useState<ConnectionMode>('aggregate')
-  const [form, setForm] = useState({
-    name: '',
-    target_type: 'upstream',
-    target_id: '',
-    rate_limit: '',
-  })
+  const [form, setForm] = useState<KeyForm>(blankVirtualKeyForm)
 
   function load() {
     Promise.all([
@@ -97,17 +93,12 @@ export default function VirtualKeysPage() {
     try {
       const created = await api<VirtualKey>('/virtual-keys', {
         method: 'POST',
-        body: JSON.stringify({
-          name: form.name,
-          target_type: form.target_type,
-          target_id: form.target_id,
-          rate_limit: form.rate_limit ? Number(form.rate_limit) : undefined,
-        }),
+        body: JSON.stringify(virtualKeyCreateBody(form)),
       })
       setOpen(false)
       setSecret(created)
       setMode(splitAvailable(created) ? 'per-server' : 'aggregate')
-      setForm({ name: '', target_type: 'upstream', target_id: '', rate_limit: '' })
+      setForm(blankVirtualKeyForm())
       load()
     } catch (err) {
       setError((err as Error).message)
@@ -251,7 +242,9 @@ export default function VirtualKeysPage() {
                 <Select
                   name="target_type"
                   value={form.target_type}
-                  onChange={(e) => setForm({ ...form, target_type: e.target.value, target_id: '' })}
+                  onChange={(e) =>
+                    setForm({ ...form, target_type: e.target.value === 'group' ? 'group' : 'upstream', target_id: '' })
+                  }
                 >
                   <option value="upstream">Upstream</option>
                   <option value="group">Group</option>

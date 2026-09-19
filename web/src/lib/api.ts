@@ -216,6 +216,16 @@ export type VirtualKey = {
   created_at: string
   api_key?: string
   proxy_url?: string
+  /** Absent when empty: the server omits an empty list, so absent and [] are the same rule. */
+  tool_allowlist?: string[]
+  /** Absent when empty, like tool_allowlist. The deny list is checked first. */
+  tool_denylist?: string[]
+  /**
+   * True when this key's stored lists could not be decoded. Both lists are then
+   * absent, which looks like a key with no rules, while the proxy refuses every
+   * call on it. A PATCH must send both lists to replace them. Response only.
+   */
+  lists_malformed?: boolean
   /** Enabled members only, always an array. A single-upstream key has one entry mirroring proxy_url. */
   endpoints: Endpoint[]
 }
