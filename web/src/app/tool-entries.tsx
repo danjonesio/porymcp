@@ -2,7 +2,7 @@
 
 import { Badge, type BadgeColor } from '@/components/badge'
 import { Button } from '@/components/button'
-import { Field, Label } from '@/components/fieldset'
+import { Description, Field, Label } from '@/components/fieldset'
 import { Input } from '@/components/input'
 import { Text } from '@/components/text'
 import { useRef, useState } from 'react'
@@ -10,14 +10,30 @@ import { useRef, useState } from 'react'
 /** One row of the list: the entry as stored, what kind it is, and what the lib said about it. */
 export type EntryRow = { text: string; kind: 'tool' | 'prefix'; badge: string; note: string }
 
-const BADGE_TONE: Record<string, BadgeColor> = { 'Cannot be saved': 'pink', 'Not advertised': 'amber' }
+// Pink is broken, amber is held (docs/06-ui.md): an allow entry the deny list overrules is held.
+const BADGE_TONE: Record<string, BadgeColor> = {
+  'Cannot be saved': 'pink',
+  'Also denied': 'amber',
+  'Not advertised': 'amber',
+}
 
 /**
  * One add-by-hand input. Both dialogs are forms with a submit button, so Enter
  * in a text input would save the dialog without the entry; here Enter adds the
  * entry instead, and Add is a plain button.
  */
-function AddEntry({ label, name, onAdd }: { label: string; name: string; onAdd: (entry: string) => void }) {
+function AddEntry({
+  label,
+  hint,
+  name,
+  onAdd,
+}: {
+  label: string
+  /** What this input adds. The two inputs look alike and mean different rules, so each says which it is. */
+  hint: string
+  name: string
+  onAdd: (entry: string) => void
+}) {
   const [text, setText] = useState('')
   function add() {
     const entry = text.trim()
@@ -28,6 +44,7 @@ function AddEntry({ label, name, onAdd }: { label: string; name: string; onAdd: 
   return (
     <Field>
       <Label>{label}</Label>
+      <Description>{hint}</Description>
       <div data-slot="control" className="flex items-start gap-3">
         <Input
           name={name}
@@ -68,6 +85,8 @@ export function ToolEntries({
   onRemove,
   onAddTool,
   onAddPrefix,
+  toolHint,
+  prefixHint,
 }: {
   label: string
   /** Prefixes the input names, so two lists in one dialog do not share one. */
@@ -79,6 +98,10 @@ export function ToolEntries({
   onAddTool: (entry: string) => void
   /** Only a group's tool_filter has prefixes. */
   onAddPrefix?: (entry: string) => void
+  /** addToolHint's sentence for this list's side. */
+  toolHint: string
+  /** addPrefixHint's sentence; read only when onAddPrefix is given. */
+  prefixHint?: string
 }) {
   // Remove unmounts the button that was pressed. Without this the focus falls
   // back to the dialog and the next Tab starts from the top; the heading is the
@@ -132,8 +155,10 @@ export function ToolEntries({
           </ul>
         )}
       </div>
-      <AddEntry label="Add a tool by name" name={`${name}_add_tool`} onAdd={onAddTool} />
-      {onAddPrefix ? <AddEntry label="Add a prefix" name={`${name}_add_prefix`} onAdd={onAddPrefix} /> : null}
+      <AddEntry label="Add a tool by name" hint={toolHint} name={`${name}_add_tool`} onAdd={onAddTool} />
+      {onAddPrefix ? (
+        <AddEntry label="Add a prefix" hint={prefixHint ?? ''} name={`${name}_add_prefix`} onAdd={onAddPrefix} />
+      ) : null}
     </div>
   )
 }

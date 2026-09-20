@@ -91,7 +91,7 @@ export function DiscoverySummary({ result }: { result: Discovery }) {
  * attribute. A real list, so its length and boundaries are announced. Renders
  * nothing for an empty list.
  */
-function ReportedList({ label, items }: { label: string; items: string[] }) {
+export function ReportedList({ label, items }: { label: string; items: string[] }) {
   if (items.length === 0) return null
   return (
     <div>

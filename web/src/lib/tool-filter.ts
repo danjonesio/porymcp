@@ -194,6 +194,25 @@ export function filterListsNothing(f: FilterForm): string {
   return f.mode === 'deny' && f.tools.length + f.prefixes.length === 0 ? 'This filter lists nothing, so it blocks nothing.' : ''
 }
 
+/**
+ * Under "Add a tool by name". Says that the entry is ONE tool, because the input
+ * below it looks the same and means something else.
+ */
+export function addToolHint(side: 'allow' | 'deny'): string {
+  const verb = side === 'allow' ? 'Allows' : 'Denies'
+  return `${verb} one tool. Write its full name: the upstream's slug, two underscores, then the tool's own name.`
+}
+
+/**
+ * Under "Add a prefix". A prefix reads like a tool name and reaches every tool
+ * whose name starts with it, which is how a rule meant for one tool ends up
+ * covering two.
+ */
+export function addPrefixHint(side: 'allow' | 'deny'): string {
+  const verb = side === 'allow' ? 'Allows' : 'Denies'
+  return `${verb} every tool whose own name starts with this text, so it can match more than one. For a single tool, use the box above.`
+}
+
 /** The label of a member's whole-member checkbox. Under allow the same tick is a standing permit, so the word changes with the mode. */
 export function wholeMemberLabel(mode: FilterMode, slug: string): string {
   const verb = mode === 'allow' ? 'Allow' : 'Deny'

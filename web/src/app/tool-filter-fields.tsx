@@ -10,9 +10,12 @@ import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Code, Text } from '@/components/text'
 import { BLOCKS_EVERYTHING_NOW, blocksEverything, entryMark, unmatchedEntries, type Catalogue } from '@/lib/catalogue'
 import type { GroupForm } from '@/lib/group-form'
+import { prefixMatchNote } from '@/lib/rule-conflicts'
 import { filterPermits } from '@/lib/tool-entry'
 import {
   ZERO_ENTRIES,
+  addPrefixHint,
+  addToolHint,
   clampText,
   filterAdmitsNothing,
   filterListsNothing,
@@ -85,6 +88,9 @@ export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoa
       groupTarget: true,
       keyList: false,
       unmatched: kind === 'tool' ? unmatchedTools : unmatchedPrefixes,
+      // Which tools a prefix reaches right now: a prefix typed where a tool name
+      // was meant looks the same in this list, and the names are what show it.
+      prefixNote: kind === 'prefix' ? prefixMatchNote(text, catalogue) : undefined,
     })
     return { text, kind, badge: m.badge, note: m.note }
   }
@@ -162,6 +168,8 @@ export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoa
               }
               onAddTool={(entry) => setFilter({ ...f, tools: toggleEntry(f.tools, entry, true) })}
               onAddPrefix={(entry) => setFilter({ ...f, prefixes: toggleEntry(f.prefixes, entry, true) })}
+              toolHint={addToolHint(side)}
+              prefixHint={addPrefixHint(side)}
             />
             <HelpDisclosure label="How does a prefix match?">
               <p>

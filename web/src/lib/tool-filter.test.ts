@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   ZERO_ENTRIES,
+  addPrefixHint,
+  addToolHint,
   blankFilterForm,
   clampText,
   filterAdmitsNothing,
@@ -200,4 +202,12 @@ test('clampText cuts by code point and never leaves half a surrogate pair', () =
   const got = clampText(s, 2)
   assert.deepEqual(got, { text: 'a\u{1f600}', cut: true })
   assert.equal(got.text.length, 3)
+})
+
+// PORM-181 AC5: the two add inputs say what they add, and the prefix one says it can match more than one tool.
+test('addToolHint and addPrefixHint are worded from the side', () => {
+  assert.match(addToolHint('deny'), /^Denies one tool\./)
+  assert.match(addToolHint('allow'), /^Allows one tool\./)
+  assert.match(addPrefixHint('deny'), /^Denies every tool whose own name starts with this text, so it can match more than one\./)
+  assert.match(addPrefixHint('allow'), /^Allows every tool/)
 })
