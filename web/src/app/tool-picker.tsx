@@ -94,6 +94,7 @@ function MemberBlock({
   onTick,
   onLoad,
   wholeMember,
+  rowNotes,
 }: {
   member: MemberCatalogue
   /** Some member of this catalogue is loading: no other load may start (useCatalogue drops it). */
@@ -107,6 +108,7 @@ function MemberBlock({
   onTick: (entry: string, on: boolean) => void
   onLoad: (upstreamId: string) => void
   wholeMember?: WholeMember
+  rowNotes?: RowNotes
 }) {
   // On the transport alone. The group form hides this line for a disabled
   // member because a disabled member is off the proxy's path; it is not off the
@@ -193,6 +195,7 @@ function MemberBlock({
                   const notes: string[] = []
                   if (!nameable) notes.push(unnameableRowNote(side, !!wholeMember, !!covered))
                   if (covered) notes.push(coveredNote(covered))
+                  if (rowNotes) notes.push(...rowNotes(member.slug, tool.name))
                   return (
                     <ToolRow
                       key={index}
@@ -229,6 +232,12 @@ function MemberBlock({
   )
 }
 
+/**
+ * Further lines under a tool's row, from rules the picker does not hold itself:
+ * in the key dialog, that the deny list or the group's filter stops this tool.
+ */
+export type RowNotes = (slug: string, name: string) => string[]
+
 /** The group dialog's whole-member rule: one prefixes entry per member, labelled from the mode. */
 export type WholeMember = {
   label: (slug: string) => string
@@ -257,6 +266,7 @@ export function ToolPicker({
   onTick,
   onLoad,
   wholeMember,
+  rowNotes,
 }: {
   catalogue: Catalogue
   side: 'allow' | 'deny'
@@ -268,6 +278,7 @@ export function ToolPicker({
   onTick: (entry: string, on: boolean) => void
   onLoad: (upstreamId: string) => void
   wholeMember?: WholeMember
+  rowNotes?: RowNotes
 }) {
   const [find, setFind] = useState('')
   const rows = catalogue.members.reduce((n, m) => n + m.tools.length, 0)
@@ -304,6 +315,7 @@ export function ToolPicker({
           onTick={onTick}
           onLoad={onLoad}
           wholeMember={wholeMember}
+          rowNotes={rowNotes}
         />
       ))}
     </div>

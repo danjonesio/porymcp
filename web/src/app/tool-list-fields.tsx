@@ -1,5 +1,6 @@
 'use client'
 
+import { ReportedList } from '@/app/discovery-panel'
 import { ToolEntries, type EntryRow } from '@/app/tool-entries'
 import { ToolPicker, ToolPickerLoad } from '@/app/tool-picker'
 import { Button } from '@/components/button'
@@ -8,8 +9,19 @@ import { Subheading } from '@/components/heading'
 import { errorLine } from '@/components/primitives'
 import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Text } from '@/components/text'
+import type { Group } from '@/lib/api'
 import { entryMark, unmatchedEntries, type Catalogue } from '@/lib/catalogue'
-import { toggleEntry } from '@/lib/tool-filter'
+import {
+  ALSO_DENIED_NOTE,
+  GROUP_BLOCKS_NOTE,
+  allowEntryDeniedBy,
+  allowListAdmitsNothing,
+  deniedBy,
+  deniedRowNote,
+  groupBlocks,
+  groupFilterSummary,
+} from '@/lib/rule-conflicts'
+import { addToolHint, toggleEntry } from '@/lib/tool-filter'
 import type { KeyForm } from '@/lib/virtual-key-form'
 import { useState } from 'react'
 
@@ -18,6 +30,10 @@ export type ToolListFieldsProps = {
   onChange: (patch: Partial<KeyForm>) => void
   /** The key's target is a group, which is when an allow entry has to name a member. */
   groupTarget: boolean
+  /** The target group, when there is one and the page has it: its filter is the third rule on this key. */
+  group?: Group
+  /** On a single-upstream key, that upstream's slug, so a bare entry can be judged; '' otherwise. */
+  targetSlug: string
   /** The key being edited reports lists_malformed: its stored lists cannot be read. */
   unreadable: boolean
   catalogue: Catalogue
@@ -35,6 +51,7 @@ function RuleList({
   form,
   onChange,
   groupTarget,
+  targetSlug,
   catalogue,
 }: {
   title: string
@@ -43,13 +60,16 @@ function RuleList({
   form: KeyForm
   onChange: (patch: Partial<KeyForm>) => void
   groupTarget: boolean
+  targetSlug: string
   catalogue: Catalogue
 }) {
   const list = form[field]
   const set = (next: string[]) => onChange({ [field]: next })
   const unmatched = unmatchedEntries(list, catalogue, { prefix: false })
   const entries: EntryRow[] = list.map((text) => {
-    const m = entryMark(text, { kind: 'tool', side, groupTarget, keyList: true, unmatched })
+    // The deny list is checked first, so an allow entry it also names never takes effect.
+    const overruled = side === 'allow' && allowEntryDeniedBy(text, form.tool_denylist, targetSlug) ? ALSO_DENIED_NOTE : ''
+    const m = entryMark(text, { kind: 'tool', side, groupTarget, keyList: true, unmatched, overruled })
     return { text, kind: 'tool', badge: m.badge, note: m.note }
   })
   return (
@@ -62,7 +82,32 @@ function RuleList({
         emptyNote=""
         onRemove={(row) => set(toggleEntry(list, row.text, false))}
         onAddTool={(entry) => set(toggleEntry(list, entry, true))}
+        toolHint={addToolHint(side)}
       />
+    </div>
+  )
+}
+
+/**
+ * What the key's group already does, read-only. The group's filter is the third
+ * rule the proxy runs on this key, and without this block the dialog shows two
+ * of the three. Its entries are stored text, drawn as the Tools panel draws a
+ * reported name.
+ */
+function GroupFilterBlock({ group }: { group: Group }) {
+  const s = groupFilterSummary(group)
+  return (
+    <div data-slot="control" className="space-y-3 text-base/6 sm:text-sm/6">
+      {s.tone === 'pink' ? (
+        <p role="status" className={errorLine}>
+          {s.sentence}
+        </p>
+      ) : (
+        <Text>{s.sentence}</Text>
+      )}
+      <ReportedList label={`Tools the group ${group.name} lists`} items={s.tools} />
+      <ReportedList label={`Prefixes the group ${group.name} lists`} items={s.prefixes} />
+      {s.more > 0 ? <Text>{`And ${s.more} more.`}</Text> : null}
     </div>
   )
 }
@@ -80,6 +125,8 @@ export function ToolListFields({
   form,
   onChange,
   groupTarget,
+  group,
+  targetSlug,
   unreadable,
   catalogue,
   rateLimited,
@@ -88,6 +135,17 @@ export function ToolListFields({
 }: ToolListFieldsProps) {
   const [ticking, setTicking] = useState<'deny' | 'allow'>('deny')
   const field = ticking === 'allow' ? 'tool_allowlist' : 'tool_denylist'
+  const nothingAllowed = allowListAdmitsNothing(form.tool_allowlist, form.tool_denylist, groupTarget, targetSlug)
+  const blockedByGroup = group ? groupBlocks(group) : null
+  // Lines under a tool's row for the two rules this picker does not hold: the
+  // group's filter, and, while ticks go to the allow list, the deny list.
+  const rowNotes = (slug: string, name: string): string[] => {
+    const notes: string[] = []
+    if (blockedByGroup?.(slug, name)) notes.push(GROUP_BLOCKS_NOTE)
+    const denied = ticking === 'allow' ? deniedBy(slug, name, form.tool_denylist) : ''
+    if (denied) notes.push(deniedRowNote(denied))
+    return notes
+  }
   if (unreadable && !form.listsReplace) {
     return (
       <Fieldset>
@@ -112,6 +170,12 @@ export function ToolListFields({
           ? "The deny list is checked first, then the allow list, then the group's filter. Each one can only take tools away."
           : 'The deny list is checked first, then the allow list. Each one can only take tools away.'}
       </Text>
+      {group ? <GroupFilterBlock group={group} /> : null}
+      {nothingAllowed ? (
+        <p role="status" className={errorLine}>
+          {nothingAllowed}
+        </p>
+      ) : null}
       {form.listsReplace ? (
         <Text>
           Saving replaces both lists. At least one of them could not be read, and a list that could not be read is
@@ -126,6 +190,7 @@ export function ToolListFields({
         form={form}
         onChange={onChange}
         groupTarget={groupTarget}
+        targetSlug={targetSlug}
         catalogue={catalogue}
       />
       <RuleList
@@ -135,6 +200,7 @@ export function ToolListFields({
         form={form}
         onChange={onChange}
         groupTarget={groupTarget}
+        targetSlug={targetSlug}
         catalogue={catalogue}
       />
       <div data-slot="control" className="space-y-8">
@@ -165,6 +231,7 @@ export function ToolListFields({
               name={field}
               onTick={(entry, on) => onChange({ [field]: toggleEntry(form[field], entry, on) })}
               onLoad={(id) => onLoad(id)}
+              rowNotes={rowNotes}
             />
           </>
         ) : null}

@@ -459,6 +459,8 @@ export default function VirtualKeysPage() {
                 form={form}
                 onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
                 groupTarget={groupTarget}
+                group={groupTarget ? groups.find((g) => g.id === targetId) : undefined}
+                targetSlug={groupTarget ? '' : (members[0]?.slug ?? '')}
                 unreadable={!!editing?.lists_malformed}
                 catalogue={catalogue}
                 rateLimited={rateLimited}
