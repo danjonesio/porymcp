@@ -172,9 +172,12 @@ export function ToolListFields({
       </Text>
       {group ? <GroupFilterBlock group={group} /> : null}
       {nothingAllowed ? (
-        <p role="status" className={errorLine}>
-          {nothingAllowed}
-        </p>
+        // A control slot, so the Fieldset gives it the gap it gives each block.
+        <div data-slot="control">
+          <p role="status" className={errorLine}>
+            {nothingAllowed}
+          </p>
+        </div>
       ) : null}
       {form.listsReplace ? (
         <Text>
