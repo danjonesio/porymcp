@@ -190,21 +190,35 @@ export function notAdvertisedNote(side: 'allow' | 'deny', keyList: boolean): str
     : 'No member advertises this tool right now. The rule is kept and applies if the tool comes back.'
 }
 
-export type EntryMark = { badge: '' | 'Cannot be saved' | 'Not advertised' | 'Prefix' | 'Any member'; note: string }
+export type EntryMark = {
+  badge: '' | 'Cannot be saved' | 'Also denied' | 'Not advertised' | 'Prefix' | 'Any member'
+  note: string
+}
 
 /**
  * The badge and sentence for one row of the Entries list. A write-side problem
- * wins, then Not advertised (complete catalogue only, via `unmatched`), then
- * what kind of entry it is.
+ * wins; then an allow entry the key's deny list overrules (`overruled` is that
+ * sentence, from rule-conflicts.ts); then Not advertised (complete catalogue
+ * only, via `unmatched`); then what kind of entry it is. A prefix row carries
+ * `prefixNote`, the tools it matches right now.
  */
 export function entryMark(
   entry: string,
-  o: { kind: 'tool' | 'prefix'; side: 'allow' | 'deny'; groupTarget: boolean; keyList: boolean; unmatched: string[] },
+  o: {
+    kind: 'tool' | 'prefix'
+    side: 'allow' | 'deny'
+    groupTarget: boolean
+    keyList: boolean
+    unmatched: string[]
+    overruled?: string
+    prefixNote?: string
+  },
 ): EntryMark {
   const problem = entryProblem(entry, o)
   if (problem) return { badge: 'Cannot be saved', note: problem }
+  if (o.overruled) return { badge: 'Also denied', note: o.overruled }
   if (o.unmatched.includes(entry)) return { badge: 'Not advertised', note: notAdvertisedNote(o.side, o.keyList) }
-  if (o.kind === 'prefix') return { badge: 'Prefix', note: '' }
+  if (o.kind === 'prefix') return { badge: 'Prefix', note: o.prefixNote ?? '' }
   // Only where there is more than one member for a bare name to reach.
   if (o.groupTarget && !splitEntry(entry).scoped) return { badge: 'Any member', note: '' }
   return { badge: '', note: '' }

@@ -189,3 +189,14 @@ test('entryMark: a problem wins, then Not advertised, then the kind of entry', (
 test('coveredNote names the entry that covers the row', () => {
   assert.equal(coveredNote('gh__'), 'Covered by gh__. Change it in the entries above.')
 })
+
+// PORM-181: an overruled allow entry outranks Not advertised, and a prefix row carries what it matches.
+test('entryMark: Also denied sits after a problem and before Not advertised; a prefix row carries its note', () => {
+  const o = { kind: 'tool' as const, side: 'allow' as const, groupTarget: true, keyList: true, unmatched: ['gh__gone'] }
+  assert.deepEqual(entryMark('gh__gone', { ...o, overruled: 'Deny wins.' }), { badge: 'Also denied', note: 'Deny wins.' })
+  assert.equal(entryMark('search', { ...o, overruled: 'Deny wins.' }).badge, 'Cannot be saved')
+  assert.deepEqual(entryMark('gh__', { ...o, kind: 'prefix' as const, side: 'deny' as const, unmatched: [], prefixNote: 'Matches 2 tools.' }), {
+    badge: 'Prefix',
+    note: 'Matches 2 tools.',
+  })
+})
