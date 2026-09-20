@@ -9,15 +9,33 @@ import { Description, Field, FieldGroup, Fieldset, Label, Legend } from '@/compo
 import { Heading, Subheading } from '@/components/heading'
 import { HelpDisclosure } from '@/components/help-disclosure'
 import { Input } from '@/components/input'
+import { errorLine } from '@/components/primitives'
 import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Select } from '@/components/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { Strong } from '@/components/text'
 import { Textarea } from '@/components/textarea'
-import { api, type Endpoint, type Group, type Upstream, type VirtualKey } from '@/lib/api'
+import { ToolListFields } from '@/app/tool-list-fields'
+import { ApiError, api, type Endpoint, type Group, type Upstream, type VirtualKey } from '@/lib/api'
+import type { Member } from '@/lib/catalogue'
 import { clientHint, clientLabels, clientSnippet, slugName, type ClientKind, type SnippetServer } from '@/lib/clients'
+import { editErrorMessage } from '@/lib/edit-error'
 import { ABSENT } from '@/lib/placeholder'
-import { Fragment, useEffect, useState } from 'react'
+import { useCatalogue } from '@/lib/use-catalogue'
+import {
+  KEY_RULES_STALE,
+  blankVirtualKeyForm,
+  formFromVirtualKey,
+  keyPolicyStale,
+  keyRulesBadge,
+  keySaveBlocked,
+  listsSent,
+  virtualKeyCreateBody,
+  virtualKeyPatchBody,
+  type KeyForm,
+} from '@/lib/virtual-key-form'
+import clsx from 'clsx'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
 /** How the dialog offers a key's endpoints: one server per upstream, or the single aggregate URL. */
 type ConnectionMode = 'per-server' | 'aggregate'
@@ -56,18 +74,28 @@ export default function VirtualKeysPage() {
   const [upstreams, setUpstreams] = useState<Upstream[]>([])
   const [groups, setGroups] = useState<Group[]>([])
   const [open, setOpen] = useState(false)
+  /** The row the dialog is editing; null while it is creating. Decides the mode, the title and the submit. */
+  const [editing, setEditing] = useState<VirtualKey | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
+  // Counts failures, not messages, so a second identical refusal still scrolls into view.
+  const [formErrorSeq, setFormErrorSeq] = useState(0)
+  // The same in-flight bookkeeping as the Groups page: `openRef` mirrors `open`
+  // for a save whose dialog was closed meanwhile, and `dialogSeq` tells a
+  // request which open it belongs to, since one dialog serves every row.
+  const openRef = useRef(false)
+  const dialogSeq = useRef(0)
+  const formErrorRef = useRef<HTMLParagraphElement>(null)
+  // The tool catalogue's reset key: every open, and every change of target on
+  // create, starts from nothing loaded and drops the last target's answers.
+  const [catalogueKey, setCatalogueKey] = useState(0)
   const [secret, setSecret] = useState<VirtualKey | null>(null)
   const [pendingDelete, setPendingDelete] = useState<VirtualKey | null>(null)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState<string | null>(null)
   const [client, setClient] = useState<ClientKind>('claude-code')
   const [mode, setMode] = useState<ConnectionMode>('aggregate')
-  const [form, setForm] = useState({
-    name: '',
-    target_type: 'upstream',
-    target_id: '',
-    rate_limit: '',
-  })
+  const [form, setForm] = useState<KeyForm>(blankVirtualKeyForm)
 
   function load() {
     Promise.all([
@@ -85,6 +113,75 @@ export default function VirtualKeysPage() {
 
   useEffect(load, [])
 
+  useEffect(() => {
+    // The panel is a bottom sheet on a phone, so a failed submit's message
+    // would otherwise sit off-screen above the operator.
+    formErrorRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [formErrorSeq])
+
+  // What the dialog's key points at: the row's target on an edit, where it is
+  // fixed, and the form's on a create.
+  const targetType = editing ? editing.target_type : form.target_type
+  const targetId = editing ? editing.target_id : form.target_id
+  const groupTarget = targetType === 'group'
+  const members = useMemo<Member[]>(() => {
+    const ids = groupTarget ? (groups.find((g) => g.id === targetId)?.upstream_ids ?? []) : targetId ? [targetId] : []
+    return ids.flatMap((id) => {
+      const u = upstreams.find((x) => x.id === id)
+      return u ? [{ upstream_id: u.id, slug: u.slug, name: u.name, enabled: u.enabled, transport: u.transport }] : []
+    })
+  }, [groupTarget, targetId, groups, upstreams])
+  const { catalogue, rateLimited, load: loadTools } = useCatalogue(members, catalogueKey)
+  const blocked = keySaveBlocked(editing, form, groupTarget)
+
+  function openCreate() {
+    setEditing(null)
+    setForm(blankVirtualKeyForm())
+    opened()
+  }
+
+  function openEdit(vk: VirtualKey) {
+    setEditing(vk)
+    setForm(formFromVirtualKey(vk))
+    opened()
+  }
+
+  /** The part of every open that the in-flight bookkeeping depends on. */
+  function opened() {
+    dialogSeq.current++
+    openRef.current = true
+    setCatalogueKey((n) => n + 1)
+    setFormError('')
+    setSaving(false)
+    setOpen(true)
+  }
+
+  /** Every way out. `editing` is left alone so the closing panel does not re-render as the Create form. */
+  function close() {
+    openRef.current = false
+    setOpen(false)
+  }
+
+  /** A failed save or create. `mine` is the dialog count the request started under. */
+  function failed(message: string, mine: number, err?: unknown) {
+    if (err instanceof ApiError && err.status === 404) void load()
+    if (openRef.current && dialogSeq.current === mine) {
+      setFormError(message)
+      setFormErrorSeq((n) => n + 1)
+    } else {
+      setError(message)
+    }
+  }
+
+  /**
+   * Entries name slugs, so they belong to the target they were ticked under. A
+   * new target clears both lists, and the catalogue with its rate-limit line.
+   */
+  function retarget(patch: Partial<KeyForm>) {
+    setForm((f) => ({ ...f, ...patch, tool_allowlist: [], tool_denylist: [] }))
+    setCatalogueKey((n) => n + 1)
+  }
+
   function targetName(a: VirtualKey) {
     if (a.target_type === 'group') {
       return groups.find((g) => g.id === a.target_id)?.name || 'Group'
@@ -92,26 +189,71 @@ export default function VirtualKeysPage() {
     return upstreams.find((u) => u.id === a.target_id)?.name || 'Upstream'
   }
 
-  async function create(e: React.FormEvent) {
-    e.preventDefault()
+  async function create() {
+    const mine = dialogSeq.current
+    setSaving(true)
     try {
       const created = await api<VirtualKey>('/virtual-keys', {
         method: 'POST',
-        body: JSON.stringify({
-          name: form.name,
-          target_type: form.target_type,
-          target_id: form.target_id,
-          rate_limit: form.rate_limit ? Number(form.rate_limit) : undefined,
-        }),
+        body: JSON.stringify(virtualKeyCreateBody(form)),
       })
-      setOpen(false)
+      if (dialogSeq.current === mine) {
+        close()
+        setForm(blankVirtualKeyForm())
+      }
       setSecret(created)
       setMode(splitAvailable(created) ? 'per-server' : 'aggregate')
-      setForm({ name: '', target_type: 'upstream', target_id: '', rate_limit: '' })
       load()
     } catch (err) {
-      setError((err as Error).message)
+      failed(editErrorMessage(err, 'virtual key', 'save'), mine, err)
+    } finally {
+      if (dialogSeq.current === mine) setSaving(false)
     }
+  }
+
+  /**
+   * Send only what changed (see virtualKeyPatchBody). A body that carries a list
+   * is checked for staleness as the last act before the PATCH, for the lists it
+   * carries only: PATCH replaces a whole list and the API has no 409 yet
+   * (PORM-119). The re-read is inside the try, so if it fails nothing is sent.
+   * The 200 is the row itself, so the table takes it in place.
+   */
+  async function save() {
+    const row = editing
+    if (!row) return
+    const body = virtualKeyPatchBody(row, form)
+    if (Object.keys(body).length === 0) {
+      close()
+      return
+    }
+    const mine = dialogSeq.current
+    setSaving(true)
+    try {
+      const fields = listsSent(row, form)
+      if (fields.length > 0) {
+        const fresh = await api<VirtualKey | null>(`/virtual-keys/${row.id}`)
+        // No readable row is not a fresh row: refuse, as for a changed one.
+        if (!fresh || keyPolicyStale(row, fresh, fields)) {
+          failed(KEY_RULES_STALE, mine)
+          return
+        }
+      }
+      const saved = await api<VirtualKey>(`/virtual-keys/${row.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      setKeys((list) => list.map((x) => (x.id === saved.id ? saved : x)))
+      if (dialogSeq.current === mine) close()
+    } catch (err) {
+      failed(editErrorMessage(err, 'virtual key', 'save'), mine, err)
+    } finally {
+      if (dialogSeq.current === mine) setSaving(false)
+    }
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setFormError('')
+    if (blocked) return
+    if (editing) void save()
+    else void create()
   }
 
   async function rotate(id: string) {
@@ -172,14 +314,14 @@ export default function VirtualKeysPage() {
     <>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <Heading>Virtual keys</Heading>
-        <Button type="button" color="cyan" onClick={() => setOpen(true)}>
+        <Button type="button" color="cyan" onClick={openCreate}>
           Create virtual key
         </Button>
       </div>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
         One identity per client: its own key, target, limits and audit trail. The key is shown once.
       </p>
-      {error ? <p className="mt-4 text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400">{error}</p> : null}
+      {error ? <p className={clsx('mt-4', errorLine)}>{error}</p> : null}
 
       {keys.length === 0 ? (
         <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">No virtual keys yet.</p>
@@ -197,82 +339,110 @@ export default function VirtualKeysPage() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {keys.map((a) => (
-              <TableRow key={a.id}>
-                <TableCell className="font-medium">{a.name}</TableCell>
-                <TableCell className="font-mono text-zinc-500">{a.key_prefix}…</TableCell>
-                <TableCell className="max-w-xs font-mono text-zinc-500">
-                  <div className="truncate">{a.proxy_url || ABSENT}</div>
-                  {(a.endpoints?.length ?? 0) > 1 ? (
-                    <div className="text-base/6 sm:text-sm/6">+{a.endpoints?.length ?? 0} per-server</div>
-                  ) : null}
-                </TableCell>
-                <TableCell>
-                  {a.target_type}: {targetName(a)}
-                </TableCell>
-                <TableCell>
-                  <Badge color={a.status === 'active' ? 'lime' : a.status === 'revoked' ? 'pink' : 'amber'}>
-                    {a.status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="tabular-nums text-zinc-500">
-                  {a.last_used_at ? new Date(a.last_used_at).toLocaleString() : 'Never'}
-                </TableCell>
-                <TableCell className="text-right">
-                  <span className="inline-flex gap-2">
-                    <Button type="button" plain onClick={() => rotate(a.id)}>
-                      Rotate
-                    </Button>
-                    <Button type="button" plain onClick={() => revoke(a.id)}>
-                      Revoke
-                    </Button>
-                    <Button type="button" plain onClick={() => setPendingDelete(a)}>
-                      Delete
-                    </Button>
-                  </span>
-                </TableCell>
-              </TableRow>
-            ))}
+            {keys.map((a) => {
+              const rules = keyRulesBadge(a)
+              return (
+                <TableRow key={a.id}>
+                  <TableCell className="font-medium">{a.name}</TableCell>
+                  <TableCell className="font-mono text-zinc-500">{a.key_prefix}…</TableCell>
+                  <TableCell className="max-w-xs font-mono text-zinc-500">
+                    <div className="truncate">{a.proxy_url || ABSENT}</div>
+                    {(a.endpoints?.length ?? 0) > 1 ? (
+                      <div className="text-base/6 sm:text-sm/6">+{a.endpoints?.length ?? 0} per-server</div>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>
+                    {a.target_type}: {targetName(a)}
+                    {rules ? (
+                      <div className="mt-1">
+                        <Badge color={rules.tone}>{rules.label}</Badge>
+                      </div>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>
+                    <Badge color={a.status === 'active' ? 'lime' : a.status === 'revoked' ? 'pink' : 'amber'}>
+                      {a.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-zinc-500 tabular-nums">
+                    {a.last_used_at ? new Date(a.last_used_at).toLocaleString() : 'Never'}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <span className="inline-flex gap-2">
+                      <Button type="button" plain onClick={() => openEdit(a)}>
+                        Edit
+                      </Button>
+                      <Button type="button" plain onClick={() => rotate(a.id)}>
+                        Rotate
+                      </Button>
+                      <Button type="button" plain onClick={() => revoke(a.id)}>
+                        Revoke
+                      </Button>
+                      <Button type="button" plain onClick={() => setPendingDelete(a)}>
+                        Delete
+                      </Button>
+                    </span>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
           </TableBody>
         </Table>
       )}
 
-      <Dialog open={open} onClose={setOpen}>
-        <form onSubmit={create}>
-          <DialogTitle>Create virtual key</DialogTitle>
+      <Dialog open={open} onClose={close} size="2xl">
+        <form onSubmit={submit}>
+          <DialogTitle>{editing ? 'Edit virtual key' : 'Create virtual key'}</DialogTitle>
+          {editing ? (
+            <DialogDescription>
+              {`${editing.target_type === 'group' ? 'Group' : 'Upstream'}: ${targetName(editing)}. The target is fixed here.`}
+            </DialogDescription>
+          ) : null}
           <DialogBody>
+            {formError ? (
+              <p ref={formErrorRef} role="alert" className={clsx('mb-4', errorLine)}>
+                {formError}
+              </p>
+            ) : null}
             <FieldGroup>
               <Field>
                 <Label>Name</Label>
                 <Input name="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
               </Field>
-              <Field>
-                <Label>Target type</Label>
-                <Select
-                  name="target_type"
-                  value={form.target_type}
-                  onChange={(e) => setForm({ ...form, target_type: e.target.value, target_id: '' })}
-                >
-                  <option value="upstream">Upstream</option>
-                  <option value="group">Group</option>
-                </Select>
-              </Field>
-              <Field>
-                <Label>Target</Label>
-                <Select
-                  name="target_id"
-                  value={form.target_id}
-                  onChange={(e) => setForm({ ...form, target_id: e.target.value })}
-                  required
-                >
-                  <option value="">Select…</option>
-                  {targets.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
+              {editing ? null : (
+                <>
+                  <Field>
+                    <Label>Target type</Label>
+                    <Select
+                      name="target_type"
+                      value={form.target_type}
+                      onChange={(e) =>
+                        retarget({ target_type: e.target.value === 'group' ? 'group' : 'upstream', target_id: '' })
+                      }
+                    >
+                      <option value="upstream">Upstream</option>
+                      <option value="group">Group</option>
+                    </Select>
+                  </Field>
+                  <Field>
+                    <Label>Target</Label>
+                    <Select
+                      name="target_id"
+                      value={form.target_id}
+                      onChange={(e) => retarget({ target_id: e.target.value })}
+                      required
+                    >
+                      <option value="">Select…</option>
+                      {targets.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </Select>
+                    <Description>Changing the target clears both lists.</Description>
+                  </Field>
+                </>
+              )}
               <Field>
                 <Label>Rate limit</Label>
                 <Input
@@ -284,14 +454,34 @@ export default function VirtualKeysPage() {
                 />
                 <Description>Optional requests per minute.</Description>
               </Field>
+              {/* Last, so Save is one Tab past the final tool row. */}
+              <ToolListFields
+                form={form}
+                onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+                groupTarget={groupTarget}
+                unreadable={!!editing?.lists_malformed}
+                catalogue={catalogue}
+                rateLimited={rateLimited}
+                onLoad={loadTools}
+                emptyHint={
+                  // On the target, not on the mode: a create can pick a group
+                  // that has no members, and the chosen target is then on screen.
+                  !targetId
+                    ? 'Choose a target to see its tools.'
+                    : groupTarget
+                      ? 'This group has no upstreams, so there are no tools to tick.'
+                      : 'This upstream is no longer there, so there are no tools to tick.'
+                }
+              />
+              {blocked ? <p className={errorLine}>{blocked}</p> : null}
             </FieldGroup>
           </DialogBody>
           <DialogActions>
-            <Button type="button" plain onClick={() => setOpen(false)}>
+            <Button type="button" plain onClick={close}>
               Cancel
             </Button>
-            <Button type="submit" color="cyan">
-              Create
+            <Button type="submit" color="cyan" disabled={saving || !!blocked}>
+              {saving ? 'Saving…' : editing ? 'Save changes' : 'Create'}
             </Button>
           </DialogActions>
         </form>

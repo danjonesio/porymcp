@@ -8,6 +8,7 @@ import { Button } from '@/components/button'
 import { Dialog, DialogActions, DialogBody, DialogDescription, DialogTitle } from '@/components/dialog'
 import { Divider } from '@/components/divider'
 import { Heading } from '@/components/heading'
+import { errorLine } from '@/components/primitives'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { Text } from '@/components/text'
 import { ApiError, api, discoverUpstream, discoverUpstreamPayload, type Discovery, type Upstream } from '@/lib/api'
@@ -72,8 +73,6 @@ const DOT = {
   passed: 'bg-lime-500 dark:bg-lime-400',
   failed: 'bg-pink-500 dark:bg-pink-400',
 }
-
-const errorLine = 'text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400'
 
 export default function UpstreamsPage() {
   const [items, setItems] = useState<Upstream[]>([])

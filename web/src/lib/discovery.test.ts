@@ -7,26 +7,11 @@ import {
   hostOf,
   plainHTTPCredential,
   protocolSummary,
-  scopedToolName,
 } from './discovery.ts'
 
 // Run with: npm test (node --test). The .ts extensions above are required:
 // Node will not resolve an extensionless TypeScript specifier; tsconfig.json
 // sets allowImportingTsExtensions so tsc accepts them.
-
-test('scopedToolName joins the slug and the tool name the way the proxy does', () => {
-  assert.equal(scopedToolName('github', 'create_issue'), 'github__create_issue')
-})
-
-test('scopedToolName leaves a tool name that already contains the separator alone', () => {
-  // ParseCanonical splits on the first separator, so this round-trips to
-  // slug "github", tool "a__b".
-  assert.equal(scopedToolName('github', 'a__b'), 'github__a__b')
-})
-
-test('scopedToolName yields nothing without a slug', () => {
-  assert.equal(scopedToolName('', 'x'), '')
-})
 
 test('discoverable accepts absolute http and https URLs', () => {
   assert.equal(discoverable('https://h/mcp'), true)

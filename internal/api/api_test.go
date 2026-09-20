@@ -1902,6 +1902,36 @@ func TestVirtualKeyWithUndecodableLists(t *testing.T) {
 		t.Fatalf("the seeded key is not blocked; the rest of this test proves nothing")
 	}
 
+	// reported says whether the management API tells a client the key's lists
+	// are unreadable. PORM-4 SR6: the dashboard cannot otherwise tell this key
+	// from a healthy one, because the list that did not decode reads back absent.
+	reported := func(t *testing.T) (get, list, present bool) {
+		t.Helper()
+		body := getJSON(t, h, "/virtual-keys/"+id)
+		_, present = body["lists_malformed"]
+		get, _ = body["lists_malformed"].(bool)
+		keys, _ := getJSON(t, h, "/virtual-keys")["virtual_keys"].([]any)
+		for _, k := range keys {
+			if m, _ := k.(map[string]any); m["id"] == id {
+				list, _ = m["lists_malformed"].(bool)
+			}
+		}
+		return get, list, present
+	}
+
+	t.Run("the API reports the key as unreadable", func(t *testing.T) {
+		get, list, _ := reported(t)
+		if !get || !list {
+			t.Fatalf("lists_malformed: get=%v list=%v, want true on both routes", get, list)
+		}
+		// A healthy key carries no such member at all, so a client written
+		// before the field existed sees no change.
+		healthy, _ := mustVirtualKey(t, h, "healthy", "upstream", ghID)["id"].(string)
+		if _, ok := getJSON(t, h, "/virtual-keys/"+healthy)["lists_malformed"]; ok {
+			t.Error("a healthy key's response carries lists_malformed; want it absent")
+		}
+	})
+
 	for _, tc := range []struct{ name, method, path string }{
 		{"rotate", http.MethodPost, "/virtual-keys/" + id + "/rotate"},
 		{"revoke", http.MethodPost, "/virtual-keys/" + id + "/revoke"},
@@ -1930,6 +1960,22 @@ func TestVirtualKeyWithUndecodableLists(t *testing.T) {
 		}
 		if !blocked(t) {
 			t.Error("after a rename the key is no longer blocked")
+		}
+	})
+
+	t.Run("a client cannot clear the flag by sending it", func(t *testing.T) {
+		// lists_malformed is response only: upsertVirtualKey has no such field,
+		// so a client that round-trips the key it read changes nothing.
+		rr := doJSON(t, h, http.MethodPatch, "/virtual-keys/"+id, "test-admin",
+			map[string]any{"name": "still blocked", "lists_malformed": false})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("patch: %d %s", rr.Code, rr.Body.String())
+		}
+		if get, _, _ := reported(t); !get {
+			t.Error("sending lists_malformed:false cleared the report")
+		}
+		if !blocked(t) {
+			t.Error("sending lists_malformed:false unblocked the key")
 		}
 	})
 
@@ -1966,6 +2012,9 @@ func TestVirtualKeyWithUndecodableLists(t *testing.T) {
 		}
 		if blocked(t) {
 			t.Fatal("the key is still blocked after both lists were replaced")
+		}
+		if _, _, present := reported(t); present {
+			t.Error("lists_malformed is still in the response after both lists were replaced")
 		}
 		allow, deny := storedLists(t, h, id)
 		if !slices.Equal(allow, []string{ghSlug + "__read_issue"}) || !slices.Equal(deny, []string{"delete_repo"}) {

@@ -36,6 +36,13 @@ type virtualKeyPublic struct {
 	Status   string `json:"status"`
 	APIKey   string `json:"api_key,omitempty"`
 	ProxyURL string `json:"proxy_url,omitempty"`
+	// ListsUnreadable says this key's stored tool lists could not be decoded: the
+	// proxy refuses every call on it, and a PATCH must send both lists to replace
+	// them (see patchVirtualKey). Response only. It mirrors the embedded
+	// models.VirtualKey.ListsMalformed, whose tag stays json:"-" because that
+	// field travels back into the store meaning "leave both columns alone". The
+	// Go name differs from that field's so nothing is shadowed.
+	ListsUnreadable bool `json:"lists_malformed,omitempty"`
 	// Endpoints is never omitempty and never nil: an empty array means
 	// "nothing is reachable through this key right now", which the dashboard
 	// renders and an installer must see. A nil slice would marshal as null and
@@ -198,10 +205,11 @@ func (s *Server) presentVirtualKey(ctx context.Context, ix *endpointIndex, a *mo
 // minted key nobody can ever read again.
 func (s *Server) presentVirtualKeyWithEndpoints(a *models.VirtualKey, plaintext string, eps []virtualKeyEndpoint) virtualKeyPublic {
 	out := virtualKeyPublic{
-		VirtualKey: *a,
-		Status:     a.Status(),
-		ProxyURL:   s.proxyURL(a.ID, "mcp"),
-		Endpoints:  eps,
+		VirtualKey:      *a,
+		Status:          a.Status(),
+		ProxyURL:        s.proxyURL(a.ID, "mcp"),
+		ListsUnreadable: a.ListsMalformed,
+		Endpoints:       eps,
 	}
 	if plaintext != "" {
 		out.APIKey = plaintext
@@ -472,9 +480,10 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 		a.ToolDenylist = list
 	}
 	// A key whose stored lists did not decode is the one case where a patch of
-	// a single list cannot do what it says. The scan answers nil for BOTH lists
-	// on such a key, so the merged key here carries the sent list beside a nil
-	// the operator never wrote, and the store refuses to touch either column
+	// a single list cannot do what it says. The scan answers nil for the list
+	// that did not decode (and keeps one that did), so the merged key here can
+	// carry the sent list beside a nil the operator never wrote, and the store
+	// refuses to touch either column
 	// while the flag is set, which would make this request a silent no-op
 	// answered 200 with the new list echoed back. Saying so is better than
 	// either half-truth, and it names the request that works.

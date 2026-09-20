@@ -73,7 +73,10 @@ credential.
 stored credential cannot be resent, and only a filter or list the request sends
 is judged: one that predates today's validation rules keeps working until
 someone rewrites it, but sent back unchanged it is judged by the current rules
-and may be refused (see Tool lists).
+and may be refused (see Tool lists). The dashboard follows this rule by
+comparing meaning, not bytes: a filter or list whose entries are the same set
+is not sent, and "No filter" is sent as `null`, never `{}`, so what is stored
+and what is served agree.
 
 **Concurrency.** Two overlapping `PATCH`es are not merged: last write wins;
 each request rewrites the row from the copy it read when it arrived. Every
@@ -468,6 +471,14 @@ clears on `""` or `null`; `upstream_ids` and `tool_filter` clear on `null`.
 `rate_limit` and `expires_at` are removed with `null`; `tool_allowlist`,
 `tool_denylist` and `metadata` clear on `null`.
 
+Every virtual-key response carries `lists_malformed: true` when the key's
+stored tool lists could not be decoded, and leaves the member out otherwise.
+A list that did not decode reads back as absent, which is what a key with no
+such list looks like, while the proxy refuses every call on the key; this is how
+a client tells the two apart. A list that did decode is served as stored. It is response only: a request that sends it changes
+nothing. Sending both lists in one `PATCH` replaces them and clears it (see
+Tool lists).
+
 ### Endpoints
 
 Every virtual-key response carries `endpoints`: a read-only array computed per
@@ -559,6 +570,14 @@ The allow side takes one more rule, and it follows the key's **target**:
 `tool_denylist` takes both forms on both targets: "block this name wherever it
 appears" is exactly what an unscoped deny entry means.
 
+On an upstream target both spellings are correct and both are enforced. The
+dashboard's picker writes the scoped one on every target, so one identity is
+taught and an allow entry fails loudly on a retarget instead of changing what
+it means. The cost is on the deny side: a scoped deny entry belongs to that
+upstream and stops applying if the key is moved to another, and it does not
+govern a prompt or resource of the same bare name. An unscoped deny entry,
+added by hand, survives the move.
+
 `PATCH` validates only a list the request sends, and against the target
 the key will have **after** the patch, so a body that moves a key onto a group
 and sends a new allowlist in the same request is judged as the group key it is
@@ -567,8 +586,9 @@ re-checked, so a key written before these rules existed stays renamable,
 expirable and revocable.
 
 A key whose **stored** lists cannot be decoded is the one place where leaving an
-unsent list alone is not enough. Both lists read back as absent on such a key,
-so the proxy blocks every call on it, and every write leaves the two columns
+unsent list alone is not enough. The list that did not decode reads back as
+absent on such a key, which would otherwise read as no rule at all, so the proxy
+blocks every call on it, and every write leaves the two columns
 exactly as they are: a rename, a `rotate` and a `revoke` all succeed and the key
 stays blocked, rather than replacing an unreadable rule with no rule at all. A
 `PATCH` carrying **both** `tool_allowlist` and `tool_denylist` (including as

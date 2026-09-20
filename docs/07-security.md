@@ -389,7 +389,34 @@
   cannot hold an admin request open, and that is the bound that matters,
   because one discovery is at most 53 authenticated requests (`initialize`, the
   notification, up to fifty pages, the teardown), so the per-minute budget
-  bounds discoveries, not requests.
+  bounds discoveries, not requests. The dashboard's tool picker goes through
+  this same route and no other: a Load tools press in a group or virtual key
+  dialog is one discovery per member of the target, so it spends one token per
+  member, runs two at a time against the gate of four, stops at the first `429`
+  and never retries on its own. It happens only on that press, and each run is
+  recorded as the member's last test, which is the one durable trace that the
+  outbound call was made.
+- **The dashboard's rule editor never claims more than the proxy enforces.**
+  It reads a stored `tool_filter` with the read-side rules above and no others,
+  so a filter the proxy rejects is shown as unreadable, with the sentence that
+  every tool on the group is blocked, and one the proxy enforces is never
+  called broken. An allow rule whose every entry is unscoped says that it
+  admits nothing. A stored filter or list the operator did not touch is never
+  sent, whatever is wrong with it, and never stops an unrelated save. An
+  unreadable filter, or a key reporting `lists_malformed`, is replaced only
+  after an explicit press, never as a side effect of another edit. "No filter"
+  is sent as `null`, so the widening is recorded as the clear it is. A mode
+  with nothing listed cannot be saved once that was the operator's edit. An
+  entry is flagged as matching nothing, and a filter as blocking every tool,
+  only when every member of the target answered with its whole catalogue.
+  Before a save that carries a policy field the dashboard re-reads the row and
+  refuses if that field changed since the dialog opened; this narrows the
+  lost-update window and does not close it (PORM-119 does).
+- **Known gap: a key created with tool lists leaves no mark on its create
+  event.** `POST /groups` records `tool_filter_set`; `POST /virtual-keys`
+  records the target and the key prefix only, so the Logs page shows that a key
+  was created and not that it was created narrowed. A later `PATCH` of either
+  list is recorded by field name as before.
 - **A discovery response is a fixed set of fields, not a window onto the
   upstream.** `ok`, a latency rounded to 10 ms, the protocol version, the
   server's name and version, and a list of tool names, titles, descriptions and

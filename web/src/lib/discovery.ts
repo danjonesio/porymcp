@@ -1,22 +1,6 @@
 import { ApiError } from './api.ts'
 import type { Discovery } from './api.ts'
 
-/** Mirrors models.ToolSeparator (internal/models/toolidentity.go). */
-export const TOOL_SEPARATOR = '__'
-
-/**
- * The identity a group endpoint advertises for one of this upstream's tools, and
- * the form a group tool_filter allow rule has to be written in. Mirrors
- * models.ToolIdentity.Canonical: slug, two underscores, then the tool's own name,
- * which ParseCanonical splits on the first separator, so a tool called `a__b`
- * keeps its own underscores. An empty slug yields an empty string, and the caller
- * shows only the published name.
- */
-export function scopedToolName(slug: string, name: string): string {
-  if (!slug) return ''
-  return slug + TOOL_SEPARATOR + name
-}
-
 /**
  * True when a URL is one discovery can be pointed at: absolute, http or https.
  * Discover is not a submit, so the form's `required` and `type="url"` never run

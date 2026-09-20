@@ -2009,11 +2009,12 @@ func (s *SQLStore) ListVirtualKeys(ctx context.Context) ([]models.VirtualKey, er
 // two entry lists of a key whose lists did not decode, which are left exactly as
 // they are found.
 //
-// The reason is that scanVirtualKey answers nil for both lists alongside
-// ListsMalformed, because there is no list to answer: an unreadable column is
-// not a rule anyone can enforce. Writing those nils back would store "null" in
-// both columns (no allowlist and no denylist) and "null" decodes cleanly, so the
-// flag would be gone on the next read and the key would be fully permissive.
+// The reason is that scanVirtualKey answers nil for a list that did not decode,
+// alongside ListsMalformed, because there is no list to answer: an unreadable
+// column is not a rule anyone can enforce. (A list that did decode is kept.)
+// Writing that nil back would store "null" in the unreadable column, and "null"
+// decodes cleanly, so the flag would be gone on the next read and the rule the
+// column held would be gone with it.
 // That would hand a rename, a rotation or a revocation the power to turn a key
 // the proxy blocks on every call into one with no policy at all, which is the
 // exact opposite of what an operator reaching for any of the three means. The

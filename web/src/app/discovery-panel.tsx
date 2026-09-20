@@ -2,11 +2,15 @@
 
 import { Badge } from '@/components/badge'
 import { Button } from '@/components/button'
+import { CheckboxField } from '@/components/checkbox'
+import { Description, Label } from '@/components/fieldset'
 import { HelpDisclosure } from '@/components/help-disclosure'
 import { Code, Text } from '@/components/text'
 import type { DiscoveredTool, Discovery } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
-import { PLAIN_HTTP_NOTE, hostOf, plainHTTPCredential, protocolSummary, scopedToolName } from '@/lib/discovery'
+import { truncatedNote, unnameableNote } from '@/lib/catalogue'
+import { PLAIN_HTTP_NOTE, hostOf, plainHTTPCredential, protocolSummary } from '@/lib/discovery'
+import { scopedToolName } from '@/lib/tool-entry'
 import clsx from 'clsx'
 import { useEffect, useRef, useState } from 'react'
 
@@ -109,8 +113,14 @@ function ReportedList({ label, items }: { label: string; items: string[] }) {
 
 /**
  * One tool: the name the server publishes, the name a group endpoint gives it,
- * and the description. The row is a flex line whose first slot is free, so
- * PORM-4's per-tool checkbox drops in ahead of the names without restructuring.
+ * and the description.
+ *
+ * With `control` (PORM-4's tool picker passes a Checkbox) the row is a
+ * CheckboxField: the names are its Label and the description its Description, so
+ * Headless UI owns the label and described-by wiring as it does for every other
+ * option in the dashboard, and a press on the names toggles the box. `notes`
+ * are further lines under the description. Without `control` the row is the
+ * flex line the Tools dialog has always drawn, unchanged.
  */
 export function ToolRow({
   tool,
@@ -118,13 +128,46 @@ export function ToolRow({
   clamped,
   copyLabel,
   onCopy,
+  control,
+  disabled,
+  notes,
 }: {
   tool: DiscoveredTool
   scoped: string
   clamped: boolean
   copyLabel?: string
   onCopy?: () => void
+  control?: React.ReactNode
+  disabled?: boolean
+  notes?: string[]
 }) {
+  if (control !== undefined) {
+    return (
+      <li className="py-2 first:pt-0 last:pb-0">
+        <CheckboxField disabled={disabled}>
+          {control}
+          <Label>
+            <span dir="ltr" className="block break-all">
+              <Code>{tool.name}</Code>
+            </span>
+            {scoped ? (
+              <span dir="ltr" className="block font-mono font-normal break-all text-zinc-500 dark:text-zinc-400">
+                {scoped}
+              </span>
+            ) : null}
+          </Label>
+          {tool.description ? (
+            <Description dir="ltr" className={clsx('text-pretty wrap-break-word', clamped && 'line-clamp-3')}>
+              {tool.description}
+            </Description>
+          ) : null}
+          {(notes ?? []).map((note) => (
+            <Description key={note}>{note}</Description>
+          ))}
+        </CheckboxField>
+      </li>
+    )
+  }
   return (
     <li className="flex items-start gap-3 py-2 first:pt-0 last:pb-0">
       <div className="min-w-0 flex-1">
@@ -321,16 +364,10 @@ export function DiscoveryPanel({
                   both truncate, usually well under 500, so the panel names the
                   count it actually has rather than a number it may not. */}
               {result.truncated ? (
-                <Text className="mt-3">
-                  {`Not every tool is listed. ${result.tool_count} shown. This server offers more.`}
-                </Text>
+                <Text className="mt-3">{truncatedNote(result.tool_count)}</Text>
               ) : null}
               {unnameable > 0 ? (
-                <Text className="mt-3">
-                  {unnameable === 1
-                    ? '1 tool is not listed: its name contains characters PoryMCP cannot hold a caller to.'
-                    : `${unnameable} tools are not listed: their names contain characters PoryMCP cannot hold a caller to.`}
-                </Text>
+                <Text className="mt-3">{unnameableNote(unnameable)}</Text>
               ) : null}
             </>
           )}

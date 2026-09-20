@@ -38,6 +38,14 @@ export const controlField =
   'block w-full appearance-none rounded-lg bg-transparent px-3.5 py-2.5 text-base/6 text-zinc-950 ring-1 ring-zinc-950/10 ring-inset placeholder:text-zinc-500 hover:ring-zinc-950/20 focus:outline-hidden data-invalid:ring-red-500 data-invalid:hover:ring-red-500 sm:px-3 sm:py-1.5 sm:text-sm/6 dark:bg-white/5 dark:text-white dark:scheme-dark dark:ring-white/10 dark:hover:ring-white/20 dark:data-invalid:ring-red-600'
 
 /**
+ * A line that reports a failure: the page-level line above a table and the
+ * `role="alert"` line inside a dialog. Pink is the dashboard's colour for
+ * broken, and the scale is the body's. Three pages carried a private copy of
+ * this string until PORM-4 added a fourth use.
+ */
+export const errorLine = 'text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400'
+
+/**
  * Expands a small control's hit area to 44px on coarse pointers; paints
  * nothing and is invisible to assistive tech. The parent must be `relative`;
  * render it as the first child, before the control's content.

@@ -24,8 +24,11 @@ const adminAuthFailRPM = 10
 // key, so per-IP keying would only let its holder rotate source addresses, and
 // what this bounds is authenticated outbound calls to an operator-supplied
 // host, a property of the deployment, not of the caller. 30/min is a burst of
-// 30 and then one every two seconds; the dashboard's heaviest real flow is one
-// discovery per dialog and one per Refresh click.
+// 30 and then one every two seconds. The Upstreams page spends one token per
+// dialog and one per Refresh click. A Load tools press in a group or virtual
+// key dialog (PORM-4) spends one per member of the target, two at a time, so a
+// ten-member group is a third of a minute's budget per press; the dashboard
+// stops at the first 429 and never retries on its own.
 const discoverRPM = 30
 
 // discoverBucket is that single key. The constant is the point, see

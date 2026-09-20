@@ -274,6 +274,8 @@ paths:
                           type: array
                           items:
                             $ref: "#/components/schemas/VirtualKeyEndpoint"
+                        lists_malformed:
+                          $ref: "#/components/schemas/ListsMalformed"
     post:
       summary: Create a virtual key and return the plaintext key once
       requestBody:
@@ -296,6 +298,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
   /virtual-keys/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -315,6 +319,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
     patch:
@@ -344,6 +350,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
     delete:
@@ -372,6 +380,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
   /virtual-keys/{id}/revoke:
@@ -393,6 +403,8 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
+                  lists_malformed:
+                    $ref: "#/components/schemas/ListsMalformed"
         "404":
           description: Not found
   /logs:
@@ -1092,6 +1104,17 @@ components:
             type: string
         metadata:
           type: [object, "null"]
+    ListsMalformed:
+      type: boolean
+      readOnly: true
+      description: >-
+        Present and `true` on every virtual-key response when the key's stored
+        `tool_allowlist` or `tool_denylist` could not be decoded; absent
+        otherwise. A list that did not decode is absent from the response, which
+        is what a key with no such list looks like, while the proxy blocks every
+        call on the key; a list that did decode is served as stored. Response
+        only: a request that sends it changes nothing. A PATCH sending both
+        lists replaces them and clears it.
     VirtualKeyEndpoint:
       type: object
       description: >-
