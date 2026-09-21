@@ -88,24 +88,30 @@ func TestNodeMajorConsistent(t *testing.T) {
 }
 
 var (
-	dockerfileFrom   = regexp.MustCompile(`(?m)^FROM .*$`)
-	dockerfileRun    = regexp.MustCompile(`(?m)^RUN\b.*$`)
-	dockerfileNpmCi  = regexp.MustCompile(`(?m)^RUN npm ci\b`)
-	dockerfileSyntax = regexp.MustCompile(`(?m)^# syntax=.*$`)
-	dockerfileDigest = regexp.MustCompile(`@sha256:[0-9a-f]{64}\b`)
+	dockerfileContinuation = regexp.MustCompile(`\\[ \t]*\r?\n`)
+	dockerfileFrom         = regexp.MustCompile(`(?m)^FROM .*$`)
+	dockerfilePinnedFrom   = regexp.MustCompile(`^FROM\s+(?:--\S+\s+)*\S+@sha256:[0-9a-f]{64}(?:\s|$)`)
+	dockerfileRun          = regexp.MustCompile(`(?m)^RUN\b.*$`)
+	dockerfileNpmCi        = regexp.MustCompile(`(?m)^RUN npm ci\b`)
+	dockerfileSyntax       = regexp.MustCompile(`(?mi)^#\s*syntax\s*=.*$`)
+	dockerfilePinnedSyntax = regexp.MustCompile(`@sha256:[0-9a-f]{64}\s*$`)
 )
 
 // dockerfileProblems lists what is wrong with a Dockerfile's pins and its
-// dashboard install, one message per problem. Only FROM and RUN lines and a
-// syntax directive are read, so a comment that names npm install is ignored.
+// dashboard install, one message per problem. Only FROM and RUN instructions
+// and a syntax directive are read, so a comment that names npm install is
+// ignored. A backslash continuation is joined first, so an instruction is read
+// whole. The digest has to sit on the image reference, and the directive is
+// matched the way BuildKit reads one: any case, optional spaces.
 func dockerfileProblems(src []byte) []string {
 	var problems []string
+	src = dockerfileContinuation.ReplaceAll(src, []byte(" "))
 	froms := dockerfileFrom.FindAll(src, -1)
 	if len(froms) < 3 {
 		problems = append(problems, fmt.Sprintf("%d FROM lines; the build has three stages", len(froms)))
 	}
 	for _, line := range froms {
-		if !dockerfileDigest.Match(line) {
+		if !dockerfilePinnedFrom.Match(line) {
 			problems = append(problems, fmt.Sprintf("base image without an @sha256 digest: %s", line))
 		}
 	}
@@ -120,7 +126,7 @@ func dockerfileProblems(src []byte) []string {
 		}
 	}
 	for _, line := range dockerfileSyntax.FindAll(src, -1) {
-		if !dockerfileDigest.Match(line) {
+		if !dockerfilePinnedSyntax.Match(line) {
 			problems = append(problems, fmt.Sprintf("frontend without an @sha256 digest: %s", line))
 		}
 	}
@@ -182,29 +188,51 @@ func TestDockerfileProblems_ShortDigest(t *testing.T) {
 	wantProblem(t, src, "base image without an @sha256 digest: FROM --platform=$BUILDPLATFORM node:22-alpine")
 }
 
+// A digest in a trailing comment is not on the image reference.
+func TestDockerfileProblems_DigestInComment(t *testing.T) {
+	d := "@sha256:" + strings.Repeat("a", 64)
+	src := strings.Replace(pinnedDockerfile(), "golang:1.26-alpine"+d+" AS build", "golang:1.26-alpine AS build # was "+d, 1)
+	wantProblem(t, src, "base image without an @sha256 digest: FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build")
+}
+
 func TestDockerfileProblems_TwoFroms(t *testing.T) {
 	src := pinnedDockerfile()
 	src = src[:strings.LastIndex(src, "FROM ")]
 	wantProblem(t, src, "2 FROM lines")
 }
 
-// npm install beside a valid npm ci line is still reported.
-func TestDockerfileProblems_NpmInstall(t *testing.T) {
-	wantProblem(t, pinnedDockerfile()+"RUN npm install --no-fund\n", "npm install in the image build")
-	src := strings.Replace(pinnedDockerfile(), "RUN npm ci --no-audit --no-fund", "RUN npm install", 1)
-	wantProblem(t, src, "0 RUN npm ci lines")
+// The install is one npm ci line: none and two are both reported.
+func TestDockerfileProblems_NpmCiCount(t *testing.T) {
+	none := strings.Replace(pinnedDockerfile(), "RUN npm ci --no-audit --no-fund\n", "", 1)
+	wantProblem(t, none, "0 RUN npm ci lines")
+	wantProblem(t, pinnedDockerfile()+"RUN npm ci\n", "2 RUN npm ci lines")
 }
 
-// Security requirement 2 of the PORM-42 plan: no vulnerability check of its
-// own in the image build.
+// npm install beside a valid npm ci line is still reported, and so is one on
+// the continuation of an instruction, which is how a RUN line usually grows.
+func TestDockerfileProblems_NpmInstall(t *testing.T) {
+	wantProblem(t, pinnedDockerfile()+"RUN npm install --no-fund\n", "npm install in the image build")
+	continued := strings.Replace(pinnedDockerfile(), "RUN npm ci --no-audit --no-fund\n", "RUN npm ci --no-audit --no-fund \\\n  && npm install left-pad\n", 1)
+	wantProblem(t, continued, "npm install in the image build")
+}
+
+// The image build carries no vulnerability check of its own: an advisory
+// against frozen code would fail a rebuild of a published commit, and
+// make web-audit is the gate.
 func TestDockerfileProblems_NpmAudit(t *testing.T) {
 	wantProblem(t, pinnedDockerfile()+"RUN npm audit --audit-level=high\n", "npm audit in the image build")
 }
 
-// Security requirement 10 of the PORM-42 plan: a frontend line that returns
-// must carry a digest.
+// A frontend line that returns must carry a digest, in every spelling BuildKit
+// reads as the directive: the key is case-insensitive and spaces are optional.
 func TestDockerfileProblems_UnpinnedSyntax(t *testing.T) {
-	wantProblem(t, "# syntax=docker/dockerfile:1\n"+pinnedDockerfile(), "frontend without an @sha256 digest")
+	for _, line := range []string{
+		"# syntax=docker/dockerfile:1",
+		"#syntax=docker/dockerfile:1",
+		"# SYNTAX = docker/dockerfile:1",
+	} {
+		wantProblem(t, line+"\n"+pinnedDockerfile(), "frontend without an @sha256 digest")
+	}
 	pinned := "# syntax=docker/dockerfile:1@sha256:" + strings.Repeat("a", 64) + "\n" + pinnedDockerfile()
 	if got := dockerfileProblems([]byte(pinned)); len(got) != 0 {
 		t.Fatalf("a pinned frontend reported %q", got)
