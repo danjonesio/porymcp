@@ -88,6 +88,7 @@ func TestNodeMajorConsistent(t *testing.T) {
 }
 
 var (
+	dockerfileComment      = regexp.MustCompile(`(?m)^[ \t]*#.*$`)
 	dockerfileContinuation = regexp.MustCompile(`\\[ \t]*\r?\n`)
 	dockerfileFrom         = regexp.MustCompile(`(?m)^FROM .*$`)
 	dockerfilePinnedFrom   = regexp.MustCompile(`^FROM\s+(?:--\S+\s+)*\S+@sha256:[0-9a-f]{64}(?:\s|$)`)
@@ -100,11 +101,15 @@ var (
 // dockerfileProblems lists what is wrong with a Dockerfile's pins and its
 // dashboard install, one message per problem. Only FROM and RUN instructions
 // and a syntax directive are read, so a comment that names npm install is
-// ignored. A backslash continuation is joined first, so an instruction is read
-// whole. The digest has to sit on the image reference, and the directive is
-// matched the way BuildKit reads one: any case, optional spaces.
+// ignored. Comment lines are dropped and then backslash continuations are
+// joined, the order BuildKit uses, so an instruction is read whole and a
+// comment ending in a backslash cannot hide the line after it. The digest has
+// to sit on the image reference, and the directive is matched the way BuildKit
+// reads one: any case, optional spaces.
 func dockerfileProblems(src []byte) []string {
 	var problems []string
+	directives := dockerfileSyntax.FindAll(src, -1)
+	src = dockerfileComment.ReplaceAll(src, nil)
 	src = dockerfileContinuation.ReplaceAll(src, []byte(" "))
 	froms := dockerfileFrom.FindAll(src, -1)
 	if len(froms) < 3 {
@@ -125,7 +130,7 @@ func dockerfileProblems(src []byte) []string {
 			}
 		}
 	}
-	for _, line := range dockerfileSyntax.FindAll(src, -1) {
+	for _, line := range directives {
 		if !dockerfilePinnedSyntax.Match(line) {
 			problems = append(problems, fmt.Sprintf("frontend without an @sha256 digest: %s", line))
 		}
@@ -214,6 +219,7 @@ func TestDockerfileProblems_NpmInstall(t *testing.T) {
 	wantProblem(t, pinnedDockerfile()+"RUN npm install --no-fund\n", "npm install in the image build")
 	continued := strings.Replace(pinnedDockerfile(), "RUN npm ci --no-audit --no-fund\n", "RUN npm ci --no-audit --no-fund \\\n  && npm install left-pad\n", 1)
 	wantProblem(t, continued, "npm install in the image build")
+	wantProblem(t, pinnedDockerfile()+"# a comment ending in a backslash \\\nRUN npm install left-pad\n", "npm install in the image build")
 }
 
 // The image build carries no vulnerability check of its own: an advisory
