@@ -27,11 +27,11 @@ docker buildx imagetools inspect node:22-alpine --format '{{.Manifest.Digest}}'
 docker buildx imagetools inspect node:22-alpine@sha256:<digest>   # lists linux/amd64 and linux/arm64
 ```
 
-An index digest resolves per platform. The digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned: the two build stages run on the builder's own architecture, so an amd64 manifest pinned there builds on the amd64 CI runners and is only noticed on an arm64 machine. The `docker` job builds and smoke-tests the new pin on the pull request.
+An index digest resolves per platform. The digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned: the two build stages run on the builder's own architecture, so an amd64 manifest pinned there builds on the amd64 CI runners and is only noticed on an arm64 machine. The runtime base resolves per target, so the same mistake there fails the `docker` job's arm64 build. The `docker` job builds and smoke-tests the new pin on the pull request.
 
 The `golang` digest and the `toolchain` line in `go.mod` move in one commit, with the version string in `README.md`, `docs/04-architecture.md` and this file, because the image never downloads a toolchain. A Node major move also changes `web/.nvmrc` (`TestNodeMajorConsistent` fails otherwise) and needs the `web/out` rebuild that `CONTRIBUTING.md` describes. A digest refresh under the same tag needs neither.
 
-Dependabot's monthly docker lane (`.github/dependabot.yml`) raises a pull request that moves the tag and the digest together when a newer tag exists. A digest under an unchanged tag is refreshed by hand.
+Dependabot's monthly docker lane (`.github/dependabot.yml`) raises a pull request that moves the tag and the digest together when a newer tag exists. No pull request that refreshes a digest under an unchanged tag has been seen on this repository, so the recipe above is the backstop for a pin whose tag stays put.
 
 `TestDockerfilePinned` in `cmd/server/pins_test.go` fails a `FROM` line without a digest. It checks the digest's shape, so the platform check above stays with the maintainer. The Dockerfile declares no `# syntax=` line, because no instruction in it needs an external frontend; the same test requires a digest on that line if it returns.
 
