@@ -16,7 +16,24 @@ Copy `.env.example` to `.env` and set both `ADMIN_API_KEY` and `ENCRYPTION_KEY` 
 
 The embed directive is a compile-time error when `web/out` is missing, so the `COPY --from=web` in the `build` stage has to come before `go build`. `.dockerignore` excludes the tracked `web/out`, so the image always embeds what the `web` stage just built, never what happens to be checked in. Both build stages carry `--platform=$BUILDPLATFORM`, so a multi-arch build (`--platform linux/amd64,linux/arm64`) runs the export once and cross-compiles the binary per target; nothing runs under emulation, and only the runtime stage resolves per platform.
 
-All three base images are pinned by index digest (the Go image since PORM-40, the Node and runtime images since PORM-10), so rebuilds are reproducible and do not silently pick up base-image changes; bumping a digest is a deliberate edit (the build-reproducibility issue's Dependabot config is the counterweight). An index digest, which resolves per platform, comes from `docker buildx imagetools inspect <ref> --format '{{.Manifest.Digest}}'`; the digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned. `go.mod` pins `toolchain go1.26.8`, which makes `go build`/`go test` download that exact toolchain when the local one differs. Offline or air-gapped builders can set `GOTOOLCHAIN=local` to insist on the installed Go (1.26.x or later required).
+All three base images are pinned by index digest (the Go image since PORM-40, the Node and runtime images since PORM-10), so rebuilds are reproducible and do not silently pick up base-image changes; bumping a digest is a deliberate edit. `go.mod` pins `toolchain go1.26.8`. On a workstation that makes `go build`/`go test` download that exact toolchain when the local one differs, and offline or air-gapped builders can set `GOTOOLCHAIN=local` to insist on the installed Go (1.26.x or later required). The `golang` base image sets `GOTOOLCHAIN=local` itself, so inside the image the line is a minimum and nothing is downloaded: the base has to ship that release already.
+
+### How a pin moves
+
+By hand, take the tag's index digest, check that the index lists both published platforms, and paste the digest after the tag on the `FROM` line:
+
+```bash
+docker buildx imagetools inspect node:22-alpine --format '{{.Manifest.Digest}}'
+docker buildx imagetools inspect node:22-alpine@sha256:<digest>   # lists linux/amd64 and linux/arm64
+```
+
+An index digest resolves per platform. The digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned: the two build stages run on the builder's own architecture, so an amd64 manifest pinned there builds on the amd64 CI runners and is only noticed on an arm64 machine. The `docker` job builds and smoke-tests the new pin on the pull request.
+
+The `golang` digest and the `toolchain` line in `go.mod` move in one commit, with the version string in `README.md`, `docs/04-architecture.md` and this file, because the image never downloads a toolchain. A Node major move also changes `web/.nvmrc` (`TestNodeMajorConsistent` fails otherwise) and needs the `web/out` rebuild that `CONTRIBUTING.md` describes. A digest refresh under the same tag needs neither.
+
+Dependabot's monthly docker lane (`.github/dependabot.yml`) raises a pull request that moves the tag and the digest together when a newer tag exists. A digest under an unchanged tag is refreshed by hand.
+
+`TestDockerfilePinned` in `cmd/server/pins_test.go` fails a `FROM` line without a digest. It checks the digest's shape, so the platform check above stays with the maintainer. The Dockerfile declares no `# syntax=` line, because no instruction in it needs an external frontend; the same test requires a digest on that line if it returns.
 
 ## Images and tags
 
