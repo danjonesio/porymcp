@@ -26,7 +26,8 @@
 #
 # gomod (/): version lane. go.sum is copied into the image (Dockerfile, COPY
 # go.mod go.sum); the go job's govulncheck step is the check a bump has to
-# pass.
+# pass. govulncheck's own version sits in a go run argument in the Makefile,
+# which no lane reads; CONTRIBUTING.md has the procedure.
 #
 # npm (/web): version lane. web/package-lock.json builds the dashboard in the
 # image's web stage; the web job ends with npm audit --audit-level=high, which
@@ -34,19 +35,21 @@
 #
 # docker (/): version lane. All three FROM lines in the Dockerfile are
 # digest-pinned (node:22-alpine, golang:1.26-alpine and
-# gcr.io/distroless/static-debian12:nonroot, each @sha256); PORM-42 notes that
-# Dependabot moves the tag and the digest together, which is the deliberate
-# movement it asks for.
+# gcr.io/distroless/static-debian12:nonroot, each @sha256). How a pin moves,
+# by this lane or by hand, is in docs/08-docker.md.
 #
 # Not covered, on purpose:
-#   - docker-compose (docker-compose.yml, docker-compose.tls.yml): every
-#     image: is a floating tag (postgres:16-alpine, caddy:2.10-alpine) or a
-#     local build (porymcp:local from build: .), so there is no version for
-#     Dependabot to move.
+#   - docker-compose (docker-compose.yml, docker-compose.tls.yml): no
+#     docker-compose lane. The image never contains these files, their
+#     image: tags float (postgres:16-alpine, caddy:2.10-alpine) or name a
+#     local build (porymcp:local from build: .), and a digest pin with no
+#     lane to move it is the drift named above.
 #
-# Unknown at write time: whether Dependabot raises security updates for the
-# docker ecosystem. The docker lane's security group is written as the
-# standard shapes it and opens nothing if it does not.
+# Dependabot does not raise security updates for the docker ecosystem:
+# GitHub's supported-ecosystems table lists version updates as supported and
+# security updates as not supported for it (read 2026-09-21). The docker
+# lane's security group is written as the standard shapes it and opens
+# nothing.
 #
 # No commit-message prefix: the last 30 subjects carry no conventional prefix
 # (PORM-NN: is the shape), so Dependabot's own default stands.

@@ -5,9 +5,9 @@
 # merges ports additively, and the direct-hit acceptance check needs the
 # published container port.
 #
-# Caddy image is a 2.x alpine tag, not a digest: Docker was unavailable when
-# this overlay was written, so no RepoDigest was recorded. PORM-42 will
-# digest-pin it.
+# The Caddy image is a floating 2.x alpine tag on purpose. This overlay is a
+# localhost TLS demonstration, the PoryMCP image never contains Caddy, and an
+# operator who fronts PoryMCP with a proxy pins their own.
 
 services:
   porymcp:
