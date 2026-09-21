@@ -1,9 +1,10 @@
-# syntax=docker/dockerfile:1
-
 # Both build stages run on the builder's own architecture: the export is the
 # same for every target, and the Go compiler cross-compiles by argument. Only
 # the runtime stage below resolves per target platform. Pinned by index digest
 # for the same reason as the Go base image.
+# No syntax directive is declared, because no instruction here needs an
+# external frontend. Add one back, pinned by digest, when this file first uses
+# a heredoc, COPY --link or RUN --mount.
 FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
