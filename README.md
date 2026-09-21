@@ -66,7 +66,7 @@ until you rotate or restore.
 
 ## Local development
 
-Go 1.26 or later. `go.mod` pins `toolchain go1.26.7`, which Go downloads automatically. Set `GOTOOLCHAIN=local` to insist on your installed release. The dashboard is compiled into the server binary. After `go run ./cmd/server`, open http://localhost:8080.
+Go 1.26 or later. `go.mod` pins `toolchain go1.26.8`, which Go downloads automatically. Set `GOTOOLCHAIN=local` to insist on your installed release. The dashboard is compiled into the server binary. After `go run ./cmd/server`, open http://localhost:8080.
 
 ```bash
 [ -f ~/porymcp.admin ] || (umask 077; openssl rand -hex 32 > ~/porymcp.admin)

@@ -2,7 +2,7 @@ module github.com/danjonesio/porymcp
 
 go 1.26.0
 
-toolchain go1.26.7
+toolchain go1.26.8
 
 require (
 	github.com/go-chi/chi/v5 v5.3.2
