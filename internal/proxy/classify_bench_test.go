@@ -3,6 +3,8 @@ package proxy
 import (
 	"strings"
 	"testing"
+
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 )
 
 // BenchmarkClassifyAnswer measures what answerStatus costs per answer shape
@@ -28,6 +30,15 @@ func BenchmarkClassifyAnswer(b *testing.B) {
 	}
 	past := stream(maxPickDocumentsForBench)
 	within := stream(maxPickDocumentsForBench - 1)
+	// The two bound inputs are what their names say, or the constant below
+	// has drifted from mcpclient's and the numbers would measure the wrong
+	// path.
+	if _, err := mcpclient.PickResponse("text/event-stream", past, "1"); err == nil {
+		b.Fatal("sse-past-bound reduces: maxPickDocumentsForBench no longer mirrors maxPickDocuments")
+	}
+	if _, err := mcpclient.PickResponse("text/event-stream", within, "1"); err != nil {
+		b.Fatalf("sse-4095-then-answer does not reduce: %v", err)
+	}
 
 	old := func(body []byte) {
 		if 200 >= 400 || rpcFailed(body) {
