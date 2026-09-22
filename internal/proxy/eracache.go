@@ -153,10 +153,13 @@ func (c *eraCache) evictLocked(now time.Time) {
 	}
 }
 
-// memberEra is the one lookup of an upstream's era: the cached verdict, or a
-// fresh server/discover probe whose verdict is then cached. PORM-32's route
-// cache is expected to absorb it, which is why nothing else reads h.eras for a
-// verdict.
+// memberEra is the one probing lookup of an upstream's era: the cached
+// verdict, or a fresh server/discover probe whose verdict is then cached. The
+// catalogue walk calls it for every member, and the group relay calls it for
+// the first member when a modern client's request depends on that member's
+// era (PORM-172); the routed call reads the cache alone, because the walk
+// just before it stored the verdict. PORM-32's route cache is expected to
+// absorb the walk's share.
 //
 // The caller has already refused a transport it cannot dial and read the
 // credential, so a member that must not be contacted is never probed. seen is

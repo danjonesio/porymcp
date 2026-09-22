@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1369,14 +1370,6 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 			"beta":  beta,
 		}, true, nil, nil, nil)
 	}
-	callRow := func(t *testing.T, f *fixture) models.AuditLog {
-		t.Helper()
-		rows := f.waitAudit(models.LogFilter{Method: "tools/call"})
-		if len(rows) != 1 {
-			t.Fatalf("%d tools/call rows, want 1", len(rows))
-		}
-		return rows[0]
-	}
 
 	t.Run("the client is sent the one document, as JSON", func(t *testing.T) {
 		const result = `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"scraped"}],"isError":false}}`
@@ -1400,7 +1393,7 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 		if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
 			t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
 		}
-		if row := callRow(t, f); row.Status != models.StatusSuccess || row.UpstreamID != "u2" {
+		if row := methodRow(t, f, "tools/call"); row.Status != models.StatusSuccess || row.UpstreamID != "u2" {
 			t.Errorf("row status=%q upstream=%q, want success against u2", row.Status, row.UpstreamID)
 		}
 	})
@@ -1415,7 +1408,7 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 		if code, msg, _ := rpcErrorOf(t, rr.Body.Bytes()); code != -32000 || msg != "rate limit reached" {
 			t.Errorf("client saw code=%d message=%q, want the member's own error", code, msg)
 		}
-		if row := callRow(t, f); row.Status != models.StatusError || row.ErrorMessage != "rate limit reached" {
+		if row := methodRow(t, f, "tools/call"); row.Status != models.StatusError || row.ErrorMessage != "rate limit reached" {
 			t.Errorf("row status=%q error=%q, want error and the member's message", row.Status, row.ErrorMessage)
 		}
 	})
@@ -1458,6 +1451,21 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 	// from a member's response, so it is where a member's session id could
 	// cross if anything but that one name were copied. The row is judged by the
 	// HTTP status alone, and the warning is the only place that says why.
+	// PORM-172: the same table holds on a method the group relays to its first
+	// member (alpha, u1), whose answer now goes through the same reader. The
+	// warning names the bounded method the row carries.
+	relays := []struct {
+		method, slug, upstreamID string
+		build                    func(t *testing.T, spec upstreamSpec) *fixture
+		send                     func(f *fixture) *httptest.ResponseRecorder
+	}{
+		{"tools/call", "beta", "u2", group, func(f *fixture) *httptest.ResponseRecorder { return f.post(toolCall("2", "beta__scrape")) }},
+		{"resources/read", "alpha", "u1", func(t *testing.T, spec upstreamSpec) *fixture {
+			t.Helper()
+			spec.RelayCT = spec.CallCT
+			return newFixture(t, map[string]upstreamSpec{"alpha": spec, "beta": {Tools: []string{"other"}}}, true, nil, nil, nil)
+		}, func(f *fixture) *httptest.ResponseRecorder { return f.post(relayRequest("2", "resources/read")) }},
+	}
 	for _, c := range []struct {
 		name, callCT, body, wantCT, wantWhy string
 	}{
@@ -1466,36 +1474,38 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 		{"a lone notification in answer to a call", sse, sseFrame(`{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"x"}}`), sse, "answer carried neither a result nor an error"},
 		{"JSON that is not a JSON-RPC envelope", "application/json", `"NOT-AN-ENVELOPE"`, "application/json", "response carried no answer to this request"},
 	} {
-		t.Run(c.name+" is relayed unreduced", func(t *testing.T) {
-			f := group(t, upstreamSpec{
-				Tools: []string{"scrape"}, CallCT: c.callCT, CallBody: c.body,
-				RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"},
-			})
-			logs := captureLogs(f)
-			rr := f.post(toolCall("2", "beta__scrape"))
-			if rr.Code != http.StatusOK || rr.Body.String() != c.body {
-				t.Errorf("HTTP code=%d body=%q, want 200 and the member's bytes", rr.Code, rr.Body.String())
-			}
-			// The bare media type PoryMCP chose, not the member's header value.
-			if got := rr.Header().Get("Content-Type"); got != c.wantCT {
-				t.Errorf("Content-Type=%q want %q", got, c.wantCT)
-			}
-			if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
-				t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
-			}
-			if row := callRow(t, f); row.Status != models.StatusSuccess || row.UpstreamID != "u2" {
-				t.Errorf("row status=%q upstream=%q: an unreduced answer is judged by its HTTP status, as it always was", row.Status, row.UpstreamID)
-			}
-			var warned []map[string]any
-			for _, r := range logRecords(t, logs) {
-				if r["msg"] == "group answer relayed unreduced" {
-					warned = append(warned, r)
+		for _, r := range relays {
+			t.Run(c.name+" is relayed unreduced on "+r.method, func(t *testing.T) {
+				f := r.build(t, upstreamSpec{
+					Tools: []string{"scrape"}, CallCT: c.callCT, CallBody: c.body,
+					RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"},
+				})
+				logs := captureLogs(f)
+				rr := r.send(f)
+				if rr.Code != http.StatusOK || rr.Body.String() != c.body {
+					t.Errorf("HTTP code=%d body=%q, want 200 and the member's bytes", rr.Code, rr.Body.String())
 				}
-			}
-			if len(warned) != 1 || warned[0]["slug"] != "beta" || warned[0]["err"] != c.wantWhy {
-				t.Errorf("warnings=%v, want one for beta with err %q", warned, c.wantWhy)
-			}
-		})
+				// The bare media type PoryMCP chose, not the member's header value.
+				if got := rr.Header().Get("Content-Type"); got != c.wantCT {
+					t.Errorf("Content-Type=%q want %q", got, c.wantCT)
+				}
+				if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
+					t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
+				}
+				if row := methodRow(t, f, r.method); row.Status != models.StatusSuccess || row.UpstreamID != r.upstreamID {
+					t.Errorf("row status=%q upstream=%q: an unreduced answer is judged by its HTTP status and its raw bytes, as it always was", row.Status, row.UpstreamID)
+				}
+				var warned []map[string]any
+				for _, rec := range logRecords(t, logs) {
+					if rec["msg"] == "group answer relayed unreduced" {
+						warned = append(warned, rec)
+					}
+				}
+				if len(warned) != 1 || warned[0]["slug"] != r.slug || warned[0]["err"] != c.wantWhy || warned[0]["method"] != r.method {
+					t.Errorf("warnings=%v, want one for %s on %s with err %q", warned, r.slug, r.method, c.wantWhy)
+				}
+			})
+		}
 	}
 
 	// A gateway in front of a member may label a bodyless 202. The member still
@@ -1537,7 +1547,7 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 		if strings.Contains(rr.Body.String(), "SECRET-FROM-UPSTREAM") {
 			t.Errorf("the member's bytes reached the client: %s", rr.Body.String())
 		}
-		row := callRow(t, f)
+		row := methodRow(t, f, "tools/call")
 		if row.Status != models.StatusError || row.ErrorMessage != "upstream answered with a media type the proxy cannot relay" || row.UpstreamID != "u2" {
 			t.Errorf("row status=%q error=%q upstream=%q, want error, the fixed sentence, u2", row.Status, row.ErrorMessage, row.UpstreamID)
 		}
@@ -2044,8 +2054,12 @@ func TestAggregateRelayDropsNegotiatedVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("a modern client on a group is relayed as it came", func(t *testing.T) {
-		f := newGroupFixture(t, map[string][]string{"alpha": {"a"}}, nil, nil, nil)
+	// PORM-172 (D8): to a handshake-era first member the version header no
+	// longer crosses (TestGroupRelayComposesForLegacyMember); to a modern one
+	// the request is relayed as it came.
+	t.Run("a modern client on a group is relayed as it came to a modern member", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{"alpha": {Tools: []string{"a"}, Modern: true,
+			CallBody: `{"jsonrpc":"2.0","id":6,"result":{"resources":[],"resultType":"complete"}}`}}, true, nil, nil, nil)
 		body, hdr := modernRequest("6", "resources/list", mcpclient.RevisionModern)
 		f.postWith(body, hdr)
 		if v := relayed(t, f, "alpha", "resources/list").Header.Get("Mcp-Protocol-Version"); v != mcpclient.RevisionModern {
@@ -2183,4 +2197,416 @@ func TestReplaceParams(t *testing.T) {
 			}
 		})
 	}
+}
+
+// methodRow is the one audit row for method, or a failure.
+func methodRow(t *testing.T, f *fixture, method string) models.AuditLog {
+	t.Helper()
+	rows := f.waitAudit(models.LogFilter{Method: method})
+	if len(rows) != 1 {
+		t.Fatalf("%d %s rows, want 1", len(rows), method)
+	}
+	return rows[0]
+}
+
+// relayRequest is a handshake-era client's request for a method the group
+// endpoint relays to its first member.
+func relayRequest(id, method string) string {
+	return `{"jsonrpc":"2.0","id":` + id + `,"method":"` + method + `","params":{"uri":"x"}}`
+}
+
+// modernMeta is the three reserved _meta members a 2026-07-28 client sends.
+const modernMeta = `"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"test","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}`
+
+// firstMember builds a group whose first member (alpha, u1) is spec and whose
+// second is a plain handshake member, so a relayed method reaches spec.
+func firstMember(t *testing.T, spec upstreamSpec) *fixture {
+	t.Helper()
+	if spec.Tools == nil && spec.RawList == "" {
+		spec.Tools = []string{"a"}
+	}
+	return newFixture(t, map[string]upstreamSpec{"alpha": spec, "beta": {Tools: []string{"other"}}}, true, nil, nil, nil)
+}
+
+// resultTypeOf reads result.resultType from an answer, "" when absent.
+func resultTypeOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var env struct {
+		Result map[string]json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("answer is not JSON: %v (%s)", err, body)
+	}
+	return strings.Trim(string(env.Result["resultType"]), `"`)
+}
+
+// discoverCount is how many era probes a stub answered.
+func discoverCount(f *fixture, slug string) int {
+	n := 0
+	for _, r := range f.requestsTo(slug) {
+		if r.RPCMethod == "server/discover" {
+			n++
+		}
+	}
+	return n
+}
+
+// lastRequest is the most recent request a stub saw for method.
+func lastRequest(t *testing.T, f *fixture, slug, method string) recordedRequest {
+	t.Helper()
+	reqs := f.requestsTo(slug)
+	for i := len(reqs) - 1; i >= 0; i-- {
+		if reqs[i].RPCMethod == method {
+			return reqs[i]
+		}
+	}
+	t.Fatalf("%s saw no %s request", slug, method)
+	return recordedRequest{}
+}
+
+// PORM-172 criterion 3, security requirements 3 and 4. A first member that
+// answers everything in SSE framing, with its own session id, is relayed to
+// the group client as one JSON document under a bare label, and the row is
+// judged from that document.
+func TestGroupRelayFromSSEMember(t *testing.T) {
+	const sse = "text/event-stream"
+	doc := `{"jsonrpc":"2.0","id":3,"error":{"code":-32002,"message":"no such resource"}}`
+	f := firstMember(t, upstreamSpec{
+		RawList:     sseFrame(sseCatalogue("1", "a")),
+		RespHeaders: map[string]string{"Content-Type": sse, "Mcp-Session-Id": "MEMBER-SESSION"},
+		CallBody:    sseFrame(doc),
+	})
+	req := relayRequest("3", "resources/read")
+	rr := f.post(req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type=%q want application/json", got)
+	}
+	if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
+		t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
+	}
+	if strings.TrimSpace(rr.Body.String()) != doc {
+		t.Errorf("body=%q want the one answering document", rr.Body.String())
+	}
+	if got := string(lastRequest(t, f, "alpha", "resources/read").Body); got != req {
+		t.Errorf("member saw %q want the client's bytes", got)
+	}
+	if row := methodRow(t, f, "resources/read"); row.Status != models.StatusError || row.ErrorMessage != "no such resource" || row.UpstreamID != "u1" {
+		t.Errorf("row status=%q error_message=%q upstream=%q", row.Status, row.ErrorMessage, row.UpstreamID)
+	}
+}
+
+// PORM-172 criterion 4 as amended (D8), security requirement 9. A modern
+// client's relayed request to a first member held as handshake-era loses its
+// version header and the three reserved _meta members, and nothing else.
+func TestGroupRelayComposesForLegacyMember(t *testing.T) {
+	hdr := map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern, "Mcp-Method": "prompts/get"}
+	result := `{"jsonrpc":"2.0","id":4,"result":{"messages":[]}}`
+	const big = `12345678901234567890`
+
+	t.Run("reserved members go, every other byte stays", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: result})
+		body := `{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"_meta":{` + modernMeta + `,"progressToken":"p<1>"},"n":` + big + `}}`
+		rr := f.postWith(body, hdr)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		got := lastRequest(t, f, "alpha", "prompts/get")
+		if v := got.Header.Get("Mcp-Protocol-Version"); v != "" {
+			t.Errorf("member saw MCP-Protocol-Version %q, want none", v)
+		}
+		b := string(got.Body)
+		for _, want := range []string{`"progressToken":"p<1>"`, `"n":` + big, `"id":4`} {
+			if !strings.Contains(b, want) {
+				t.Errorf("member body %s lacks %s", b, want)
+			}
+		}
+		if strings.Contains(b, "io.modelcontextprotocol/") {
+			t.Errorf("member body %s still carries a reserved _meta member", b)
+		}
+	})
+	t.Run("a Params spelling arrives as one params", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: result})
+		body := `{"jsonrpc":"2.0","id":4,"method":"prompts/get","Params":{"_meta":{` + modernMeta + `}}}`
+		if rr := f.postWith(body, hdr); rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		b := string(lastRequest(t, f, "alpha", "prompts/get").Body)
+		if strings.Count(strings.ToLower(b), `"params"`) != 1 || strings.Contains(b, `"Params"`) {
+			t.Errorf("member body %s, want one params member", b)
+		}
+	})
+	t.Run("nothing to strip crosses untouched", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: result})
+		body := `{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"uri":"x"}}`
+		if rr := f.postWith(body, hdr); rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		got := lastRequest(t, f, "alpha", "prompts/get")
+		if string(got.Body) != body || got.Header.Get("Mcp-Protocol-Version") != "" {
+			t.Errorf("member saw %q with version %q, want the client's bytes and no version", got.Body, got.Header.Get("Mcp-Protocol-Version"))
+		}
+	})
+	t.Run("a handshake client's request is unchanged", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: result})
+		body := relayRequest("4", "prompts/get")
+		if rr := f.post(body); rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if got := string(lastRequest(t, f, "alpha", "prompts/get").Body); got != body {
+			t.Errorf("member saw %q want the client's bytes", got)
+		}
+		if n := discoverCount(f, "alpha"); n != 0 {
+			t.Errorf("a handshake client's relay cost %d probes, want 0", n)
+		}
+	})
+}
+
+// PORM-172 D6, security requirement 6. A modern client's relay probes the
+// first member's era once per eraTTL, never once per request; a probe the
+// member did not answer is retried after eraRetry; a handshake client's relay
+// never probes.
+func TestGroupRelayProbesOncePerTTL(t *testing.T) {
+	hdr := map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern, "Mcp-Method": "prompts/get"}
+	body := `{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"_meta":{` + modernMeta + `}}}`
+	result := `{"jsonrpc":"2.0","id":4,"result":{"messages":[]}}`
+
+	t.Run("one probe per TTL", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: result})
+		now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+		f.H.eras.SetClock(func() time.Time { return now })
+		for i := 0; i < 2; i++ {
+			if rr := f.postWith(body, hdr); rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+			}
+		}
+		if n := discoverCount(f, "alpha"); n != 1 {
+			t.Fatalf("two relays cost %d probes, want 1", n)
+		}
+		if n := f.count("alpha", "prompts/get", ""); n != 2 {
+			t.Fatalf("member saw %d prompts/get, want 2", n)
+		}
+		now = now.Add(eraTTL + time.Second)
+		if rr := f.postWith(body, hdr); rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if n := discoverCount(f, "alpha"); n != 2 {
+			t.Fatalf("a relay past the TTL cost %d probes in all, want 2", n)
+		}
+	})
+	t.Run("an unanswered probe is retried after eraRetry", func(t *testing.T) {
+		// A modern member whose probe answered with a version PoryMCP cannot
+		// speak is an unusable verdict, kept for eraRetry only (a member the
+		// probe cannot reach at all would fail the relay too).
+		f := firstMember(t, upstreamSpec{CallBody: result, DiscoverCode: http.StatusBadRequest,
+			DiscoverBody: `{"jsonrpc":"2.0","id":null,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2027-01-01"]}}}`})
+		now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+		f.H.eras.SetClock(func() time.Time { return now })
+		for i := 0; i < 2; i++ {
+			if rr := f.postWith(body, hdr); rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+			}
+		}
+		if n := discoverCount(f, "alpha"); n != 1 {
+			t.Fatalf("two relays cost %d probes, want 1", n)
+		}
+		now = now.Add(eraRetry + time.Second)
+		if rr := f.postWith(body, hdr); rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if n := discoverCount(f, "alpha"); n != 2 {
+			t.Fatalf("a relay past eraRetry cost %d probes in all, want 2", n)
+		}
+		if n := f.count("alpha", "prompts/get", ""); n != 3 {
+			t.Fatalf("member saw %d prompts/get, want 3: the relay goes out whatever the probe learned", n)
+		}
+	})
+}
+
+// PORM-172 criterion 4, security requirement 5. A handshake-era first
+// member's result reaches a modern client with resultType, whether its era
+// was cached by a tools/list or found by the relay's own probe.
+func TestGroupRelayCompletesResultForModernClient(t *testing.T) {
+	hdr := map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern, "Mcp-Method": "prompts/get"}
+	body := `{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"_meta":{` + modernMeta + `}}}`
+	result := `{"jsonrpc":"2.0","id":4,"result":{"messages":[]}}`
+	for name, warm := range map[string]bool{"era cached by tools/list": true, "era found by the relay's probe": false} {
+		t.Run(name, func(t *testing.T) {
+			f := firstMember(t, upstreamSpec{CallBody: result})
+			if warm {
+				list, lh := modernRequest("1", "tools/list", mcpclient.RevisionModern)
+				if rr := f.postWith(list, lh); rr.Code != http.StatusOK {
+					t.Fatalf("tools/list code=%d body=%s", rr.Code, rr.Body.String())
+				}
+			}
+			rr := f.postWith(body, hdr)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+			}
+			if got := resultTypeOf(t, rr.Body.Bytes()); got != "complete" {
+				t.Errorf("resultType=%q want complete; body=%s", got, rr.Body.String())
+			}
+		})
+	}
+}
+
+// PORM-172: a modern member's relayed result is the member's own document,
+// with the version header and _meta the client sent.
+func TestGroupRelayLeavesModernMemberAlone(t *testing.T) {
+	hdr := map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern, "Mcp-Method": "prompts/get"}
+	body := `{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"_meta":{` + modernMeta + `}}}`
+	f := firstMember(t, upstreamSpec{Modern: true, CallBody: `{"jsonrpc":"2.0","id":4,"result":{"messages":[]}}`})
+	rr := f.postWith(body, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := resultTypeOf(t, rr.Body.Bytes()); got != "" {
+		t.Errorf("resultType=%q want none added to a modern member's own document", got)
+	}
+	got := lastRequest(t, f, "alpha", "prompts/get")
+	if got.Header.Get("Mcp-Protocol-Version") != mcpclient.RevisionModern || string(got.Body) != body {
+		t.Errorf("member saw version %q body %q, want the client's", got.Header.Get("Mcp-Protocol-Version"), got.Body)
+	}
+}
+
+// PORM-172 D5. A notification's 202 passes with no body; a request with no
+// id member is never given a resultType; a DELETE's answer carries no member
+// session id.
+func TestGroupRelayNotificationAndDelete(t *testing.T) {
+	t.Run("a notification's 202 passes with no body", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{RelayCode: http.StatusAccepted, RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"}})
+		rr := f.post(`{"jsonrpc":"2.0","method":"notifications/foo"}`)
+		if rr.Code != http.StatusAccepted || rr.Body.Len() != 0 || rr.Header().Get("Content-Type") != "" || rr.Header().Get("Mcp-Session-Id") != "" {
+			t.Errorf("code=%d body=%q ct=%q session=%q, want 202, no body, no label, no session", rr.Code, rr.Body.String(), rr.Header().Get("Content-Type"), rr.Header().Get("Mcp-Session-Id"))
+		}
+	})
+	t.Run("a modern notification answered with a result is not completed", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: `{"jsonrpc":"2.0","id":null,"result":{}}`, RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"}})
+		body := `{"jsonrpc":"2.0","method":"notifications/foo","params":{"_meta":{` + modernMeta + `}}}`
+		rr := f.postWith(body, map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern, "Mcp-Method": "notifications/foo"})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if got := resultTypeOf(t, rr.Body.Bytes()); got != "" {
+			t.Errorf("resultType=%q on the answer to a request with no id", got)
+		}
+		if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
+			t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
+		}
+	})
+	t.Run("a DELETE's answer carries no member session id", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: `{"jsonrpc":"2.0","id":null,"result":{}}`, RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"}})
+		rr := f.doPath(http.MethodDelete, "http://localhost:8080/mcp", "", map[string]string{"Mcp-Session-Id": "CLIENT-SESSION"})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type=%q want application/json", got)
+		}
+		if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
+			t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
+		}
+	})
+}
+
+// PORM-172 D3 (Dan, 2026-09-22), security requirement 3. A member body that
+// is neither JSON nor SSE keeps its status with no body when the status says
+// failure, and is a 502 on a success status. Either way the member's bytes
+// and label never reach the client.
+func TestGroupRelayUnreadableAnswerKeepsStatus(t *testing.T) {
+	t.Run("a 404 in HTML keeps its status with no body", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{RelayCode: http.StatusNotFound, RelayCT: "text/html", CallBody: "<html>nope</html>", RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"}})
+		logs := captureLogs(f)
+		rr := f.post(relayRequest("5", "resources/read"))
+		if rr.Code != http.StatusNotFound || rr.Body.Len() != 0 || rr.Header().Get("Content-Type") != "" || rr.Header().Get("Mcp-Session-Id") != "" {
+			t.Errorf("code=%d body=%q ct=%q session=%q, want 404, no body, no label, no session", rr.Code, rr.Body.String(), rr.Header().Get("Content-Type"), rr.Header().Get("Mcp-Session-Id"))
+		}
+		if row := methodRow(t, f, "resources/read"); row.Status != models.StatusError || row.ErrorMessage != "" {
+			t.Errorf("row status=%q error_message=%q, want error and no message", row.Status, row.ErrorMessage)
+		}
+		warned := 0
+		for _, rec := range logRecords(t, logs) {
+			if rec["msg"] == "group answer relayed unreduced" && rec["err"] == errUnrelayableAnswer.Error() {
+				warned++
+			}
+		}
+		if warned != 1 {
+			t.Errorf("%d warnings, want one naming the unrelayable answer", warned)
+		}
+	})
+	t.Run("a 200 in HTML is a 502", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{RelayCT: "text/html", CallBody: "<html>nope</html>"})
+		rr := f.post(relayRequest("5", "resources/read"))
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("HTTP code=%d body=%s want 502", rr.Code, rr.Body.String())
+		}
+		if code, _, _ := rpcErrorOf(t, rr.Body.Bytes()); code != -32000 {
+			t.Errorf("code=%d want -32000", code)
+		}
+		if row := methodRow(t, f, "resources/read"); row.Status != models.StatusError || row.ErrorMessage != errUnrelayableAnswer.Error() {
+			t.Errorf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
+		}
+	})
+}
+
+// PORM-172 D4 (Dan, 2026-09-22). Retry-After crosses on a relayed method and
+// on a routed call alike, in either body shape, and never with the member's
+// session id.
+func TestGroupRelayKeepsRetryAfter(t *testing.T) {
+	errDoc := `{"jsonrpc":"2.0","id":5,"error":{"code":-32000,"message":"slow down"}}`
+	headers := map[string]string{"Retry-After": "3", "Mcp-Session-Id": "MEMBER-SESSION"}
+	check := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+		if rr.Code != http.StatusTooManyRequests || rr.Header().Get("Retry-After") != "3" || rr.Header().Get("Mcp-Session-Id") != "" {
+			t.Errorf("code=%d Retry-After=%q session=%q, want 429, 3, none", rr.Code, rr.Header().Get("Retry-After"), rr.Header().Get("Mcp-Session-Id"))
+		}
+	}
+	t.Run("relay, text/plain", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{RelayCode: http.StatusTooManyRequests, RelayCT: "text/plain", CallBody: "slow down", RespHeaders: headers})
+		rr := f.post(relayRequest("5", "resources/read"))
+		check(t, rr)
+		if rr.Body.Len() != 0 {
+			t.Errorf("body=%q want none", rr.Body.String())
+		}
+		if row := methodRow(t, f, "resources/read"); row.Status != models.StatusError {
+			t.Errorf("row status=%q want error", row.Status)
+		}
+	})
+	t.Run("relay, JSON error", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{RelayCode: http.StatusTooManyRequests, CallBody: errDoc, RespHeaders: headers})
+		rr := f.post(relayRequest("5", "resources/read"))
+		check(t, rr)
+		if row := methodRow(t, f, "resources/read"); row.Status != models.StatusError || row.ErrorMessage != "slow down" {
+			t.Errorf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
+		}
+	})
+	t.Run("routed call", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"a"}},
+			"beta":  {Tools: []string{"b"}, CallCode: http.StatusTooManyRequests, CallBody: errDoc, RespHeaders: headers},
+		}, true, nil, nil, nil)
+		check(t, f.post(toolCall("5", "beta__b")))
+	})
+}
+
+// PORM-172 D9, security requirement 7. The unreduced warning carries the
+// bounded method name the row carries, never the client's raw string.
+func TestGroupRelayWarnCarriesBoundedMethod(t *testing.T) {
+	f := firstMember(t, upstreamSpec{RelayCT: "text/event-stream", CallBody: sseFrame(`{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"x"}}`)})
+	logs := captureLogs(f)
+	method := strings.Repeat("m", 300)
+	if rr := f.post(relayRequest("6", method)); rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	for _, rec := range logRecords(t, logs) {
+		if rec["msg"] == "group answer relayed unreduced" {
+			if got, _ := rec["method"].(string); len(got) != auditFieldBytes {
+				t.Errorf("warning method is %d bytes, want %d", len(got), auditFieldBytes)
+			}
+			return
+		}
+	}
+	t.Fatal("no unreduced warning")
 }

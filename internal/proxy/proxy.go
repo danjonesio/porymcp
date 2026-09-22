@@ -538,7 +538,46 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		if onAggregate && !clientModern {
 			relay = &memberHeaders{drop: []string{hdrProtocol}}
 		}
-		respBody, statusCode, headers, err = h.forward(r.Context(), r, up, body, relay)
+		sent := body
+		var memberModern bool
+		if onAggregate && clientModern {
+			// Only a modern client's request changes with the member's era,
+			// so only that client can cost a member a probe: one
+			// server/discover per member per eraTTL (eraRetry after a
+			// failure), through memberEra, which caches whatever it learns.
+			// Nothing walks the catalogue on a relay, and the merged list lets
+			// a client cache it for an hour, so the cache is cold here in an
+			// ordinary flow. A member the cache then holds as handshake-era
+			// is sent what a routed call sends it: no version header and no
+			// reserved _meta member. Every other byte the client sent
+			// crosses, and a body with nothing to strip crosses untouched.
+			plain, cerr := h.credential(up)
+			if cerr != nil {
+				err = cerr
+			} else {
+				verdict := h.memberEra(r.Context(), up, plain)
+				memberModern = verdict.era == mcpclient.EraModern
+				if legacyStrip(verdict, true, clientModern) {
+					relay = &memberHeaders{drop: []string{hdrProtocol}}
+					if params, changed := stripReservedMeta(req.Params); changed && method != "" {
+						sent = replaceParams(body, params)
+					}
+				}
+			}
+		}
+		if err == nil {
+			respBody, statusCode, headers, err = h.forward(r.Context(), r, up, sent, relay)
+		}
+		if onAggregate && err == nil {
+			// On this endpoint PoryMCP is the server: the member's answer is
+			// read as a routed call's is. Nothing is completed for a request
+			// with no id member: a DELETE or a notification asked for no
+			// result. An unreduced event stream is read once more by
+			// answerStatus below, for the row only; labelling it JSON to
+			// spare that read would tell the client a lie about its shape.
+			respBody, headers, err = h.groupAnswer(up, auditMethod, statusCode, sent, respBody, headers,
+				clientModern && !memberModern && len(bytes.TrimSpace(req.ID)) > 0)
+		}
 		// Trim the catalogue to what the gate above would let this key call,
 		// before the classification below, so the row records the size of the
 		// body the client is actually sent.

@@ -155,3 +155,16 @@ func TestAnswerStatusJSONAllocs(t *testing.T) {
 		})
 	}
 }
+
+// A notification answered 202 with no body on a single-upstream key: the
+// client gets the 202, no body, no label, and the row is success, as today.
+func TestRelayNotificationRowUnchanged(t *testing.T) {
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, RelayCode: http.StatusAccepted}, nil, nil)
+	rr := f.post(`{"jsonrpc":"2.0","method":"notifications/foo"}`)
+	if rr.Code != http.StatusAccepted || rr.Body.Len() != 0 || rr.Header().Get("Content-Type") != "" {
+		t.Fatalf("code=%d body=%q ct=%q, want 202, no body, no label", rr.Code, rr.Body.String(), rr.Header().Get("Content-Type"))
+	}
+	if row := f.waitAudit(models.LogFilter{Method: "notifications/foo"})[0]; row.Status != models.StatusSuccess {
+		t.Fatalf("row status=%q want success", row.Status)
+	}
+}
