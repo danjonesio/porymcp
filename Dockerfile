@@ -1,10 +1,11 @@
-# syntax=docker/dockerfile:1
-
 # Both build stages run on the builder's own architecture: the export is the
 # same for every target, and the Go compiler cross-compiles by argument. Only
 # the runtime stage below resolves per target platform. Pinned by index digest
 # for the same reason as the Go base image.
-FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS web
+# No syntax directive is declared, because no instruction here needs an
+# external frontend. Add one back, pinned by digest, when this file first uses
+# a heredoc, COPY --link or RUN --mount.
+FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -12,7 +13,7 @@ COPY web/ ./
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
