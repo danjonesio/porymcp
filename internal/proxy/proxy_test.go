@@ -270,6 +270,39 @@ func TestInvalidKeyRejected(t *testing.T) {
 	}
 }
 
+// legacyPlain is a recognisable fixture key, not a random one, and legacyHash
+// is the hash a build before PORM-44 wrote for it: the row shape a rollback
+// verifies. Kept so the proxy is proved to accept a key created before the
+// SHA-256 verifier without re-keying (PORM-44 acceptance criterion 4).
+const (
+	legacyPlain = "pory_cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe"
+	legacyHash  = "$argon2id$v=19$m=65536,t=3,p=4$Cy+fTutQIvXPS1BJr9VMVA$vzjaTy8ZC4xqaY4UHoCVWU0VmIirIv733H73OI28Z4o"
+)
+
+// TestKeyCreatedBeforeSHA256Authenticates is a lookup-path test: the proxy
+// finds the row by the digest of the presented token, so a key with a
+// pre-PORM-44 key_hash authenticates because its key_lookup was always the
+// SHA-256 of the key, and a token one character off misses the lookup.
+func TestKeyCreatedBeforeSHA256Authenticates(t *testing.T) {
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}}, nil, nil)
+	if err := auth.VerifyKey(legacyPlain, legacyHash); err != nil {
+		t.Fatal(err)
+	}
+	mutateKey(t, f, func(vk *models.VirtualKey) {
+		vk.KeyHash = legacyHash
+		vk.KeyLookup = auth.LookupDigest(legacyPlain)
+	})
+	f.Key = legacyPlain
+	if rr := f.post(listRequest); rr.Code != http.StatusOK {
+		t.Fatalf("legacy key: code=%d want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	// The last character changed: the lookup misses, which is the 401.
+	f.Key = legacyPlain[:len(legacyPlain)-1] + "0"
+	if rr := f.post(listRequest); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("altered key: code=%d want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestGroupAlwaysPrefixesToolNames(t *testing.T) {
 	mk := func(name string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

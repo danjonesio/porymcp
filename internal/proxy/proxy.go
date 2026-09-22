@@ -669,7 +669,7 @@ func (h *Handler) authenticate(r *http.Request) (*models.VirtualKey, error) {
 	if err != nil {
 		return nil, errUnauthorized
 	}
-	if err := auth.VerifyKey(token, vk.KeyHash); err != nil {
+	if err := auth.VerifyLookup(token, vk.KeyLookup); err != nil {
 		return nil, errUnauthorized
 	}
 	if vk.RevokedAt != nil {
