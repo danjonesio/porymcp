@@ -253,7 +253,7 @@ func TestVirtualKeyKeyOnce(t *testing.T) {
 	if key == "" || created["proxy_url"] != "http://localhost:8080/"+id+"/mcp" {
 		t.Fatalf("missing one-time key fields: %+v", created)
 	}
-	// The row holds only the SHA-256 digest of the key (PORM-44): no argon2id
+	// The row holds only the SHA-256 digest of the key (PORM-44): no slow
 	// hash is written, and the key verifies against the digest.
 	stored, err := st.GetVirtualKey(context.Background(), id)
 	if err != nil {
