@@ -14,7 +14,7 @@ vet:
 	@files="$$(git ls-files '*.go' 2>/dev/null)"; [ -n "$$files" ] || files="./cmd ./internal ./web"; unformatted="$$(gofmt -l $$files)"; if [ -n "$$unformatted" ]; then echo "gofmt -l: $$unformatted"; exit 1; fi
 
 vuln:
-	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./cmd/... ./internal/... ./web
+	go tool govulncheck ./cmd/... ./internal/... ./web
 
 tidy:
 	go mod tidy
