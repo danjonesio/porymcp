@@ -26,8 +26,15 @@
 #
 # gomod (/): version lane. go.sum is copied into the image (Dockerfile, COPY
 # go.mod go.sum); the go job's govulncheck step is the check a bump has to
-# pass. govulncheck's own version sits in a go run argument in the Makefile,
-# which no lane reads; CONTRIBUTING.md has the procedure.
+# pass. The scanner itself is a tool directive in go.mod and make vuln runs
+# go tool govulncheck, so this lane moves its version too, through an allow
+# rule named for it: go get -tool writes a tool module's require line as
+# indirect, and without the rule the lane would skip it (dependabot-core,
+# read 2026-09-22). The four modules that build the scanner (golang.org/x/vuln,
+# x/tools, x/mod, x/telemetry) are downloaded by the image build and never
+# linked, so an advisory against one of them is not a product advisory, and
+# is still taken, because these are the libraries the scanner reads with.
+# The check any gomod pull request has to pass is in CONTRIBUTING.md.
 #
 # npm (/web): version lane. web/package-lock.json builds the dashboard in the
 # image's web stage; the web job ends with npm audit --audit-level=high, which
@@ -75,12 +82,19 @@ updates:
         patterns: ["*"]
 
   # Version lane on a deploying path, by the decision in the header: go.sum is
-  # in the image.
+  # in the image. govulncheck is a tool directive in go.mod, go get -tool
+  # writes its require line as indirect, and the version lane skips indirect
+  # modules, so the second allow rule names the scanner and the first keeps
+  # the default for everything else.
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5
+    allow:
+      - dependency-type: "direct"
+      - dependency-name: "golang.org/x/vuln"
+        dependency-type: "all"
     groups:
       gomod-versions:
         applies-to: version-updates
