@@ -88,12 +88,18 @@ answers `server/discover`, `initialize`, `notifications/initialized`, `ping` and
 `tasks/update` with `404` and `-32601`, and routes `tools/call` to the member
 that owns the tool, composing the request for the era that member speaks (the
 era comes from the era cache, read and never probed on this path). Everything
-else goes to the first member, and no upstream session reaches the client. A member is
-listed whether it answers `tools/list` as JSON or as an event stream, and the
-answer to a routed `tools/call` is reduced to its one JSON document before the
-client sees it, so the audit row is judged from the bytes the client is sent.
-An answer with no such document in it is passed on as it came when it is JSON
-or an event stream, and is a `502` otherwise.
+else goes to the first member, composed for that member's era when a
+`2026-07-28` client sent it (the era cache, probed on a miss, with the
+bounds `docs/07-security.md` gives the probe), and no upstream session reaches the client. A member is
+listed whether it answers `tools/list` as JSON or as an event stream, and every
+answer on a group endpoint, to a routed `tools/call` or a relayed method, is
+reduced to its one JSON document before the client sees it, so the audit row
+is judged from the bytes the client is sent. An answer with no such document
+in it is passed on as it came when it is JSON or an event stream; any other
+media type keeps its failure status with no body, or is a `502` on a success
+status. On a single-upstream key and a member endpoint the answer is relayed
+as the upstream sent it, and only the row is judged from the answering
+document.
 
 ### Sessions and response headers
 The proxy is stateless: it holds no session table. Each member URL carries its

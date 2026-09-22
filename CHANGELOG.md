@@ -4,6 +4,38 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### A relayed answer is read the way a routed call's is (PORM-172)
+
+- **Rows that read `success` now read `error` when the upstream's error came
+  in SSE framing.** On a single-upstream key and a member endpoint an
+  upstream's JSON-RPC error inside an event stream was written as `success`
+  with no message, because the row was judged from the raw bytes. It is now
+  judged from the document that answers the request, in either framing, and
+  carries the upstream's message, bounded. The bytes the client receives on
+  those routes do not change. Dashboards and alerts built on the old counts
+  move.
+- **A group endpoint no longer sends a member's `Mcp-Session-Id` or media
+  type on a relayed method** (`resources/read`, `prompts/get`,
+  `logging/setLevel` and the rest). The member's answer is reduced to its one
+  document and sent as `application/json`, as a routed `tools/call` answer has
+  been since PORM-171, and a 2026-07-28 client gets `resultType: "complete"`
+  when a handshake-era member sent none. The server log line for an answer
+  that could not be reduced now reads `group answer relayed unreduced` and
+  names the method.
+- **A 2026-07-28 client's relayed request to a handshake-era first member no
+  longer carries the version header that member would refuse,** nor the three
+  reserved `_meta` members; every other value crosses as sent. The member's
+  era is read from the cache and, on a miss, probed, under the era probe's
+  existing bounds: one `server/discover` per member per ten minutes for
+  callers in sequence, thirty seconds while the member does not answer.
+- **A member body on a group endpoint that is neither JSON nor an event stream
+  keeps its status with no body** when the status is `400` or above (a `429`
+  keeps its `Retry-After`), and is a `502` on a success status. On a relayed
+  method it used to be passed through with the member's label; on a routed
+  call every such body used to be a `502`.
+- **`Retry-After` now crosses on a routed `tools/call`**, as it already did on
+  a relayed method.
+
 ### The group endpoint is a server in both protocol eras (PORM-153)
 
 - **A 2026-07-28 client can use a group.** Claude Code showed a group as
@@ -55,9 +87,11 @@ Behaviour changes that affect a running deployment. Newest first.
   and a failed call was logged as a success. The client now gets the one
   answering document, with the member's HTTP status, and the Logs row records
   its outcome. An answer with no such document in it is passed on as it came
-  when it is JSON or an event stream; its row is still judged by the HTTP status
-  alone, and the server log says `group call answer relayed unreduced`. A member
-  that answers with a body in any other media type is a `502`.
+  when it is JSON or an event stream; its row is judged by the HTTP status and
+  what can be read of its bytes, and the server log says `group answer relayed
+  unreduced` (PORM-172, above). A member that answers with a body in any other
+  media type keeps its failure status with no body, or is a `502` on a success
+  status (PORM-172).
 - A member can still be missing from a group when it refuses a `tools/list` sent
   without a session, answers with a redirect, or answers something the proxy
   cannot read. The `group member skipped` log line says which.

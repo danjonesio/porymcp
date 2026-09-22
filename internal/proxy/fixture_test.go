@@ -46,6 +46,14 @@ type upstreamSpec struct {
 	// cannot build the member whose listing reads and whose call answer does
 	// not.
 	CallCT string
+	// RelayCode and RelayCT are the status and the label of the answer to any
+	// method that is none of initialize, tools/list, tools/call and
+	// server/discover (PORM-172: what the group relay carries). A 202 or a 204
+	// is written with no body, as the transport requires of them. The era
+	// probe is untouched by either, so a member's verdict does not change
+	// with them.
+	RelayCode int
+	RelayCT   string
 	// RespHeaders are extra response headers the stub writes on every reply,
 	// tools/list and the redirect arm included. Each arm sets its own
 	// Content-Type only when RespHeaders did not, so a test can put a
@@ -180,6 +188,13 @@ func (s *stub) serveModern(w http.ResponseWriter, r *http.Request, body []byte, 
 		out, _ := json.Marshal(map[string]any{"tools": tools, "resultType": "complete", "ttlMs": 60000, "cacheScope": "public"})
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, id, out)
 	default:
+		// CallBody, when set, is this member's answer to a relayed method too
+		// (PORM-172), so a test can hand a modern member a result to relay.
+		if spec.CallBody != "" {
+			setContentType(w, spec.CallCT)
+			_, _ = io.WriteString(w, spec.CallBody)
+			return
+		}
 		rpcError(http.StatusNotFound, -32601, "Method not found")
 	}
 }
@@ -301,8 +316,18 @@ func newStub(spec upstreamSpec) *stub {
 			if spec.CallCode != 0 {
 				w.WriteHeader(spec.CallCode)
 			}
-		} else {
+		} else if req.Method == "initialize" || req.Method == "server/discover" {
 			setContentType(w, "")
+		} else {
+			if spec.RelayCode == http.StatusAccepted || spec.RelayCode == http.StatusNoContent {
+				// No body and no label of its own: what a server sends for one.
+				w.WriteHeader(spec.RelayCode)
+				return
+			}
+			setContentType(w, spec.RelayCT)
+			if spec.RelayCode != 0 {
+				w.WriteHeader(spec.RelayCode)
+			}
 		}
 		if spec.CallBody != "" {
 			_, _ = io.WriteString(w, spec.CallBody)

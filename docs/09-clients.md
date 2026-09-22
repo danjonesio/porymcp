@@ -336,10 +336,6 @@ What remains on an aggregate URL:
   schema. A member's `annotations` (`readOnlyHint` and `destructiveHint`
   included), `outputSchema`, `icons` and tool `_meta` do not cross (PORM-73).
   The member's own URL lists them.
-- A method the group relays to its first member (`resources/read`,
-  `prompts/get`, `logging/setLevel`) returns that member's answer as it came.
-  From a handshake-era first member a 2026-07-28 client receives a result with
-  no `resultType`, which a strict client refuses.
 
 Thirteen, not sixteen. That server registers three further tools
 (`get-roots-list`, `trigger-sampling-request` and `trigger-elicitation-request`)

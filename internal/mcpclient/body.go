@@ -92,11 +92,10 @@ func rpcPayloadN(contentType string, body []byte, limit int) ([][]byte, error) {
 		return nil, errEmptyBody
 	}
 	shape := MediaType(contentType)
-	if shape == "" {
+	if SSEFramed(contentType, body) {
+		shape = "text/event-stream"
+	} else if shape == "" {
 		shape = "application/json"
-		if LooksLikeSSE(body) {
-			shape = "text/event-stream"
-		}
 	}
 	switch shape {
 	case "application/json":
@@ -189,6 +188,25 @@ func NextLine(body []byte) (line, term, rest []byte) {
 		}
 	}
 	return body, nil, nil
+}
+
+// SSEFramed reports whether an answer is an event stream: the label says so,
+// or the label names no type (absent, or parameters alone) and the body reads
+// as one. PickResponse applies the same rule; a caller that wants to know
+// whether reducing would change anything asks this first, because a JSON body
+// reduces to itself.
+func SSEFramed(contentType string, body []byte) bool {
+	if contentType == "application/json" {
+		// The label nearly every JSON answer carries, spelled exactly so:
+		// answered without the lowering and trimming MediaType does, since
+		// this runs on every relayed answer.
+		return false
+	}
+	shape := MediaType(contentType)
+	if shape == "" {
+		return LooksLikeSSE(body)
+	}
+	return shape == "text/event-stream"
 }
 
 // LooksLikeSSE reports whether body opens with an event-stream field. It is
