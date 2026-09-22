@@ -217,7 +217,7 @@ func TestAdminAuthRateLimited(t *testing.T) {
 }
 
 func TestVirtualKeyKeyOnce(t *testing.T) {
-	_, h, _ := testAPI(t)
+	_, h, st := testAPI(t)
 	rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", map[string]any{
 		"name": "GitHub", "url": "https://example.com/mcp",
 		"auth_type": "bearer", "auth_config": map[string]string{"token": "sk-real"},
@@ -253,11 +253,20 @@ func TestVirtualKeyKeyOnce(t *testing.T) {
 	if key == "" || created["proxy_url"] != "http://localhost:8080/"+id+"/mcp" {
 		t.Fatalf("missing one-time key fields: %+v", created)
 	}
-	if err := auth.VerifyKey(key, ""); err == nil {
-		t.Fatal("blank hash should not verify")
-	}
-	if _, _, _, _, err := auth.GenerateKey(); err != nil {
+	// The row holds only the SHA-256 digest of the key (PORM-44): no argon2id
+	// hash is written, and the key verifies against the digest.
+	stored, err := st.GetVirtualKey(context.Background(), id)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if stored.KeyHash != "" {
+		t.Fatalf("key_hash=%q want empty", stored.KeyHash)
+	}
+	if err := auth.VerifyLookup(key, stored.KeyLookup); err != nil {
+		t.Fatalf("the created key does not verify against its stored digest: %v", err)
+	}
+	if err := auth.VerifyLookup(key, ""); err == nil {
+		t.Fatal("blank digest should not verify")
 	}
 
 	rr = doJSON(t, h, http.MethodGet, "/virtual-keys", "test-admin", nil)
@@ -2834,5 +2843,55 @@ func TestPatchUpstreamClearLogsCredential(t *testing.T) {
 	patchUpstreamJSON(t, h, viaEmpty, map[string]any{"name": "Renamed"})
 	if got := clearLines(t); len(got) != 0 {
 		t.Fatalf("a request that removed nothing logged a clear: %v", got)
+	}
+}
+
+// TestRotateClearsLegacyHash covers PORM-44 decision D4 and security
+// requirement 7: rotating a key that still holds the hash a build before
+// PORM-44 wrote leaves the row with no hash, so a previous build cannot
+// verify the replaced key against a hash that no longer names any key.
+func TestRotateClearsLegacyHash(t *testing.T) {
+	_, h, st := testAPI(t)
+	rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", map[string]any{
+		"name": "GitHub", "url": "https://example.com/mcp", "auth_type": "none",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create upstream %d %s", rr.Code, rr.Body.String())
+	}
+	var up map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &up)
+	rr = doJSON(t, h, http.MethodPost, "/virtual-keys", "test-admin", map[string]any{
+		"name": "legacy", "target_type": "upstream", "target_id": up["id"],
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create virtual key %d %s", rr.Code, rr.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &created)
+	id, _ := created["id"].(string)
+
+	ctx := context.Background()
+	before, err := st.GetVirtualKey(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.KeyHash = "legacy-hash"
+	if err := st.UpdateVirtualKey(ctx, before); err != nil {
+		t.Fatal(err)
+	}
+
+	rr = doJSON(t, h, http.MethodPost, "/virtual-keys/"+id+"/rotate", "test-admin", map[string]any{})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rotate %d %s", rr.Code, rr.Body.String())
+	}
+	after, err := st.GetVirtualKey(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.KeyHash != "" {
+		t.Fatalf("key_hash=%q after rotate, want empty", after.KeyHash)
+	}
+	if after.KeyLookup == before.KeyLookup {
+		t.Fatal("rotate did not change key_lookup")
 	}
 }

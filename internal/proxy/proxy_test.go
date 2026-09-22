@@ -50,12 +50,12 @@ func TestInjectBearerAndHideVirtualKey(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	plain, hash, lookup, prefix, err := auth.GenerateKey()
+	plain, lookup, prefix, err := auth.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := st.CreateVirtualKey(ctx, &models.VirtualKey{
-		ID: "a1", Name: "bot", KeyHash: hash, KeyLookup: lookup, KeyPrefix: prefix,
+		ID: "a1", Name: "bot", KeyLookup: lookup, KeyPrefix: prefix,
 		TargetType: models.TargetUpstream, TargetID: "u1", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestKeyPathMustMatchKey(t *testing.T) {
 	}
 	defer st.Close()
 	now := time.Now().UTC()
-	plain, hash, lookup, prefix, err := auth.GenerateKey()
+	plain, lookup, prefix, err := auth.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestKeyPathMustMatchKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := st.CreateVirtualKey(context.Background(), &models.VirtualKey{
-		ID: "a1", Name: "bot", KeyHash: hash, KeyLookup: lookup, KeyPrefix: prefix,
+		ID: "a1", Name: "bot", KeyLookup: lookup, KeyPrefix: prefix,
 		TargetType: models.TargetUpstream, TargetID: "u1", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -196,14 +196,14 @@ func TestProxyURLUnchangedAcrossRename(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	plain, hash, lookup, prefix, err := auth.GenerateKey()
+	plain, lookup, prefix, err := auth.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The worked example in docs/09-clients.md.
 	const id = "77232bc0-dd4a-44d5-8ae7-ef2f679879ec"
 	if err := st.CreateVirtualKey(ctx, &models.VirtualKey{
-		ID: id, Name: "claude-code", KeyHash: hash, KeyLookup: lookup, KeyPrefix: prefix,
+		ID: id, Name: "claude-code", KeyLookup: lookup, KeyPrefix: prefix,
 		TargetType: models.TargetUpstream, TargetID: "u1", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -285,9 +285,6 @@ const (
 // SHA-256 of the key, and a token one character off misses the lookup.
 func TestKeyCreatedBeforeSHA256Authenticates(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}}, nil, nil)
-	if err := auth.VerifyKey(legacyPlain, legacyHash); err != nil {
-		t.Fatal(err)
-	}
 	mutateKey(t, f, func(vk *models.VirtualKey) {
 		vk.KeyHash = legacyHash
 		vk.KeyLookup = auth.LookupDigest(legacyPlain)
@@ -348,9 +345,9 @@ func TestGroupAlwaysPrefixesToolNames(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	plain, hash, lookup, prefix, _ := auth.GenerateKey()
+	plain, lookup, prefix, _ := auth.GenerateKey()
 	if err := st.CreateVirtualKey(ctx, &models.VirtualKey{
-		ID: "a1", Name: "multi", KeyHash: hash, KeyLookup: lookup, KeyPrefix: prefix,
+		ID: "a1", Name: "multi", KeyLookup: lookup, KeyPrefix: prefix,
 		TargetType: models.TargetGroup, TargetID: "g1", CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)

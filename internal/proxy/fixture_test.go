@@ -445,12 +445,12 @@ func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter 
 		targetType, targetID = models.TargetGroup, "g1"
 	}
 
-	plain, hash, lookup, prefix, err := auth.GenerateKey()
+	plain, lookup, prefix, err := auth.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := st.CreateVirtualKey(ctx, &models.VirtualKey{
-		ID: "a1", Name: "bot", KeyHash: hash, KeyLookup: lookup, KeyPrefix: prefix,
+		ID: "a1", Name: "bot", KeyLookup: lookup, KeyPrefix: prefix,
 		TargetType: targetType, TargetID: targetID,
 		ToolAllowlist: allow, ToolDenylist: deny, CreatedAt: now,
 	}); err != nil {

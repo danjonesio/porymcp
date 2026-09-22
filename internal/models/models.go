@@ -125,8 +125,13 @@ type ToolFilter struct {
 // VirtualKey is a credential PoryMCP issues to one agent (Claude Code, Cursor,
 // a bot). It points at one Upstream or one Group.
 type VirtualKey struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// KeyHash was retired by PORM-44 and is never read by this build. A key
+	// created before PORM-44 still holds the hash a previous build verifies,
+	// and the store writes it back unchanged so a rollback keeps that key
+	// working. Empty for keys created or rotated since. Goes with the
+	// key_hash column.
 	KeyHash       string          `json:"-"`
 	KeyLookup     string          `json:"-"`
 	KeyPrefix     string          `json:"key_prefix"`

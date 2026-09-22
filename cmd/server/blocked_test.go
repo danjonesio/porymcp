@@ -145,12 +145,12 @@ func newBlockFixture(t *testing.T, targetType, toolFilter string) *blockFixture 
 		deny = []string{"delete_repo"}
 	}
 
-	plain, hash, lookup, prefix, err := auth.GenerateKey()
+	plain, lookup, prefix, err := auth.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := st.CreateVirtualKey(ctx, &models.VirtualKey{
-		ID: "k1", Name: "bot", KeyHash: hash, KeyLookup: lookup, KeyPrefix: prefix,
+		ID: "k1", Name: "bot", KeyLookup: lookup, KeyPrefix: prefix,
 		TargetType: targetType, TargetID: targetID, ToolDenylist: deny, CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
