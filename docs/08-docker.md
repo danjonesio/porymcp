@@ -31,7 +31,7 @@ An index digest resolves per platform. The digest `docker inspect` prints on one
 
 The `golang` digest and the `toolchain` line in `go.mod` move in one commit, with the version string in `README.md`, `docs/04-architecture.md` and this file, because the image never downloads a toolchain. A Node major move also changes `web/.nvmrc` (`TestNodeMajorConsistent` fails otherwise) and needs the `web/out` rebuild that `CONTRIBUTING.md` describes. A digest refresh under the same tag needs neither.
 
-Dependabot's monthly docker lane (`.github/dependabot.yml`) raises a pull request that moves the tag and the digest together when a newer tag exists. No pull request that refreshes a digest under an unchanged tag has been seen on this repository, so the recipe above is the backstop for a pin whose tag stays put.
+Dependabot's monthly docker lane (`.github/dependabot.yml`) raises a pull request that moves the tag and the digest together when a newer tag exists. The lane holds back Node majors (`.github/dependabot.yml`), so a Node major is the by-hand move above; for `node` the lane can offer only a digest refresh of the current major. No pull request that refreshes a digest under an unchanged tag has been seen on this repository, so the recipe above is the backstop for a pin whose tag stays put.
 
 `TestDockerfilePinned` in `cmd/server/pins_test.go` fails a `FROM` line without a digest. It checks the digest's shape, so the platform check above stays with the maintainer. The Dockerfile declares no `# syntax=` line, because no instruction in it needs an external frontend; the same test requires a digest on that line if it returns.
 
