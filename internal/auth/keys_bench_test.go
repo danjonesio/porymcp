@@ -19,3 +19,20 @@ func BenchmarkVerifyKey(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkVerifyLookup measures the SHA-256 verifier that replaces argon2id
+// (PORM-44, acceptance criterion 2): one digest of the presented token and one
+// constant-time comparison. Its numbers stand beside BenchmarkVerifyKey's from
+// the same run.
+func BenchmarkVerifyLookup(b *testing.B) {
+	plain, _, lookup, _, err := GenerateKey()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := VerifyLookup(plain, lookup); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
