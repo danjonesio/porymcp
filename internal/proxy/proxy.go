@@ -572,12 +572,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 
-	st := models.StatusSuccess
-	errMsg := ""
-	if statusCode >= 400 || rpcFailed(respBody) {
-		st = models.StatusError
-		errMsg = rpcErrorMessage(respBody)
-	}
+	st, errMsg := answerStatus(statusCode, headers.Get("Content-Type"), respBody, strings.TrimSpace(string(req.ID)))
 	// The relay path writes the widest row in the file and was the only one
 	// left unbounded. errMsg is the upstream's own error.message, returned
 	// verbatim out of a body allowed to be 16 MiB, so a hostile
@@ -1401,6 +1396,29 @@ func rewriteMethod(original []byte, method string, params json.RawMessage) []byt
 	}
 	b, _ := json.Marshal(req)
 	return b
+}
+
+// answerStatus judges the row for an answer the client is sent. An answer in
+// SSE framing is reduced to the one document that answers the request before
+// it is read, because a JSON-RPC error inside an event stream is still an
+// error. When the framing cannot be read, or the label is anything else, the
+// raw bytes are judged as they always were: a JSON error under a wrong label
+// stays an error row, and a JSON body is never reduced, since it would reduce
+// to itself at the cost of a copy. A status of 400 or more is an error
+// whatever the body. On the group paths the answer arrives already reduced
+// and labelled JSON, so nothing is read twice there but an unreduced event
+// stream, which is rare and bounded.
+func answerStatus(statusCode int, contentType string, body []byte, wantID string) (status, errMsg string) {
+	judged := body
+	if mcpclient.SSEFramed(contentType, body) {
+		if doc, err := mcpclient.PickResponse(contentType, body, wantID); err == nil {
+			judged = doc
+		}
+	}
+	if statusCode >= 400 || rpcFailed(judged) {
+		return models.StatusError, rpcErrorMessage(judged)
+	}
+	return models.StatusSuccess, ""
 }
 
 func rpcFailed(body []byte) bool {

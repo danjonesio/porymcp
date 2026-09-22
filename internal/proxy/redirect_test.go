@@ -533,20 +533,30 @@ func TestGroupCallOnRedirectingMemberIs502(t *testing.T) {
 // error.message copied onto the row verbatim, out of a body the proxy will
 // buffer up to 16 MiB of. The client still gets the answer it was sent; only
 // the row is bounded.
+//
+// The SSE case is PORM-172's, security requirement 7: the same message inside
+// an event stream now reaches the row too, through the same bound.
 func TestUpstreamRelayErrorMessageIsBounded(t *testing.T) {
 	huge := strings.Repeat("A", 64<<10)
-	f := newSingleFixture(t, upstreamSpec{
-		Tools:    []string{"ping_tool"},
-		CallBody: `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"` + huge + `"}}`,
-	}, nil, nil)
-
-	rr := f.post(toolCall("1", "ping_tool"))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("HTTP code=%d want 200: the upstream answered, badly; the transport did not fail", rr.Code)
-	}
-	row := f.waitAudit(models.LogFilter{Status: models.StatusError, Tool: "ping_tool"})[0]
-	if len(row.ErrorMessage) > auditFieldBytes {
-		t.Errorf("error_message is %d bytes, want at most %d: it is the upstream's own string", len(row.ErrorMessage), auditFieldBytes)
+	doc := `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"` + huge + `"}}`
+	for name, spec := range map[string]upstreamSpec{
+		"json": {Tools: []string{"ping_tool"}, CallBody: doc},
+		"sse":  {Tools: []string{"ping_tool"}, CallCT: "text/event-stream", CallBody: sseFrame(doc)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSingleFixture(t, spec, nil, nil)
+			rr := f.post(toolCall("1", "ping_tool"))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d want 200: the upstream answered, badly; the transport did not fail", rr.Code)
+			}
+			row := f.waitAudit(models.LogFilter{Status: models.StatusError, Tool: "ping_tool"})[0]
+			if len(row.ErrorMessage) > auditFieldBytes {
+				t.Errorf("error_message is %d bytes, want at most %d: it is the upstream's own string", len(row.ErrorMessage), auditFieldBytes)
+			}
+			if !strings.HasPrefix(row.ErrorMessage, "AAAA") {
+				t.Errorf("error_message=%q, want the upstream's message, bounded", row.ErrorMessage)
+			}
+		})
 	}
 }
 
