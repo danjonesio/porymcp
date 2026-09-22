@@ -542,22 +542,31 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		var memberModern bool
 		if onAggregate && clientModern {
 			// Only a modern client's request changes with the member's era,
-			// so only that client can cost a member a probe: one
-			// server/discover per member per eraTTL (eraRetry after a
-			// failure), through memberEra, which caches whatever it learns.
-			// Nothing walks the catalogue on a relay, and the merged list lets
-			// a client cache it for an hour, so the cache is cold here in an
-			// ordinary flow. A member the cache then holds as handshake-era
-			// is sent what a routed call sends it: no version header and no
-			// reserved _meta member. Every other byte the client sent
-			// crosses, and a body with nothing to strip crosses untouched.
-			plain, cerr := h.credential(up)
-			if cerr != nil {
-				err = cerr
-			} else {
-				verdict := h.memberEra(r.Context(), up, plain)
+			// so only that client can cost a member a probe, through
+			// memberEra, which caches whatever it learns: one server/discover
+			// per member per eraTTL for callers in sequence, per eraRetry
+			// while the member does not answer, and one per caller when
+			// several miss at once, as on the catalogue walk. Nothing walks
+			// the catalogue on a relay, and the merged list lets a client
+			// cache it for an hour, so the cache is cold here in an ordinary
+			// flow. A member the cache then holds as handshake-era is sent
+			// what a routed call sends it: no version header, whatever the
+			// method, and no reserved _meta member. Every other value the
+			// client sent crosses as sent, and a body with nothing to strip,
+			// or with no method, crosses untouched.
+			verdict, known := h.eras.get(up.ID, up.UpdatedAt)
+			if !known {
+				// The credential is read only for a probe; forward reads it
+				// again through the same function, so the two agree.
+				if plain, cerr := h.credential(up); cerr != nil {
+					err = cerr
+				} else {
+					verdict, known = h.memberEra(r.Context(), up, plain), true
+				}
+			}
+			if err == nil {
 				memberModern = verdict.era == mcpclient.EraModern
-				if legacyStrip(verdict, true, clientModern) {
+				if legacyStrip(verdict, known, clientModern) {
 					relay = &memberHeaders{drop: []string{hdrProtocol}}
 					if params, changed := stripReservedMeta(req.Params); changed && method != "" {
 						sent = replaceParams(body, params)

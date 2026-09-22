@@ -340,8 +340,8 @@
   member is asked or which members answer. A member whose stored transport
   cannot be dialled, or whose credential cannot be read, is not probed at all.
   A `2026-07-28` client's request relayed to a group's first member reads
-  that member's verdict the same way, so such a relay may cost the member
-  one probe per ten minutes; a handshake-era client's relay never probes.
+  that member's verdict the same way, under the same bounds and with the
+  same undeduplicated misses; a handshake-era client's relay never probes.
   Each probe is bounded (5 s, 2 MiB). How often one is sent is bounded for
   sequential callers only: the verdict is remembered for ten minutes, or thirty
   seconds when the probe got no answer, was refused, or the member then did not
@@ -656,8 +656,8 @@
   slug and a fixed reason. A routed call is composed for the member's era from
   the cached era verdict and PoryMCP's own constants, never from the client's
   request, and a relayed method is composed the same way for a member held as
-  handshake-era (on a relay the verdict is probed when the cache misses, at
-  most once per member per ten minutes, and only for a `2026-07-28` client,
+  handshake-era (on a relay the verdict is probed when the cache misses,
+  under the era probe's bounds above, and only for a `2026-07-28` client,
   whose request is the one the verdict changes); when no verdict is held the
   client's request is sent as it came: a
   handshake-era client calling a `2026-07-28` member has the version, `Mcp-Method`,

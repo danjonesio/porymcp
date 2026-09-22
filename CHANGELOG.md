@@ -24,9 +24,10 @@ Behaviour changes that affect a running deployment. Newest first.
   names the method.
 - **A 2026-07-28 client's relayed request to a handshake-era first member no
   longer carries the version header that member would refuse,** nor the three
-  reserved `_meta` members; every other byte crosses as sent. The member's era
-  is read from the cache and, on a miss, probed once, which may cost that
-  member one `server/discover` per ten minutes.
+  reserved `_meta` members; every other value crosses as sent. The member's
+  era is read from the cache and, on a miss, probed, under the era probe's
+  existing bounds: one `server/discover` per member per ten minutes for
+  callers in sequence, thirty seconds while the member does not answer.
 - **A member body on a group endpoint that is neither JSON nor an event stream
   keeps its status with no body** when the status is `400` or above (a `429`
   keeps its `Retry-After`), and is a `502` on a success status. On a relayed
@@ -86,9 +87,11 @@ Behaviour changes that affect a running deployment. Newest first.
   and a failed call was logged as a success. The client now gets the one
   answering document, with the member's HTTP status, and the Logs row records
   its outcome. An answer with no such document in it is passed on as it came
-  when it is JSON or an event stream; its row is still judged by the HTTP status
-  alone, and the server log says `group call answer relayed unreduced`. A member
-  that answers with a body in any other media type is a `502`.
+  when it is JSON or an event stream; its row is judged by the HTTP status and
+  what can be read of its bytes, and the server log says `group answer relayed
+  unreduced` (PORM-172, above). A member that answers with a body in any other
+  media type keeps its failure status with no body, or is a `502` on a success
+  status (PORM-172).
 - A member can still be missing from a group when it refuses a `tools/list` sent
   without a session, answers with a redirect, or answers something the proxy
   cannot read. The `group member skipped` log line says which.

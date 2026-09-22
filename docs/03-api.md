@@ -1037,10 +1037,11 @@ Every other method is relayed to the group's first member and audited against
 it. A handshake-era client's `MCP-Protocol-Version` is not sent with it: that
 version was agreed by the group endpoint's `initialize`, for itself, and a
 member on an older revision would refuse it. A `2026-07-28` client's relayed
-request has the first member's era looked up first (the cached verdict, else
-one `server/discover` probe, at most one per member per ten minutes); to a
+request has the first member's era looked up first: the cached verdict, else
+one `server/discover` probe, cached for ten minutes, or thirty seconds while
+the member does not answer (the bounds in `docs/07-security.md`); to a
 member held as handshake-era the request loses its `MCP-Protocol-Version`
-header and the three reserved `_meta` members, and every other byte crosses
+header and the three reserved `_meta` members, and every other value crosses
 as sent. The member's answer is read as a routed call's is: reduced to the
 one document that answers the request, sent as `application/json` with no
 member header but `Retry-After`, and given `resultType: "complete"` for a

@@ -89,8 +89,8 @@ answers `server/discover`, `initialize`, `notifications/initialized`, `ping` and
 that owns the tool, composing the request for the era that member speaks (the
 era comes from the era cache, read and never probed on this path). Everything
 else goes to the first member, composed for that member's era when a
-`2026-07-28` client sent it (the era cache, probed on a miss, at most once per
-member per ten minutes), and no upstream session reaches the client. A member is
+`2026-07-28` client sent it (the era cache, probed on a miss, with the
+bounds `docs/07-security.md` gives the probe), and no upstream session reaches the client. A member is
 listed whether it answers `tools/list` as JSON or as an event stream, and every
 answer on a group endpoint, to a routed `tools/call` or a relayed method, is
 reduced to its one JSON document before the client sees it, so the audit row
