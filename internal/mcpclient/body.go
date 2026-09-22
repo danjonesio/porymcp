@@ -196,6 +196,12 @@ func NextLine(body []byte) (line, term, rest []byte) {
 // whether reducing would change anything asks this first, because a JSON body
 // reduces to itself.
 func SSEFramed(contentType string, body []byte) bool {
+	if contentType == "application/json" {
+		// The label nearly every JSON answer carries, spelled exactly so:
+		// answered without the lowering and trimming MediaType does, since
+		// this runs on every relayed answer.
+		return false
+	}
 	shape := MediaType(contentType)
 	if shape == "" {
 		return LooksLikeSSE(body)
