@@ -2351,7 +2351,9 @@ func TestGroupRelayComposesForLegacyMember(t *testing.T) {
 	})
 	t.Run("a POST with no method crosses untouched, without the version header", func(t *testing.T) {
 		f := firstMember(t, upstreamSpec{CallBody: result})
-		body := `{"jsonrpc":"2.0","id":9,"result":{"_meta":{` + modernMeta + `}}}`
+		// The reserved members sit under params, so stripReservedMeta finds
+		// something to strip and only the missing method holds the body back.
+		body := `{"jsonrpc":"2.0","id":9,"params":{"_meta":{` + modernMeta + `}}}`
 		if rr := f.postWith(body, map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern}); rr.Code != http.StatusOK {
 			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
 		}
