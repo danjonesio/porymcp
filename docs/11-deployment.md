@@ -479,8 +479,9 @@ The build that verifies virtual keys by their SHA-256 digest has no schema
 step, so the version stays 6 and the previous build still opens the
 database. A key created or rotated on the newer build carries no hash the
 previous build can check, so the previous build answers 401 to it until it
-is rotated again there; keys made before the newer build keep working, and
-so does a key the newer build renamed or revoked and restored. Before a
+is rotated again there; keys made before the newer build keep working,
+including ones the newer build renamed or revoked. Rotate is the only way to
+bring a revoked key back, and a rotated key needs rotating again. Before a
 rollback, list the keys that will need rotating (revoked keys need none):
 
 ```bash
