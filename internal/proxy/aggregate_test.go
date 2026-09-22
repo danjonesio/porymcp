@@ -2349,6 +2349,17 @@ func TestGroupRelayComposesForLegacyMember(t *testing.T) {
 			t.Errorf("member saw %q with version %q, want the client's bytes and no version", got.Body, got.Header.Get("Mcp-Protocol-Version"))
 		}
 	})
+	t.Run("a POST with no method crosses untouched, without the version header", func(t *testing.T) {
+		f := firstMember(t, upstreamSpec{CallBody: result})
+		body := `{"jsonrpc":"2.0","id":9,"result":{"_meta":{` + modernMeta + `}}}`
+		if rr := f.postWith(body, map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern}); rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
+		}
+		got := lastRequest(t, f, "alpha", "")
+		if string(got.Body) != body || got.Header.Get("Mcp-Protocol-Version") != "" {
+			t.Errorf("member saw %q with version %q, want the client's bytes and no version", got.Body, got.Header.Get("Mcp-Protocol-Version"))
+		}
+	})
 	t.Run("a handshake client's request is unchanged", func(t *testing.T) {
 		f := firstMember(t, upstreamSpec{CallBody: result})
 		body := relayRequest("4", "prompts/get")
@@ -2396,7 +2407,7 @@ func TestGroupRelayProbesOncePerTTL(t *testing.T) {
 			t.Fatalf("a relay past the TTL cost %d probes in all, want 2", n)
 		}
 	})
-	t.Run("an unanswered probe is retried after eraRetry", func(t *testing.T) {
+	t.Run("a refused probe is retried after eraRetry", func(t *testing.T) {
 		// A modern member whose probe answered with a version PoryMCP cannot
 		// speak is an unusable verdict, kept for eraRetry only (a member the
 		// probe cannot reach at all would fail the relay too).
@@ -2421,6 +2432,11 @@ func TestGroupRelayProbesOncePerTTL(t *testing.T) {
 		}
 		if n := f.count("alpha", "prompts/get", ""); n != 3 {
 			t.Fatalf("member saw %d prompts/get, want 3: the relay goes out whatever the probe learned", n)
+		}
+		// An unusable modern verdict is not a handshake-era one: nothing is
+		// stripped, and the request crosses as it came.
+		if v := lastRequest(t, f, "alpha", "prompts/get").Header.Get("Mcp-Protocol-Version"); v != mcpclient.RevisionModern {
+			t.Fatalf("member saw MCP-Protocol-Version %q, want the client's own", v)
 		}
 	})
 }
@@ -2496,9 +2512,9 @@ func TestGroupRelayNotificationAndDelete(t *testing.T) {
 			t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
 		}
 	})
-	t.Run("a DELETE's answer carries no member session id", func(t *testing.T) {
+	t.Run("a modern client's DELETE is not completed and carries no member session id", func(t *testing.T) {
 		f := firstMember(t, upstreamSpec{CallBody: `{"jsonrpc":"2.0","id":null,"result":{}}`, RespHeaders: map[string]string{"Mcp-Session-Id": "MEMBER-SESSION"}})
-		rr := f.doPath(http.MethodDelete, "http://localhost:8080/mcp", "", map[string]string{"Mcp-Session-Id": "CLIENT-SESSION"})
+		rr := f.doPath(http.MethodDelete, "http://localhost:8080/mcp", "", map[string]string{"MCP-Protocol-Version": mcpclient.RevisionModern, "Mcp-Session-Id": "CLIENT-SESSION"})
 		if rr.Code != http.StatusOK {
 			t.Fatalf("HTTP code=%d body=%s", rr.Code, rr.Body.String())
 		}
@@ -2507,6 +2523,12 @@ func TestGroupRelayNotificationAndDelete(t *testing.T) {
 		}
 		if got := rr.Header().Get("Mcp-Session-Id"); got != "" {
 			t.Errorf("a member's Mcp-Session-Id %q reached a group client", got)
+		}
+		if got := resultTypeOf(t, rr.Body.Bytes()); got != "" {
+			t.Errorf("resultType=%q on the answer to a request with no id", got)
+		}
+		if v := lastRequest(t, f, "alpha", "").Header.Get("Mcp-Protocol-Version"); v != "" {
+			t.Errorf("member saw MCP-Protocol-Version %q, want none", v)
 		}
 	})
 }
