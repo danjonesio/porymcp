@@ -131,7 +131,7 @@ type VirtualKey struct {
 	// created before PORM-44 still holds the hash a previous build verifies,
 	// and the store writes it back unchanged so a rollback keeps that key
 	// working. Empty for keys created or rotated since. Goes with the
-	// key_hash column.
+	// key_hash column (PORM-188).
 	KeyHash       string          `json:"-"`
 	KeyLookup     string          `json:"-"`
 	KeyPrefix     string          `json:"key_prefix"`

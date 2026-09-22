@@ -218,9 +218,11 @@ TypeScript (Fastify/Hono) is the alternative if you want faster UI iteration.
 The database is SQLite by default, with no configuration, plus optional
 Postgres. The HTTP router is chi or gin in Go, Hono or Fastify in TypeScript.
 The UI is React with Tailwind CSS and Headless UI, using PoryMCP's own component
-set in `web/src/components/`. Auth uses high-entropy API keys hashed with
-argon2id or bcrypt. Secrets are encrypted at rest with AES-256-GCM.
-Observability is structured JSON logs plus optional Prometheus.
+set in `web/src/components/`. Auth uses high-entropy API keys (256 random
+bits), stored as a SHA-256 digest and compared in constant time;
+`docs/07-security.md` says why no slow hash is needed. Secrets are encrypted
+at rest with AES-256-GCM. Observability is structured JSON logs plus optional
+Prometheus.
 
 Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
 (`toolchain go1.26.8`) so local builds, the Docker stage and the `go` job in

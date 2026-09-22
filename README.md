@@ -87,7 +87,7 @@ cd web && npm ci && npm run build
 # then restart the Go server (or `npm run dev` on :3000 while the API stays on :8080)
 ```
 
-`make test` covers auth, key hashing, store CRUD, management API, proxy credential injection and the tracked-file guards. Use the target rather than `go test ./...`: once `npm ci` has run, `./...` also reaches a Go file shipped inside `web/node_modules`. `make web-test` (`cd web && npm test`) covers the dashboard's client-snippet generation. [CONTRIBUTING.md](CONTRIBUTING.md) lists every check CI runs and the order to run them in.
+`make test` covers auth, key verification, store CRUD, management API, proxy credential injection and the tracked-file guards. Use the target rather than `go test ./...`: once `npm ci` has run, `./...` also reaches a Go file shipped inside `web/node_modules`. `make web-test` (`cd web && npm test`) covers the dashboard's client-snippet generation. [CONTRIBUTING.md](CONTRIBUTING.md) lists every check CI runs and the order to run them in.
 
 ## Core concepts
 
@@ -118,7 +118,7 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
   upstream transport is not implemented (PORM-5); `sse` is refused on write
   since PORM-28.
 - Encrypted storage of upstream secrets (AES-256-GCM)
-- Virtual keys hashed with argon2id; plaintext shown only on create or rotate
+- Virtual keys stored as a SHA-256 digest, never in plaintext; plaintext shown only on create or rotate
 - Virtual key rotation and revocation
 - Optional per-key rate limiting
 - Filterable audit logs
