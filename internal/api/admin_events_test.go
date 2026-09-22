@@ -693,7 +693,6 @@ func TestAdminEventNeverStoresSecrets(t *testing.T) {
 		"stored ciphertext": ciphertext,
 		"auth_config key":   "auth_config",
 		"plaintext key":     plain,
-		"key hash":          stored.KeyHash,
 		"key lookup":        stored.KeyLookup,
 		"first api_key":     vk["api_key"].(string),
 	} {

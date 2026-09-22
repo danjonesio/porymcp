@@ -748,9 +748,9 @@ var v1IndexDDL = []string{
 // them, in tsLayout.
 var v1DataRows = []string{
 	`INSERT INTO agents (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, rate_limit, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
-	 VALUES ('a1', 'cursor', '$argon2id$hash-a1', 'lookup-a1', 'pory_a1a1a1a', 'upstream', 'u1', NULL, NULL, '[]', '[]', '2026-01-05T10:00:00Z', NULL, NULL, '')`,
+	 VALUES ('a1', 'cursor', 'hash-a1', 'lookup-a1', 'pory_a1a1a1a', 'upstream', 'u1', NULL, NULL, '[]', '[]', '2026-01-05T10:00:00Z', NULL, NULL, '')`,
 	`INSERT INTO agents (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, rate_limit, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
-	 VALUES ('a2', 'claude', '$argon2id$hash-a2', 'lookup-a2', 'pory_a2a2a2a', 'group', 'g1', 60, '2027-01-01T00:00:00Z', '["safe_tool"]', '["rm"]', '2026-01-06T10:00:00Z', '2026-01-07T10:00:00Z', '2026-01-08T10:00:00Z', '{"team":"x"}')`,
+	 VALUES ('a2', 'claude', 'hash-a2', 'lookup-a2', 'pory_a2a2a2a', 'group', 'g1', 60, '2027-01-01T00:00:00Z', '["safe_tool"]', '["rm"]', '2026-01-06T10:00:00Z', '2026-01-07T10:00:00Z', '2026-01-08T10:00:00Z', '{"team":"x"}')`,
 	`INSERT INTO audit_logs (id, timestamp, agent_id, agent_name, method, tool_name, params, status, latency_ms, response_size_bytes, upstream_id, error_message, request_id)
 	 VALUES ('l1', '2026-01-09T10:00:00Z', 'a1', 'cursor', 'tools/list', '', '', 'success', 12, 340, 'u1', '', 'r1')`,
 	`INSERT INTO audit_logs (id, timestamp, agent_id, agent_name, method, tool_name, params, status, latency_ms, response_size_bytes, upstream_id, error_message, request_id)
@@ -759,8 +759,8 @@ var v1DataRows = []string{
 
 var (
 	wantVirtualKeyRows = []string{
-		"a1|cursor|$argon2id$hash-a1|lookup-a1|pory_a1a1a1a|upstream|u1|NULL|NULL|[]|[]|2026-01-05T10:00:00.000000000Z|NULL|NULL|",
-		`a2|claude|$argon2id$hash-a2|lookup-a2|pory_a2a2a2a|group|g1|60|2027-01-01T00:00:00.000000000Z|["safe_tool"]|["rm"]|2026-01-06T10:00:00.000000000Z|2026-01-07T10:00:00.000000000Z|2026-01-08T10:00:00.000000000Z|{"team":"x"}`,
+		"a1|cursor|hash-a1|lookup-a1|pory_a1a1a1a|upstream|u1|NULL|NULL|[]|[]|2026-01-05T10:00:00.000000000Z|NULL|NULL|",
+		`a2|claude|hash-a2|lookup-a2|pory_a2a2a2a|group|g1|60|2027-01-01T00:00:00.000000000Z|["safe_tool"]|["rm"]|2026-01-06T10:00:00.000000000Z|2026-01-07T10:00:00.000000000Z|2026-01-08T10:00:00.000000000Z|{"team":"x"}`,
 	}
 	wantAuditRows = []string{
 		"l1|a1|cursor|",
@@ -1288,7 +1288,7 @@ func v2Key(id, targetType, targetID, allow, deny string) string {
 	return fmt.Sprintf(
 		`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id,
 			rate_limit, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
-		 VALUES ('%s', '%s', '$argon2id$hash-%s', 'lookup-%s', 'pory_%s', '%s', '%s',
+		 VALUES ('%s', '%s', 'hash-%s', 'lookup-%s', 'pory_%s', '%s', '%s',
 			NULL, NULL, '%s', '%s', '2026-02-01T10:00:00Z', NULL, NULL, '')`,
 		id, id, id, id, id, targetType, targetID, allow, deny)
 }
@@ -2398,9 +2398,9 @@ var v5Rows = []string{
 	`INSERT INTO groups (id, name, upstream_ids, tool_filter, created_at, updated_at)
 	 VALUES ('g1', 'Tools', '["u1"]', '', '2026-01-01T10:00:00+00:00', '2026-01-01T10:00:00Z')`,
 	`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
-	 VALUES ('k1', 'bot', '$argon2id$hash-k1', 'lookup-k1', 'pory_k1k1k1k', 'upstream', 'u1', '2027-01-01T00:00:00.25Z', '["a"]', '["b"]', '2026-01-01T10:00:00Z', NULL, NULL, '{"team":"x"}')`,
+	 VALUES ('k1', 'bot', 'hash-k1', 'lookup-k1', 'pory_k1k1k1k', 'upstream', 'u1', '2027-01-01T00:00:00.25Z', '["a"]', '["b"]', '2026-01-01T10:00:00Z', NULL, NULL, '{"team":"x"}')`,
 	`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata)
-	 VALUES ('k2', 'old-bot', '$argon2id$hash-k2', 'lookup-k2', 'pory_k2k2k2k', 'group', 'g1', NULL, '[]', '[]', '2026-01-01T10:00:00.123456789Z', '2026-01-03T10:00:00.75Z', '2026-01-04T10:00:00Z', '')`,
+	 VALUES ('k2', 'old-bot', 'hash-k2', 'lookup-k2', 'pory_k2k2k2k', 'group', 'g1', NULL, '[]', '[]', '2026-01-01T10:00:00.123456789Z', '2026-01-03T10:00:00.75Z', '2026-01-04T10:00:00Z', '')`,
 	`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, request_id)
 	 VALUES ('l1', '2026-01-09T10:00:00Z', 'k1', 'bot', 'tools/call', 'search', '{"q":"x"}', 'success', 'r1')`,
 	`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, request_id)
@@ -2421,8 +2421,8 @@ var v5OtherColumns = map[string]string{
 	}, "\n"),
 	`SELECT id, name, upstream_ids, tool_filter FROM groups ORDER BY id`: `g1|Tools|["u1"]|`,
 	`SELECT id, key_hash, key_lookup, key_prefix, target_type, target_id, rate_limit, tool_allowlist, tool_denylist, metadata FROM virtual_keys ORDER BY id`: strings.Join([]string{
-		`k1|$argon2id$hash-k1|lookup-k1|pory_k1k1k1k|upstream|u1|NULL|["a"]|["b"]|{"team":"x"}`,
-		"k2|$argon2id$hash-k2|lookup-k2|pory_k2k2k2k|group|g1|NULL|[]|[]|",
+		`k1|hash-k1|lookup-k1|pory_k1k1k1k|upstream|u1|NULL|["a"]|["b"]|{"team":"x"}`,
+		"k2|hash-k2|lookup-k2|pory_k2k2k2k|group|g1|NULL|[]|[]|",
 	}, "\n"),
 	`SELECT id, virtual_key_id, method, tool_name, params, status, request_id FROM audit_logs ORDER BY id`: strings.Join([]string{
 		`l1|k1|tools/call|search|{"q":"x"}|success|r1`,
@@ -2668,7 +2668,7 @@ func TestMigrateTimestampsRefusesUnreadableValue(t *testing.T) {
 		`INSERT INTO upstreams (id, name, slug, url, transport, auth_type, auth_config, enabled, created_at, updated_at)
 		 VALUES ('u9', 'Payroll Vendor', 'payroll', 'https://vendor.example.com/mcp?key=hunter2', 'streamable-http', 'none', '', 1, '2026-02-01T10:00:00Z', '2026-02-01T10:00:00Z')`,
 		`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, expires_at, created_at)
-		 VALUES ('k9', 'payroll-bot', '$argon2id$hash-k9', 'lookup-k9', 'pory_k9k9k9k', 'upstream', 'u9', 'not a time', '2026-02-01T10:00:00Z')`,
+		 VALUES ('k9', 'payroll-bot', 'hash-k9', 'lookup-k9', 'pory_k9k9k9k', 'upstream', 'u9', 'not a time', '2026-02-01T10:00:00Z')`,
 	)
 	v5Fixture(t, path, rows...)
 	const upstreams = `SELECT id, name, url, created_at, updated_at, last_test_at FROM upstreams ORDER BY id`

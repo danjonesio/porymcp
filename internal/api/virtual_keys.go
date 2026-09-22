@@ -335,7 +335,7 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 		v := in.ExpiresAt.Value
 		expiresAt = &v
 	}
-	plain, hash, lookup, prefix, err := auth.GenerateKey()
+	plain, lookup, prefix, err := auth.GenerateKey()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not mint key")
 		return
@@ -344,7 +344,6 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 	a := &models.VirtualKey{
 		ID:            uuid.NewString(),
 		Name:          strings.TrimSpace(in.Name.Value),
-		KeyHash:       hash,
 		KeyLookup:     lookup,
 		KeyPrefix:     prefix,
 		TargetType:    targetType,
@@ -565,12 +564,14 @@ func (s *Server) rotateVirtualKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
-	plain, hash, lookup, prefix, err := auth.GenerateKey()
+	plain, lookup, prefix, err := auth.GenerateKey()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not mint key")
 		return
 	}
-	a.KeyHash = hash
+	// The replaced key's hash goes with it: a previous build must not hold a
+	// hash for a key that no longer exists (PORM-44).
+	a.KeyHash = ""
 	a.KeyLookup = lookup
 	a.KeyPrefix = prefix
 	a.RevokedAt = nil

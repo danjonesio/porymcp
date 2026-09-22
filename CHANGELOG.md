@@ -4,6 +4,24 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Virtual keys are verified with SHA-256 instead of argon2id (PORM-44)
+
+- **A proxied call no longer spends about 60 ms and 64 MiB checking its
+  key.** The proxy compares, in constant time, the SHA-256 digest it already
+  stored for every key; sixteen calls in flight no longer hold about 1 GiB,
+  and creating or rotating a key is as fast. Every existing key keeps
+  working with no re-keying, and the schema version stays 6.
+- **A key with no `rate_limit` is no longer slowed by hashing.** It calls as
+  fast as the network allows, and every call still writes its audit row and
+  `last_used_at`; set a limit where that matters.
+- **The previous build refuses keys created or rotated on this one** with
+  `401`, because it checks a hash they no longer have; keys made before this
+  build and not rotated since keep working under it. Before a rollback, list
+  the keys that will need rotating (`length(key_hash) = 0` and not revoked;
+  the commands are in `docs/11-deployment.md`, section 14), and rotate them
+  under the previous build afterwards, or roll forward. Stop every
+  previous-build replica before starting this one.
+
 ### A relayed answer is read the way a routed call's is (PORM-172)
 
 - **Rows that read `success` now read `error` when the upstream's error came

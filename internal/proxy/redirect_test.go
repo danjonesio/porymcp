@@ -108,7 +108,7 @@ var redirectAuthCases = []authCase{
 func TestUpstreamRedirectIsNotFollowed(t *testing.T) {
 	b := newRecorder(t)
 
-	// One fixture, four members: one argon2id hash instead of four. Each
+	// One fixture, four members: one key instead of four. Each
 	// member redirects everything it is sent.
 	specs := map[string]upstreamSpec{}
 	for _, tc := range redirectAuthCases {

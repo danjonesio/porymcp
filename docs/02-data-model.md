@@ -137,7 +137,11 @@ a bot); PoryMCP does not store agents.
 
 - `id` (uuid)
 - `name` / label (e.g. "cursor-dev", "research-agent")
-- `key_hash` (hashed: never store plaintext after creation)
+- `key_lookup` (SHA-256 of the key, hex, unique: the proxy finds the key by it
+  and verifies against it; the plaintext is never stored)
+- `key_hash` (retired by PORM-44: the argon2id hash earlier builds verified.
+  Empty for keys created or rotated since, never read, kept until PORM-188
+  drops it so a rollback still verifies older keys)
 - `key_prefix` (for display, e.g. "pory_7f3a...")
 - `target_type`: `"upstream"` | `"group"`
 - `target_id` (uuid)
@@ -271,7 +275,8 @@ retention for both audit tables, with a longer window for this one.
 ## Schema versioning
 
 `schema_meta(key, value)` records the applied schema version under
-`schema_version`; this binary expects version 6. It also holds
+`schema_version`; this binary expects version 6. PORM-44 changes no schema, so
+the version stays 6. It also holds
 `encryption_key_fp`, the fingerprint of the `ENCRYPTION_KEY` the stored
 credentials open under (the PORM-52 issue text called it `enc_key_fp`). That row
 is data, not schema: it is written by the boot check once every stored

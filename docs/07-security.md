@@ -111,7 +111,24 @@
   ephemeral key is for an empty database, or one whose upstreams all use
   `auth_type: none`. A key generated at boot is unguessable, and the
   generated-key warning already covers it.
-- Virtual keys: high-entropy, shown only once on create/rotate. Store only hash (argon2id preferred).
+- Virtual keys are `pory_` plus 32 bytes from `crypto/rand` (256 bits), shown
+  only once, on create or rotate. They are stored hashed, never in plaintext:
+  `key_lookup` holds the SHA-256 digest of the key, and the proxy finds the
+  key by that digest and checks it with a constant-time comparison. A slow
+  hash such as argon2id protects a low-entropy secret, like a password, from
+  offline guessing; nobody can guess a 256-bit random key at any hash speed,
+  so a slow hash adds cost to every call and no protection. Until PORM-44
+  the proxy also checked an argon2id hash on every call, at about 60 ms and
+  64 MiB each, while `key_lookup` already held the SHA-256 of the same key.
+  The `key_hash` column stays, unwritten, until PORM-188 drops it, so a
+  rollback to the previous release still verifies keys made before PORM-44
+  (`CHANGELOG.md`). This position holds only while keys carry at least 128
+  random bits and `key_lookup` stays the stored form; a change to either
+  reopens it. A server-side pepper (an HMAC over the key), which would stop
+  a stolen database from recognising a presented key, is PORM-187. Hashing
+  no longer slows a client: a key with no `rate_limit` calls as fast as the
+  network allows, and every call still writes its audit row and
+  `last_used_at`, so set a limit where that matters.
 - Proxy never logs or returns real upstream secrets.
 - Optional redaction of sensitive fields in AuditLog params.
 - Management changes are recorded in `admin_events` (PORM-54): one row per
