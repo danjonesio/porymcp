@@ -100,3 +100,30 @@ func TestPickResponse(t *testing.T) {
 		}
 	})
 }
+
+// TestSSEFramed covers PORM-172 D2: the one shape rule answerStatus asks before
+// it reduces, and the rule rpcPayloadN applies, so the two cannot drift.
+func TestSSEFramed(t *testing.T) {
+	sse := []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
+	doc := []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)
+	cases := []struct {
+		name string
+		ct   string
+		body []byte
+		want bool
+	}{
+		{"sse label", "text/event-stream", sse, true},
+		{"sse label with charset", "text/event-stream; charset=utf-8", doc, true},
+		{"json label", "application/json", sse, false},
+		{"no label, sse body", "", sse, true},
+		{"parameters only, sse body", "; charset=utf-8", sse, true},
+		{"no label, json body", "", doc, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SSEFramed(tc.ct, tc.body); got != tc.want {
+				t.Fatalf("SSEFramed(%q) = %v, want %v", tc.ct, got, tc.want)
+			}
+		})
+	}
+}
