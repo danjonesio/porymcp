@@ -4,6 +4,37 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### A relayed answer is read the way a routed call's is (PORM-172)
+
+- **Rows that read `success` now read `error` when the upstream's error came
+  in SSE framing.** On a single-upstream key and a member endpoint an
+  upstream's JSON-RPC error inside an event stream was written as `success`
+  with no message, because the row was judged from the raw bytes. It is now
+  judged from the document that answers the request, in either framing, and
+  carries the upstream's message, bounded. The bytes the client receives on
+  those routes do not change. Dashboards and alerts built on the old counts
+  move.
+- **A group endpoint no longer sends a member's `Mcp-Session-Id` or media
+  type on a relayed method** (`resources/read`, `prompts/get`,
+  `logging/setLevel` and the rest). The member's answer is reduced to its one
+  document and sent as `application/json`, as a routed `tools/call` answer has
+  been since PORM-171, and a 2026-07-28 client gets `resultType: "complete"`
+  when a handshake-era member sent none. The server log line for an answer
+  that could not be reduced now reads `group answer relayed unreduced` and
+  names the method.
+- **A 2026-07-28 client's relayed request to a handshake-era first member no
+  longer carries the version header that member would refuse,** nor the three
+  reserved `_meta` members; every other byte crosses as sent. The member's era
+  is read from the cache and, on a miss, probed once, which may cost that
+  member one `server/discover` per ten minutes.
+- **A member body on a group endpoint that is neither JSON nor an event stream
+  keeps its status with no body** when the status is `400` or above (a `429`
+  keeps its `Retry-After`), and is a `502` on a success status. On a relayed
+  method it used to be passed through with the member's label; on a routed
+  call every such body used to be a `502`.
+- **`Retry-After` now crosses on a routed `tools/call`**, as it already did on
+  a relayed method.
+
 ### The group endpoint is a server in both protocol eras (PORM-153)
 
 - **A 2026-07-28 client can use a group.** Claude Code showed a group as

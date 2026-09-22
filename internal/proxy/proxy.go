@@ -1051,10 +1051,12 @@ const (
 // gate in ServeHTTP has already made its decision from the first one.
 //
 // The http.Header it returns is not a member's header set. It is nil on every
-// arm but tools/call, and there it holds at most a Content-Type the aggregate
-// chose itself (see reduceCallAnswer), so serve's one writer of response
-// headers stays the one writer and no member's Mcp-Session-Id can reach a
-// group client through it.
+// arm but tools/call, and there it holds at most the Content-Type the
+// aggregate chose itself and the member's Retry-After (see groupAnswer), so
+// serve's one writer of response headers stays the one writer and no member's
+// Mcp-Session-Id can reach a group client through it. A method this endpoint
+// neither answers nor refuses never gets here: serve relays it to the first
+// member and reads the answer through the same groupAnswer.
 func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, fields routingFields, clientModern bool, body []byte) ([]byte, int, http.Header, string, error) {
 	switch req.Method {
 	case "subscriptions/listen", "tasks/get", "tasks/update":
@@ -1201,12 +1203,14 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 	}
 }
 
-// errUnrelayableAnswer is a member's tools/call answer the aggregate can neither
-// read nor pass on. serve turns it into the 502 every failed upstream request
-// gets, and this sentence, which carries no byte of the answer, is the row's.
+// errUnrelayableAnswer is a member's answer, to a routed tools/call or a
+// relayed method, that the group endpoint can neither read nor pass on. On a
+// success status serve turns it into the 502 every failed upstream request
+// gets, and this sentence, which carries no byte of the answer, is the row's;
+// on a failure status the status crosses with no body (groupAnswer).
 var errUnrelayableAnswer = errors.New("upstream answered with a media type the proxy cannot relay")
 
-// errAnswersNothing is why a call answer that did decode is still passed on
+// errAnswersNothing is why an answer that did decode is still passed on
 // unreduced: the one document in it carries neither a result nor an error.
 var errAnswersNothing = errors.New("answer carried neither a result nor an error")
 
@@ -1246,10 +1250,11 @@ func (h *Handler) groupAnswer(up *models.Upstream, method string, status int, se
 	return doc, media, err
 }
 
-// reduceCallAnswer turns a member's answer to a routed tools/call into what the
-// group's client is sent. On the aggregate endpoint PoryMCP is the server, so
-// the answer is its own to frame, and the transport lets a server answer a POST
-// with application/json every time.
+// reduceCallAnswer turns a member's answer, to a routed tools/call or to a
+// method relayed to the first member, into what the group's client is sent.
+// On the aggregate endpoint PoryMCP is the server, so the answer is its own to
+// frame, and the transport lets a server answer a POST with application/json
+// every time. groupAnswer is its one caller.
 //
 // A member answers in whichever framing its SDK defaults to, and the reference
 // SDKs default to an event stream. Relayed as it came, that stream reached the
@@ -1278,12 +1283,13 @@ func (h *Handler) groupAnswer(up *models.Upstream, method string, status int, se
 // stream by the reader's own test, or JSON only if it parses as JSON, so an
 // unlabelled HTML error page is never sent out under a type it does not have).
 // The type is written here, as a bare constant, and is the one header serve may
-// copy back. unreduced says why, in a fixed sentence, so aggregate can log a
-// relay the row cannot describe: serve judges those bytes by their HTTP status
-// alone, as it always did. A body in any other media type is an error: a third
-// media type on a response of PoryMCP's own is something no client can
-// classify, and a member's Content-Type is otherwise a string this endpoint
-// never repeats.
+// copy back. unreduced says why, in a fixed sentence, so groupAnswer can log a
+// relay the row cannot fully describe: serve judges those bytes by their HTTP
+// status and by what answerStatus can still read of them. A body in any other
+// media type is an error: a third media type on a response of PoryMCP's own is
+// something no client can classify, and a member's Content-Type is otherwise a
+// string this endpoint never repeats. groupAnswer decides whether that error
+// is a 502 or the member's own failure status with no body.
 //
 // An answer with no body (a notification's 202) is passed on as no body at
 // all, which is what both eras of the transport require of a 202, and whatever
@@ -1321,12 +1327,11 @@ func reduceCallAnswer(sent, answer []byte, contentType string) (out []byte, medi
 	}
 }
 
-// completeResult gives a routed tools/call result the resultType the stateless
+// completeResult gives a member's result the resultType the stateless
 // revision requires of every result, when the member sent none. It is called
-// only for a client that declared that revision and a member not known to
-// speak it. It is the routed call's alone: a method the group endpoint relays
-// to its first member still returns that member's result as it came (a
-// follow-up, named in docs/09-clients.md).
+// only for a client that declared that revision, a member not known to speak
+// it, and a request that carried an id, on a routed tools/call and on a
+// method the group endpoint relays to its first member alike (groupAnswer).
 //
 // A handshake-era member's result has no resultType, and the revision does say
 // a client reads an absent one as "complete", but only of a server on an

@@ -1037,8 +1037,17 @@ Every other method is relayed to the group's first member and audited against
 it. A handshake-era client's `MCP-Protocol-Version` is not sent with it: that
 version was agreed by the group endpoint's `initialize`, for itself, and a
 member on an older revision would refuse it. A `2026-07-28` client's relayed
-request is sent as it came, and so is the member's answer: a handshake-era
-first member's result reaches that client without a `resultType`.
+request has the first member's era looked up first (the cached verdict, else
+one `server/discover` probe, at most one per member per ten minutes); to a
+member held as handshake-era the request loses its `MCP-Protocol-Version`
+header and the three reserved `_meta` members, and every other byte crosses
+as sent. The member's answer is read as a routed call's is: reduced to the
+one document that answers the request, sent as `application/json` with no
+member header but `Retry-After`, and given `resultType: "complete"` for a
+`2026-07-28` client when the member sent none. A member body that is neither
+JSON nor an event stream keeps its status with no body when that status is
+`400` or above, and is a `502` otherwise, so a member's own `401` or `403`
+reaches the client bare.
 
 ## Unknown tools on the aggregate endpoint
 
@@ -1085,6 +1094,12 @@ told nothing about the upstream's host, address or response. The two transport
 rows quote the upstream's own registered URL, query string and all: the URL an
 operator chose, not one an upstream named, but one more reason this field is
 read by operators and never returned to a key holder (PORM-72).
+
+Whether a row is `success` or `error` is judged from the document that
+answers the request, in either framing: an upstream's JSON-RPC error inside
+an event stream is an `error` row carrying that error's message, as a JSON
+one is. When the framing cannot be read, the row is judged by the HTTP status
+and the raw body, as every row was before PORM-172.
 
 | Condition | `error_message` on the row |
 | --- | --- |

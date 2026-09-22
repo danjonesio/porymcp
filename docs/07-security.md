@@ -339,6 +339,9 @@
   byte of the inbound request reaches it, so a key holder cannot choose what a
   member is asked or which members answer. A member whose stored transport
   cannot be dialled, or whose credential cannot be read, is not probed at all.
+  A `2026-07-28` client's request relayed to a group's first member reads
+  that member's verdict the same way, so such a relay may cost the member
+  one probe per ten minutes; a handshake-era client's relay never probes.
   Each probe is bounded (5 s, 2 MiB). How often one is sent is bounded for
   sequential callers only: the verdict is remembered for ten minutes, or thirty
   seconds when the probe got no answer, was refused, or the member then did not
@@ -487,7 +490,9 @@
   can read leaves as `private`, whether or not a tool was removed: it is the one catalogue the
   proxy rewrites per key, and one proxy URL answers for every key. A list
   that carried no `cacheScope` is relayed byte for byte, and `resources/list`
-  and `prompts/list` are relayed as they arrive. Every proxy response carries
+  and `prompts/list` are relayed as they arrive on a single-upstream key and
+  a member endpoint (on a group endpoint their answer is reduced to one
+  document, as every group answer is). Every proxy response carries
   `Cache-Control: no-store` either way.
 - Tool policy matches a name byte-exactly: no trimming, no case folding, no
   wildcards, no regular expressions, no Unicode normalisation. There is one
@@ -623,26 +628,38 @@
   a member that is down or session-gated still drops out of the catalogue, and
   PoryMCP does not refuse the whole group when one member fails. A member that
   answers as `text/event-stream` is read like one that answers as JSON, on its
-  catalogue and on a routed `tools/call`: the proxy reduces the answer to the
-  one document that answers its request, with the same reader discovery uses,
-  and sends a group's client that document as `application/json`. Reading a
+  catalogue, on a routed `tools/call` and on a method relayed to the first
+  member: the proxy reduces the answer to the one document that answers its
+  request, with the same reader discovery uses, and sends a group's client that
+  document as `application/json`. On a single-upstream key and a member
+  endpoint the bytes are relayed as the upstream sent them and only the audit
+  row is judged from that document, so an event stream carrying a JSON-RPC
+  error is an `error` row there too; the row carries the upstream's own
+  `error.message`, bounded at 256 bytes and unredacted, whichever framing it
+  came in. Reading a
   member's answer this way runs for every member on every group call, so it is
   bounded twice: the bytes by the 16 MiB body limit every upstream response
   already had, and the events split out of a stream by a fixed 4096, past which
   the answer counts as unreadable: on the catalogue the member is skipped with a
   fixed sentence, and on a call the answer is treated as the next sentence says.
-  A call answer the proxy cannot reduce (no document in it answers the call) is
-  passed on as it came only under `application/json` or `text/event-stream`,
-  the member's own label or, with no label, what the body is (an event stream,
-  or JSON only if it parses). PoryMCP writes that bare media type itself; a
-  body in any other media type is a `502`, an answer with no body is passed on
-  as no body, and no other header of a member's reaches a group client. The
-  audit row for an answer passed on this way is judged by its HTTP status
-  alone, as every row was before the reduction existed, so the server log says
-  `group call answer relayed unreduced`, with the member's slug and a fixed
-  reason. A routed call is composed for the member's era from the cached era
-  verdict and PoryMCP's own constants, never from the client's request, and
-  when no verdict is held the client's request is sent as it came: a
+  A group answer the proxy cannot reduce (no document in it answers the
+  request) is passed on as it came only under `application/json` or
+  `text/event-stream`, the member's own label or, with no label, what the body
+  is (an event stream, or JSON only if it parses). PoryMCP writes that bare
+  media type itself; a body in any other media type keeps the member's status
+  with no body when that status is `400` or above (so a `429` keeps its
+  `Retry-After`) and is a `502` otherwise; an answer with no body is passed on
+  as no body; and no header of a member's but `Retry-After` reaches a group
+  client. The audit row for an answer passed on this way is judged by its HTTP
+  status and by what can still be read of its bytes, so the server log says
+  `group answer relayed unreduced`, with the bounded method name, the member's
+  slug and a fixed reason. A routed call is composed for the member's era from
+  the cached era verdict and PoryMCP's own constants, never from the client's
+  request, and a relayed method is composed the same way for a member held as
+  handshake-era (on a relay the verdict is probed when the cache misses, at
+  most once per member per ten minutes, and only for a `2026-07-28` client,
+  whose request is the one the verdict changes); when no verdict is held the
+  client's request is sent as it came: a
   handshake-era client calling a `2026-07-28` member has the version, `Mcp-Method`,
   `Mcp-Name` and the three reserved `_meta` members added, and a `2026-07-28`
   client calling a handshake-era member has its `MCP-Protocol-Version` header
