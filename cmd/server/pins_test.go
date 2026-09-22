@@ -96,6 +96,9 @@ var (
 	dockerfileNpmCi        = regexp.MustCompile(`(?m)^RUN npm ci\b`)
 	dockerfileSyntax       = regexp.MustCompile(`(?mi)^#\s*syntax\s*=.*$`)
 	dockerfilePinnedSyntax = regexp.MustCompile(`@sha256:[0-9a-f]{64}\s*$`)
+	gomodToolVuln          = regexp.MustCompile(`(?m)^(?:tool[ \t]+|\t)golang\.org/x/vuln/cmd/govulncheck[ \t]*\r?$`)
+	makefileComment        = regexp.MustCompile(`^[ \t]*#`)
+	makefileVulnRecipe     = regexp.MustCompile(`(?m)^vuln:[ \t]*\r?\n\tgo tool govulncheck `)
 )
 
 // dockerfileProblems lists what is wrong with a Dockerfile's pins and its
@@ -251,6 +254,115 @@ func TestDockerfileProblems_CommentIgnored(t *testing.T) {
 	src := "# Use npm install to change dependencies, never in a RUN line.\n" + pinnedDockerfile()
 	if got := dockerfileProblems([]byte(src)); len(got) != 0 {
 		t.Fatalf("a comment reported %q", got)
+	}
+}
+
+// vulnPinProblems lists what is wrong with how the vulnerability scanner is
+// pinned, one message per problem: go.mod must name govulncheck in a tool
+// directive (a single tool line or an entry in a tool block, the two shapes
+// go get -tool writes), the Makefile's vuln target must run it through go
+// tool, and no Makefile line may pin it by version, which is what a go run
+// argument does. A Makefile comment that names the old pin is prose about
+// the build, not a pin, and is ignored the way dockerfileProblems ignores
+// comments.
+func vulnPinProblems(gomod, makefile []byte) []string {
+	var problems []string
+	if !gomodToolVuln.Match(gomod) {
+		problems = append(problems, "go.mod has no tool line for golang.org/x/vuln/cmd/govulncheck")
+	}
+	if !makefileVulnRecipe.Match(makefile) {
+		problems = append(problems, "Makefile has no vuln target whose recipe starts with go tool govulncheck")
+	}
+	for _, line := range bytes.Split(makefile, []byte("\n")) {
+		if !makefileComment.Match(line) && bytes.Contains(line, []byte("govulncheck@")) {
+			problems = append(problems, fmt.Sprintf("govulncheck pinned by version in the Makefile: %s", bytes.TrimSpace(line)))
+		}
+	}
+	return problems
+}
+
+// TestVulnPinned keeps the vulnerability scanner's version in go.mod, where
+// PORM-183 moved it so that Dependabot's gomod lane can raise the bump. The
+// version sat in a go run argument in the Makefile before that, where no
+// lane reads it, and drifted seven releases. This fails if that pin returns
+// or the tool line goes.
+func TestVulnPinned(t *testing.T) {
+	root := repoRoot(t)
+	for _, p := range vulnPinProblems(readRepoFile(t, root, "go.mod"), readRepoFile(t, root, "Makefile")) {
+		t.Error(p)
+	}
+}
+
+// The tests below run vulnPinProblems on in-memory inputs, so the guard is
+// shown to fail without touching the tracked files.
+
+const (
+	pinnedGoMod = "module example.com/m\n\ngo 1.26.0\n\nrequire golang.org/x/vuln v1.8.0 // indirect\n\n" +
+		"tool golang.org/x/vuln/cmd/govulncheck\n"
+	pinnedMakefile = "vet:\n\tgo vet ./cmd/... ./internal/... ./web\n\n" +
+		"vuln:\n\tgo tool govulncheck ./cmd/... ./internal/... ./web\n"
+)
+
+func wantVulnProblem(t *testing.T, gomod, makefile, fragment string) {
+	t.Helper()
+	got := vulnPinProblems([]byte(gomod), []byte(makefile))
+	for _, p := range got {
+		if strings.Contains(p, fragment) {
+			return
+		}
+	}
+	t.Fatalf("no problem containing %q; got %q", fragment, got)
+}
+
+// Both shapes go get -tool writes are accepted: a single tool line, and an
+// entry in a tool block once a second tool exists.
+func TestVulnPinProblems_Pinned(t *testing.T) {
+	block := strings.Replace(pinnedGoMod, "tool golang.org/x/vuln/cmd/govulncheck\n",
+		"tool (\n\tgolang.org/x/tools/cmd/stringer\n\tgolang.org/x/vuln/cmd/govulncheck\n)\n", 1)
+	for _, gomod := range []string{pinnedGoMod, block} {
+		if got := vulnPinProblems([]byte(gomod), []byte(pinnedMakefile)); len(got) != 0 {
+			t.Fatalf("a pinned tree reported %q", got)
+		}
+	}
+}
+
+func TestVulnPinProblems_NoToolLine(t *testing.T) {
+	gomod := strings.Replace(pinnedGoMod, "tool golang.org/x/vuln/cmd/govulncheck\n", "", 1)
+	wantVulnProblem(t, gomod, pinnedMakefile, "no tool line")
+	if got := vulnPinProblems([]byte(gomod), []byte(pinnedMakefile)); len(got) != 1 {
+		t.Fatalf("want 1 problem, got %q", got)
+	}
+}
+
+// The old recipe is reported twice: no go tool recipe, and the version pin.
+func TestVulnPinProblems_GoRunPin(t *testing.T) {
+	makefile := strings.Replace(pinnedMakefile, "go tool govulncheck ./cmd/... ./internal/... ./web",
+		"go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./cmd/... ./internal/... ./web", 1)
+	wantVulnProblem(t, pinnedGoMod, makefile, "no vuln target whose recipe starts with go tool govulncheck")
+	wantVulnProblem(t, pinnedGoMod, makefile, "pinned by version in the Makefile: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0")
+	if got := vulnPinProblems([]byte(pinnedGoMod), []byte(makefile)); len(got) != 2 {
+		t.Fatalf("want 2 problems, got %q", got)
+	}
+}
+
+func TestVulnPinProblems_NoVulnTarget(t *testing.T) {
+	makefile := pinnedMakefile[:strings.Index(pinnedMakefile, "vuln:")]
+	wantVulnProblem(t, pinnedGoMod, makefile, "no vuln target")
+	if got := vulnPinProblems([]byte(pinnedGoMod), []byte(makefile)); len(got) != 1 {
+		t.Fatalf("want 1 problem, got %q", got)
+	}
+}
+
+// A Makefile comment naming the old pin is not a pin, and a go.mod written
+// with CRLF line endings still carries its tool line.
+func TestVulnPinProblems_CommentAndCRLF(t *testing.T) {
+	commented := "# was: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./cmd/...\n" + pinnedMakefile
+	if got := vulnPinProblems([]byte(pinnedGoMod), []byte(commented)); len(got) != 0 {
+		t.Fatalf("a comment reported %q", got)
+	}
+	crlf := strings.ReplaceAll(pinnedGoMod, "\n", "\r\n")
+	if got := vulnPinProblems([]byte(crlf), []byte(pinnedMakefile)); len(got) != 0 {
+		t.Fatalf("a CRLF go.mod reported %q", got)
 	}
 }
 

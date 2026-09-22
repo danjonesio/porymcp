@@ -48,12 +48,13 @@ jobs:
       - name: Tracked-file guards ran and passed
         shell: bash
         run: |
-          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestDockerfilePinned' -v | tee "$RUNNER_TEMP/guards.log"
+          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestDockerfilePinned|TestVulnPinned' -v | tee "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNoInternalReferences' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestProseStyle' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestOwnerConsistent' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNodeMajorConsistent' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestDockerfilePinned' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestVulnPinned' "$RUNNER_TEMP/guards.log"
       - run: make vuln
 
   web:
