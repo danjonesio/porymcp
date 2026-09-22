@@ -1145,21 +1145,11 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		if err != nil {
 			return out, status, nil, route.Upstream.ID, err
 		}
-		doc, media, unreduced, err := reduceCallAnswer(rewritten, out, hdr.Get("Content-Type"))
-		if unreduced != nil && h.log != nil {
-			// The row for this call is judged by its HTTP status alone, because
-			// what the client is sent could not be read. This line is the only
-			// place that says so. unreduced is a fixed sentence.
-			h.log.Warn("group call answer relayed unreduced", "slug", route.Upstream.Slug,
-				"upstream_id", route.Upstream.ID, "err", unreduced.Error())
-		}
-		// Not for a member known to speak the stateless revision: it sends its
-		// own resultType, and a second decode of up to 16 MiB to change nothing
-		// is a cost on every call.
+		// Not completed for a member known to speak the stateless revision: it
+		// sends its own resultType, and a second decode of up to 16 MiB to
+		// change nothing is a cost on every call.
 		memberModern := known && verdict.era == mcpclient.EraModern
-		if err == nil && unreduced == nil && clientModern && !memberModern {
-			doc = completeResult(doc)
-		}
+		doc, media, err := h.groupAnswer(route.Upstream, "tools/call", status, rewritten, out, hdr, clientModern && !memberModern)
 		return doc, status, media, route.Upstream.ID, err
 	default:
 		// Unreachable: serve calls aggregate only for a method shouldAggregate
@@ -1180,6 +1170,42 @@ var errUnrelayableAnswer = errors.New("upstream answered with a media type the p
 // errAnswersNothing is why a call answer that did decode is still passed on
 // unreduced: the one document in it carries neither a result nor an error.
 var errAnswersNothing = errors.New("answer carried neither a result nor an error")
+
+// groupAnswer reads a member's answer on the group endpoint, whether the
+// request was a routed tools/call or a method relayed to the first member.
+// The answer is reduced to the one document that answers sent, labelled by
+// its shape alone, and completed with a resultType when complete is true.
+// Of the member's headers only Retry-After crosses: it names no member, and
+// a group client is under the same limit. An answer that cannot be read at
+// all keeps its status with no body when the status already says failure,
+// so a 429's Retry-After is not lost behind a 502; a success status on
+// unreadable bytes is the 502 it has been since PORM-171. method is the
+// bounded name the row carries, never the client's raw string.
+func (h *Handler) groupAnswer(up *models.Upstream, method string, status int, sent, answer []byte, hdr http.Header, complete bool) (doc []byte, media http.Header, err error) {
+	doc, media, unreduced, err := reduceCallAnswer(sent, answer, hdr.Get("Content-Type"))
+	if errors.Is(err, errUnrelayableAnswer) && status >= 400 {
+		// The one Warn line below is the trace an operator has for a member
+		// 404 that sent HTML; the row is error with no message.
+		doc, media, unreduced, err = nil, nil, errUnrelayableAnswer, nil
+	}
+	if unreduced != nil && h.log != nil {
+		// The row for this request is judged from what could be read of the
+		// answer, else by its status and its raw bytes. This line is the only
+		// place that says so. unreduced is a fixed sentence.
+		h.log.Warn("group answer relayed unreduced", "method", method, "slug", up.Slug,
+			"upstream_id", up.ID, "err", unreduced.Error())
+	}
+	if err == nil && unreduced == nil && complete {
+		doc = completeResult(doc)
+	}
+	if v := hdr.Get("Retry-After"); v != "" && err == nil {
+		if media == nil {
+			media = http.Header{}
+		}
+		media.Set("Retry-After", v)
+	}
+	return doc, media, err
+}
 
 // reduceCallAnswer turns a member's answer to a routed tools/call into what the
 // group's client is sent. On the aggregate endpoint PoryMCP is the server, so

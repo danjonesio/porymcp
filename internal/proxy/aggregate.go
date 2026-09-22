@@ -238,7 +238,7 @@ func modernMetaMembers() map[string]json.RawMessage {
 // member would be sent a request that still declares the stateless revision,
 // with no header beside it, and a modern member one object declaring two
 // versions. What the check can read, this removes.
-func dropReservedMeta(meta map[string]any) {
+func dropReservedMeta[V any](meta map[string]V) {
 	reserved := modernMetaMembers()
 	for k := range meta {
 		for name := range reserved {
@@ -288,6 +288,83 @@ func rewriteToolCallParams(params json.RawMessage, original string, meta metaAct
 		return params
 	}
 	return b
+}
+
+// stripReservedMeta removes the three reserved _meta members from a request's
+// params for a handshake-era member and reports whether anything was removed.
+// Only the envelope of params and of _meta is decoded, each into raw members:
+// every value crosses as the bytes the client sent, which
+// rewriteToolCallParams, built on map[string]any, does not promise (an integer
+// past 2^53 and a string with < in it come back changed there). _meta itself
+// goes when nothing is left in it. params that are empty, not an object, or
+// hold no reserved member come back unchanged with false, so the caller sends
+// the client's bytes untouched. Member order may change; no value does.
+func stripReservedMeta(params json.RawMessage) (json.RawMessage, bool) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return params, false
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(params, &m); err != nil || m == nil {
+		return params, false
+	}
+	key := ""
+	for k := range m {
+		if strings.EqualFold(k, "_meta") {
+			key = k
+			break
+		}
+	}
+	if key == "" {
+		return params, false
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(m[key], &meta); err != nil || meta == nil {
+		return params, false
+	}
+	before := len(meta)
+	dropReservedMeta(meta)
+	if len(meta) == before {
+		return params, false
+	}
+	if len(meta) == 0 {
+		delete(m, key)
+	} else {
+		raw, err := marshalRaw(meta)
+		if err != nil {
+			return params, false
+		}
+		m[key] = raw
+	}
+	out, err := marshalRaw(m)
+	if err != nil {
+		return params, false
+	}
+	return out, true
+}
+
+// replaceParams writes params into a request envelope in place of every
+// spelling of the params member: parseRequest binds the key case-insensitively
+// and refuses only a colliding pair, so a client may have spelled it Params,
+// and a member must never be sent two spellings of one member. Every other
+// envelope member, the id above all, crosses as raw bytes; marshalRaw writes
+// the members in sorted order and escapes no HTML. A body that is not an
+// object comes back as it came.
+func replaceParams(body, params json.RawMessage) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
+		return body
+	}
+	for k := range m {
+		if strings.EqualFold(k, "params") {
+			delete(m, k)
+		}
+	}
+	m["params"] = params
+	out, err := marshalRaw(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // routingFields is the one bounded read of params that serve makes: the

@@ -491,7 +491,6 @@ func declaredVersion(h http.Header, f routingFields) (string, *rpcError) {
 // drop inside it.
 func memberCallHeaders(src http.Header, memberTool string, v eraVerdict, known, clientModern bool) (*memberHeaders, metaAction) {
 	memberModern := known && v.era == mcpclient.EraModern && v.fail == ""
-	memberLegacy := known && v.era == mcpclient.EraLegacy
 
 	if memberModern && !clientModern {
 		set := http.Header{}
@@ -506,7 +505,7 @@ func memberCallHeaders(src http.Header, memberTool string, v eraVerdict, known, 
 		set.Set(hdrName, encodeHeaderValue(memberTool))
 		out = &memberHeaders{set: set}
 	}
-	if memberLegacy && clientModern {
+	if legacyStrip(v, known, clientModern) {
 		if out == nil {
 			out = &memberHeaders{}
 		}
@@ -514,4 +513,12 @@ func memberCallHeaders(src http.Header, memberTool string, v eraVerdict, known, 
 		return out, metaStrip
 	}
 	return out, metaKeep
+}
+
+// legacyStrip is true when a modern client's request is going to a member the
+// cache holds as handshake-era: the version header is dropped and the reserved
+// _meta members removed, on a routed call and on a relayed method alike. The
+// one statement of that rule, so the two paths cannot drift.
+func legacyStrip(v eraVerdict, known, clientModern bool) bool {
+	return known && v.era == mcpclient.EraLegacy && clientModern
 }

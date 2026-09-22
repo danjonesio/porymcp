@@ -1488,7 +1488,7 @@ func TestAggregateCallFromSSEMember(t *testing.T) {
 			}
 			var warned []map[string]any
 			for _, r := range logRecords(t, logs) {
-				if r["msg"] == "group call answer relayed unreduced" {
+				if r["msg"] == "group answer relayed unreduced" {
 					warned = append(warned, r)
 				}
 			}
@@ -2135,5 +2135,52 @@ func TestAggregateRequestWithNoMethod(t *testing.T) {
 	body, hdr := modernRequest("9", "tools/list", "2027-01-01")
 	if mr := f.postMemberWith("alpha", body, hdr); mr.Code != http.StatusOK || f.count("alpha", "tools/list", "") == 0 {
 		t.Errorf("member endpoint, 2027-01-01: HTTP code=%d, want it relayed", mr.Code)
+	}
+}
+
+// PORM-172 security requirement 9: the relay's rewrite for a handshake-era
+// member touches the reserved _meta members and nothing else. Every other
+// value crosses as the bytes the client sent, which rewriteToolCallParams,
+// built on map[string]any, does not promise.
+func TestStripReservedMeta(t *testing.T) {
+	const big = `12345678901234567890`
+	cases := []struct {
+		name    string
+		params  string
+		want    string
+		changed bool
+	}{
+		{"empty params", "", "", false},
+		{"no _meta", `{"name":"x","n":` + big + `}`, `{"name":"x","n":` + big + `}`, false},
+		{"_meta with no reserved member", `{"_meta":{"progressToken":"p<1>"}}`, `{"_meta":{"progressToken":"p<1>"}}`, false},
+		{"not an object", `[1,2]`, `[1,2]`, false},
+		{"reserved members beside a progressToken", `{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},"io.modelcontextprotocol/clientCapabilities":{},"progressToken":"p<1>"},"n":` + big + `,"s":"a&b"}`, `{"_meta":{"progressToken":"p<1>"},"n":` + big + `,"s":"a&b"}`, true},
+		{"only reserved members", `{"_meta":{"IO.ModelContextProtocol/ProtocolVersion":"2026-07-28"},"n":` + big + `}`, `{"n":` + big + `}`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, changed := stripReservedMeta(json.RawMessage(c.params))
+			if changed != c.changed || string(got) != c.want {
+				t.Fatalf("stripReservedMeta(%s) = %s, %v; want %s, %v", c.params, got, changed, c.want, c.changed)
+			}
+		})
+	}
+}
+
+func TestReplaceParams(t *testing.T) {
+	params := json.RawMessage(`{"a":1}`)
+	cases := []struct {
+		name, body, want string
+	}{
+		{"lowercase", `{"jsonrpc":"2.0","id":12345678901234567890,"method":"prompts/get","params":{"b":2}}`, `{"id":12345678901234567890,"jsonrpc":"2.0","method":"prompts/get","params":{"a":1}}`},
+		{"capitalised spelling replaced by one params", `{"jsonrpc":"2.0","id":"x<y>","method":"prompts/get","Params":{"b":2}}`, `{"id":"x<y>","jsonrpc":"2.0","method":"prompts/get","params":{"a":1}}`},
+		{"no params member", `{"jsonrpc":"2.0","id":1,"method":"prompts/get"}`, `{"id":1,"jsonrpc":"2.0","method":"prompts/get","params":{"a":1}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := string(replaceParams(json.RawMessage(c.body), params)); got != c.want {
+				t.Fatalf("replaceParams = %s, want %s", got, c.want)
+			}
+		})
 	}
 }
