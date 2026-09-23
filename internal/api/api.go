@@ -73,6 +73,11 @@ type Server struct {
 	// routes: tokens per minute, and how many may be in flight at once.
 	discoverLimit *auth.Limiter
 	discovering   chan struct{}
+	// flows is the pending OAuth sign-ins (PORM-139), in memory: one
+	// process, one operator, ten minutes each. callbackFails is the per-address
+	// budget for callbacks that do not redeem.
+	flows         *oauthFlows
+	callbackFails *auth.Limiter
 }
 
 func New(cfg *config.Config, st store.Store, log *slog.Logger, mcp *mcpclient.Client, encryption string) *Server {
@@ -94,6 +99,8 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, mcp *mcpclient.Cl
 		present:       credential.NewPresenter(keys, st, mcp, log),
 		discoverLimit: auth.NewLimiter(),
 		discovering:   make(chan struct{}, maxInFlightDiscoveries),
+		flows:         newOAuthFlows(),
+		callbackFails: auth.NewLimiter(),
 	}
 }
 
@@ -109,6 +116,11 @@ func (s *Server) Routes() http.Handler {
 		writeError(w, http.StatusNotFound, "not found")
 	})
 	r.Get("/health", s.health)
+	// The Client ID Metadata Document is fetched by a vendor's authorization
+	// server, so it carries no admin key (PORM-139). It sits inside /api/v1
+	// beside the callback: nothing at the root, and no /.well-known/ path
+	// that would make an MCP client think PoryMCP itself wants OAuth.
+	r.Get("/oauth/client-metadata", s.clientMetadata)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAdmin)
 		r.Get("/stats", s.stats)
@@ -123,6 +135,9 @@ func (s *Server) Routes() http.Handler {
 		// 404 rather than a 405, pinned in discover_test.go.
 		r.Post("/upstreams/discover", s.discoverUnsaved)
 		r.Post("/upstreams/{id}/discover", s.discoverUpstream)
+		// Connect (PORM-139): learns the authorization server and answers the
+		// URL the browser is sent to; POST for the same reason as discover.
+		r.Post("/upstreams/{id}/oauth/start", s.oauthStart)
 		r.Get("/upstreams/{id}", s.getUpstream)
 		r.Patch("/upstreams/{id}", s.patchUpstream)
 		r.Delete("/upstreams/{id}", s.deleteUpstream)

@@ -558,6 +558,11 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	// A pending sign-in was started for the old URL, type or client: forget
+	// it, so its callback cannot store a token for a row that moved.
+	if (before.AuthType == models.AuthOAuth || u.AuthType == models.AuthOAuth) && (urlChanged || typeChanged || in.AuthConfig.Has()) {
+		s.flows.drop(u.ID)
+	}
 	// The log line fires on the same test the admin event uses (a column that
 	// held bytes and holds none now, or a token set dropped for a new
 	// client), so the two records of a removal never disagree, whichever
