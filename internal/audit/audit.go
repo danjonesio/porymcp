@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -150,6 +151,60 @@ var secretKeys = map[string]struct{}{
 	"access_token":  {},
 	"refresh_token": {},
 	"value":         {},
+}
+
+// queryOnlySecretKeys is the second set of credential names, read only by
+// RedactQuery: the names an HTTP API takes a key under in a query string
+// (PORM-146). It is separate from secretKeys on purpose: Redact runs over
+// every audit row, MCP tool arguments included, and a tool argument named
+// "code" or "key" is not a secret there. Matching is on the lower-cased name
+// with "-" read as "_", so api-key and api_key are one name.
+var queryOnlySecretKeys = map[string]struct{}{
+	"key":                  {},
+	"api_key":              {},
+	"access_token":         {},
+	"id_token":             {},
+	"client_secret":        {},
+	"client_assertion":     {},
+	"assertion":            {},
+	"code":                 {},
+	"sig":                  {},
+	"signature":            {},
+	"private_token":        {},
+	"auth":                 {},
+	"jwt":                  {},
+	"session":              {},
+	"oauth_token":          {},
+	"oauth_signature":      {},
+	"passwd":               {},
+	"pwd":                  {},
+	"x_amz_signature":      {},
+	"x_amz_credential":     {},
+	"x_amz_security_token": {},
+	"x_goog_signature":     {},
+	"x_goog_credential":    {},
+}
+
+// RedactQuery turns a relayed request's query string into the object the
+// relay door records under params.query: one string per name, repeated
+// values joined with ",", and a value replaced by "[redacted]" when its name
+// is in secretKeys or queryOnlySecretKeys. Values are strings, never arrays,
+// because redactValue (which Record still runs over the whole row) replaces
+// only a string under a secret name; an array of secrets would pass it in
+// clear.
+func RedactQuery(q url.Values) map[string]string {
+	out := make(map[string]string, len(q))
+	for name, vals := range q {
+		norm := strings.ReplaceAll(strings.ToLower(name), "-", "_")
+		_, a := secretKeys[norm]
+		_, b := queryOnlySecretKeys[norm]
+		if a || b {
+			out[name] = "[redacted]"
+			continue
+		}
+		out[name] = strings.Join(vals, ",")
+	}
+	return out
 }
 
 // Redact recursively replaces sensitive JSON fields with "[redacted]".
