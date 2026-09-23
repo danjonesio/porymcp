@@ -121,6 +121,10 @@ func (s *Server) Routes() http.Handler {
 	// beside the callback: nothing at the root, and no /.well-known/ path
 	// that would make an MCP client think PoryMCP itself wants OAuth.
 	r.Get("/oauth/client-metadata", s.clientMetadata)
+	// The vendor sends the operator's browser here with the code; it cannot
+	// carry the admin key, so the state alone authenticates the request
+	// (oauth.go). GET only: chi answers HEAD with 405 and no state is spent.
+	r.Get("/oauth/callback", s.oauthCallback)
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAdmin)
 		r.Get("/stats", s.stats)

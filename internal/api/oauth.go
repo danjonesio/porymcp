@@ -1,20 +1,25 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"html/template"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/auth"
+	"github.com/danjonesio/porymcp/internal/credential"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/go-chi/chi/v5"
 )
@@ -353,4 +358,186 @@ func (s *Server) oauthStartFailed(w http.ResponseWriter, u *models.Upstream, err
 	}
 	s.log.Warn("upstream oauth start failed", "upstream_id", u.ID, "stage", stage, "status", status, "host", host, "reason", err.Error())
 	writeError(w, http.StatusBadGateway, err.Error())
+}
+
+// The callback (10b). The one unauthenticated write route: everything binds
+// to the state, which is single use, ten minutes old at most, and keyed by
+// its hash. The answer is always a fixed HTML page, because a browser lands
+// here: no script (the CSP hashes only the dashboard's own), no <style>
+// (style attributes only, which the CSP allows), no form, and nothing from
+// the query ever enters the page: not the code, not the state, not the iss,
+// and never error_description. The upstream's name is the one variable and
+// html/template escapes it.
+
+// callbackPage is what the template renders.
+type callbackPage struct {
+	Title   string
+	Body    string
+	Refresh bool
+}
+
+var callbackTemplate = template.Must(template.New("callback").Parse(`<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+{{if .Refresh}}<meta http-equiv="refresh" content="0; url=/upstreams/">
+{{end}}<title>PoryMCP</title>
+</head>
+<body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5">
+<h1 style="font-size: 1.5rem">{{.Title}}</h1>
+<p>{{.Body}}</p>
+<p><a href="/upstreams/">Open the Upstreams page</a></p>
+</body>
+</html>
+`))
+
+// The fixed pages. A page never says "tab": the flow runs in the browser's
+// current tab and comes back to the dashboard.
+var (
+	pageConnected = callbackPage{Title: "Upstream connected", Refresh: true}
+	pageState     = callbackPage{Title: "This sign-in link has expired or was already used", Body: "Open the Upstreams page to see whether the upstream is connected."}
+	pageRefused   = callbackPage{Title: "The vendor did not connect this upstream", Body: "The authorization server refused the request. Nothing was stored. Press Connect to try again."}
+	pageExchange  = callbackPage{Title: "The upstream could not be connected", Body: "The authorization server did not accept the sign-in. Nothing was stored. The server log has the reason. Press Connect to try again."}
+	pageChanged   = callbackPage{Title: "This upstream changed during sign-in", Body: "It was deleted, or its URL or auth type changed. Nothing was stored."}
+	pageBudget    = callbackPage{Title: "Too many failed sign-in attempts", Body: "Wait a minute, then reload this page."}
+)
+
+// vendorErrorCodes is RFC 6749 §4.1.2.1: the only error values a page may
+// name. Anything else prints the fixed refusal.
+var vendorErrorCodes = map[string]bool{
+	"access_denied": true, "invalid_request": true, "unauthorized_client": true, "unsupported_response_type": true,
+	"invalid_scope": true, "server_error": true, "temporarily_unavailable": true,
+}
+
+func writeCallbackPage(w http.ResponseWriter, status int, p callbackPage) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = callbackTemplate.Execute(w, p)
+}
+
+// oauthCallback redeems a sign-in. In order: the per-address budget (before
+// the state is touched, so an over-budget reload keeps its state); the state,
+// taken and deleted under the mutex; a vendor error; the iss check, before
+// any exchange, so a mix-up never sends the code anywhere; the row, which
+// must be the row the flow started against; the exchange, on its own
+// context so a browser that goes away cannot abandon a redeemed code; the
+// write, under the per-upstream lock and conditioned on updated_at; the
+// event; the page.
+func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	ip := webutil.ClientIP(r, s.cfg.TrustedProxies)
+	if ok, retry := s.callbackFails.Consume(ip, callbackFailRPM); !ok {
+		sec := int(retry.Seconds())
+		if sec < 1 {
+			sec = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(sec))
+		writeCallbackPage(w, http.StatusTooManyRequests, pageBudget)
+		return
+	}
+	q := r.URL.Query()
+	state := q.Get("state")
+	if state == "" {
+		writeCallbackPage(w, http.StatusBadRequest, pageState)
+		return
+	}
+	flow, ok := s.flows.take(state)
+	if !ok {
+		writeCallbackPage(w, http.StatusBadRequest, pageState)
+		return
+	}
+	warn := func(reason string) {
+		s.log.Warn("upstream oauth callback failed", "upstream_id", flow.upstreamID, "reason", reason)
+	}
+	if code := q.Get("error"); code != "" {
+		page := pageRefused
+		if vendorErrorCodes[code] {
+			page.Body = "The authorization server answered " + code + ". Nothing was stored. Press Connect to try again."
+			warn("vendor_error:" + code)
+		} else {
+			warn("vendor_error")
+		}
+		writeCallbackPage(w, http.StatusBadRequest, page)
+		return
+	}
+	if iss := q.Get("iss"); (flow.as.IssParameterSupported && iss == "") || (iss != "" && strings.TrimSuffix(iss, "/") != flow.as.Issuer) {
+		warn("iss_mismatch")
+		writeCallbackPage(w, http.StatusBadGateway, pageExchange)
+		return
+	}
+	code := q.Get("code")
+	if code == "" {
+		warn("exchange")
+		writeCallbackPage(w, http.StatusBadGateway, pageExchange)
+		return
+	}
+	u, err := s.store.GetUpstream(r.Context(), flow.upstreamID)
+	if err != nil {
+		warn("changed")
+		writeCallbackPage(w, http.StatusNotFound, pageChanged)
+		return
+	}
+	if u.AuthType != models.AuthOAuth || !u.UpdatedAt.Equal(flow.seen) {
+		warn("changed")
+		writeCallbackPage(w, http.StatusConflict, pageChanged)
+		return
+	}
+
+	now := time.Now().UTC()
+	xctx, cancel := context.WithTimeout(context.Background(), oauthExchangeBudget)
+	set, err := s.mcp.Exchange(xctx, flow.as, flow.set, code, flow.verifier, s.redirectURI(), now)
+	cancel()
+	if err != nil {
+		var oe *mcpclient.OAuthError
+		reason := "exchange"
+		if errors.As(err, &oe) && oe.Code != "" {
+			reason = "exchange:" + oe.Code
+		}
+		warn(reason)
+		writeCallbackPage(w, http.StatusBadGateway, pageExchange)
+		return
+	}
+	raw, _ := json.Marshal(set)
+	enc, err := s.keys.Seal(raw)
+	if err != nil {
+		warn("seal")
+		writeCallbackPage(w, http.StatusBadGateway, pageExchange)
+		return
+	}
+	lctx, lcancel := context.WithTimeout(context.Background(), oauthWriteBudget)
+	unlock, err := credential.LockUpstream(lctx, u.ID)
+	lcancel()
+	if err != nil {
+		warn("busy")
+		writeCallbackPage(w, http.StatusConflict, pageChanged)
+		return
+	}
+	wctx, wcancel := context.WithTimeout(context.Background(), oauthWriteBudget)
+	err = s.store.ConnectUpstreamAuth(wctx, u.ID, []byte(enc), flow.seen, now)
+	wcancel()
+	unlock()
+	if err != nil {
+		warn("changed")
+		status := http.StatusConflict
+		if _, gerr := s.store.GetUpstream(context.Background(), u.ID); errors.Is(gerr, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeCallbackPage(w, status, pageChanged)
+		return
+	}
+	hasRefresh := set.RefreshToken != ""
+	issuerHost := ""
+	if iu, perr := url.Parse(set.Issuer); perr == nil {
+		issuerHost = iu.Host
+	}
+	s.recordAdmin(r, models.ActionUpstreamOAuthConnect, u.ID, u.Name, adminDetails{
+		AuthType: models.AuthOAuth, Client: set.ClientSource, RefreshToken: &hasRefresh, Issuer: issuerHost,
+	})
+	s.log.Info("upstream oauth connected", "upstream_id", u.ID, "client", set.ClientSource, "refresh_token", hasRefresh,
+		"expires_in_s", int(set.ExpiresAt.Sub(now)/time.Second), "issuer", issuerHost)
+	page := pageConnected
+	page.Body = u.Name + " is connected."
+	writeCallbackPage(w, http.StatusOK, page)
 }

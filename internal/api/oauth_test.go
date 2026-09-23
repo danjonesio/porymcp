@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/mcpclient/oauthstub"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 // The OAuth routes (PORM-139 steps 10a to 10c). Start tests run under an
@@ -342,5 +344,348 @@ func TestOAuthStartLogsStageOnFailure(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "VENDOR_WORDS_MARKER") {
 		t.Fatalf("vendor words reached the log: %s", logs.String())
+	}
+}
+
+// The callback (10b).
+
+// approve plays the vendor's consent page for a started flow and returns
+// the callback path plus query the browser would be sent to.
+func approve(t *testing.T, stub *oauthstub.Server, out map[string]any) string {
+	t.Helper()
+	rd, err := stub.Approve(out["authorization_url"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc, _ := url.Parse(rd.Location)
+	return "/oauth/callback?" + loc.RawQuery
+}
+
+// callback GETs the callback with no admin key.
+func callback(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doJSON(t, h, http.MethodGet, path, "", nil)
+}
+
+// connect runs start, approve and callback and returns the callback answer.
+func connect(t *testing.T, h http.Handler, stub *oauthstub.Server, id string) (*httptest.ResponseRecorder, string) {
+	t.Helper()
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	return callback(t, h, path), path
+}
+
+func withQuery(t *testing.T, path string, edit func(q url.Values)) string {
+	t.Helper()
+	u, err := url.Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	edit(q)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// Criterion 3.
+func TestOAuthCallbackConnects(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	rr, cbPath := connect(t, h, stub, id)
+	if rr.Code != http.StatusOK || !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/html") || rr.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("%d %v %s", rr.Code, rr.Header(), rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "Upstream connected") || !strings.Contains(body, `content="0; url=/upstreams/"`) || !strings.Contains(body, "Vendor is connected.") || strings.Contains(body, "<script") || strings.Contains(body, "<style") {
+		t.Fatalf("page %s", body)
+	}
+	u, _ := st.GetUpstream(context.Background(), id)
+	if !strings.HasPrefix(string(u.AuthConfig), "v1:") {
+		t.Fatalf("stored %q, want a v1 blob", u.AuthConfig)
+	}
+	set, _ := storedOAuthSet(t, s, st, id)
+	if !stub.AccessValid(set.AccessToken) || !stub.RefreshValid(set.RefreshToken) || set.Resource != stub.MCPURL() || set.TokenEndpoint != stub.TokenEndpoint() || set.ClientSource != "document" || set.Issuer != stub.Issuer() {
+		t.Fatalf("stored %+v", set)
+	}
+	row := getJSON(t, h, "/upstreams/"+id)
+	if row["auth_status"] != "ok" || row["auth_configured"] != true || row["last_test_at"] != nil {
+		t.Fatalf("row %v", row)
+	}
+	events := eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthConnect)
+	if len(events) != 1 || events[0].Actor != models.ActorAdmin || events[0].ResourceName != "Vendor" {
+		t.Fatalf("events %+v", events)
+	}
+	if d := string(events[0].Details); !strings.Contains(d, `"auth_type":"oauth"`) || !strings.Contains(d, `"client":"document"`) || !strings.Contains(d, `"refresh_token":true`) || !strings.Contains(d, `"issuer":"`) {
+		t.Fatalf("details %s", d)
+	}
+	// The same state a second time answers 400 and records nothing.
+	rr = callback(t, h, cbPath)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "expired or was already used") {
+		t.Fatalf("second use: %d %s", rr.Code, rr.Body.String())
+	}
+	if n := len(eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthConnect)); n != 1 {
+		t.Fatalf("events after reuse %d", n)
+	}
+	if stub.Grants("authorization_code") != 1 {
+		t.Fatalf("code grants %d", stub.Grants("authorization_code"))
+	}
+}
+
+func TestOAuthCallbackStateSingleUse(t *testing.T) {
+	s, h, _, stub, id := oauthServer(t, testPublicURL)
+	out := mustStart(t, h, id, nil)
+	path := approve(t, stub, out)
+	// A failed callback consumes the state too: a vendor error on a live
+	// state leaves nothing to redeem.
+	rr := callback(t, h, withQuery(t, path, func(q url.Values) { q.Set("error", "access_denied"); q.Del("code") }))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if rr := callback(t, h, path); rr.Code != http.StatusBadRequest {
+		t.Fatalf("after a consumed state: %d", rr.Code)
+	}
+	if _, ok := s.flows.take(authQuery(t, out).Get("state")); ok {
+		t.Fatal("the state survived")
+	}
+}
+
+func TestOAuthCallbackUnknownState(t *testing.T) {
+	_, h, st, _, _ := oauthServer(t, testPublicURL)
+	for _, path := range []string{"/oauth/callback", "/oauth/callback?code=x", "/oauth/callback?code=x&state=nope"} {
+		rr := callback(t, h, path)
+		if rr.Code != http.StatusBadRequest || !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/html") {
+			t.Fatalf("%s: %d %v", path, rr.Code, rr.Header())
+		}
+	}
+	if n := len(adminEvents(t, st)); n != 1 { // the create
+		t.Fatalf("events %d", n)
+	}
+}
+
+func TestOAuthCallbackExpiredState(t *testing.T) {
+	s, h, _, stub, id := oauthServer(t, testPublicURL)
+	now := time.Now()
+	s.flows.SetClock(func() time.Time { return now })
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	now = now.Add(oauthFlowTTL + time.Second)
+	if rr := callback(t, h, path); rr.Code != http.StatusBadRequest || stub.Grants("authorization_code") != 0 {
+		t.Fatalf("%d grants %d", rr.Code, stub.Grants("authorization_code"))
+	}
+}
+
+func TestOAuthCallbackVendorError(t *testing.T) {
+	_, h, _, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	rr := callback(t, h, withQuery(t, path, func(q url.Values) {
+		q.Set("error", "access_denied")
+		q.Set("error_description", "DESCRIPTION_MARKER")
+		q.Del("code")
+	}))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "answered access_denied") || strings.Contains(rr.Body.String(), "DESCRIPTION_MARKER") {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	path = approve(t, stub, mustStart(t, h, id, nil))
+	rr = callback(t, h, withQuery(t, path, func(q url.Values) { q.Set("error", "<img src=x onerror=alert(1)>"); q.Del("code") }))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "refused the request") || strings.Contains(rr.Body.String(), "onerror") {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Security requirement 1: a wrong or missing iss is refused before the code
+// goes anywhere.
+func TestOAuthCallbackIssMismatchBeforeExchange(t *testing.T) {
+	_, h, _, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	rr := callback(t, h, withQuery(t, path, func(q url.Values) { q.Set("iss", "https://other.invalid") }))
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), "could not be connected") {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if stub.Grants("authorization_code") != 0 {
+		t.Fatal("the code was exchanged despite the iss mismatch")
+	}
+}
+
+func TestOAuthCallbackMissingIssWhenAdvertised(t *testing.T) {
+	_, h, _, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	rr := callback(t, h, withQuery(t, path, func(q url.Values) { q.Del("iss") }))
+	if rr.Code != http.StatusBadGateway || stub.Grants("authorization_code") != 0 {
+		t.Fatalf("%d grants %d", rr.Code, stub.Grants("authorization_code"))
+	}
+	// A server that never promised iss may omit it.
+	_, h2, _ := testAPIPublicURL(t, testPublicURL)
+	stub2 := oauthstub.New(t)
+	stub2.NoIss = true
+	id2, _ := mustUpstream(t, h2, "Vendor", map[string]any{"url": stub2.MCPURL(), "auth_type": "oauth"})
+	if rr, _ := connect(t, h2, stub2, id2); rr.Code != http.StatusOK {
+		t.Fatalf("no-iss server: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Security requirement 2: a row edited during the sign-in stores nothing.
+func TestOAuthCallbackRowEditedDuringFlow(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	if rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"name": "Renamed"}); rr.Code != http.StatusOK {
+		t.Fatalf("rename: %d", rr.Code)
+	}
+	rr := callback(t, h, path)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "changed during sign-in") {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if _, ok := storedOAuthSet(t, s, st, id); ok {
+		t.Fatal("a token was stored on an edited row")
+	}
+	if n := len(eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthConnect)); n != 0 {
+		t.Fatalf("connect events %d", n)
+	}
+	// A URL change drops the flow itself.
+	path = approve(t, stub, mustStart(t, h, id, nil))
+	if rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"url": stub.URL() + "/other"}); rr.Code != http.StatusOK {
+		t.Fatalf("url change: %d", rr.Code)
+	}
+	if rr := callback(t, h, path); rr.Code != http.StatusBadRequest {
+		t.Fatalf("after a URL change: %d, want the dropped flow's 400", rr.Code)
+	}
+}
+
+func TestOAuthCallbackRowDeletedDuringFlow(t *testing.T) {
+	_, h, _, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	if rr := doJSON(t, h, http.MethodDelete, "/upstreams/"+id, "test-admin", nil); rr.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+	if rr := callback(t, h, path); rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), "changed during sign-in") {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestOAuthCallbackNeedsNoAdminKey(t *testing.T) {
+	_, h, _, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	req := httptest.NewRequest(http.MethodGet, path, nil) // no Authorization at all
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Security requirement 3: the budget is checked before the state, so an
+// over-budget reload keeps its state and redeems once the budget refills.
+func TestOAuthCallbackFailureLimiterKeepsState(t *testing.T) {
+	s, h, _, stub, id := oauthServer(t, testPublicURL)
+	now := time.Now()
+	s.callbackFails.SetClock(func() time.Time { return now })
+	for i := 0; i < callbackFailRPM; i++ {
+		if rr := callback(t, h, "/oauth/callback?state=junk"); rr.Code != http.StatusBadRequest {
+			t.Fatalf("junk %d: %d", i, rr.Code)
+		}
+	}
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	rr := callback(t, h, path)
+	if rr.Code != http.StatusTooManyRequests || rr.Header().Get("Retry-After") == "" || !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/html") || !strings.Contains(rr.Body.String(), "Too many failed sign-in attempts") {
+		t.Fatalf("%d %v %s", rr.Code, rr.Header(), rr.Body.String())
+	}
+	now = now.Add(2 * time.Minute)
+	if rr := callback(t, h, path); rr.Code != http.StatusOK {
+		t.Fatalf("after the budget refilled: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Security requirement 10: nothing from the query reaches any page, and no
+// page says "tab".
+func TestOAuthCallbackPageEchoesNothing(t *testing.T) {
+	_, h, _, stub, id := oauthServer(t, testPublicURL)
+	stub.TokenType = "DPoP" // the exchange is refused
+	stub.ErrorDescriptionMarker = "VENDOR_WORDS_MARKER"
+	pages := map[string]*httptest.ResponseRecorder{}
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	q, _ := url.ParseQuery(strings.TrimPrefix(path, "/oauth/callback?"))
+	code, state := q.Get("code"), q.Get("state")
+	pages["exchange"] = callback(t, h, path)
+	pages["reused"] = callback(t, h, path)
+	pages["unknown"] = callback(t, h, "/oauth/callback?code=CODE_MARKER&state=STATE_MARKER&iss=ISS_MARKER")
+	path = approve(t, stub, mustStart(t, h, id, nil))
+	pages["vendor"] = callback(t, h, withQuery(t, path, func(q url.Values) { q.Set("error", "access_denied"); q.Set("error_description", "DESC_MARKER") }))
+	for name, rr := range pages {
+		body := rr.Body.String()
+		for _, needle := range []string{code, state, "CODE_MARKER", "STATE_MARKER", "ISS_MARKER", "DESC_MARKER", "VENDOR_WORDS_MARKER", "tab", "<script"} {
+			if needle != "" && strings.Contains(body, needle) {
+				t.Fatalf("%s page carries %q: %s", name, needle, body)
+			}
+		}
+	}
+	if pages["exchange"].Code != http.StatusBadGateway {
+		t.Fatalf("exchange page %d", pages["exchange"].Code)
+	}
+}
+
+func TestOAuthCallbackHeadIs405(t *testing.T) {
+	s, h, _, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	req := httptest.NewRequest(http.MethodHead, path, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("HEAD: %d", rr.Code)
+	}
+	_ = s
+	if rr := callback(t, h, path); rr.Code != http.StatusOK {
+		t.Fatalf("HEAD consumed the state: %d", rr.Code)
+	}
+}
+
+// A browser that goes away after the vendor issued the grant cannot lose it.
+func TestOAuthCallbackRunsOffRequestContext(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	release := stub.HoldToken()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- doJSONCtx(t, h, ctx, http.MethodGet, path, "", nil).Code }()
+	deadline := time.Now().Add(5 * time.Second)
+	for stub.Grants("authorization_code") == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	release()
+	<-done
+	set, ok := storedOAuthSet(t, s, st, id)
+	if !ok || !stub.AccessValid(set.AccessToken) {
+		t.Fatalf("stored %+v ok=%v", set, ok)
+	}
+}
+
+// Security requirement 3: the routes reachable without the admin key are
+// exactly the three public ones.
+func TestPublicRoutesArePinned(t *testing.T) {
+	s, h, _ := testAPIPublicURL(t, testPublicURL)
+	public := map[string]bool{"GET /health": true, "GET /oauth/callback": true, "GET /oauth/client-metadata": true}
+	seen := map[string]bool{}
+	// The admin-fail budget answers 429 after ten refusals from one address;
+	// the clock moves a minute per route so every refusal is the 401 itself.
+	now := time.Now()
+	s.adminFails.SetClock(func() time.Time { return now })
+	err := chi.Walk(h.(chi.Routes), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		key := method + " " + route
+		seen[key] = true
+		now = now.Add(time.Minute)
+		path := strings.ReplaceAll(route, "{id}", "00000000-0000-4000-8000-000000000000")
+		rr := doJSON(t, h, method, path, "", nil)
+		if public[key] {
+			if rr.Code == http.StatusUnauthorized {
+				t.Errorf("%s answered 401, want it public", key)
+			}
+		} else if rr.Code != http.StatusUnauthorized {
+			t.Errorf("%s answered %d without a key, want 401", key, rr.Code)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key := range public {
+		if !seen[key] {
+			t.Errorf("public route %s is not served", key)
+		}
 	}
 }
