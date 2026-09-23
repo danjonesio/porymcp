@@ -660,15 +660,32 @@ export default function VirtualKeysPage() {
               </Field>
             )}
 
-            {httpEndpoints.length > 0 ? (
+            {httpEndpoints.length > 0 || !showMCP ? (
               <div>
                 <Subheading level={3}>HTTP API endpoints</Subheading>
                 <Text className="mt-2">
                   An SDK takes the URL as its base URL and this key as its API key. Requests are relayed to the API
                   with the stored credential.
                 </Text>
+                {httpEndpoints.length === 0 ? (
+                  <Text className="mt-2">
+                    Its upstream is disabled, so requests to this URL are refused until it is enabled again.
+                  </Text>
+                ) : null}
                 <DescriptionList className="mt-3">
-                  {httpEndpoints.map((e) => (
+                  {(httpEndpoints.length > 0
+                    ? httpEndpoints
+                    : // A key on a disabled HTTP API upstream has no endpoint entry
+                      // yet, but its door is still the /api/ proxy_url, which is the
+                      // URL to hand out once the upstream is enabled.
+                      [
+                        {
+                          upstream_id: secret?.target_id ?? '',
+                          name: upstreams.find((u) => u.id === secret?.target_id)?.name ?? 'Upstream',
+                          url: secret?.proxy_url ?? '',
+                        },
+                      ]
+                  ).map((e) => (
                     <Fragment key={e.upstream_id}>
                       <DescriptionTerm>{e.name}</DescriptionTerm>
                       <DescriptionDetails className="flex items-start gap-2">
