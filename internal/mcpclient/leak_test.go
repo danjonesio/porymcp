@@ -48,6 +48,37 @@ func TestDiscoverInjectsCredential(t *testing.T) {
 	}
 }
 
+// TestDiscoverOAuthSendsOnlyBearer is criterion 4's discover half (PORM-139):
+// an oauth set reaches the upstream as exactly one Authorization header
+// carrying the access token, no other credential header, never the inbound
+// virtual key, and no token travels back in the answer.
+func TestDiscoverOAuthSendsOnlyBearer(t *testing.T) {
+	const access = "OAUTH_ACCESS_MARKER_51c2"
+	const refresh = "OAUTH_REFRESH_MARKER_7e90"
+	f := newFixture(t)
+	up := f.upstream()
+	up.AuthType = models.AuthOAuth
+	set := `{"access_token":"` + access + `","refresh_token":"` + refresh + `","client_secret":"OAUTH_SECRET_MARKER"}`
+	got := discover(t, up, json.RawMessage(set))
+	if !got.OK {
+		t.Fatalf("ok=false error=%q", got.Error)
+	}
+	for _, r := range f.requests() {
+		if v := r.Header.Get("Authorization"); v != "Bearer "+access {
+			t.Errorf("%s %s carried Authorization=%q, want the access token", r.Method, r.RPC, v)
+		}
+		if len(r.Header.Values("Authorization")) != 1 {
+			t.Errorf("%s %s carried %d Authorization headers", r.Method, r.RPC, len(r.Header.Values("Authorization")))
+		}
+		for _, name := range []string{"X-Api-Key", "X-API-Key", "Cookie"} {
+			if v := r.Header.Get(name); v != "" {
+				t.Errorf("%s %s carried %s=%q", r.Method, r.RPC, name, v)
+			}
+		}
+	}
+	absent(t, marshal(t, got), access, refresh, "OAUTH_SECRET_MARKER")
+}
+
 // The headline failure: the token is wrong. The operator has to be told, and
 // neither the token nor a byte of the server's page may travel back.
 func TestDiscoverWrongCredentialLeaksNothing(t *testing.T) {

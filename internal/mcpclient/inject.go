@@ -57,6 +57,12 @@ func CheckCredential(authType string, raw json.RawMessage) error {
 // api_key with no value; custom with no headers and no header/value pair. An
 // empty value inside custom "headers" still counts as written, as it always
 // has. An unknown auth type writes nothing and is ErrNoCredential.
+//
+// oauth decodes an OAuthTokenSet instead of an AuthConfig and writes exactly
+// one header, Authorization: Bearer <access_token>; a set with no access token
+// (not yet connected, or a client-only blob) is ErrNoCredential. Refresh is
+// not this function's business: the Presenter in internal/credential renews
+// the set before it reaches here, so headersFor stays a pure function.
 func headersFor(authType string, raw json.RawMessage) (http.Header, error) {
 	h := http.Header{}
 	switch authType {
@@ -65,6 +71,14 @@ func headersFor(authType string, raw json.RawMessage) (http.Header, error) {
 	}
 	if len(raw) == 0 {
 		return nil, ErrNoCredential
+	}
+	if authType == models.AuthOAuth {
+		var set models.OAuthTokenSet
+		if err := json.Unmarshal(raw, &set); err != nil || set.AccessToken == "" {
+			return nil, ErrNoCredential
+		}
+		h.Set("Authorization", "Bearer "+set.AccessToken)
+		return h, nil
 	}
 	var cfg models.AuthConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
