@@ -4,6 +4,45 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Plain HTTP APIs behind a virtual key (PORM-146)
+
+- **An upstream can now be an HTTP API.** `POST /api/v1/upstreams` takes
+  `kind: "http"` with a base URL, a credential and an optional `test_path`;
+  a virtual key on it is served at `/{virtual_key_id}/api/<path>` (and an
+  HTTP API member of a group at `/{virtual_key_id}/{slug}/api/<path>`), where
+  any `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or `DELETE` is relayed to the base
+  URL with the same path, query, headers and body, the virtual key swapped
+  for the stored credential, and the upstream's status, headers and body
+  relayed back. `kind` defaults to `mcp` and cannot be changed after create.
+  Existing upstreams and keys are unchanged.
+- **Schema version 7.** The first boot adds `upstreams.kind`,
+  `upstreams.test_path` and `virtual_keys.http_methods`, with defaults, and
+  stamps the version. The stamp is one-way: the previous build refuses the
+  database at `Open`, so the rollback is restore from backup. Back up before
+  the upgrade (`docs/11-deployment.md`, section 14). The step moves no data,
+  so the start does not pause.
+- **`http_methods` on a virtual key** limits the verbs it may send through an
+  `/api/` endpoint (`["GET","HEAD"]` for a read-only key; empty means every
+  one of the six). A refused verb is `403` with a `blocked` audit row. The
+  MCP endpoints never read it.
+- **Refusals on an `/api/` endpoint are plain JSON**
+  (`{"error":"…","request_id":"…"}`), not a JSON-RPC envelope, and the
+  relay's `429` carries `Retry-After`. The MCP endpoints' bytes are
+  unchanged.
+- **Audit rows for relayed requests** record the verb in `method`, the path
+  in `tool_name` (beginning with `/`), and the query, content type and
+  request size in `params`, with secret-looking query values redacted. The
+  request body is not recorded.
+- **`oauth` is refused on an HTTP API upstream** for now: the connect flow
+  starts with an MCP `initialize`, which a REST API cannot answer. Bearer,
+  header, API-key and custom credentials work.
+- **The Test button** on an HTTP API upstream sends one `GET` to the base URL
+  joined with `test_path` and reports the status; `POST /upstreams/{id}/discover`
+  answers `kind: "http"`, `http_status` and an empty `tools`.
+- **An upstream's `endpoints[]` entries carry `kind`**, and a single HTTP API
+  key's `proxy_url` ends in `/api/`. A group's `proxy_url` stays its `/mcp`
+  aggregate whatever its members are.
+
 ### Event-stream answers are relayed as they arrive (PORM-5)
 
 - **A 2xx `text/event-stream` answer on a member or single-upstream endpoint
@@ -45,7 +84,7 @@ Behaviour changes that affect a running deployment. Newest first.
   `401`, because it checks a hash they no longer have; keys made before this
   build and not rotated since keep working under it. Before a rollback, list
   the keys that will need rotating (`length(key_hash) = 0` and not revoked;
-  the commands are in `docs/11-deployment.md`, section 14), and rotate them
+  the commands are in `docs/11-deployment.md`, section 15), and rotate them
   under the previous build afterwards, or roll forward. Stop every
   previous-build replica before starting this one.
 

@@ -13,8 +13,9 @@ import { errorLine } from '@/components/primitives'
 import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Select } from '@/components/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
-import { Strong } from '@/components/text'
+import { Strong, Text } from '@/components/text'
 import { Textarea } from '@/components/textarea'
+import { HttpMethodsFields } from '@/app/http-methods-fields'
 import { ToolListFields } from '@/app/tool-list-fields'
 import { ApiError, api, type Endpoint, type Group, type Upstream, type VirtualKey } from '@/lib/api'
 import type { Member } from '@/lib/catalogue'
@@ -33,6 +34,7 @@ import {
   virtualKeyCreateBody,
   virtualKeyPatchBody,
   type KeyForm,
+  mcpDoorShown,
 } from '@/lib/virtual-key-form'
 import clsx from 'clsx'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
@@ -46,9 +48,35 @@ type ConnectionMode = 'per-server' | 'aggregate'
  * there is nothing to choose between.
  */
 function splitAvailable(vk: VirtualKey | null): boolean {
-  const eps = vk?.endpoints ?? []
+  // MCP endpoints only: an HTTP API endpoint (PORM-146) is its own door and
+  // never part of the aggregate, so it is not a shape to choose between.
+  const eps = (vk?.endpoints ?? []).filter((e) => e.kind !== 'http')
   if (eps.length === 0) return false
   return !(eps.length === 1 && eps[0].url === vk?.proxy_url)
+}
+
+/**
+ * The Endpoint column's main line: the aggregate /mcp door, or, for a key that
+ * reaches no MCP server, its first HTTP API endpoint, because the /mcp door of
+ * such a key answers 400 and is not what an operator hands out.
+ */
+function endpointLine(vk: VirtualKey): string {
+  const eps = vk.endpoints ?? []
+  const mcp = eps.filter((e) => e.kind !== 'http')
+  if (mcp.length === 0 && eps.length > 0) return eps[0].url
+  return vk.proxy_url ?? ''
+}
+
+/** The Endpoint column's second line: what the main line leaves out, counted by kind. '' when nothing. */
+function endpointExtra(vk: VirtualKey): string {
+  const eps = vk.endpoints ?? []
+  const mcp = eps.filter((e) => e.kind !== 'http').length
+  const http = eps.length - mcp
+  const parts: string[] = []
+  if (mcp > 1) parts.push(`+${mcp} per-server`)
+  const extraHTTP = mcp === 0 ? http - 1 : http
+  if (extraHTTP > 0) parts.push(`+${extraHTTP} HTTP API`)
+  return parts.join(', ')
 }
 
 /**
@@ -113,6 +141,7 @@ export default function VirtualKeysPage() {
 
   useEffect(load, [])
 
+
   useEffect(() => {
     // The panel is a bottom sheet on a phone, so a failed submit's message
     // would otherwise sit off-screen above the operator.
@@ -128,10 +157,23 @@ export default function VirtualKeysPage() {
     const ids = groupTarget ? (groups.find((g) => g.id === targetId)?.upstream_ids ?? []) : targetId ? [targetId] : []
     return ids.flatMap((id) => {
       const u = upstreams.find((x) => x.id === id)
-      return u ? [{ upstream_id: u.id, slug: u.slug, name: u.name, enabled: u.enabled, transport: u.transport }] : []
+      // An HTTP API member (PORM-146) has no tools to load, so it stays out
+      // of the catalogue rather than being probed and stamped for nothing.
+      return u && u.kind !== 'http'
+        ? [{ upstream_id: u.id, slug: u.slug, name: u.name, enabled: u.enabled, transport: u.transport, kind: u.kind }]
+        : []
     })
   }, [groupTarget, targetId, groups, upstreams])
   const { catalogue, rateLimited, load: loadTools } = useCatalogue(members, catalogueKey)
+  // Every member of the target whatever its kind, enabled or not, for the two
+  // questions the dialog asks about kinds (PORM-146): is there an HTTP API
+  // here (show Allowed methods) and an MCP server (show Tool rules).
+  const targetKinds = useMemo(() => {
+    const ids = groupTarget ? (groups.find((g) => g.id === targetId)?.upstream_ids ?? []) : targetId ? [targetId] : []
+    return ids.map((id) => upstreams.find((x) => x.id === id)?.kind ?? '')
+  }, [groupTarget, targetId, groups, upstreams])
+  const hasHTTPTarget = targetKinds.includes('http')
+  const hasMCPTarget = targetKinds.includes('mcp')
   const blocked = keySaveBlocked(editing, form, groupTarget)
 
   function openCreate() {
@@ -178,7 +220,9 @@ export default function VirtualKeysPage() {
    * new target clears both lists, and the catalogue with its rate-limit line.
    */
   function retarget(patch: Partial<KeyForm>) {
-    setForm((f) => ({ ...f, ...patch, tool_allowlist: [], tool_denylist: [] }))
+    // The ticked verbs go too: the Allowed methods fieldset may be hidden
+    // under the new target, and a hidden value is never sent.
+    setForm((f) => ({ ...f, ...patch, tool_allowlist: [], tool_denylist: [], http_methods: [], methodsReplace: false }))
     setCatalogueKey((n) => n + 1)
   }
 
@@ -296,18 +340,43 @@ export default function VirtualKeysPage() {
   const targets = form.target_type === 'group' ? groups : upstreams
 
   const endpoints = secret?.endpoints ?? []
+  // The two kinds are two sections of the dialog (PORM-146): the MCP
+  // endpoints take the connection shape and the client configs, the HTTP API
+  // endpoints are listed on their own and appear in the curl snippet only.
+  const mcpEndpoints = endpoints.filter((e) => e.kind !== 'http')
+  const httpEndpoints = endpoints.filter((e) => e.kind === 'http')
+  // The aggregate URL and its shape are shown when the key reaches an MCP
+  // server, and for an empty group or a disabled MCP upstream, whose /mcp URL
+  // is still the one to hand out; never for a key whose door is /api/.
+  const showMCP = secret ? mcpDoorShown(secret) : false
   const canSplit = splitAvailable(secret)
   // canSplit implies at least one endpoint, so the example below always has a
   // real slug; the fallback only keeps the dialog rendering if that ever changes.
-  const example = endpoints[0] ?? { slug: 'upstream', name: 'each upstream' }
+  const example = mcpEndpoints[0] ?? { slug: 'upstream', name: 'each upstream' }
   const effectiveMode: ConnectionMode = canSplit ? mode : 'aggregate'
-  const servers: SnippetServer[] =
-    effectiveMode === 'per-server'
-      ? endpoints.map((e) => ({ name: e.slug, url: e.url }))
+  const mcpServers: SnippetServer[] = !showMCP
+    ? []
+    : effectiveMode === 'per-server'
+      ? mcpEndpoints.map((e) => ({ name: e.slug, url: e.url }))
       : [{ name: slugName(secret?.name ?? ''), url: secret?.proxy_url ?? '' }]
+  // One list, split by clientSnippet on kind and nowhere else. The test path
+  // is the upstream row's; an endpoint entry does not carry it.
+  const httpServers: SnippetServer[] = httpEndpoints.map((e) => ({
+    name: e.slug,
+    url: e.url,
+    kind: 'http',
+    testPath: upstreams.find((u) => u.id === e.upstream_id)?.test_path,
+  }))
+  const servers = [...mcpServers, ...httpServers]
+  const clientKinds: ClientKind[] = showMCP ? (Object.keys(clientLabels) as ClientKind[]) : ['curl']
+  // A key with no MCP endpoint has only curl to offer: derived here rather
+  // than written into state, so the select never shows a client config that
+  // would print nothing, and the operator's last choice survives for the next
+  // key that has MCP endpoints.
+  const effectiveClient: ClientKind = clientKinds.includes(client) ? client : 'curl'
   const snippet =
     secret?.api_key && servers.length > 0 && servers.every((s) => s.url)
-      ? clientSnippet(client, servers, secret.api_key)
+      ? clientSnippet(effectiveClient, servers, secret.api_key)
       : ''
 
   return (
@@ -346,10 +415,8 @@ export default function VirtualKeysPage() {
                   <TableCell className="font-medium">{a.name}</TableCell>
                   <TableCell className="font-mono text-zinc-500">{a.key_prefix}…</TableCell>
                   <TableCell className="max-w-xs font-mono text-zinc-500">
-                    <div className="truncate">{a.proxy_url || ABSENT}</div>
-                    {(a.endpoints?.length ?? 0) > 1 ? (
-                      <div className="text-base/6 sm:text-sm/6">+{a.endpoints?.length ?? 0} per-server</div>
-                    ) : null}
+                    <div className="truncate">{endpointLine(a) || ABSENT}</div>
+                    {endpointExtra(a) ? <div className="text-base/6 sm:text-sm/6">{endpointExtra(a)}</div> : null}
                   </TableCell>
                   <TableCell>
                     {a.target_type}: {targetName(a)}
@@ -454,7 +521,20 @@ export default function VirtualKeysPage() {
                 />
                 <Description>Optional requests per minute.</Description>
               </Field>
-              {/* Last, so Save is one Tab past the final tool row. */}
+              {/* Only when the target has an HTTP API (PORM-146); hidden, the
+                  stored value is never sent. Before Tool rules, which stays last. */}
+              {hasHTTPTarget ? (
+                <HttpMethodsFields
+                  form={form}
+                  onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+                  groupTarget={groupTarget}
+                  unreadable={!!editing?.http_methods_malformed}
+                />
+              ) : null}
+              {/* Last, so Save is one Tab past the final tool row. Hidden when
+                  the target holds no MCP server: an HTTP API has no tools, and
+                  a tool rule on such a key is accepted and ignored. */}
+              {!targetId || hasMCPTarget ? (
               <ToolListFields
                 form={form}
                 onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
@@ -475,6 +555,9 @@ export default function VirtualKeysPage() {
                       : 'This upstream is no longer there, so there are no tools to tick.'
                 }
               />
+              ) : groupTarget ? (
+                <Text>This group has no MCP servers, so there are no tools to tick.</Text>
+              ) : null}
               {blocked ? <p className={errorLine}>{blocked}</p> : null}
             </FieldGroup>
           </DialogBody>
@@ -544,11 +627,11 @@ export default function VirtualKeysPage() {
               </Fieldset>
             ) : null}
 
-            {effectiveMode === 'per-server' ? (
+            {!showMCP ? null : effectiveMode === 'per-server' ? (
               <div>
                 <Subheading level={3}>Endpoints</Subheading>
                 <DescriptionList className="mt-3">
-                  {endpoints.map((e) => (
+                  {mcpEndpoints.map((e) => (
                     <Fragment key={e.upstream_id}>
                       <DescriptionTerm>{e.name}</DescriptionTerm>
                       <DescriptionDetails className="flex items-start gap-2">
@@ -577,10 +660,56 @@ export default function VirtualKeysPage() {
               </Field>
             )}
 
+            {httpEndpoints.length > 0 || !showMCP ? (
+              <div>
+                <Subheading level={3}>HTTP API endpoints</Subheading>
+                <Text className="mt-2">
+                  An SDK takes the URL as its base URL and this key as its API key. Requests are relayed to the API
+                  with the stored credential.
+                </Text>
+                {httpEndpoints.length === 0 ? (
+                  <Text className="mt-2">
+                    Its upstream is disabled, so requests to this URL are refused until it is enabled again.
+                  </Text>
+                ) : null}
+                <DescriptionList className="mt-3">
+                  {(httpEndpoints.length > 0
+                    ? httpEndpoints
+                    : // A key on a disabled HTTP API upstream has no endpoint entry
+                      // yet, but its door is still the /api/ proxy_url, which is the
+                      // URL to hand out once the upstream is enabled.
+                      [
+                        {
+                          upstream_id: secret?.target_id ?? '',
+                          name: upstreams.find((u) => u.id === secret?.target_id)?.name ?? 'Upstream',
+                          url: secret?.proxy_url ?? '',
+                        },
+                      ]
+                  ).map((e) => (
+                    <Fragment key={e.upstream_id}>
+                      <DescriptionTerm>{e.name}</DescriptionTerm>
+                      <DescriptionDetails className="flex items-start gap-2">
+                        <span className="min-w-0 font-mono break-all">{e.url}</span>
+                        <Button
+                          type="button"
+                          plain
+                          className="shrink-0"
+                          aria-label={`Copy the ${e.name} URL`}
+                          onClick={() => copy(e.url, e.upstream_id)}
+                        >
+                          {copied === e.upstream_id ? 'Copied' : 'Copy'}
+                        </Button>
+                      </DescriptionDetails>
+                    </Fragment>
+                  ))}
+                </DescriptionList>
+              </div>
+            ) : null}
+
             <Field>
               <Label>Client</Label>
-              <Select name="client" value={client} onChange={(e) => setClient(e.target.value as ClientKind)}>
-                {(Object.keys(clientLabels) as ClientKind[]).map((k) => (
+              <Select name="client" value={effectiveClient} onChange={(e) => setClient(e.target.value as ClientKind)}>
+                {clientKinds.map((k) => (
                   <option key={k} value={k}>
                     {clientLabels[k]}
                   </option>
@@ -597,7 +726,7 @@ export default function VirtualKeysPage() {
                 readOnly
                 value={snippet}
               />
-              <Description>{clientHint(client)}</Description>
+              <Description>{clientHint(effectiveClient, { mcp: mcpServers.length > 0, http: httpServers.length > 0 })}</Description>
             </Field>
           </FieldGroup>
         </DialogBody>

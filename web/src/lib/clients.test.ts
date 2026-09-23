@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { clientSnippet, slugName, type ClientKind, type SnippetServer } from './clients.ts'
+import { HTTP_CURL_HINT, clientHint, clientSnippet, slugName, type ClientKind, type SnippetServer } from './clients.ts'
 
 // Run with: npm test (node --test). The import above keeps its .ts extension
 // because Node will not resolve an extensionless TypeScript specifier;
@@ -235,4 +235,35 @@ test('slugName collapses to hyphens', () => {
   // Pinned so nobody unifies it with deriveSlug, which collapses to underscores
   // and would rename every existing single-upstream user's server.
   assert.equal(slugName('My Agent'), 'my-agent')
+})
+
+// PORM-146: HTTP API endpoints in the snippets.
+const mcpServer: SnippetServer = { name: 'github', url: 'https://p.example/k1/github/mcp' }
+const httpServer: SnippetServer = { name: 'vendor', url: 'https://p.example/k1/vendor/api/', kind: 'http', testPath: '/user;x$y' }
+
+test('MCP client snippets leave http endpoints out', () => {
+  for (const kind of ['claude-code', 'cursor', 'codex', 'opencode', 'gemini'] as ClientKind[]) {
+    const s = clientSnippet(kind, [mcpServer, httpServer], 'pory_k')
+    assert.ok(!s.includes('/api/'), `${kind} printed an http endpoint: ${s}`)
+    assert.ok(s.includes('/github/mcp'), `${kind} lost the mcp endpoint`)
+    assert.equal(clientSnippet(kind, [httpServer], 'pory_k'), '', `${kind} printed something for an http-only key`)
+  }
+})
+
+test('curl prints one GET per http endpoint, single-quoted, after the MCP commands', () => {
+  const only = clientSnippet('curl', [httpServer], 'pory_k')
+  assert.equal(only, ["curl -sS 'https://p.example/k1/vendor/api/user;x$y' \\", '  -H "Authorization: Bearer pory_k"'].join('\n'))
+  const mixed = clientSnippet('curl', [mcpServer, httpServer], 'pory_k')
+  assert.ok(mixed.startsWith('# github\ncurl -sS -X POST https://p.example/k1/github/mcp'))
+  assert.ok(mixed.includes("# vendor\ncurl -sS 'https://p.example/k1/vendor/api/user;x$y' \\"))
+  assert.ok(mixed.indexOf('# github') < mixed.indexOf('# vendor'))
+  const bare = clientSnippet('curl', [{ ...httpServer, testPath: undefined }], 'pory_k')
+  assert.ok(bare.startsWith("curl -sS 'https://p.example/k1/vendor/api/' \\"))
+})
+
+test('clientHint for curl names the HTTP API rule when the snippet carries one', () => {
+  assert.equal(clientHint('curl'), 'Sanity-check the proxy before wiring a client.')
+  assert.equal(clientHint('curl', { http: true }), HTTP_CURL_HINT)
+  assert.equal(clientHint('curl', { mcp: true, http: true }), 'Sanity-check the proxy before wiring a client. ' + HTTP_CURL_HINT)
+  assert.equal(clientHint('claude-code', { http: true }), clientHint('claude-code'))
 })

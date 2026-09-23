@@ -2,8 +2,8 @@
 
 **One key. Many shapes.**
 
-PoryMCP is an open-source MCP credential proxy that ships as one Docker container.
-Register real MCP servers once, then mint per-agent virtual keys and endpoints. Agents never see the real credentials.
+PoryMCP is an open-source credential proxy for MCP servers and HTTP APIs that ships as one Docker container.
+Register real MCP servers and HTTP APIs once, then mint per-agent virtual keys and endpoints. Agents never see the real credentials.
 
 **Website:** [porymcp.com](https://porymcp.com)
 
@@ -19,7 +19,9 @@ Every agent gets its own virtual key, which you can rotate, revoke or rate-limit
 
 You can ask a registered server what it offers, from the dashboard or the API, and read back the exact `{slug}__{tool}` name a rule has to be written in. The tool list is not stored. Only the result of the last test is.
 
-Every tool call is written to a structured audit log: who called, when, what, and which upstream answered.
+A plain HTTP API is registered the same way, with its base URL and API key, and a virtual key on it relays any request to `/{virtual_key_id}/api/<path>` with the same verb, path, query, headers and body. An SDK pointed at that endpoint with the virtual key as its API key works unchanged, and the key can be limited to a set of verbs.
+
+Every tool call and every relayed API request is written to a structured audit log: who called, when, what, and which upstream answered.
 
 PoryMCP runs as a single Docker container with a REST API and a dashboard. Every action in the dashboard is available through the API.
 
@@ -93,7 +95,7 @@ cd web && npm ci && npm run build
 
 | Concept | Description |
 | --- | --- |
-| Upstream | A real MCP server (its final URL + credentials) |
+| Upstream | A real MCP server (its final URL + credentials), or a plain HTTP API (its base URL + credentials) |
 | Group | A collection of Upstreams that can be exposed together |
 | Virtual key | A key plus its endpoints: one per Upstream, or one per Group member plus an aggregate |
 | Audit log | Every MCP request made through a Virtual key is recorded |
@@ -116,6 +118,10 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
   endpoint, and a client's `GET` is answered `405`. The legacy HTTP+SSE
   upstream transport is not implemented; `sse` is refused on write since
   PORM-28.
+- Plain HTTP APIs behind a virtual key: `/{virtual_key_id}/api/<path>` relays
+  the request to the API's base URL with the stored credential, the key's
+  rate limit, expiry and method allowlist applied, and one audit row per call
+  showing the verb and the path
 - Encrypted storage of upstream secrets (AES-256-GCM)
 - OAuth upstreams: connect a hosted MCP server that follows the MCP authorization specification once, from the dashboard; the proxy presents the access token and renews it, and agents keep their virtual keys
 - Virtual keys stored as a SHA-256 digest, never in plaintext; plaintext shown only on create or rotate

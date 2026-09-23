@@ -6,7 +6,9 @@ import {
   CLIENT_SECRET_ALONE,
   CONNECTION_FIELDS,
   DEFAULT_HEADER,
+  KIND_LABELS,
   TRANSPORT_LABELS,
+  applyKindChange,
   authConfigFrom,
   blankUpstreamForm,
   clearStoredDescription,
@@ -36,6 +38,7 @@ function up(over: Partial<Upstream> = {}): Upstream {
     name: 'GitHub',
     slug: 'github',
     description: 'Issues and pull requests',
+    kind: 'mcp',
     url: 'https://api.example.com/mcp',
     transport: 'streamable-http',
     auth_type: 'bearer',
@@ -153,8 +156,10 @@ test('blankUpstreamForm: equals the initial state the Add dialog has always had,
     name: '',
     slug: '',
     description: '',
+    kind: 'mcp',
     url: '',
     transport: 'streamable-http',
+    test_path: '',
     auth_type: 'none',
     token: '',
     header: DEFAULT_HEADER,
@@ -181,6 +186,7 @@ test('upstreamCreateBody: matches the POST body the Add dialog has always sent',
     name: 'GitHub',
     slug: 'gh',
     description: '',
+    kind: 'mcp',
     url: 'https://api.example.com/mcp',
     transport: 'streamable-http',
     auth_type: 'bearer',
@@ -503,4 +509,69 @@ test('removeCredentialDescription: choosing None on a connected oauth row says t
     removeCredentialDescription(oauthUp(), edit(oauthUp(), { auth_type: 'none' })),
     'Saving removes the stored credential. It cannot be recovered. Switching back later means entering it again.',
   )
+})
+
+// PORM-146: kind and test_path.
+test('KIND_LABELS names both kinds the way the radio and the column show them', () => {
+  assert.deepEqual(KIND_LABELS, { mcp: 'MCP server', http: 'HTTP API' })
+})
+
+test('CONNECTION_FIELDS carries kind and test_path, so a change discards the discovery panel', () => {
+  assert.ok((CONNECTION_FIELDS as readonly string[]).includes('kind'))
+  assert.ok((CONNECTION_FIELDS as readonly string[]).includes('test_path'))
+})
+
+test('blankUpstreamForm starts as an MCP server with no test path', () => {
+  const f = blankUpstreamForm()
+  assert.equal(f.kind, 'mcp')
+  assert.equal(f.test_path, '')
+})
+
+test('formFromUpstream reads kind and test_path', () => {
+  const f = formFromUpstream(up({ kind: 'http', test_path: '/user' }))
+  assert.equal(f.kind, 'http')
+  assert.equal(f.test_path, '/user')
+  assert.equal(formFromUpstream(up()).test_path, '')
+})
+
+test('applyKindChange keeps typed values and resets an OAuth selection on an HTTP API', () => {
+  const f = { ...blankUpstreamForm(), url: 'https://api.example/v1', auth_type: 'oauth', client_id: 'cid', client_secret: 'sec', register_client: true }
+  const http = applyKindChange(f, 'http')
+  assert.equal(http.kind, 'http')
+  assert.equal(http.url, 'https://api.example/v1')
+  assert.equal(http.auth_type, 'none')
+  assert.equal(http.client_id, '')
+  assert.equal(http.client_secret, '')
+  assert.equal(http.register_client, false)
+  const bearer = applyKindChange({ ...blankUpstreamForm(), auth_type: 'bearer', token: 't' }, 'http')
+  assert.equal(bearer.auth_type, 'bearer')
+  assert.equal(bearer.token, 't')
+  assert.equal(applyKindChange(http, 'mcp').kind, 'mcp')
+})
+
+test('upstreamCreateBody always sends kind, and test_path only on an http row with a value', () => {
+  const mcp = upstreamCreateBody({ ...blankUpstreamForm(), name: 'Docs', url: 'https://x/mcp', test_path: '/ignored' }, false)
+  assert.equal(mcp.kind, 'mcp')
+  assert.equal('test_path' in mcp, false)
+  const http = upstreamCreateBody(
+    { ...blankUpstreamForm(), kind: 'http', name: 'API', url: 'https://api.example/v1', test_path: ' /user ' },
+    false,
+  )
+  assert.equal(http.kind, 'http')
+  assert.equal(http.test_path, '/user')
+  const bare = upstreamCreateBody({ ...blankUpstreamForm(), kind: 'http', name: 'API', url: 'https://api.example/v1' }, false)
+  assert.equal('test_path' in bare, false)
+})
+
+test('upstreamPatchBody never sends kind and sends test_path when it changed on an http row', () => {
+  const before = up({ kind: 'http', test_path: '/user', url: 'https://api.example/v1' })
+  const same = upstreamPatchBody(before, { ...formFromUpstream(before), kind: 'mcp' })
+  assert.equal('kind' in same, false)
+  assert.equal('test_path' in same, false)
+  const changed = upstreamPatchBody(before, { ...formFromUpstream(before), test_path: '/me' })
+  assert.deepEqual(changed, { test_path: '/me' })
+  const cleared = upstreamPatchBody(before, { ...formFromUpstream(before), test_path: '' })
+  assert.deepEqual(cleared, { test_path: '' })
+  const mcp = up()
+  assert.equal('test_path' in upstreamPatchBody(mcp, { ...formFromUpstream(mcp), test_path: '/x' }), false)
 })

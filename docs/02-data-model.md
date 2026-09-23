@@ -1,7 +1,7 @@
 # Core data model
 
 ## Upstream
-Represents a real MCP server.
+Represents a real MCP server, or a plain HTTP API (PORM-146).
 
 - `id` (uuid)
 - `name` (string)
@@ -23,13 +23,39 @@ Represents a real MCP server.
   with a host and no fragment (`mcpclient.CheckTarget`, the same check
   discovery applies before it opens a socket), so a stored value is one PoryMCP
   can dial; anything else is `400`. Whether that host *should* be
-  dialled (loopback, link-local, cloud metadata) is not checked yet (PORM-79)
+  dialled (loopback, link-local, cloud metadata) is not checked yet (PORM-79).
+  On an `http` upstream it is the API's **base URL** (`https://api.example.com/v1`):
+  a caller's path is joined under it, and it must carry no query string and
+  no userinfo (`400 url must not carry a query string`,
+  `400 url must not embed credentials`; `mcpclient.CheckHTTPBase`), because
+  the caller's query must not merge with the base's and userinfo would go out
+  as `Authorization: Basic`. A host-only base (`https://api.github.com`) is
+  read as `/`.
+- `kind`: `"mcp"` (the default; every row written before PORM-146 reads it)
+  or `"http"`. What the URL is and which proxy door serves it: an `mcp` row is
+  reached through `/{virtual_key_id}/mcp` and `/{virtual_key_id}/{slug}/mcp`;
+  an `http` row through `/{virtual_key_id}/api/*` and
+  `/{virtual_key_id}/{slug}/api/*`. A row of the other kind answers `404` on a
+  door, and a stored value that is neither (a hand-edited row) serves on no
+  door, has no `endpoints[]` entry and draws one WARN line at start.
+  **Immutable after create**: `PATCH` with a different value answers
+  `400 kind cannot be changed`, because every rule below (tool identities,
+  `test_path`, `http_methods`, the OAuth refusal) reads it.
+- `test_path` (string, `""` on an `mcp` row): the path the connection test
+  requests on an `http` upstream, joined under `url`, such as `/user`. At most
+  256 bytes, beginning with `/`, no `?`, `#` or control character, no `.` or
+  `..` segment in any encoding (`models.ValidateTestPath`); on an `mcp` row
+  anything but `""` is `400 test_path applies to an HTTP API upstream`. A
+  change resets the last test, as a URL change does.
 - `transport`: `"streamable-http"` is the only value accepted on write. `"sse"`
   may still be present on rows saved before PORM-28; the proxy refuses every
   request routed to such a row and discovery reports it as not implemented,
   and the row is repaired by a `PATCH` sending `streamable-http`. Nothing
   rewrites the stored value.
-- `auth_type`: `"none"` | `"bearer"` | `"header"` | `"api_key"` | `"custom"` | `"oauth"`
+- `auth_type`: `"none"` | `"bearer"` | `"header"` | `"api_key"` | `"custom"` | `"oauth"`.
+  `oauth` is refused on an `http` row, on create and on `PATCH`
+  (`400 oauth is not available on an HTTP API upstream`), because the connect
+  flow's first step is an MCP `initialize` to the URL.
 - `auth_config` (JSON): e.g. `{"header": "Authorization", "value": "Bearer sk-..."}`.
   For `oauth` the stored value is the token set PoryMCP obtained by the
   operator signing in at the vendor (PORM-139): `access_token`,
@@ -45,9 +71,11 @@ Represents a real MCP server.
 - `enabled` (bool)
 - `last_test_at` (nullable): when the last deliberate connection test ran. A
   press of **Tools** or **Refresh** in the dashboard is that test
-  (`POST /upstreams/{id}/discover`), and the field is `null` until the first one.
-  `PATCH` cannot set it, and a `PATCH` that changes `url`, `transport` or
-  `auth_type`, or carries any `auth_config` other than an explicit `null`,
+  (`POST /upstreams/{id}/discover`; on an `http` row the button reads
+  **Test** and the run is one `GET` of `url` joined with `test_path`), and the
+  field is `null` until the first one.
+  `PATCH` cannot set it, and a `PATCH` that changes `url`, `transport`,
+  `auth_type` or `test_path`, or carries any `auth_config` other than an explicit `null`,
   resets it to `null`, so a recorded result never vouches for a connection
   nobody has tried. A test is not an edit: `updated_at` does not move when one
   is recorded.
@@ -165,14 +193,29 @@ a bot); PoryMCP does not store agents.
 - `target_type`: `"upstream"` | `"group"`
 - `target_id` (uuid)
 - `endpoints` (read-only): not stored. Computed on every response from the
-  target: one entry `{upstream_id, slug, name, url}` per **enabled** group
+  target: one entry `{upstream_id, slug, name, kind, url}` per **enabled** group
   member, in `upstream_ids` order, whose `url` is
-  `{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp`; or, for a single-upstream target,
-  exactly one entry whose `url` is `proxy_url` itself. Every entry is a URL that
+  `{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp` for an `mcp` member and
+  `{PUBLIC_URL}/{virtual_key_id}/{slug}/api/` for an `http` member; or, for a
+  single-upstream target, exactly one entry whose `url` is `proxy_url` itself
+  (`…/mcp` or `…/api/` by the upstream's kind). Every entry is a URL that
   speaks exactly one upstream, 1:1. A member that is disabled or removed from
-  the group has no entry and its URL answers `404`; `endpoints` is `[]` when
+  the group has no entry and its URL answers `404`; a member whose stored
+  `kind` is neither value has no entry either. `endpoints` is `[]` when
   nothing is reachable, and is unchanged by revocation or expiry. See
   `docs/03-api.md`.
+- `http_methods` (`[]` by default): the verbs this key may send through an
+  `/api/` endpoint, a subset of `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and
+  `DELETE`, stored upper-cased, de-duplicated and in that order
+  (`models.NormalizeHTTPMethods`). Empty means every one of the six. It judges
+  the verb on the relay door only; the MCP doors never read it, and a key
+  whose target has no HTTP API can still hold one. The column is written
+  through one helper that stores `[]` for an empty list, never `null`, and a
+  stored value that is not a normalised array (`""`, `null`, `["get"]`,
+  `["FETCH"]`, a duplicate, an unsorted list) reads as malformed: the relay
+  door refuses every request on the key, a rename, rotate or revoke leaves
+  the column alone, and a `PATCH` that sends `http_methods` repairs it
+  (`http_methods_malformed` in the response says which state a key is in).
 - `rate_limit` (optional: requests per minute; `null`, omitted or `0` means
   unlimited; removed with `null` on `PATCH`)
 - `expires_at` (optional; removed with `null` on `PATCH`, after which the key is
@@ -232,17 +275,36 @@ On creation/rotation the plaintext key is returned **once**.
   JSON-RPC method when the body carried one, and the HTTP verb when it did
   not. That covers a request refused before its body could be parsed (a
   batch, an unparseable body), a session teardown (a `DELETE` with an empty
-  body) and a `POST` whose body named no method; `?method=DELETE` and
-  `?method=POST` return those rows. A client can also send those strings as
+  body), a `POST` whose body named no method, and every request on an
+  `/api/` endpoint (PORM-146), where the verb is the method; `?method=DELETE`
+  and `?method=POST` return those rows. A client can also send those strings as
   its JSON-RPC method, so the filter returns those rows as well; the row does
   not record which it was
-- `tool_name` (if applicable)
+- `tool_name` (if applicable). On a relayed HTTP API request it is the path
+  after `/api`, escaped as the client sent it, beginning with `/` and cut at
+  256 bytes (`/user`, `/repos/o/r/issues`; `/` for the base URL itself), with
+  no query string. Every relay row's `tool_name` begins with `/`, which no
+  MCP tool name does, so that prefix is how a relay row is told from an MCP
+  row until PORM-82 adds a field for it. The 401, 429 and wrong-key rows on
+  that door carry it too; a path that contains the presented virtual key is
+  recorded as `/[redacted]`
 - `params` (JSON, redacted; above 4 KiB it is replaced by
-  `{"truncated":true,"bytes":N}`)
-- `status`: success | error | blocked (`blocked` = refused by tool policy;
-  no upstream was contacted. `error` covers both an upstream that answered badly
-  and one the proxy refused to keep talking to: a `3xx` answer, which is never
-  followed)
+  `{"truncated":true,"bytes":N}`). On a relay row it is
+  `{"query":{…},"content_type":"…","request_bytes":N}`: the query string as
+  one string per name (repeated values joined with `,`), every value under a
+  secret-looking name (`token`, `key`, `api-key`, `access_token`, `sig`,
+  `X-Amz-Signature` and the rest of `audit.RedactQuery`'s two sets, matched
+  case-insensitively with `-` and `_` equal) and every value containing the
+  virtual key replaced by `[redacted]`; the client's `Content-Type`, bounded;
+  and the request body's size. The body itself is never recorded. When the
+  query alone is over 4 KiB it is replaced by the size marker and the other
+  two members survive
+- `status`: success | error | blocked (`blocked` = refused by tool policy, or
+  on the relay door by `http_methods`; no upstream was contacted. `error`
+  covers both an upstream that answered badly and one the proxy refused to
+  keep talking to: a `3xx` answer, which is never followed. A relayed HTTP
+  API answer is `success` below 400 and `error` at 400 and above, with
+  `error_message` reading `upstream answered N`)
 - `latency_ms`: from the request to the end of the answer; for a streamed
   answer, the end of the stream
 - `response_size_bytes` (optional): for a streamed answer, the bytes relayed to
@@ -279,7 +341,7 @@ management-plane half of the audit trail, beside `AuditLog`, the proxy half.
   delete; cleaned of control characters and cut at 256 bytes on the row
 - `details` (JSON, always an object, `{}` when empty): a closed set of keys
   the server composes, `fields`, `cleared` (field names, plus `credential`
-  when an upstream's stored credential was removed), `slug`, `auth_type`,
+  when an upstream's stored credential was removed), `slug`, `kind`, `auth_type`,
   `auth_changed`, `upstream_count`, `tool_filter_set`, `target_type`,
   `target_id`, `key_prefix`; never the request body, a credential, a
   ciphertext, a plaintext key, metadata, a tool filter, a tool list or a
@@ -297,8 +359,8 @@ retention for both audit tables, with a longer window for this one.
 ## Schema versioning
 
 `schema_meta(key, value)` records the applied schema version under
-`schema_version`; this binary expects version 6. PORM-44 changes no schema, so
-the version stays 6. It also holds
+`schema_version`; this binary expects version 7 (PORM-146). PORM-44 changed
+no schema, so the version stayed 6 until then. It also holds
 `encryption_key_fp`, the fingerprint of the `ENCRYPTION_KEY` the stored
 credentials open under (the PORM-52 issue text called it `enc_key_fp`). That row
 is data, not schema: it is written by the boot check once every stored
@@ -414,6 +476,18 @@ size of the database file meanwhile. The count of rows changed is reported as
 one-way: a version-5 binary would write the short spelling again and
 reintroduce the mixed widths, so it refuses the database at `Open`.
 
+Step 7 (PORM-146) adds three columns with defaults and moves no data:
+`upstreams.kind TEXT NOT NULL DEFAULT 'mcp'`,
+`upstreams.test_path TEXT NOT NULL DEFAULT ''` and
+`virtual_keys.http_methods TEXT NOT NULL DEFAULT '[]'`. Every existing row
+reads as an MCP server with no test path, and every existing key as one that
+may send any verb, which is what each was before the columns existed. Each
+`ADD COLUMN` is gated on a column-existence probe, as steps 1 and 4 are, so a
+re-run changes nothing; on Postgres each is a catalog-only change. Nothing is
+contacted and nothing is backfilled. The stamp is one-way like steps 5 and 6:
+a version-6 binary refuses the database at `Open`, so the rollback is restore
+from backup (`docs/11-deployment.md` §14).
+
 Step 2 is the one exception to base-then-steps: it renames the very objects the
 base `CREATE TABLE IF NOT EXISTS` statements name, so while the recorded version
 is below 2 the rename runs first, as an existence-gated prelude in its own
@@ -429,7 +503,8 @@ the step runner is then an idempotent no-op that stamps the version.
   **restore from backup**, not redeploy: the old binary will not run against the
   new schema, and step 3 has already added entries the old binary never wrote.
   Starting a build at or after PORM-52 migrates the database to version 5
-  immediately, and one at or after PORM-26 to version 6, even if startup then
+  immediately, one at or after PORM-26 to version 6, and one at or after
+  PORM-146 to version 7, even if startup then
   refuses for another reason, so take the backup **before** the upgrade. A
   backup is restorable only together with the
   `ENCRYPTION_KEY` that was current when it was taken: one taken before a
@@ -441,9 +516,13 @@ group whose `tool_filter` does not validate (that group blocks every call until
 it is fixed), and a `WARN` row for each of: a group or key holding scoped
 entries whose head is not one of that target's members; a group filter in mode
 `allow`, or a group key's `tool_allowlist`, holding unscoped entries, which
-admit nothing; and a key whose stored lists could not be decoded, which blocks
-everything on that key. An entry the migration deliberately kept (a bare deny
-entry beside the scoped form it added) draws nothing.
+admit nothing; a key whose stored lists could not be decoded, which blocks
+everything on that key; a key whose stored `http_methods` could not be
+decoded, which refuses every request on its `/api/` endpoint; and an upstream
+whose `kind` is neither `mcp` nor `http`, which serves on no endpoint. An
+entry the migration deliberately kept (a bare deny entry beside the scoped
+form it added) draws nothing, and an HTTP API member of a group is not counted
+when a key's tool entries are checked against the group's members.
 
 Concurrent starts never leave a half-applied schema, though the protection
 differs by driver. On Postgres, `pg_advisory_xact_lock` covers the versioned

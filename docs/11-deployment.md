@@ -3,7 +3,7 @@
 PoryMCP listens on plain HTTP at `:8080` by default. `PUBLIC_URL` defaults to
 `http://localhost:8080`, so a laptop checkout does not enforce TLS. That
 default is for localhost only. `PUBLIC_URL` is also the address an OAuth
-vendor sends the operator's browser back to (§15), so it must be the address
+vendor sends the operator's browser back to (§16), so it must be the address
 the browser uses.
 
 ## 1. TLS is required off localhost
@@ -243,7 +243,7 @@ a PaaS router), not in PoryMCP. The process does not emit it.
 
 | Variable | Default | When to set it |
 | --- | --- | --- |
-| `ALLOW_INSECURE_HTTP` | unset / false | TLS terminates somewhere PoryMCP cannot observe (some kube HTTP probes, an outer mesh that strips TLS before the pod). Non-loopback HTTP is then allowed even when `PUBLIC_URL` is https, and an http `PUBLIC_URL` off loopback is accepted as an OAuth redirect URI (§15). |
+| `ALLOW_INSECURE_HTTP` | unset / false | TLS terminates somewhere PoryMCP cannot observe (some kube HTTP probes, an outer mesh that strips TLS before the pod). Non-loopback HTTP is then allowed even when `PUBLIC_URL` is https, and an http `PUBLIC_URL` off loopback is accepted as an OAuth redirect URI (§16). |
 | `ALLOW_LOCALHOST` | unset / false | Accept `localhost` / `127.0.0.1` / `::1` Host values when `PUBLIC_URL` is not itself localhost. |
 | `EXTRA_ALLOWED_HOSTS` | empty | Extra Host values (comma-separated, no scheme) accepted on the proxy endpoints besides `PUBLIC_URL`. |
 
@@ -483,7 +483,46 @@ deploying it:
 
    An empty result means no audit rows yet, which is also fine.
 
-## 14. Rolling back past the SHA-256 key check (PORM-44)
+## 14. Upgrading to schema version 7
+
+The build that adds HTTP API upstreams (PORM-146) stamps schema version 7 on
+its first boot, after adding three columns with defaults: `upstreams.kind`
+(`mcp`), `upstreams.test_path` (`""`) and `virtual_keys.http_methods`
+(`[]`). No row is rewritten and nothing is contacted, so the start does not
+pause as the version-6 upgrade did. The stamp is one-way: a version-6 binary
+refuses the database at `Open`, so the rollback is restore from backup, as in
+§12 and §13. Before deploying it:
+
+1. **Back up**, stored together with the `ENCRYPTION_KEY` it was taken under
+   (§12 step 1 for SQLite, §13 step 1 for Postgres).
+
+2. **Stop every old process first**, as in §13 step 2: the stamp keeps an old
+   binary from starting, not one already running. With more than one replica
+   (Postgres) start **one** new process, wait for its `schema migrated` line
+   with `version=7`, then `porymcp listening`, then start the rest.
+
+3. **Verify** after the `schema migrated` line: every upstream reads `kind`
+   `mcp` and every key `http_methods` `[]`, until an operator changes one.
+
+   ```bash
+   # SQLite
+   docker run --rm -v porymcp_porymcp-data:/data alpine sh -c 'apk add -q sqlite && sqlite3 /data/porymcp.db "SELECT kind, count(*) FROM upstreams GROUP BY kind; SELECT http_methods, count(*) FROM virtual_keys GROUP BY http_methods;"; chown 65532:65532 /data/porymcp.db*'
+   # Postgres
+   docker compose --profile postgres exec postgres psql -U porymcp -d porymcp -c "SELECT kind, count(*) FROM upstreams GROUP BY kind;" -c "SELECT http_methods, count(*) FROM virtual_keys GROUP BY http_methods;"
+   ```
+
+4. **Rolling back** is a restore of the step-1 backup under the previous
+   image. An upstream created as an HTTP API, and every key on it, exists
+   only in the version-7 database and is lost with it; the previous build
+   would not have served them anyway.
+
+The start also reports, once per row and never with the stored text, a key
+whose `http_methods` could not be decoded (every request on its `/api/`
+endpoint is refused until a `PATCH` supplies the field) and an upstream whose
+`kind` is neither `mcp` nor `http` (it serves on no endpoint). Neither can
+come from this build's own writes.
+
+## 15. Rolling back past the SHA-256 key check (PORM-44)
 
 The build that verifies virtual keys by their SHA-256 digest has no schema
 step, so the version stays 6 and the previous build still opens the
@@ -504,7 +543,7 @@ docker compose --profile postgres exec postgres psql -U porymcp -d porymcp -c "S
 Stop every replica of the previous build before starting the newer one: a
 previous-build replica answers 401 to keys the newer one creates.
 
-## 15. OAuth upstreams
+## 16. OAuth upstreams
 
 An upstream with `auth_type: oauth` is connected by the operator signing in at
 the vendor from the dashboard (PORM-139). Three deployment facts decide

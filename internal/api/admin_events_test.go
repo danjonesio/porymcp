@@ -95,7 +95,7 @@ func upstreamMutationCases() []mutationCase {
 		{
 			name: "upstream.create", method: http.MethodPost, route: "/upstreams", action: models.ActionUpstreamCreate,
 			wantStatus: http.StatusCreated, wantName: "GitHub",
-			wantKeys: []string{"auth_changed", "auth_type", "slug"},
+			wantKeys: []string{"auth_changed", "auth_type", "kind", "slug"},
 			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
 				return "/upstreams", upstreamBody("GitHub", map[string]any{
 					"auth_type": "bearer", "auth_config": map[string]any{"token": "secret-token-value"},
@@ -502,6 +502,7 @@ func TestAdminEventFieldsAreADiff(t *testing.T) {
 		{"virtual key allowlist", map[string]any{"tool_allowlist": []string{"read_issue"}}, `{"fields":["tool_allowlist"]}`},
 		{"virtual key denylist", map[string]any{"tool_denylist": []string{"delete_repo"}}, `{"fields":["tool_denylist"]}`},
 		{"virtual key metadata name only", map[string]any{"metadata": map[string]any{"team": "billing"}}, `{"fields":["metadata"]}`},
+		{"virtual key http_methods", map[string]any{"http_methods": []string{"GET", "HEAD"}}, `{"fields":["http_methods"]}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, h, st := testAPI(t)

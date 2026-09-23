@@ -5,7 +5,16 @@
 - MCP Proxy core (JSON-RPC forwarding over Streamable HTTP `POST`, plus the
   `DELETE` that ends a session; an event-stream answer is relayed as it
   arrives; a client's `GET` is refused `405`)
-- Auth middleware (virtual key validation)
+- HTTP API relay (PORM-146): the second proxy door, `/{virtual_key_id}/api/*`
+  and `/{virtual_key_id}/{upstream_slug}/api/*`, for an upstream of kind
+  `http`. A request is relayed to the base URL request for request, buffered
+  (8 MiB in, 16 MiB out, five minutes), through the same `admit` prelude,
+  the same upstream client and the same audit writer as the MCP core; a `304`
+  is the one `3xx` it relays, because a conditional `GET` is a REST client's
+  ordinary request
+- Auth middleware (virtual key validation), shared by both doors as `admit`:
+  the host rule, the verb check, the request id, authentication with the
+  rate limit, and the key-versus-path rule, in one order
 - Credential injector (holds real secrets, never exposes them, and presents each
   to the upstream's own URL, never to a host the upstream names in a redirect)
 - Upstream client (`internal/mcpclient`): the one place a real credential is
@@ -101,6 +110,35 @@ media type keeps its failure status with no body, or is a `502` on a success
 status. On a single-upstream key and a member endpoint the answer is relayed
 as the upstream sent it, and only the row is judged from the answering
 document.
+
+### HTTP API relay (single-upstream keys and group members of kind http)
+
+```text
+Agent → /{virtual_key_id}/api/<path>?<query> (or /{virtual_key_id}/{upstream_slug}/api/<path>) with its virtual key
+→ admit: no-store, CORS, host rule, one of the six verbs (405 otherwise, before
+  the key is read), request id, validate key (401, 429 with Retry-After),
+  key-versus-path (403)
+→ Resolve the target among upstreams of kind http (404 "unknown endpoint" for
+  an MCP upstream, a group on the single door, or a slug that is not an
+  enabled http member)
+→ http_methods: a verb outside the key's list stops here with 403 and a
+  blocked audit row, contacting no upstream
+→ Join <path> under the base URL: a segment that would leave the base, in
+  any encoding, stops here with 400, contacting no upstream; a path or query
+  carrying the virtual key itself stops here with 400
+→ Read the body (413 over 8 MiB, before any dial)
+→ Inject real credentials (the client's Authorization, X-Api-Key, Cookie,
+  forwarding, override and underscore-named headers dropped first)
+→ Forward to the base URL with the same verb, path, query and body; a 3xx
+  other than 304 is a failed call (502, and an error row naming the host)
+→ Copy back every response header but the denylist (cookies, auth
+  challenges, redirects, security-policy names, anything PoryMCP wrote);
+  Content-Length from the relayed body; octet-stream when the upstream sent
+  no Content-Type
+→ Log (async): method = verb, tool_name = /<path>, params = query, content
+  type and request size
+→ Return the upstream's status and body
+```
 
 ### Sessions and response headers
 The proxy is stateless: it holds no session table. Each member URL carries its
@@ -237,7 +275,7 @@ Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
 ├── cmd/server/main.go
 ├── internal/
 │   ├── api/          # Management REST handlers
-│   ├── proxy/        # MCP proxy + aggregator
+│   ├── proxy/        # MCP proxy + aggregator + the HTTP API relay (httprelay.go)
 │   ├── auth/
 │   ├── crypto/       # AES-256-GCM for auth_config at rest; Keyring, fingerprints, the v1 form
 │   ├── credential/   # one answer to "can PoryMCP use this stored credential?" (proxy, API, boot)

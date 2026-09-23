@@ -4,8 +4,9 @@
 **Branding:** Named after Porygon, the Pokémon made of data. Use soft blues, cyans, and a digital, polygon look.
 
 ## One-liner
-An open-source MCP credential proxy that runs as one Docker container.  
-Register real MCP servers once, then mint per-agent virtual keys and endpoints. Agents never see the real credentials.  
+An open-source credential proxy for MCP servers and HTTP APIs that runs as one Docker container.  
+Register real MCP servers and HTTP APIs once, then mint per-agent virtual keys and endpoints. Agents never see the real credentials.  
+An MCP server is relayed as JSON-RPC over Streamable HTTP; an HTTP API is relayed request for request, at `/{virtual_key_id}/api/<path>` (PORM-146).  
 Full structured audit logs. Support grouping multiple upstreams under one virtual key: each member gets its own endpoint under that key, and a single aggregated endpoint remains for clients that want one connection.
 
 ## Vision
@@ -26,6 +27,7 @@ PoryMCP presents one endpoint per agent and shapes it to whatever set of tools t
 - Per-agent virtual keys and endpoints
 - Queryable audit logs from the first request
 - Grouping of multiple MCPs behind one key
+- The same key, audit row and rate limit for a plain HTTP API as for an MCP server
 - API-first, with a dashboard for the same actions
 
 ## Non-goals for MVP

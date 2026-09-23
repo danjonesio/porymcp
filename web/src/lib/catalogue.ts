@@ -7,8 +7,13 @@ import { matchToolEntry, scopedToolName, splitEntry, entryProblem } from './tool
 // rate limited or truncated would otherwise make a working deny entry read as
 // dead, and an operator who believes that deletes it.
 
-/** One upstream a group or a virtual key reaches. */
-export type Member = { upstream_id: string; slug: string; name: string; enabled: boolean; transport: string }
+/**
+ * One upstream a group or a virtual key reaches. kind is `mcp` or `http`
+ * (PORM-146): the pages hand useCatalogue MCP members only, because an HTTP
+ * API has no tools to list and a Load tools press would probe it and stamp
+ * its test for nothing.
+ */
+export type Member = { upstream_id: string; slug: string; name: string; enabled: boolean; transport: string; kind: string }
 
 export type MemberCatalogue = Member & {
   state: 'idle' | 'loading' | 'ok' | 'failed'
@@ -153,6 +158,9 @@ export function unnameableNote(n: number): string {
 
 /** Under a disabled member of a group. The discover route has no enabled check, so its tools still load and can still be ticked. */
 export const MEMBER_DISABLED = 'Disabled. A virtual key on this group gets no endpoint for it.'
+
+/** Under an HTTP API member in the group dialog (PORM-146): it is reached by its own door and holds no tools. */
+export const MEMBER_HTTP_API = "HTTP API. Reached at its own /api/ endpoint, not through the group's MCP endpoint."
 
 /** Under a member whose transport PoryMCP does not speak (PORM-28). Discovery fails before it dials, so there is nothing to try again. */
 export const MEMBER_NOT_IMPLEMENTED =

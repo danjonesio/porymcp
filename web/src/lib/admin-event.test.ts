@@ -135,3 +135,13 @@ test('fromText: the address of the request, or the actor when there was none', (
   assert.equal(fromText({ actor: 'admin', remote_addr: '203.0.113.10' }), '203.0.113.10')
   assert.equal(fromText({ actor: 'proxy', remote_addr: '' }), 'proxy')
 })
+
+// PORM-146: kind on a create, and the two new field labels.
+test('changedText: an upstream create names its kind, and the relay fields have labels', () => {
+  assert.equal(
+    changedText(ev('upstream.create', { slug: 'vendor', kind: 'http', auth_type: 'bearer', auth_changed: true })),
+    'slug vendor, kind http, auth type bearer, credential set',
+  )
+  assert.equal(changedText(ev('upstream.update', { fields: ['test_path'] })), 'test path')
+  assert.equal(changedText(ev('virtual_key.update', { fields: ['http_methods'], cleared: ['http_methods'] })), 'allowed methods, allowed methods cleared')
+})

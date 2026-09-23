@@ -113,12 +113,29 @@ func (t UpstreamTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // Open performs an already-built upstream request and hands back the live
 // response, unless the answer is a 3xx, which it refuses before reading
-// anything. It is the one place in the tree that calls Do on a client carrying
-// a credential: a request PoryMCP composes, a request it relays and reads
-// whole, and a request whose answer it relays as it arrives all go out through
-// here, with the same refusal to be sent somewhere else. The caller owns the
-// body it is handed and closes it; ReadBody does that for the buffered callers.
+// anything. With OpenRelay it is the only way a credential-carrying request
+// leaves the process (both call the private open): a request PoryMCP
+// composes, a request it relays and reads whole, and a request whose answer
+// it relays as it arrives all go out through here, with the same refusal to
+// be sent somewhere else. The caller owns the body it is handed and closes
+// it; ReadBody does that for the buffered callers.
 func Open(hc *http.Client, req *http.Request) (*http.Response, error) {
+	return open(hc, req, false)
+}
+
+// OpenRelay is Open for the HTTP relay door (PORM-146), which differs in one
+// status: a 304 is handed back with its headers and an open body, because a
+// conditional GET is ordinary REST and a 304 carries no Location. Every other
+// 3xx is refused exactly as Open refuses it. It is a second entry point and
+// not a flag on Open so the MCP door's refusal, which PORM-94 put there,
+// cannot be weakened by a caller passing the wrong argument.
+func OpenRelay(hc *http.Client, req *http.Request) (*http.Response, error) {
+	return open(hc, req, true)
+}
+
+// open is the one place in the tree that calls Do on a client carrying a
+// credential; Open and OpenRelay are its two entry points.
+func open(hc *http.Client, req *http.Request, allow304 bool) (*http.Response, error) {
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
@@ -132,10 +149,28 @@ func Open(hc *http.Client, req *http.Request) (*http.Response, error) {
 	// not reused; an upstream that just asked us to go elsewhere does not get
 	// a warm connection back.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		if allow304 && resp.StatusCode == http.StatusNotModified {
+			return resp, nil
+		}
 		resp.Body.Close()
 		return nil, RedirectRefused(resp.Header.Get("Location"))
 	}
 	return resp, nil
+}
+
+// HopByHop reports whether name is one of the RFC 9110 section 7.6.1
+// hop-by-hop headers a proxy owns and never forwards: the whole list, not the
+// four Go computes, because the point of the list is that it is closed and
+// Proxy-Authorization is a credential-shaped name. It is the one such list in
+// the tree: sendableHeaderName (a stored auth_config's names) and the relay
+// door's two header copiers all read it.
+func HopByHop(name string) bool {
+	switch strings.ToLower(name) {
+	case "connection", "keep-alive", "proxy-connection", "transfer-encoding",
+		"te", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate":
+		return true
+	}
+	return false
 }
 
 // ReadBody reads a response Open handed back, whole, up to limit bytes, and

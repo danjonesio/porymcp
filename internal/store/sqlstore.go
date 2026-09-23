@@ -217,7 +217,9 @@ const (
 	// SAME commit as the migrateStep case it enables, or the tree is unbuildable
 	// at that commit and future bisects land on a broken store.Open.
 	// 6 (PORM-26): every stored timestamp rewritten to tsLayout.
-	schemaVersion    = 6
+	// 7 (PORM-146): kind and test_path on upstreams, http_methods on
+	// virtual_keys.
+	schemaVersion    = 7
 	schemaVersionKey = "schema_version"
 
 	// EncryptionKeyFPKey is the schema_meta row holding the fingerprint of the
@@ -318,7 +320,9 @@ func (s *SQLStore) migrateBase() error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			last_test_at TEXT,
-			last_test_ok INTEGER
+			last_test_ok INTEGER,
+			kind TEXT NOT NULL DEFAULT 'mcp',
+			test_path TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups (
 			id TEXT PRIMARY KEY,
@@ -344,7 +348,8 @@ func (s *SQLStore) migrateBase() error {
 			created_at TEXT NOT NULL,
 			last_used_at TEXT,
 			revoked_at TEXT,
-			metadata TEXT NOT NULL DEFAULT ''
+			metadata TEXT NOT NULL DEFAULT '',
+			http_methods TEXT NOT NULL DEFAULT '[]'
 		)`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id TEXT PRIMARY KEY,
@@ -478,6 +483,15 @@ func (s *SQLStore) migrateStep(v int) error {
 		// One-way like 5: a version-5 binary would write RFC3339Nano again and
 		// reintroduce the mixed widths, so it refuses the database at Open.
 		if err := s.migrateTimestamps(tx); err != nil {
+			return err
+		}
+	case 7:
+		// Three additive columns with constant defaults (PORM-146): kind and
+		// test_path on upstreams, http_methods on virtual_keys. One-way like 5
+		// and 6, and for the same reason 5 was: a version-6 binary has no kind
+		// column and would send JSON-RPC with the stored credential to an HTTP
+		// API's base URL, so it refuses the database at Open instead.
+		if err := s.migrateHTTPRelayColumns(tx); err != nil {
 			return err
 		}
 	default:
@@ -1356,6 +1370,31 @@ func (s *SQLStore) migrateUpstreamTestColumns(tx *sql.Tx) error {
 	return nil
 }
 
+// migrateHTTPRelayColumns is step 7 (PORM-146): the two upstream columns and
+// the one virtual key column the HTTP relay reads, each gated on columnExists
+// like step 4 and each carrying a constant DEFAULT so no backfill runs. The
+// three DDL strings must match migrateBase byte for byte, DEFAULT text
+// included, because TestFreshAndMigratedSchemasMatch compares dflt_value.
+func (s *SQLStore) migrateHTTPRelayColumns(tx *sql.Tx) error {
+	for _, col := range []struct{ table, name, ddl string }{
+		{"upstreams", "kind", `ALTER TABLE upstreams ADD COLUMN kind TEXT NOT NULL DEFAULT 'mcp'`},
+		{"upstreams", "test_path", `ALTER TABLE upstreams ADD COLUMN test_path TEXT NOT NULL DEFAULT ''`},
+		{"virtual_keys", "http_methods", `ALTER TABLE virtual_keys ADD COLUMN http_methods TEXT NOT NULL DEFAULT '[]'`},
+	} {
+		has, err := s.columnExists(tx, col.table, col.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := tx.Exec(col.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // dropVirtualKeysLookupIndex rides along in step 4 (PORM-68). It is a separate
 // call rather than a line inside migrateUpstreamTestColumns because it has
 // nothing to do with the test columns: a step is a version, not a subject, and
@@ -1576,6 +1615,42 @@ func jsonBytes(v any) string {
 	}
 }
 
+// methodsJSON is the one writer of the http_methods column. A nil list is
+// written as [] and never as null (which jsonBytes would produce), so the
+// column holds exactly one spelling of "every method" and a strict read
+// (decodeHTTPMethods) can treat anything else as malformed.
+func methodsJSON(m []string) string {
+	if m == nil {
+		return "[]"
+	}
+	// The API normalises before it writes, and so does this, so a caller
+	// that stores ["get","POST"] reads ["GET","POST"] back rather than a
+	// malformed row. A list the validator refuses is written as given: the
+	// API has already refused it, and the strict read reports it.
+	if n, err := models.NormalizeHTTPMethods(m); err == nil {
+		m = n
+	}
+	return jsonBytes(m)
+}
+
+// decodeHTTPMethods is the strict read of the http_methods column: it must be
+// a JSON array (not "", not null) that NormalizeHTTPMethods leaves byte for
+// byte unchanged. Anything else is malformed, including a hand-written
+// ["get"] or an unsorted list, which would otherwise be rewritten in silence
+// on the next rename. No legitimate row fails this: the column is new with
+// DEFAULT '[]' and every write goes through methodsJSON of a normalised list.
+func decodeHTTPMethods(raw string) ([]string, bool) {
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil || list == nil {
+		return nil, false
+	}
+	norm, err := models.NormalizeHTTPMethods(list)
+	if err != nil || methodsJSON(norm) != raw {
+		return nil, false
+	}
+	return norm, true
+}
+
 func decodeStrings(raw string) []string {
 	if raw == "" {
 		return nil
@@ -1615,7 +1690,7 @@ func rawOrNil(s string) json.RawMessage {
 // upstreamCols is the one place the column list lives. A fresh CREATE TABLE puts
 // slug at ordinal 2 and an ALTER-migrated table puts it last, so the two schemas
 // differ in column ORDER: never introduce SELECT * against upstreams.
-const upstreamCols = `id, name, slug, description, url, transport, auth_type, auth_config, enabled, created_at, updated_at, last_test_at, last_test_ok`
+const upstreamCols = `id, name, slug, description, url, transport, auth_type, auth_config, enabled, created_at, updated_at, last_test_at, last_test_ok, kind, test_path`
 
 func (s *SQLStore) CreateUpstream(ctx context.Context, u *models.Upstream) error {
 	// The unique index permits exactly one slug-less row; this takes it to zero,
@@ -1625,12 +1700,18 @@ func (s *SQLStore) CreateUpstream(ctx context.Context, u *models.Upstream) error
 	if u.Slug == "" {
 		return errors.New("upstream slug is required")
 	}
+	// An empty kind is an MCP server: every caller written before the column
+	// existed (the proxy test fixtures among them) leaves it empty, and an
+	// explicit '' on INSERT would override the column DEFAULT.
+	if u.Kind == "" {
+		u.Kind = models.KindMCP
+	}
 	_, err := s.db.ExecContext(ctx, s.q(`
 		INSERT INTO upstreams (`+upstreamCols+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		u.ID, u.Name, u.Slug, u.Description, u.URL, u.Transport, u.AuthType, string(u.AuthConfig),
 		boolToInt(u.Enabled), fmtTime(u.CreatedAt), fmtTime(u.UpdatedAt),
-		nullTime(u.LastTestAt), nullBool(u.LastTestOK),
+		nullTime(u.LastTestAt), nullBool(u.LastTestOK), u.Kind, u.TestPath,
 	)
 	return conflictErr(err)
 }
@@ -1700,10 +1781,10 @@ const (
 	KeepAuth  = false
 )
 
-// UpdateUpstream writes every mutable field except slug (immutable after
-// create; deliberately absent from SET, so the store can never rewrite one
-// even if a caller hands it a changed value) and, unless writeAuth, except
-// auth_config.
+// UpdateUpstream writes every mutable field except slug and kind (both
+// immutable after create; deliberately absent from SET, so the store can never
+// rewrite either even if a caller hands it a changed value) and, unless
+// writeAuth, except auth_config.
 //
 // The two flags are independent and both shape the one statement, there is no
 // second statement for a crash to land between (there is no transaction here).
@@ -1720,8 +1801,8 @@ const (
 // cannot slip out of position; resetTest can be true while writeAuth is false
 // (only url, transport or auth_type changed).
 func (s *SQLStore) UpdateUpstream(ctx context.Context, u *models.Upstream, resetTest, writeAuth bool) error {
-	set := []string{"name=?", "description=?", "url=?", "transport=?", "auth_type=?", "enabled=?", "updated_at=?"}
-	args := []any{u.Name, u.Description, u.URL, u.Transport, u.AuthType, boolToInt(u.Enabled), fmtTime(u.UpdatedAt)}
+	set := []string{"name=?", "description=?", "url=?", "transport=?", "auth_type=?", "enabled=?", "updated_at=?", "test_path=?"}
+	args := []any{u.Name, u.Description, u.URL, u.Transport, u.AuthType, boolToInt(u.Enabled), fmtTime(u.UpdatedAt), u.TestPath}
 	if writeAuth {
 		set = append(set, "auth_config=?")
 		args = append(args, string(u.AuthConfig))
@@ -1859,7 +1940,7 @@ func scanUpstream(row rowScanner) (*models.Upstream, error) {
 	var created, updated string
 	var lastTestAt sql.NullString
 	var lastTestOK sql.NullInt64
-	if err := row.Scan(&u.ID, &u.Name, &u.Slug, &u.Description, &u.URL, &u.Transport, &u.AuthType, &auth, &enabled, &created, &updated, &lastTestAt, &lastTestOK); err != nil {
+	if err := row.Scan(&u.ID, &u.Name, &u.Slug, &u.Description, &u.URL, &u.Transport, &u.AuthType, &auth, &enabled, &created, &updated, &lastTestAt, &lastTestOK, &u.Kind, &u.TestPath); err != nil {
 		return nil, err
 	}
 	u.AuthConfig = rawOrNil(auth)
@@ -1994,11 +2075,12 @@ func (s *SQLStore) CreateVirtualKey(ctx context.Context, a *models.VirtualKey) e
 		INSERT INTO virtual_keys (
 			id, name, key_hash, key_lookup, key_prefix, target_type, target_id,
 			rate_limit, expires_at, tool_allowlist, tool_denylist, created_at,
-			last_used_at, revoked_at, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			last_used_at, revoked_at, metadata, http_methods
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		a.ID, a.Name, a.KeyHash, a.KeyLookup, a.KeyPrefix, a.TargetType, a.TargetID,
 		nullInt(a.RateLimit), nullTime(a.ExpiresAt), jsonBytes(a.ToolAllowlist), jsonBytes(a.ToolDenylist),
 		fmtTime(a.CreatedAt), nullTime(a.LastUsedAt), nullTime(a.RevokedAt), string(a.Metadata),
+		methodsJSON(a.HTTPMethods),
 	)
 	return err
 }
@@ -2072,6 +2154,14 @@ func (s *SQLStore) UpdateVirtualKey(ctx context.Context, a *models.VirtualKey) e
 		set += `, tool_allowlist=?, tool_denylist=?`
 		args = append(args, jsonBytes(a.ToolAllowlist), jsonBytes(a.ToolDenylist))
 	}
+	// The same rule for http_methods (PORM-146), under its own flag: a
+	// column that did not read as a normalised array scans as nil, and writing
+	// that nil back would turn a key the relay refuses on every call into one
+	// that allows every method.
+	if !a.MethodsMalformed {
+		set += `, http_methods=?`
+		args = append(args, methodsJSON(a.HTTPMethods))
+	}
 	args = append(args, a.ID)
 	res, err := s.db.ExecContext(ctx, s.q(`UPDATE virtual_keys SET `+set+` WHERE id=?`), args...)
 	if err != nil {
@@ -2101,19 +2191,24 @@ func (s *SQLStore) TouchVirtualKey(ctx context.Context, id string) error {
 	return err
 }
 
-const virtualKeyCols = `id, name, key_hash, key_lookup, key_prefix, target_type, target_id, rate_limit, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata`
+const virtualKeyCols = `id, name, key_hash, key_lookup, key_prefix, target_type, target_id, rate_limit, expires_at, tool_allowlist, tool_denylist, created_at, last_used_at, revoked_at, metadata, http_methods`
 
 func scanVirtualKey(row rowScanner) (*models.VirtualKey, error) {
 	var a models.VirtualKey
 	var rate sql.NullInt64
 	var expires, last, revoked sql.NullString
-	var allow, deny, created, meta string
+	var allow, deny, created, meta, methods string
 	if err := row.Scan(
 		&a.ID, &a.Name, &a.KeyHash, &a.KeyLookup, &a.KeyPrefix, &a.TargetType, &a.TargetID,
-		&rate, &expires, &allow, &deny, &created, &last, &revoked, &meta,
+		&rate, &expires, &allow, &deny, &created, &last, &revoked, &meta, &methods,
 	); err != nil {
 		return nil, err
 	}
+	// http_methods reads strictly (decodeHTTPMethods): a marked key carries
+	// nil here and MethodsMalformed, which the relay door reads as refuse
+	// everything and UpdateVirtualKey reads as leave the column alone.
+	methodList, methodsOK := decodeHTTPMethods(methods)
+	a.HTTPMethods, a.MethodsMalformed = methodList, !methodsOK
 	if rate.Valid {
 		v := int(rate.Int64)
 		a.RateLimit = &v

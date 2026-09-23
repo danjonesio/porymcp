@@ -72,7 +72,11 @@ export default function GroupsPage() {
     () =>
       form.upstream_ids.flatMap((id) => {
         const u = upstreams.find((x) => x.id === id)
-        return u ? [{ upstream_id: u.id, slug: u.slug, name: u.name, enabled: u.enabled, transport: u.transport }] : []
+        // An HTTP API member (PORM-146) has no tools to load, so it stays
+        // out of the catalogue rather than being probed and stamped for nothing.
+        return u && u.kind !== 'http'
+          ? [{ upstream_id: u.id, slug: u.slug, name: u.name, enabled: u.enabled, transport: u.transport, kind: u.kind }]
+          : []
       }),
     [form.upstream_ids, upstreams],
   )
@@ -410,7 +414,11 @@ export default function GroupsPage() {
         <Alert open={confirmBlocks} onClose={() => setConfirmBlocks(false)}>
           <AlertTitle>This filter blocks every tool.</AlertTitle>
           <AlertDescription>
-            {`${form.name.trim() || 'This group'} would advertise no tools, and every call through a key on it is refused.`}
+            {`${form.name.trim() || 'This group'} would advertise no tools, and every call through a key on it is refused.${
+              form.upstream_ids.some((id) => upstreams.find((u) => u.id === id)?.kind === 'http')
+                ? ' Its HTTP API members are not affected.'
+                : ''
+            }`}
           </AlertDescription>
           <AlertActions>
             <Button type="button" plain onClick={() => setConfirmBlocks(false)}>

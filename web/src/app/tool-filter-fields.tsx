@@ -39,6 +39,8 @@ export type ToolFilterFieldsProps = {
   onLoad: (upstreamId?: string) => void
   /** groupSaveBlocked's sentence ('' when Save may proceed). The page prints it beside Save; here it only picks the empty-list note. */
   blocked: string
+  /** Shown instead of Load tools while the catalogue has no member; the default asks for a tick. */
+  emptyHint?: string
 }
 
 /**
@@ -47,7 +49,7 @@ export type ToolFilterFieldsProps = {
  * (parseToolFilter, through the form), what would be sent (groupPatchBody), what
  * the catalogue can and cannot say (catalogue.ts).
  */
-export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoad, blocked }: ToolFilterFieldsProps) {
+export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoad, blocked, emptyHint }: ToolFilterFieldsProps) {
   const f = form.filter
   const setFilter = (next: FilterForm) => onChange({ filter: next })
 
@@ -182,7 +184,7 @@ export function ToolFilterFields({ form, onChange, catalogue, rateLimited, onLoa
           <ToolPickerLoad
             catalogue={catalogue}
             rateLimited={rateLimited}
-            emptyHint="Tick an upstream above to choose its tools."
+            emptyHint={emptyHint ?? 'Tick an upstream above to choose its tools.'}
             onLoad={() => onLoad()}
           />
           <ToolPicker

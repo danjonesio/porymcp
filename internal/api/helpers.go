@@ -3,12 +3,11 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/webutil"
 )
 
 type errorBody struct {
@@ -29,17 +28,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // tooManyRequests answers a caller a limiter turned away, carrying the wait the
-// limiter itself computed. Retry-After is whole seconds and never zero, because
-// a client that honours a "0" backs off for no time at all, which is the one
-// thing a budget exists to prevent. There is more than one budget on this
-// server now, so the header and the shape of the body are written in one place
-// rather than at each of them.
+// limiter itself computed. The rounding rule (whole seconds, never zero) is
+// webutil.RetryAfterSeconds, shared with the proxy's relay door. There is more
+// than one budget on this server now, so the header and the shape of the body
+// are written in one place rather than at each of them.
 func tooManyRequests(w http.ResponseWriter, retry time.Duration, msg string) {
-	sec := int(math.Ceil(retry.Seconds()))
-	if sec < 1 {
-		sec = 1
-	}
-	w.Header().Set("Retry-After", strconv.Itoa(sec))
+	w.Header().Set("Retry-After", webutil.RetryAfterSeconds(retry))
 	writeError(w, http.StatusTooManyRequests, msg)
 }
 

@@ -2,9 +2,10 @@
 
 import { Button } from '@/components/button'
 import { Checkbox, CheckboxField, CheckboxGroup } from '@/components/checkbox'
-import { Description, Field, FieldGroup, Label } from '@/components/fieldset'
+import { Description, Field, FieldGroup, Fieldset, Label, Legend } from '@/components/fieldset'
 import { HelpDisclosure } from '@/components/help-disclosure'
 import { Input } from '@/components/input'
+import { Radio, RadioField, RadioGroup } from '@/components/radio'
 import { Select } from '@/components/select'
 import { Strong, Text } from '@/components/text'
 import { oauthClientMetadata, type Upstream } from '@/lib/api'
@@ -14,7 +15,9 @@ import { LOADING } from '@/lib/placeholder'
 import {
   AUTH_TYPE_LABELS,
   CLIENT_SECRET_ALONE,
+  KIND_LABELS,
   TRANSPORT_LABELS,
+  applyKindChange,
   clearStoredDescription,
   clientSecretAlone,
   credentialRequired,
@@ -46,6 +49,7 @@ export type UpstreamFieldsProps = {
  */
 export function UpstreamFields({ className, mode, form, onChange, before }: UpstreamFieldsProps) {
   const row = mode === 'edit' ? before : undefined
+  const isHTTP = form.kind === 'http'
   const isHeader = headerShaped(form.auth_type)
   // credentialRequired forces re-entry on any auth type change, including between
   // header, api_key and custom, which share one stored shape. That is the issue's
@@ -86,6 +90,22 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
           key stops working.
         </Text>
       ) : null}
+      {mode === 'create' ? (
+        // First, because it changes what the URL box asks for. Fixed once the
+        // upstream is created, so Edit shows it in the dialog's description
+        // line instead (PORM-146).
+        <Fieldset>
+          <Legend>Kind</Legend>
+          <RadioGroup name="kind" value={form.kind} onChange={(v) => onChange(applyKindChange(form, v as string))}>
+            {Object.entries(KIND_LABELS).map(([value, label]) => (
+              <RadioField key={value}>
+                <Radio value={value} color="cyan" />
+                <Label>{label}</Label>
+              </RadioField>
+            ))}
+          </RadioGroup>
+        </Fieldset>
+      ) : null}
       <Field>
         <Label>Name</Label>
         <Input name="name" value={form.name} onChange={(e) => onChange({ name: e.target.value })} required />
@@ -109,18 +129,32 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
           child, so it sits under the input instead of a full field's gap below it. */}
       <div>
         <Field>
-          <Label>URL</Label>
+          <Label>{isHTTP ? 'Base URL' : 'URL'}</Label>
           <Input type="url" name="url" value={form.url} onChange={(e) => onChange({ url: e.target.value })} required />
+          {isHTTP ? (
+            <Description>
+              Requests to the key&apos;s endpoint are sent here with the stored credential. The path after /api/ is
+              appended.
+            </Description>
+          ) : null}
           {urlNote ? <Description>{urlNote}</Description> : null}
           {plainHTTP ? <Description>{PLAIN_HTTP_NOTE}</Description> : null}
         </Field>
         <div className="mt-3">
-          <HelpDisclosure label="What URL should I use?">
-            <p>
-              <Strong>The MCP endpoint, not the home page.</Strong> Usually the address ends in{' '}
-              <span className="font-mono wrap-break-word">/mcp</span>. Copy it from the server’s documentation or from a
-              working Claude Code or Cursor config.
-            </p>
+          <HelpDisclosure label={isHTTP ? 'What base URL should I use?' : 'What URL should I use?'}>
+            {isHTTP ? (
+              <p>
+                <Strong>The API’s root.</Strong> A caller’s path is added after it: for{' '}
+                <span className="font-mono wrap-break-word">https://api.example.com/v1/user</span>, enter{' '}
+                <span className="font-mono wrap-break-word">https://api.example.com/v1</span>.
+              </p>
+            ) : (
+              <p>
+                <Strong>The MCP endpoint, not the home page.</Strong> Usually the address ends in{' '}
+                <span className="font-mono wrap-break-word">/mcp</span>. Copy it from the server’s documentation or from
+                a working Claude Code or Cursor config.
+              </p>
+            )}
             <p>
               <Strong>The final address.</Strong> PoryMCP sends this upstream’s credential to exactly the URL you enter
               and never follows a redirect. An <span className="font-mono wrap-break-word">http://</span> address that
@@ -131,22 +165,43 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
             </p>
             {mode === 'create' ? (
               <p>
-                <Strong>Check it before you save.</Strong> Discover tools connects with these settings and lists what
-                the server offers.
+                <Strong>Check it before you save.</Strong>{' '}
+                {isHTTP
+                  ? 'Test sends one GET with these settings and shows the status.'
+                  : 'Discover tools connects with these settings and lists what the server offers.'}
               </p>
             ) : (
               <p>
-                <Strong>Check it after you save.</Strong> Tools on this row connects with the saved settings and the
-                stored credential, which the browser cannot send from here.
+                <Strong>Check it after you save.</Strong>{' '}
+                {isHTTP
+                  ? 'Test on this row sends one GET with the saved settings and the stored credential.'
+                  : 'Tools on this row connects with the saved settings and the stored credential, which the browser cannot send from here.'}
               </p>
             )}
           </HelpDisclosure>
         </div>
       </div>
+      {isHTTP ? (
+        <Field>
+          <Label>Test path</Label>
+          <Input
+            name="test_path"
+            value={form.test_path}
+            maxLength={256}
+            pattern="/.*"
+            dir="ltr"
+            placeholder="/user"
+            autoComplete="off"
+            onChange={(e) => onChange({ test_path: e.target.value })}
+          />
+          <Description>A path the connection test requests, such as /user. Left empty, the base URL is tested.</Description>
+        </Field>
+      ) : null}
       <Field>
         <Label>Description</Label>
         <Input name="description" value={form.description} onChange={(e) => onChange({ description: e.target.value })} />
       </Field>
+      {isHTTP ? null : (
       <Field>
         <Label>Transport</Label>
         <Select name="transport" value={form.transport} onChange={(e) => onChange({ transport: e.target.value })}>
@@ -171,10 +226,15 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
           </Description>
         ) : null}
       </Field>
+      )}
       <Field>
         <Label>Auth type</Label>
         <Select name="auth_type" value={form.auth_type} onChange={(e) => onChange({ auth_type: e.target.value })}>
-          {Object.entries(AUTH_TYPE_LABELS).map(([value, label]) => (
+          {/* OAuth is not offered on an HTTP API: the server refuses it (PORM-146),
+              and applyKindChange has already reset a selected one. */}
+          {Object.entries(AUTH_TYPE_LABELS)
+            .filter(([value]) => !(isHTTP && value === 'oauth'))
+            .map(([value, label]) => (
             <option key={value} value={value}>
               {label}
             </option>

@@ -349,3 +349,50 @@ func TestCredentialClientCheckerCatchesEveryShape(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenRelayPasses304Only pins the relay door's one exception to the 3xx
+// refusal (PORM-146 security requirement 5): OpenRelay hands a 304 back with
+// its headers and an open body, refuses every other 3xx exactly as Open does,
+// and Open itself still refuses a 304.
+func TestOpenRelayPasses304Only(t *testing.T) {
+	var status int
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://elsewhere.example/x?code=REDIRECT_QUERY_MARKER")
+		w.Header().Set("ETag", `"v2"`)
+		w.WriteHeader(status)
+	}))
+	defer origin.Close()
+	client := NewHTTPClient(Options{Timeout: 5 * time.Second})
+	for code := 300; code <= 308; code++ {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			status = code
+			req, _ := http.NewRequest(http.MethodGet, origin.URL, nil)
+			resp, err := OpenRelay(client, req)
+			if code == http.StatusNotModified {
+				if err != nil || resp == nil || resp.StatusCode != 304 {
+					t.Fatalf("OpenRelay on 304: resp=%v err=%v", resp, err)
+				}
+				if resp.Header.Get("ETag") != `"v2"` {
+					t.Fatalf("headers not handed back: %v", resp.Header)
+				}
+				b, rerr := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if rerr != nil || len(b) != 0 {
+					t.Fatalf("304 body: %q %v", b, rerr)
+				}
+				return
+			}
+			if !errors.Is(err, ErrRedirected) || resp != nil {
+				t.Fatalf("OpenRelay on %d: resp=%v err=%v, want ErrRedirected and no response", code, resp, err)
+			}
+			if strings.Contains(err.Error(), "REDIRECT_QUERY_MARKER") {
+				t.Fatalf("the Location's query reached the error: %v", err)
+			}
+		})
+	}
+	status = http.StatusNotModified
+	req, _ := http.NewRequest(http.MethodGet, origin.URL, nil)
+	if resp, err := Open(client, req); !errors.Is(err, ErrRedirected) || resp != nil {
+		t.Fatalf("Open on 304: resp=%v err=%v; the MCP door's refusal must be unchanged", resp, err)
+	}
+}

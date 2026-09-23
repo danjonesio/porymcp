@@ -102,7 +102,7 @@ export default function OverviewPage() {
         <div className="grid gap-8 sm:grid-cols-2 xl:grid-cols-4">
           <Stat title="Active virtual keys" value={stats ? String(stats.active_virtual_keys) : LOADING} hint="Not revoked or expired" />
           <Stat title="Calls today" value={stats ? String(stats.calls_today) : LOADING} hint="Last 24 hours" />
-          <Stat title="Upstreams" value={stats ? String(stats.upstreams) : LOADING} hint="Registered MCP servers" />
+          <Stat title="Upstreams" value={stats ? String(stats.upstreams) : LOADING} hint="Registered MCP servers and HTTP APIs" />
           <Stat
             title="Error rate"
             value={stats ? formatRate(stats.error_rate) : LOADING}

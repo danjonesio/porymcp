@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -32,6 +33,54 @@ func TestRedactSecrets(t *testing.T) {
 	args := m["arguments"].(map[string]any)
 	if args["q"] != "ok" {
 		t.Fatalf("innocent field redacted: %v", args["q"])
+	}
+}
+
+// TestRedactQuery covers PORM-146 security requirement 10: a relayed query
+// is recorded as strings redacted by name, and Redact over the result changes
+// nothing further, so a query secret never reaches a row in clear.
+func TestRedactQuery(t *testing.T) {
+	q, err := url.ParseQuery("token=a&token=b&X-Amz-Signature=c&key=d&api-key=e&per_page=2&Code=z&ids=1&ids=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := RedactQuery(q)
+	want := map[string]string{
+		"token":           "[redacted]",
+		"X-Amz-Signature": "[redacted]",
+		"key":             "[redacted]",
+		"api-key":         "[redacted]",
+		"Code":            "[redacted]",
+		"per_page":        "2",
+		"ids":             "1,2",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: got %q want %q", k, got[k], v)
+		}
+	}
+	// Redact over a row carrying the result is a no-op: every value is a
+	// string and every secret name is already redacted.
+	raw, _ := json.Marshal(map[string]any{"query": got, "content_type": "application/json", "request_bytes": 3})
+	if out := Redact(raw); string(out) != string(raw) {
+		t.Fatalf("Redact changed a redacted query: %s -> %s", raw, out)
+	}
+	// The query-only names do not widen Redact: an MCP tool argument named
+	// code stays as the operator wrote it (unchanged behaviour, pinned).
+	mcp := json.RawMessage(`{"name":"exchange","arguments":{"code":"abc","key":"k"}}`)
+	var m map[string]any
+	if err := json.Unmarshal(Redact(mcp), &m); err != nil {
+		t.Fatal(err)
+	}
+	args := m["arguments"].(map[string]any)
+	if args["code"] != "abc" || args["key"] != "k" {
+		t.Fatalf("MCP arguments were redacted by the query-only set: %v", args)
+	}
+	if RedactQuery(nil) == nil {
+		t.Fatal("nil query must give an empty map, not nil")
 	}
 }
 

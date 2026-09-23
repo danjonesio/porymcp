@@ -41,6 +41,7 @@ import {
   CLIENT_SECRET_ALONE,
   clientSecretAlone,
   formFromUpstream,
+  kindLabel,
   upstreamCreateBody,
   upstreamPatchBody,
   type UpstreamForm,
@@ -258,8 +259,12 @@ export default function UpstreamsPage() {
     run(formSeq, setFormDiscovery, () =>
       discoverUpstreamPayload({
         name: form.name,
+        kind: form.kind,
         url: form.url,
         transport: form.transport,
+        // Only on an HTTP API, and only when set: the server refuses a test
+        // path on an MCP server, and an empty one means the base URL.
+        ...(form.kind === 'http' && form.test_path.trim() ? { test_path: form.test_path.trim() } : {}),
         auth_type: form.auth_type,
         auth_config: authConfigFrom(form),
       })
@@ -338,8 +343,12 @@ export default function UpstreamsPage() {
       name: '',
       slug: '',
       description: '',
+      // Kind and test path are reset for the same reason transport is: an
+      // Edit dialog closed on an HTTP API row must not open Add as one.
+      kind: 'mcp',
       url: '',
       transport: 'streamable-http',
+      test_path: '',
       token: '',
       value: '',
       clear_stored: false,
@@ -551,7 +560,7 @@ export default function UpstreamsPage() {
         </Button>
       </div>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
-        Real MCP servers. Credentials are encrypted at rest and never shown again.
+        Real MCP servers and HTTP APIs. Credentials are encrypted at rest and never shown again.
       </p>
       {error ? <p className={clsx('mt-4', errorLine)}>{error}</p> : null}
       {connectError ? (
@@ -562,7 +571,7 @@ export default function UpstreamsPage() {
       ) : null}
 
       {items.length === 0 ? (
-        <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">No upstreams yet. Add the first real MCP server.</p>
+        <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">No upstreams yet. Add the first MCP server or HTTP API.</p>
       ) : (
         <Table className="mt-8 [--gutter:--spacing(6)] lg:[--gutter:--spacing(10)]">
           <TableHead>
@@ -570,7 +579,7 @@ export default function UpstreamsPage() {
               <TableHeader>Name</TableHeader>
               <TableHeader>Slug</TableHeader>
               <TableHeader>URL</TableHeader>
-              <TableHeader>Transport</TableHeader>
+              <TableHeader>Kind</TableHeader>
               <TableHeader>Auth</TableHeader>
               <TableHeader>Status</TableHeader>
               <TableHeader className="text-right">Actions</TableHeader>
@@ -583,13 +592,14 @@ export default function UpstreamsPage() {
                 <TableCell className="font-mono text-xs text-zinc-500">{u.slug}</TableCell>
                 <TableCell className="max-w-xs truncate text-zinc-500">{u.url}</TableCell>
                 <TableCell>
-                  {/* The stored value, then a badge when the proxy refuses it
-                      (sse, saved before PORM-28, or a hand-edited column). The
-                      badge shows on disabled rows too: re-enabling one puts it
-                      straight back on the refused path. */}
+                  {/* The kind (PORM-146), then, on an MCP server, a badge when the
+                      proxy refuses its stored transport (sse, saved before
+                      PORM-28, or a hand-edited column). The badge shows on
+                      disabled rows too: re-enabling one puts it straight back on
+                      the refused path. An HTTP API has no transport to refuse. */}
                   <span className="inline-flex items-center gap-2">
-                    <span>{u.transport}</span>
-                    {transportUnsupported(u.transport) ? <Badge color="pink">Unsupported</Badge> : null}
+                    <span>{kindLabel(u.kind)}</span>
+                    {u.kind !== 'http' && transportUnsupported(u.transport) ? <Badge color="pink">Unsupported</Badge> : null}
                   </span>
                 </TableCell>
                 <TableCell>
@@ -626,7 +636,7 @@ export default function UpstreamsPage() {
                       </Button>
                     ) : null}
                     <Button type="button" plain onClick={() => openTools(u)}>
-                      Tools
+                      {u.kind === 'http' ? 'Test' : 'Tools'}
                     </Button>
                     <Button type="button" plain onClick={() => openEdit(u)}>
                       Edit
@@ -648,7 +658,9 @@ export default function UpstreamsPage() {
           {editing ? (
             // The slug is fixed once created and has no input here, so it has
             // no path into the body; this line is where the operator reads it.
-            <DialogDescription>Slug: {editing.slug}. It is fixed once the upstream is created.</DialogDescription>
+            <DialogDescription>
+              Slug: {editing.slug}. Kind: {kindLabel(editing.kind)}. Both are fixed once the upstream is created.
+            </DialogDescription>
           ) : null}
           <DialogBody>
             {formError ? (
@@ -679,12 +691,20 @@ export default function UpstreamsPage() {
                     disabled={!discoverable(form.url) || formDiscovery.pending || form.auth_type === 'oauth'}
                     onClick={discoverForm}
                   >
-                    {formDiscovery.pending ? 'Discovering…' : 'Discover tools'}
+                    {form.kind === 'http'
+                      ? formDiscovery.pending
+                        ? 'Testing…'
+                        : 'Test'
+                      : formDiscovery.pending
+                        ? 'Discovering…'
+                        : 'Discover tools'}
                   </Button>
                   <Text className="mt-2">
-                    {form.auth_type === 'oauth'
-                      ? 'Discovery needs a token. Create the upstream, connect it, then use Tools on its row.'
-                      : 'Connects to the URL above using these credentials and lists the tools that server offers. Nothing is saved, and this check is not recorded as a test.'}
+                    {form.kind === 'http'
+                      ? 'Sends one GET to the base URL and test path using these credentials, and shows the status. Nothing is saved, and this check is not recorded as a test.'
+                      : form.auth_type === 'oauth'
+                        ? 'Discovery needs a token. Create the upstream, connect it, then use Tools on its row.'
+                        : 'Connects to the URL above using these credentials and lists the tools that server offers. Nothing is saved, and this check is not recorded as a test.'}
                   </Text>
                 </div>
                 <DiscoveryPanel
@@ -694,6 +714,8 @@ export default function UpstreamsPage() {
                   authType={form.auth_type}
                   slug={form.slug.trim()}
                   surface="draft"
+                  kind={form.kind}
+                  testPath={form.test_path.trim()}
                 />
               </>
             ) : null}
@@ -739,7 +761,7 @@ export default function UpstreamsPage() {
       </Dialog>
 
       <Dialog open={!!tools} onClose={closeTools} size="2xl">
-        <DialogTitle>Tools</DialogTitle>
+        <DialogTitle>{tools?.kind === 'http' ? 'Test' : 'Tools'}</DialogTitle>
         <DialogDescription>{tools?.name}</DialogDescription>
         <DialogBody>
           {tools ? (
@@ -749,6 +771,8 @@ export default function UpstreamsPage() {
               authType={tools.auth_type}
               slug={tools.slug}
               surface="saved"
+              kind={tools.kind}
+              testPath={tools.test_path}
             />
           ) : null}
         </DialogBody>
@@ -762,7 +786,7 @@ export default function UpstreamsPage() {
             disabled={rowDiscovery.pending}
             onClick={() => tools && discoverRow(tools)}
           >
-            {rowDiscovery.pending ? 'Refreshing…' : 'Refresh'}
+            {tools?.kind === 'http' ? (rowDiscovery.pending ? 'Testing…' : 'Test again') : rowDiscovery.pending ? 'Refreshing…' : 'Refresh'}
           </Button>
         </DialogActions>
       </Dialog>

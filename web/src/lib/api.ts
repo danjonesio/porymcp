@@ -70,8 +70,16 @@ export type Upstream = {
   name: string
   slug: string
   description?: string
+  /**
+   * `mcp` or `http` (PORM-146), always present and fixed at create: an MCP
+   * server reached through the /mcp doors, or an HTTP API relayed through
+   * the /api/ doors. Typed as a string like every other server enum here.
+   */
+  kind: string
   url: string
   transport: string
+  /** The path the connection test requests on an HTTP API upstream; absent or "" means the base URL. */
+  test_path?: string
   auth_type: string
   enabled: boolean
   /** A credential blob is stored, whatever it holds. */
@@ -144,6 +152,10 @@ export type DiscoveredTool = {
  */
 export type Discovery = {
   ok: boolean
+  /** The upstream's kind the run was for, `mcp` or `http`, on every path including a refusal before any request. */
+  kind: string
+  /** The status an HTTP API answered the probe with (PORM-146); absent on an MCP run and when nothing answered. */
+  http_status?: number
   /** Always present: the server sends it on a failed discovery too. */
   latency_ms: number
   protocol_version?: string
@@ -175,8 +187,10 @@ export type Discovery = {
 /** The unsaved-payload body: what `POST /upstreams` accepts, minus what persistence needs. */
 export type DiscoverPayload = {
   name?: string
+  kind?: string
   url: string
   transport?: string
+  test_path?: string
   auth_type?: string
   auth_config?: Record<string, string>
 }
@@ -207,6 +221,8 @@ export type Endpoint = {
   upstream_id: string
   slug: string
   name: string
+  /** `mcp` (the URL ends in /mcp and takes an MCP client) or `http` (it ends in /api/ and takes a plain HTTP client). */
+  kind: string
   url: string
 }
 
@@ -233,6 +249,17 @@ export type VirtualKey = {
    * refuses every call on it. A PATCH must send both lists to replace them. Response only.
    */
   lists_malformed?: boolean
+  /**
+   * The verbs the key may relay through an /api/ door (PORM-146), always
+   * present: [] means every one of the six. Ignored on the /mcp doors.
+   */
+  http_methods: string[]
+  /**
+   * True when the stored http_methods could not be read. The relay door then
+   * refuses every request on the key; a PATCH that carries http_methods
+   * replaces the column. Response only.
+   */
+  http_methods_malformed?: boolean
   /** Enabled members only, always an array. A single-upstream key has one entry mirroring proxy_url. */
   endpoints: Endpoint[]
 }
@@ -264,6 +291,8 @@ export type AdminEventDetails = {
   fields?: string[]
   cleared?: string[]
   slug?: string
+  /** The upstream's kind on a create (PORM-146). */
+  kind?: string
   auth_type?: string
   auth_changed?: boolean
   upstream_count?: number

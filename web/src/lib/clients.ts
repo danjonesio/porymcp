@@ -1,7 +1,21 @@
 export type ClientKind = 'claude-code' | 'cursor' | 'codex' | 'opencode' | 'gemini' | 'curl'
 
-/** One MCP server as a client config sees it: a display/config name and the URL it speaks to. */
-export type SnippetServer = { name: string; url: string }
+/**
+ * One endpoint as a client config sees it: a display/config name and the URL
+ * it speaks to. kind is `mcp` (the default when absent) or `http` (PORM-146):
+ * an http entry is an API base URL a plain HTTP client is pointed at, and only
+ * the curl snippet prints it; the MCP client snippets leave it out. testPath is
+ * the upstream's test path, which the curl example requests.
+ */
+export type SnippetServer = { name: string; url: string; kind?: 'mcp' | 'http'; testPath?: string }
+
+/** The one sentence under a curl snippet that carries an HTTP API endpoint. */
+export const HTTP_CURL_HINT =
+  'Replace the path after /api/ with any path the API serves. An SDK takes this endpoint as its base URL and the key as its API key. Send the key as a bearer token or in X-Api-Key.'
+
+function isHTTP(s: SnippetServer): boolean {
+  return s.kind === 'http'
+}
 
 export const clientLabels: Record<ClientKind, string> = {
   'claude-code': 'Claude Code',
@@ -49,8 +63,13 @@ function tomlKeys(servers: SnippetServer[]): string[] {
  * always emitted. Names are used verbatim: the caller decides whether a
  * server is named after its upstream slug or after the virtual key.
  */
-export function clientSnippet(kind: ClientKind, servers: SnippetServer[], apiKey: string): string {
-  if (servers.length === 0) return ''
+export function clientSnippet(kind: ClientKind, all: SnippetServer[], apiKey: string): string {
+  // The MCP client configs take the MCP entries only; curl prints both, MCP
+  // first. This is the one place the split happens.
+  const servers = all.filter((s) => !isHTTP(s))
+  const apis = all.filter(isHTTP)
+  if (kind !== 'curl' && servers.length === 0) return ''
+  if (kind === 'curl' && all.length === 0) return ''
   const auth = `Authorization: Bearer ${apiKey}`
   switch (kind) {
     case 'claude-code':
@@ -124,24 +143,45 @@ export function clientSnippet(kind: ClientKind, servers: SnippetServer[], apiKey
         null,
         2,
       )
-    case 'curl':
-      return servers
-        .map((s) =>
-          [
-            // One command is unambiguous on its own; N need a label to tell apart.
-            ...(servers.length > 1 ? [`# ${s.name}`] : []),
-            `curl -sS -X POST ${s.url} \\`,
-            `  -H "${auth}" \\`,
-            `  -H "Content-Type: application/json" \\`,
-            `  -H "Accept: application/json, text/event-stream" \\`,
-            `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`,
-          ].join('\n'),
-        )
-        .join('\n\n')
+    case 'curl': {
+      // One command is unambiguous on its own; N need a label to tell apart.
+      const labelled = all.length > 1
+      const mcp = servers.map((s) =>
+        [
+          ...(labelled ? [`# ${s.name}`] : []),
+          `curl -sS -X POST ${s.url} \\`,
+          `  -H "${auth}" \\`,
+          `  -H "Content-Type: application/json" \\`,
+          `  -H "Accept: application/json, text/event-stream" \\`,
+          `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`,
+        ].join('\n'),
+      )
+      // The URL is single-quoted: a test path may hold a character the shell
+      // reads (; $ & *), and the endpoint is pasted into a terminal.
+      const http = apis.map((s) =>
+        [
+          ...(labelled ? [`# ${s.name}`] : []),
+          `curl -sS '${s.url}${(s.testPath ?? '').replace(/^\//, '')}' \\`,
+          `  -H "${auth}"`,
+        ].join('\n'),
+      )
+      return [...mcp, ...http].join('\n\n')
+    }
   }
 }
 
-export function clientHint(kind: ClientKind): string {
+/**
+ * The sentence under the snippet. shape says which endpoint kinds the snippet
+ * carries, for curl, whose sentence differs for an HTTP API: a mixed key
+ * reads both, MCP first.
+ */
+export function clientHint(kind: ClientKind, shape: { mcp?: boolean; http?: boolean } = { mcp: true }): string {
+  if (kind === 'curl') {
+    const parts: string[] = []
+    if (shape.mcp ?? !shape.http) parts.push('Sanity-check the proxy before wiring a client.')
+    if (shape.http) parts.push(HTTP_CURL_HINT)
+    return parts.join(' ')
+  }
   switch (kind) {
     case 'claude-code':
       return 'Run in a terminal, then /mcp inside Claude Code. Add -s user for every project.'
@@ -153,7 +193,7 @@ export function clientHint(kind: ClientKind): string {
       return 'Merge into opencode.json. oauth must be false so OpenCode does not start an OAuth flow.'
     case 'gemini':
       return 'Merge into Gemini CLI settings.json (mcpServers).'
-    case 'curl':
-      return 'Sanity-check the proxy before wiring a client.'
+    default:
+      return ''
   }
 }

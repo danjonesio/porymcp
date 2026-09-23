@@ -22,6 +22,30 @@ export type KeyForm = {
   tool_denylist: string[]
   /** Replace the stored rules was pressed on a key whose stored lists cannot be read. Closing the dialog undoes it. */
   listsReplace: boolean
+  /** The ticked Allowed methods (PORM-146), a subset of HTTP_METHODS in that order. [] means every method. */
+  http_methods: string[]
+  /** Replace the stored methods was pressed on a key whose stored http_methods cannot be read. */
+  methodsReplace: boolean
+}
+
+/**
+ * The six verbs the relay door forwards, in the order the server stores a
+ * list and the dialog renders the boxes. The one copy on this side of the
+ * wire; the server's is models.HTTPMethodsAllowed.
+ */
+export const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
+
+/**
+ * Whether the secret dialog shows the MCP half (the aggregate Proxy URL, the
+ * connection shape and the MCP client configs): when the key reaches an MCP
+ * server, or when it reaches nothing yet but its door is an MCP one (an empty
+ * group, a disabled MCP upstream). A key on a disabled HTTP API upstream has
+ * no endpoint either, but its proxy_url ends in /api/, and an MCP client
+ * config pointing there would be wrong.
+ */
+export function mcpDoorShown(vk: Pick<VirtualKey, 'proxy_url' | 'endpoints'>): boolean {
+  if (vk.endpoints.some((e) => e.kind !== 'http')) return true
+  return vk.endpoints.length === 0 && !(vk.proxy_url ?? '').endsWith('/api/')
 }
 
 export function blankVirtualKeyForm(): KeyForm {
@@ -33,6 +57,8 @@ export function blankVirtualKeyForm(): KeyForm {
     tool_allowlist: [],
     tool_denylist: [],
     listsReplace: false,
+    http_methods: [],
+    methodsReplace: false,
   }
 }
 
@@ -52,6 +78,11 @@ export function formFromVirtualKey(vk: VirtualKey): KeyForm {
     tool_allowlist: [...(vk.tool_allowlist ?? [])],
     tool_denylist: [...(vk.tool_denylist ?? [])],
     listsReplace: false,
+    // Always sent by the server; the ?? guards a response from a PoryMCP that
+    // predates the field. On a key that reports http_methods_malformed the
+    // list is absent, and [] here is not the key's rule.
+    http_methods: [...(vk.http_methods ?? [])],
+    methodsReplace: false,
   }
 }
 
@@ -65,7 +96,19 @@ export function virtualKeyCreateBody(f: KeyForm): Record<string, unknown> {
   if (f.rate_limit) body.rate_limit = Number(f.rate_limit)
   if (f.tool_allowlist.length > 0) body.tool_allowlist = f.tool_allowlist
   if (f.tool_denylist.length > 0) body.tool_denylist = f.tool_denylist
+  if (f.http_methods.length > 0) body.http_methods = f.http_methods
   return body
+}
+
+/**
+ * Whether the PATCH for this form carries http_methods: when the SET of
+ * ticked verbs changed, or when Replace the stored methods was pressed on a
+ * key whose stored list cannot be read (sent unasked, [] would turn a key
+ * that refuses every request into one that allows every method).
+ */
+export function methodsSent(before: VirtualKey, f: KeyForm): boolean {
+  if (before.http_methods_malformed) return f.methodsReplace
+  return !sameEntries(before.http_methods ?? [], f.http_methods)
 }
 
 /** Which of the two lists the PATCH for this form would carry. The one definition, shared by the body, the save gate and the stale check. */
@@ -97,6 +140,7 @@ export function virtualKeyPatchBody(before: VirtualKey, f: KeyForm): Record<stri
   const limit = f.rate_limit === '' ? null : Number(f.rate_limit)
   if (limit !== (before.rate_limit ?? null)) body.rate_limit = limit
   for (const field of listsSent(before, f)) body[field] = f[field]
+  if (methodsSent(before, f)) body.http_methods = f.http_methods
   return body
 }
 
@@ -145,6 +189,7 @@ export const KEY_RULES_STALE =
  */
 export function keyRulesBadge(vk: VirtualKey): { label: string; tone: 'zinc' | 'pink' } | null {
   if (vk.lists_malformed) return { label: 'Rules unreadable', tone: 'pink' }
+  if (vk.http_methods_malformed) return { label: 'Methods unreadable', tone: 'pink' }
   const parts: string[] = []
   const allowed = vk.tool_allowlist?.length ?? 0
   const denied = vk.tool_denylist?.length ?? 0
