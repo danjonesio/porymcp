@@ -1780,6 +1780,42 @@ func (s *SQLStore) RecordUpstreamTest(ctx context.Context, id string, at time.Ti
 	return nil
 }
 
+// SwapUpstreamAuth is the refresh write: see the interface. One statement,
+// no transaction; the compare is on the ciphertext bytes, as in
+// RekeyUpstreams, and the token endpoint call that precedes it never holds
+// the store's one connection.
+func (s *SQLStore) SwapUpstreamAuth(ctx context.Context, id string, expect, next []byte) error {
+	res, err := s.db.ExecContext(ctx, s.q(`UPDATE upstreams SET auth_config = ? WHERE id = ? AND auth_config = ?`), string(next), id, string(expect))
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ConnectUpstreamAuth is the connect and disconnect write: see the interface.
+// The compare is fmtTime(seen), exactly as RecordUpstreamTest, and the row
+// must still be an oauth row, so a callback that lands after the operator
+// switched the auth type stores nothing.
+func (s *SQLStore) ConnectUpstreamAuth(ctx context.Context, id string, next []byte, seen, at time.Time) error {
+	res, err := s.db.ExecContext(ctx, s.q(`
+		UPDATE upstreams SET auth_config = ?, updated_at = ?, last_test_at = NULL, last_test_ok = NULL
+		WHERE id = ? AND updated_at = ? AND auth_type = ?`),
+		string(next), fmtTime(at), id, fmtTime(seen), models.AuthOAuth,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLStore) DeleteUpstream(ctx context.Context, id string) error {
 	groups, err := s.ListGroups(ctx)
 	if err != nil {

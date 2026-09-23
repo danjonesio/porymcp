@@ -53,6 +53,26 @@ type Store interface {
 	// row the later write wins, deliberately.
 	RecordUpstreamTest(ctx context.Context, id string, at time.Time, ok bool, seen time.Time) error
 
+	// SwapUpstreamAuth replaces auth_config when it still holds expect, in one
+	// statement, the compare-and-swap RekeyUpstreams uses. It is the write a
+	// token refresh makes (PORM-139): updated_at, last_test_at and last_test_ok
+	// are untouched, because a refresh is not an edit, the era cache keys on
+	// updated_at, and RecordUpstreamTest's compare must keep matching across
+	// a refresh. Returns ErrNotFound when no row matched: deleted, or changed
+	// since expect was read (another refresh, a rekey re-wrap, a PATCH, a
+	// revoke). The caller re-reads to tell those apart; it never retries
+	// blind, because a rotated refresh token is spent the moment it is used.
+	SwapUpstreamAuth(ctx context.Context, id string, expect, next []byte) error
+
+	// ConnectUpstreamAuth writes auth_config (nil writes the empty string),
+	// sets updated_at to at and clears the last test, conditioned on
+	// updated_at = seen and auth_type = 'oauth'. It is the write the OAuth
+	// callback and revoke make: an operator change, so open streams end and
+	// the era cache resets, and one that must not land on a row edited since
+	// the flow started (the token was minted for the old URL). Returns
+	// ErrNotFound on a miss, as RecordUpstreamTest does.
+	ConnectUpstreamAuth(ctx context.Context, id string, next []byte, seen, at time.Time) error
+
 	DeleteUpstream(ctx context.Context, id string) error
 
 	CreateGroup(ctx context.Context, g *models.Group) error
