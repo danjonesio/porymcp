@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -716,7 +717,21 @@ func TestHTTPRequestHeaderRules(t *testing.T) {
 // refused before any dial, and never reaches the row.
 func TestHTTPKeyInRequestRefused(t *testing.T) {
 	f := relayGET(t, nil)
-	for _, p := range []string{"/a1/api/x?foo=" + f.Key, "/a1/api/" + f.Key + "/x", "/a1/api/x?foo=" + url.QueryEscape("pre "+f.Key)} {
+	// Every byte of the key percent-encoded: a spelling the literal check
+	// misses and the upstream would decode.
+	var encoded strings.Builder
+	for i := 0; i < len(f.Key); i++ {
+		fmt.Fprintf(&encoded, "%%%02X", f.Key[i])
+	}
+	refused := []string{
+		"/a1/api/x?foo=" + f.Key,
+		"/a1/api/" + f.Key + "/x",
+		"/a1/api/x?foo=" + url.QueryEscape("pre "+f.Key),
+		"/a1/api/x?" + f.Key + "=1",                                        // the key as a parameter's name
+		"/a1/api/" + encoded.String() + "/x",                               // the key percent-encoded in the path
+		"/a1/api/" + strings.Repeat("a", auditFieldBytes-6) + f.Key + "/x", // the key straddling the tool_name bound
+	}
+	for _, p := range refused {
 		rr := f.send(http.MethodGet, p, "", nil)
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("%s: status %d body %s", p, rr.Code, rr.Body.String())
@@ -729,12 +744,36 @@ func TestHTTPKeyInRequestRefused(t *testing.T) {
 	if n := len(f.APIs["beta"].requests()); n != 0 {
 		t.Fatalf("%d requests reached the upstream", n)
 	}
-	for _, row := range f.waitAuditN(models.LogFilter{VirtualKeyID: "a1"}, 3) {
-		if strings.Contains(string(row.Params), f.Key) || strings.Contains(row.ToolName, f.Key) || strings.Contains(row.ErrorMessage, f.Key) {
+	// The key inside a header the door relays (the sweep drops the header
+	// from the upstream request, and the row must not keep it either).
+	rr := f.send(http.MethodGet, "/a1/api/user", "", map[string]string{"Content-Type": "text/plain; k=" + f.Key})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("content-type case: status %d body %s", rr.Code, rr.Body.String())
+	}
+	// A key is pory_ plus hex, so ten bytes of it is a needle nothing else
+	// in a row can match, and one that a key cut at the tool_name bound
+	// would still leave behind.
+	needle := f.Key[:10]
+	rows := f.waitAuditN(models.LogFilter{VirtualKeyID: "a1"}, len(refused)+1)
+	for _, row := range rows {
+		if strings.Contains(string(row.Params), needle) || strings.Contains(row.ToolName, needle) || strings.Contains(row.ErrorMessage, needle) {
 			t.Errorf("the key reached a row: %+v", row)
 		}
+		if strings.Contains(string(row.Params), f.Key[len(f.Key)-10:]) {
+			t.Errorf("the key's tail reached a row: %+v", row)
+		}
+	}
+	if got := rows[0]; got.Status != models.StatusSuccess || !strings.Contains(string(got.Params), `"content_type":"[redacted]"`) {
+		t.Errorf("content-type row: %+v", got)
+	}
+	for _, row := range rows[1:] {
 		if row.Status != models.StatusError {
-			t.Errorf("row status %q", row.Status)
+			t.Errorf("row status %q: %+v", row.Status, row)
+		}
+	}
+	for _, row := range rows[len(rows)-3:] {
+		if row.ToolName != "/x" && row.ToolName != "/[redacted]" {
+			t.Errorf("tool_name %q", row.ToolName)
 		}
 	}
 }
@@ -917,6 +956,24 @@ func TestHTTPGroupMember(t *testing.T) {
 		if !strings.HasPrefix(row.ToolName, "/") {
 			t.Errorf("blocked relay row without the / marker: %+v", row)
 		}
+	}
+}
+
+// TestHTTPGroupKeySingleDoorIs404 covers security requirement 11: a group
+// key on the single door is the uniform 404 whatever the group holds, so a
+// group with no HTTP API member, or no enabled member, does not show through
+// as a 400 carrying the resolver's sentence.
+func TestHTTPGroupKeySingleDoorIs404(t *testing.T) {
+	f := newRelayFixture(t, map[string]upstreamSpec{"alpha": {Tools: []string{"a"}}}, map[string]httpSpec{}, true)
+	rr := f.send(http.MethodGet, "/a1/api/x", "", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	if m := jsonBody(t, rr.Body.Bytes()); m["error"] != "unknown endpoint" {
+		t.Errorf("body %s", rr.Body.String())
+	}
+	if row := f.lastRow(1); row.Status != models.StatusBlocked || row.ToolName != "/x" {
+		t.Errorf("row = %+v", row)
 	}
 }
 

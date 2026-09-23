@@ -26,6 +26,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/danjonesio/porymcp/internal/audit"
+	"github.com/danjonesio/porymcp/internal/auth"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 )
@@ -104,13 +105,32 @@ func relayRemainder(r *http.Request, key, slug string) (string, bool) {
 // relayTool is the relay door's tool_name for every row, the prelude's
 // included: "/" plus the bounded escaped remainder, so a relay row is
 // recognisable by its leading "/" and never holds a decoded byte a TEXT
-// column would refuse. The query is not part of it.
+// column would refuse. The query is not part of it. A remainder that holds
+// the presented key, escaped or decoded, whole or cut by the bound, is
+// recorded as "/[redacted]": the door refuses such a request, but the rows
+// admit writes before that (401, wrong key) carry the tool too, and the
+// check runs on the whole remainder so a key straddling the bound leaves
+// no prefix behind.
 func relayTool(r *http.Request) string {
 	rest, ok := relayRemainder(r, chi.URLParam(r, KeyParam), chi.URLParam(r, SlugParam))
 	if !ok {
 		return "/"
 	}
+	if tok := auth.BearerToken(r); tok != "" && holdsToken(rest, tok) {
+		return "/[redacted]"
+	}
 	return "/" + truncate(rest, auditFieldBytes-1)
+}
+
+// holdsToken reports whether s carries token as sent or once
+// percent-decoded, so an encoded spelling of the key is caught as the plain
+// one is.
+func holdsToken(s, token string) bool {
+	if strings.Contains(s, token) {
+		return true
+	}
+	decoded, err := url.PathUnescape(s)
+	return err == nil && strings.Contains(decoded, token)
 }
 
 // relayRequestDenylist is every inbound header name (lower-cased) that must
@@ -268,10 +288,20 @@ func writePlainError(w http.ResponseWriter, status int, requestID, msg string) i
 func relayParams(q url.Values, token, contentType string, requestBytes int) json.RawMessage {
 	query := audit.RedactQuery(q)
 	if token != "" {
+		// A key can arrive as a parameter's value, as its name, or inside
+		// the Content-Type; each is replaced, never stored. A name holding
+		// the key is folded into one "[redacted]" member.
 		for k, v := range query {
-			if strings.Contains(v, token) {
+			switch {
+			case strings.Contains(k, token):
+				delete(query, k)
+				query["[redacted]"] = "[redacted]"
+			case strings.Contains(v, token):
 				query[k] = "[redacted]"
 			}
+		}
+		if strings.Contains(contentType, token) {
+			contentType = "[redacted]"
 		}
 	}
 	qb, err := json.Marshal(query)
@@ -366,18 +396,21 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 		}
 		up = member
 	} else {
-		ups, group, err := h.resolveTargets(r.Context(), vk, models.KindHTTP)
-		switch {
-		case errors.Is(err, errKindMismatch), err == nil && group != nil:
-			// A key bound to one MCP upstream has no /api/ door, and a group
-			// key reaches its HTTP API members by slug only. The same uniform
-			// 404 as a member miss.
-			reason := errKindMismatch.Error()
-			if err == nil {
-				reason = "unknown endpoint: group key on the single-upstream door"
-			}
+		if vk.TargetType == models.TargetGroup {
+			// A group key reaches its HTTP API members by slug only, so the
+			// single door is the same uniform 404 as a member miss, decided
+			// before the group is read: what its members are, or whether any
+			// is enabled, must not show through as a different status.
 			size := writePlainError(w, http.StatusNotFound, requestID, "unknown endpoint")
-			h.finish(vk, requestID, verb, tool, "", models.StatusBlocked, reason, start, size, nil)
+			h.finish(vk, requestID, verb, tool, "", models.StatusBlocked, "unknown endpoint: group key on the single-upstream door", start, size, nil)
+			return
+		}
+		ups, _, err := h.resolveTargets(r.Context(), vk, models.KindHTTP)
+		switch {
+		case errors.Is(err, errKindMismatch):
+			// A key bound to one MCP upstream has no /api/ door.
+			size := writePlainError(w, http.StatusNotFound, requestID, "unknown endpoint")
+			h.finish(vk, requestID, verb, tool, "", models.StatusBlocked, errKindMismatch.Error(), start, size, nil)
 			return
 		case err != nil:
 			// No upstream is contacted on this path (a disabled target
