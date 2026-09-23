@@ -215,7 +215,7 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 		asCands = append(asCands, issuer+"/.well-known/openid-configuration")
 	}
 
-	var raw struct {
+	type asDoc struct {
 		Issuer                   string   `json:"issuer"`
 		AuthorizationEndpoint    string   `json:"authorization_endpoint"`
 		TokenEndpoint            string   `json:"token_endpoint"`
@@ -226,6 +226,7 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 		CIMD                     bool     `json:"client_id_metadata_document_supported"`
 		Iss                      bool     `json:"authorization_response_iss_parameter_supported"`
 	}
+	var raw asDoc
 	found = false
 	unreachable = nil
 	for _, cand := range asCands {
@@ -233,6 +234,10 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 		if err != nil {
 			return ProtectedResource{}, AuthServer{}, err
 		}
+		// A fresh document per candidate: a skipped answer must leave no
+		// field behind for the accepted one, least of all the iss flag the
+		// mix-up rule reads.
+		raw = asDoc{}
 		status, err := c.getJSON(ctx, target, &raw)
 		if err != nil {
 			if isRedirect(err) {
@@ -625,7 +630,7 @@ func (c *Client) token(ctx context.Context, set models.OAuthTokenSet, form url.V
 		ExpiresIn    *int64 `json:"expires_in"`
 		Scope        string `json:"scope"`
 	}
-	bad := &OAuthError{Stage: "token", Err: ErrOAuthTokenAnswer, Status: status, Host: h}
+	bad := &OAuthError{Stage: "token", Err: ErrOAuthTokenAnswer, Status: status, Host: h, Code: "http_" + fmt.Sprint(status)}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return tokenAnswer{}, bad
 	}
@@ -640,7 +645,7 @@ func (c *Client) token(ctx context.Context, set models.OAuthTokenSet, form url.V
 		switch {
 		case *body.ExpiresIn <= 0:
 			out.ExpiresIn = 0
-		case time.Duration(*body.ExpiresIn)*time.Second > maxExpiresIn:
+		case *body.ExpiresIn > int64(maxExpiresIn/time.Second):
 			out.ExpiresIn = maxExpiresIn
 		default:
 			out.ExpiresIn = time.Duration(*body.ExpiresIn) * time.Second

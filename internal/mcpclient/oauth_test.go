@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -334,6 +335,31 @@ func TestExchangeDefaultsExpiryToOneHour(t *testing.T) {
 	got, err := New().Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", now)
 	if err != nil || got.ExpiresAt != now.UTC().Add(time.Hour) {
 		t.Fatalf("expires_at %v err %v", got.ExpiresAt, err)
+	}
+}
+
+// A vendor's expires_in beyond the clamp, or so large it would overflow a
+// Duration, lands on the 30 day cap and never in the past.
+func TestExchangeClampsHugeExpiresIn(t *testing.T) {
+	for _, secs := range []int64{100 * 24 * 3600, 10_000_000_000, 1 << 62} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"access_token":"a","token_type":"Bearer","expires_in":%d}`, secs)
+		}))
+		now := time.Now()
+		got, err := New().Exchange(context.Background(), AuthServer{TokenEndpoint: srv.URL + "/token"}, models.OAuthTokenSet{ClientID: "c", Resource: "r"}, "c", "v", "http://pory.test/cb", now)
+		srv.Close()
+		if err != nil || !got.ExpiresAt.Equal(now.UTC().Add(maxExpiresIn)) {
+			t.Fatalf("expires_in %d: %v %v", secs, got.ExpiresAt, err)
+		}
+	}
+	// A malformed 2xx answer carries a code for the log line.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"a","token_type":"DPoP"}`)
+	}))
+	defer srv.Close()
+	_, err := New().Refresh(context.Background(), models.OAuthTokenSet{TokenEndpoint: srv.URL + "/token", RefreshToken: "r"}, time.Now())
+	if oe := oauthErr(t, err, ErrOAuthTokenAnswer); oe.Code != "http_200" {
+		t.Fatalf("code %q", oe.Code)
 	}
 }
 
