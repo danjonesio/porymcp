@@ -1,9 +1,10 @@
 # Weekly vulnerability watch. ci.yml runs the same two make targets on every
-# push and pull request; this file runs them against main on a schedule, so
-# an advisory published in a week with no push still fails a run. GitHub
-# emails a failed scheduled run to the user who created this file, or to a
-# later user who changed the cron line below or re-enabled the schedule, and
-# disables the schedule after 60 days without repository activity.
+# push to main and every pull request; this file runs them against main on a
+# schedule, so an advisory published in a week with no push still fails a
+# run. GitHub emails a failed scheduled run to the user who created this
+# file, or to a later user who changed the cron line below or re-enabled the
+# schedule, and disables the schedule after 60 days without repository
+# activity.
 name: audit
 
 on:
