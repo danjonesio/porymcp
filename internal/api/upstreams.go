@@ -53,6 +53,20 @@ const errAuthNoneCredential = "auth_config cannot be set when auth_type is none"
 // proxy post a refresh token to a host no metadata discovery vetted.
 const errOAuthConfigShape = "auth_config for oauth accepts client_id and client_secret only"
 
+// The kind rules (PORM-146). errKindImmutable mirrors errSlugImmutable: a
+// key's endpoints are derived from kind, so a flipped kind would turn every
+// key on the upstream from an MCP door into an HTTP door in silence.
+// errOAuthOnHTTP is a scope reduction, not a safety rule: the connect flow
+// POSTs an MCP initialize to the URL to read its challenge, which is not a
+// request to make of a REST API, and REST APIs rarely publish the RFC 9728
+// metadata the fallback reads, so the flow would fail after sending it.
+const (
+	errKindInvalid   = "invalid kind"
+	errKindImmutable = "kind cannot be changed"
+	errTestPathKind  = "test_path applies to an HTTP API upstream"
+	errOAuthOnHTTP   = "oauth is not available on an HTTP API upstream"
+)
+
 // maxClientFieldBytes bounds an operator-supplied client_id or client_secret:
 // both go on the token request, one of them into the authorization URL.
 const maxClientFieldBytes = 1 << 10
@@ -193,8 +207,10 @@ type upsertUpstream struct {
 	Name        Optional[string]          `json:"name"`
 	Slug        Optional[string]          `json:"slug"`
 	Description Optional[string]          `json:"description"`
+	Kind        Optional[string]          `json:"kind"`
 	URL         Optional[string]          `json:"url"`
 	Transport   Optional[string]          `json:"transport"`
+	TestPath    Optional[string]          `json:"test_path"`
 	AuthType    Optional[string]          `json:"auth_type"`
 	AuthConfig  Optional[json.RawMessage] `json:"auth_config"`
 	Enabled     Optional[bool]            `json:"enabled"`
@@ -256,6 +272,17 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid auth_type")
 		return
 	}
+	// kind defaults like transport and auth_type; the rules that tie kind,
+	// url, auth_type and test_path together are one function shared with
+	// PATCH and the unsaved discovery route (PORM-146).
+	kind := in.Kind.Value
+	if kind == "" {
+		kind = models.KindMCP
+	}
+	if msg := checkUpstreamKindRules(kind, in.URL.Value, authType, in.TestPath.Value); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	// A credential cannot ride along with auth_type none: the row would hold a
 	// secret the proxy never sends and report auth_configured true for it
 	// (PORM-120). An omitted auth_type took the default above, so the same
@@ -310,8 +337,10 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		ID:          uuid.NewString(),
 		Name:        strings.TrimSpace(in.Name.Value),
 		Description: in.Description.Value,
+		Kind:        kind,
 		URL:         strings.TrimSpace(in.URL.Value),
 		Transport:   transport,
+		TestPath:    in.TestPath.Value,
 		AuthType:    authType,
 		AuthConfig:  enc,
 		Enabled:     enabled,
@@ -339,6 +368,7 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 	// {} for an untouched box does not read "credential set" (PORM-120).
 	s.recordAdmin(r, models.ActionUpstreamCreate, u.ID, u.Name, adminDetails{
 		Slug:        u.Slug,
+		Kind:        u.Kind,
 		AuthType:    u.AuthType,
 		AuthChanged: len(u.AuthConfig) > 0,
 	})
@@ -431,10 +461,15 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// another type. Known here because the old blob is opened to decide it.
 	droppedTokens := u.AuthType == models.AuthOAuth && in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value) &&
 		credential.Status(s.keys, u.AuthType, u.AuthConfig) != credential.StatusUnreadable && len(u.AuthConfig) > 0
+	// test_path joins the reset (PORM-146): the probe requests a different
+	// path, so a dot recorded against the old one vouches for nothing. "" and
+	// null both clear it, the column is TEXT NOT NULL DEFAULT ''.
+	testPathChanged := in.TestPath.Set && in.TestPath.Value != u.TestPath
 	resetTest := (in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL) ||
 		(in.Transport.Has() && in.Transport.Value != u.Transport) ||
 		(in.AuthType.Has() && in.AuthType.Value != u.AuthType) ||
 		in.AuthConfig.Has() ||
+		testPathChanged ||
 		cleared
 	// Every field is an Optional (see optional.go): a key the body did not carry
 	// leaves the stored value alone, a value sets it under the same checks as
@@ -458,6 +493,15 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errSlugImmutable)
 			return
 		}
+	}
+	if in.Kind.Set && in.Kind.Value != u.Kind {
+		// The same rule as slug (PORM-146): the current value round-trips, any
+		// other value is refused, and the store never writes the column.
+		writeError(w, http.StatusBadRequest, errKindImmutable)
+		return
+	}
+	if in.TestPath.Set {
+		u.TestPath = in.TestPath.Value
 	}
 	if in.Description.Set {
 		// "" and null both clear: the column is TEXT NOT NULL DEFAULT ''.
@@ -483,6 +527,13 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.AuthType = in.AuthType.Value
+	}
+	// The kind rules on the merged row (PORM-146), after every field they
+	// read has been applied: a test_path on an MCP row, oauth or a base URL
+	// with a query or userinfo on an HTTP API row.
+	if msg := checkUpstreamKindRules(u.Kind, u.URL, u.AuthType, u.TestPath); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
 	}
 	// The same refusal as create, keyed on what this request named: auth_type
 	// none and a credential in one body. It sits after the auth_type block, so
@@ -611,6 +662,42 @@ func (s *Server) deleteUpstream(w http.ResponseWriter, r *http.Request) {
 func usableUpstreamURL(raw string) bool {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	return err == nil && mcpclient.CheckTarget(u) == nil
+}
+
+// checkUpstreamKindRules is the one place the rules that tie an upstream's
+// kind to its other fields live (PORM-146), for create, PATCH (on the merged
+// row) and the unsaved discovery route. It returns the 400 message, or "".
+// kind must be mcp or http; test_path is validated by models.ValidateTestPath
+// and belongs to an HTTP API row only; an HTTP API row takes no oauth
+// credential and no base URL with a query string or userinfo
+// (mcpclient.CheckHTTPBase). rawURL has already passed usableUpstreamURL, so
+// a parse failure here is unreachable and reads as the URL rule.
+func checkUpstreamKindRules(kind, rawURL, authType, testPath string) string {
+	switch kind {
+	case models.KindMCP, models.KindHTTP:
+	default:
+		return errKindInvalid
+	}
+	if err := models.ValidateTestPath(testPath); err != nil {
+		return err.Error()
+	}
+	if kind == models.KindMCP {
+		if testPath != "" {
+			return errTestPathKind
+		}
+		return ""
+	}
+	if authType == models.AuthOAuth {
+		return errOAuthOnHTTP
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return errURLRule
+	}
+	if err := mcpclient.CheckHTTPBase(u); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // validTransport is the write gate for the transport field: only

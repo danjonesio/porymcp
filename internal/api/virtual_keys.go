@@ -25,6 +25,10 @@ type virtualKeyEndpoint struct {
 	UpstreamID string `json:"upstream_id"`
 	Slug       string `json:"slug"`
 	Name       string `json:"name"`
+	// Kind is the upstream's kind, "mcp" or "http" (PORM-146): an mcp entry's
+	// URL ends in /mcp and takes an MCP client; an http entry's ends in
+	// /api/ and takes a plain HTTP client with the key as its API key.
+	Kind string `json:"kind"`
 	// URL is the PROXY url a client configures. It is never
 	// models.Upstream.URL, which addresses the real MCP server and must never
 	// be handed to a client.
@@ -43,6 +47,10 @@ type virtualKeyPublic struct {
 	// field travels back into the store meaning "leave both columns alone". The
 	// Go name differs from that field's so nothing is shadowed.
 	ListsUnreadable bool `json:"lists_malformed,omitempty"`
+	// MethodsUnreadable is ListsUnreadable's sibling for http_methods
+	// (PORM-146): the relay door refuses every request on the key, and a
+	// PATCH that carries http_methods replaces the column. Response only.
+	MethodsUnreadable bool `json:"http_methods_malformed,omitempty"`
 	// Endpoints is never omitempty and never nil: an empty array means
 	// "nothing is reachable through this key right now", which the dashboard
 	// renders and an installer must see. A nil slice would marshal as null and
@@ -117,21 +125,33 @@ func (ix *endpointIndex) groups(ctx context.Context) (map[string]*models.Group, 
 // the operator sees the endpoint, the Unsupported badge on the upstream, and
 // the refusal in the logs, and knows which row to repair.
 //
-// The resolver reads only ID, Slug and Name; a models.Upstream carries the
-// encrypted auth_config and must never escape into a response.
-func (s *Server) endpointsFor(ctx context.Context, ix *endpointIndex, vk *models.VirtualKey) ([]virtualKeyEndpoint, error) {
+// The resolver reads only ID, Slug, Name and Kind; a models.Upstream carries
+// the encrypted auth_config and must never escape into a response.
+//
+// targetKind is the kind proxy_url is derived from (PORM-146): a key bound
+// to one upstream takes that upstream's kind whatever its Enabled state, so
+// the URL in the one response that carries the plaintext key does not flip
+// between /mcp and /api/ as the upstream is toggled; a group is "mcp",
+// because its aggregate door is an MCP door whatever its members are. An
+// upstream whose kind is neither value is served on no door
+// (proxy.resolveTargets) and is left out here too.
+func (s *Server) endpointsFor(ctx context.Context, ix *endpointIndex, vk *models.VirtualKey) (eps []virtualKeyEndpoint, targetKind string, err error) {
+	targetKind = models.KindMCP
 	switch vk.TargetType {
 	case models.TargetUpstream:
 		ups, err := ix.upstreams(ctx)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out := make([]virtualKeyEndpoint, 0, 1)
 		u, ok := ups[vk.TargetID]
-		if !ok || !u.Enabled {
-			// The proxy answers errUpstreamDisabled on this key, so there is
-			// no usable endpoint to advertise.
-			return out, nil
+		if ok && u.Kind == models.KindHTTP {
+			targetKind = models.KindHTTP
+		}
+		if !ok || !u.Enabled || !servedKind(u.Kind) {
+			// The proxy answers errUpstreamDisabled (or the uniform 404) on
+			// this key, so there is no usable endpoint to advertise.
+			return out, targetKind, nil
 		}
 		// Deliberately mirrors proxy_url: a single-upstream key has no
 		// /{slug}/mcp route (that 404s), and its aggregate endpoint is already
@@ -140,13 +160,14 @@ func (s *Server) endpointsFor(ctx context.Context, ix *endpointIndex, vk *models
 			UpstreamID: u.ID,
 			Slug:       u.Slug,
 			Name:       u.Name,
-			URL:        s.proxyURL(vk.ID, "mcp"),
-		}), nil
+			Kind:       u.Kind,
+			URL:        s.singleEndpointURL(vk.ID, u.Kind),
+		}), targetKind, nil
 
 	case models.TargetGroup:
 		grps, err := ix.groups(ctx)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		g, ok := grps[vk.TargetID]
 		if !ok {
@@ -154,11 +175,11 @@ func (s *Server) endpointsFor(ctx context.Context, ix *endpointIndex, vk *models
 			// editing the database (DeleteGroup returns ErrInUse while a key
 			// references the group) but the key row is still real and must still
 			// be listed.
-			return make([]virtualKeyEndpoint, 0), nil
+			return make([]virtualKeyEndpoint, 0), targetKind, nil
 		}
 		ups, err := ix.upstreams(ctx)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		// Stored membership order, not ListUpstreams' created_at DESC, so the
 		// API, the proxy and the Groups page all agree and the dashboard
@@ -170,46 +191,64 @@ func (s *Server) endpointsFor(ctx context.Context, ix *endpointIndex, vk *models
 			// Duplicate ids are storable (the groups API does not de-dupe them)
 			// and would otherwise register one server twice in a client under
 			// the same name.
-			if !ok || !u.Enabled || seen[id] {
+			if !ok || !u.Enabled || seen[id] || !servedKind(u.Kind) {
 				continue
 			}
 			seen[id] = true
-			out = append(out, virtualKeyEndpoint{
-				UpstreamID: u.ID,
-				Slug:       u.Slug,
-				Name:       u.Name,
-				URL:        s.proxyURL(vk.ID, u.Slug, "mcp"),
-			})
+			e := virtualKeyEndpoint{UpstreamID: u.ID, Slug: u.Slug, Name: u.Name, Kind: u.Kind}
+			if u.Kind == models.KindHTTP {
+				e.URL = s.proxyURL(vk.ID, u.Slug, "api") + "/"
+			} else {
+				e.URL = s.proxyURL(vk.ID, u.Slug, "mcp")
+			}
+			out = append(out, e)
 		}
-		return out, nil
+		return out, targetKind, nil
 	}
 	// Unknown target_type: the proxy refuses every call, so nothing is usable.
-	return make([]virtualKeyEndpoint, 0), nil
+	return make([]virtualKeyEndpoint, 0), targetKind, nil
+}
+
+// servedKind reports whether the proxy has a door for this kind.
+func servedKind(kind string) bool {
+	return kind == models.KindMCP || kind == models.KindHTTP
+}
+
+// singleEndpointURL is proxy_url for a key bound to one upstream of the given
+// kind: the /mcp door, or the /api/ door with its trailing slash, which is the
+// base URL an SDK is pointed at.
+func (s *Server) singleEndpointURL(keyID, kind string) string {
+	if kind == models.KindHTTP {
+		return s.proxyURL(keyID, "api") + "/"
+	}
+	return s.proxyURL(keyID, "mcp")
 }
 
 // presentVirtualKey resolves the key's endpoints and builds the response. It
 // returns an error only when the store failed; every data condition (missing
 // group, missing or disabled member) yields an empty endpoints array.
 func (s *Server) presentVirtualKey(ctx context.Context, ix *endpointIndex, a *models.VirtualKey, plaintext string) (virtualKeyPublic, error) {
-	eps, err := s.endpointsFor(ctx, ix, a)
+	eps, kind, err := s.endpointsFor(ctx, ix, a)
 	if err != nil {
 		return virtualKeyPublic{}, err
 	}
-	return s.presentVirtualKeyWithEndpoints(a, plaintext, eps), nil
+	return s.presentVirtualKeyWithEndpoints(a, plaintext, eps, kind), nil
 }
 
 // presentVirtualKeyWithEndpoints builds the response from endpoints that have
 // already been resolved. create and rotate use it because they resolve BEFORE
 // their mutating write: the plaintext key exists only in that one response, so
 // a store failure while presenting must cost nothing, rather than strand a
-// minted key nobody can ever read again.
-func (s *Server) presentVirtualKeyWithEndpoints(a *models.VirtualKey, plaintext string, eps []virtualKeyEndpoint) virtualKeyPublic {
+// minted key nobody can ever read again. targetKind is endpointsFor's second
+// result and decides proxy_url.
+func (s *Server) presentVirtualKeyWithEndpoints(a *models.VirtualKey, plaintext string, eps []virtualKeyEndpoint, targetKind string) virtualKeyPublic {
 	out := virtualKeyPublic{
-		VirtualKey:      *a,
-		Status:          a.Status(),
-		ProxyURL:        s.proxyURL(a.ID, "mcp"),
-		ListsUnreadable: a.ListsMalformed,
-		Endpoints:       eps,
+		VirtualKey:        *a,
+		Status:            a.Status(),
+		ProxyURL:          s.singleEndpointURL(a.ID, targetKind),
+		ListsUnreadable:   a.ListsMalformed,
+		MethodsUnreadable: a.MethodsMalformed,
+		Endpoints:         eps,
 	}
 	if plaintext != "" {
 		out.APIKey = plaintext
@@ -238,6 +277,7 @@ type upsertVirtualKey struct {
 	ExpiresAt     Optional[time.Time]       `json:"expires_at"`
 	ToolAllowlist Optional[[]string]        `json:"tool_allowlist"`
 	ToolDenylist  Optional[[]string]        `json:"tool_denylist"`
+	HTTPMethods   Optional[[]string]        `json:"http_methods"`
 	Metadata      Optional[json.RawMessage] `json:"metadata"`
 }
 
@@ -322,6 +362,14 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// http_methods is accepted on every target (PORM-146): a group can gain an
+	// HTTP API member later, and the /mcp doors ignore the list. It is
+	// normalised on the way in, so the column holds one spelling.
+	httpMethods, err := models.NormalizeHTTPMethods(in.HTTPMethods.Value)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// The two nullable columns take a pointer only when a value was sent.
 	// Never &in.X.Value: that is always non-nil, and a zero expires_at would
 	// mint every key already expired.
@@ -352,6 +400,7 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:     expiresAt,
 		ToolAllowlist: in.ToolAllowlist.Value,
 		ToolDenylist:  in.ToolDenylist.Value,
+		HTTPMethods:   httpMethods,
 		CreatedAt:     now,
 		Metadata:      in.Metadata.Value,
 	}
@@ -359,7 +408,7 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 	// this response, so a store failure while presenting must cost nothing: a
 	// 500 here mints no key at all, where a 500 after the insert would leave a
 	// key in the database whose plaintext is gone forever.
-	eps, err := s.endpointsFor(r.Context(), &endpointIndex{store: s.store}, a)
+	eps, kind, err := s.endpointsFor(r.Context(), &endpointIndex{store: s.store}, a)
 	if err != nil {
 		presentError(w)
 		return
@@ -375,7 +424,7 @@ func (s *Server) createVirtualKey(w http.ResponseWriter, r *http.Request) {
 		TargetID:   a.TargetID,
 		KeyPrefix:  a.KeyPrefix,
 	})
-	writeJSON(w, http.StatusCreated, s.presentVirtualKeyWithEndpoints(a, plain, eps))
+	writeJSON(w, http.StatusCreated, s.presentVirtualKeyWithEndpoints(a, plain, eps, kind))
 }
 
 func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
@@ -503,6 +552,19 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 		// and revoke leave it set, and so preserve the columns.
 		a.ListsMalformed = false
 	}
+	// http_methods (PORM-146): absent keeps, a value sets, null and [] both
+	// clear (every method). One column, so a body that carries it is the one
+	// edit that clears MethodsMalformed; rotate and revoke leave it set and
+	// the store leaves the column alone.
+	if in.HTTPMethods.Set {
+		methods, err := models.NormalizeHTTPMethods(in.HTTPMethods.Value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.HTTPMethods = methods
+		a.MethodsMalformed = false
+	}
 	if in.Metadata.Set {
 		a.Metadata = in.Metadata.Value // null clears; the store writes ''
 	}
@@ -531,6 +593,12 @@ func (s *Server) patchVirtualKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.ToolDenylist.Set && len(a.ToolDenylist) == 0 {
 		cleared = append(cleared, "tool_denylist")
+	}
+	// An empty method list means every method, which is the widest widening
+	// this key has; the existing rule records it even when the list was
+	// already empty, and so also when it was unreadable and refused everything.
+	if in.HTTPMethods.Set && len(a.HTTPMethods) == 0 {
+		cleared = append(cleared, "http_methods")
 	}
 	if err := s.store.UpdateVirtualKey(r.Context(), a); err != nil {
 		storeError(w, err)
@@ -580,7 +648,7 @@ func (s *Server) rotateVirtualKey(w http.ResponseWriter, r *http.Request) {
 	// presenting must leave the old key working rather than rotate to a key
 	// nobody can read. Rotation cannot change the target, so the endpoints
 	// resolved here are the ones the rotated key has.
-	eps, err := s.endpointsFor(r.Context(), &endpointIndex{store: s.store}, a)
+	eps, kind, err := s.endpointsFor(r.Context(), &endpointIndex{store: s.store}, a)
 	if err != nil {
 		presentError(w)
 		return
@@ -592,7 +660,7 @@ func (s *Server) rotateVirtualKey(w http.ResponseWriter, r *http.Request) {
 	// The new prefix and nothing else: it is what lets an operator tie a key
 	// seen in the wild to the moment it was issued. plain never reaches here.
 	s.recordAdmin(r, models.ActionVirtualKeyRotate, a.ID, a.Name, adminDetails{KeyPrefix: a.KeyPrefix})
-	writeJSON(w, http.StatusOK, s.presentVirtualKeyWithEndpoints(a, plain, eps))
+	writeJSON(w, http.StatusOK, s.presentVirtualKeyWithEndpoints(a, plain, eps, kind))
 }
 
 func (s *Server) revokeVirtualKey(w http.ResponseWriter, r *http.Request) {

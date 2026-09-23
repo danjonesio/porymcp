@@ -42,6 +42,7 @@ type adminDetails struct {
 	Fields           []string `json:"fields,omitempty"`
 	Cleared          []string `json:"cleared,omitempty"`
 	Slug             string   `json:"slug,omitempty"`
+	Kind             string   `json:"kind,omitempty"`
 	AuthType         string   `json:"auth_type,omitempty"`
 	AuthChanged      bool     `json:"auth_changed,omitempty"`
 	UpstreamCount    *int     `json:"upstream_count,omitempty"`
@@ -128,6 +129,7 @@ func upstreamPatchDetails(before, after models.Upstream, authChanged, droppedTok
 	changed(&d.Fields, "description", before.Description != after.Description)
 	changed(&d.Fields, "url", before.URL != after.URL)
 	changed(&d.Fields, "transport", before.Transport != after.Transport)
+	changed(&d.Fields, "test_path", before.TestPath != after.TestPath)
 	changed(&d.Fields, "auth_type", before.AuthType != after.AuthType)
 	changed(&d.Fields, "enabled", before.Enabled != after.Enabled)
 	if (len(before.AuthConfig) > 0 && len(after.AuthConfig) == 0) || droppedTokens {
@@ -160,7 +162,7 @@ func groupPatchDetails(before, after models.Group, cleared []string) adminDetail
 }
 
 // virtualKeyPatchDetails describes a PATCH /virtual-keys/{id} that landed.
-// The eight names are the eight Optional fields of upsertVirtualKey. Values
+// The nine names are the nine Optional fields of upsertVirtualKey. Values
 // are never recorded: metadata is arbitrary operator JSON and the tool lists
 // are operator-authored. cleared is the slice patchVirtualKey already
 // computes for its log line.
@@ -173,6 +175,7 @@ func virtualKeyPatchDetails(before, after models.VirtualKey, cleared []string) a
 	changed(&d.Fields, "expires_at", !timePtrEqual(before.ExpiresAt, after.ExpiresAt))
 	changed(&d.Fields, "tool_allowlist", !slices.Equal(before.ToolAllowlist, after.ToolAllowlist))
 	changed(&d.Fields, "tool_denylist", !slices.Equal(before.ToolDenylist, after.ToolDenylist))
+	changed(&d.Fields, "http_methods", !slices.Equal(before.HTTPMethods, after.HTTPMethods))
 	changed(&d.Fields, "metadata", !bytes.Equal(before.Metadata, after.Metadata))
 	d.Cleared = cleared
 	return d

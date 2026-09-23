@@ -273,6 +273,13 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errNotOAuthRow)
 		return
 	}
+	if u.Kind == models.KindHTTP {
+		// Unreachable through the API, which refuses oauth on an HTTP API row
+		// at create and PATCH; kept so a hand-edited row cannot start a flow
+		// that POSTs an MCP initialize to a REST API (PORM-146).
+		writeError(w, http.StatusBadRequest, errOAuthOnHTTP)
+		return
+	}
 	loopback, msg := s.publicURLUsable(r)
 	if msg != "" {
 		writeError(w, http.StatusBadRequest, msg)

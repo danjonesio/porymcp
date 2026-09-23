@@ -129,6 +129,21 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errDiscoverUnsavedOAuth)
 		return
 	}
+	// The kind rules run here as on create (PORM-146): the Test button in the
+	// Add dialog must not probe a base URL create would refuse, and a base
+	// carrying userinfo would otherwise go out as Basic auth.
+	kind := in.Kind.Value
+	if kind == "" {
+		kind = models.KindMCP
+	}
+	if !usableUpstreamURL(target) {
+		writeError(w, http.StatusBadRequest, errURLRule)
+		return
+	}
+	if msg := checkUpstreamKindRules(kind, target, authType, in.TestPath.Value); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	// No slug is derived. createUpstream walks candidates and de-duplicates,
 	// so an upstream previewed as "github" may well be stored as "github-2",
 	// and an operator who copied "github__search" out of this panel into a
@@ -136,8 +151,10 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 	// With no slug the response carries no scoped_name at all, which is the
 	// honest answer before the row exists.
 	u := &models.Upstream{
+		Kind:      kind,
 		URL:       target,
 		Transport: transport,
+		TestPath:  in.TestPath.Value,
 		AuthType:  authType,
 	}
 	// in.AuthConfig arrives as plaintext, exactly as it does on create. It is
@@ -178,7 +195,15 @@ func (s *Server) runDiscovery(w http.ResponseWriter, r *http.Request, u *models.
 		writeError(w, http.StatusTooManyRequests, "too many concurrent discoveries")
 		return
 	}
-	d := s.mcp.Discover(r.Context(), u, plain)
+	// An HTTP API upstream is probed, not handshaken (PORM-146): one GET to
+	// the base URL joined with its test path, under the same slot and the
+	// same recording.
+	var d mcpclient.Discovery
+	if u.Kind == models.KindHTTP {
+		d = s.mcp.Probe(r.Context(), u, plain)
+	} else {
+		d = s.mcp.Discover(r.Context(), u, plain)
+	}
 	// Before the response, not after: the dashboard re-reads the table the
 	// moment the response lands, so a record made afterwards would race the
 	// read it exists to feed.
