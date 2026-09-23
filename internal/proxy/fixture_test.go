@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -100,6 +101,16 @@ type upstreamSpec struct {
 	// test builds the row an operator saved before that change, or one whose
 	// column was edited by hand.
 	Transport string
+	// Handler, when set, answers every request the stub receives after the
+	// request has been recorded, in place of every arm below. It is how a
+	// test builds an upstream that answers slowly, streams, holds a stream
+	// open or goes quiet (PORM-5): the body has been read for the record and
+	// is rewound, so the handler can parse it again.
+	Handler http.HandlerFunc
+	// URL, when set, is the stored upstream URL instead of the stub's own,
+	// for an upstream a test cannot express as an httptest server: a listener
+	// that accepts and never answers, say.
+	URL string
 }
 
 // recordedRequest is one request a stub received, kept whole. The counters
@@ -245,6 +256,12 @@ func newStub(spec upstreamSpec) *stub {
 		// proxy should never have sent.
 		_ = json.Unmarshal(body, &req)
 		s.bump(r, body, req.Method, req.Params.Name)
+
+		if spec.Handler != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			spec.Handler(w, r)
+			return
+		}
 
 		// RespHeaders go on before any arm, so one field reaches every reply
 		// the stub can make. The arms below set Content-Type only when this
@@ -404,6 +421,9 @@ func newFixture(t testing.TB, specs map[string]upstreamSpec, group bool, filter 
 		}
 		if tr := specs[slug].Transport; tr != "" {
 			up.Transport = tr
+		}
+		if u := specs[slug].URL; u != "" {
+			up.URL = u
 		}
 		// Bearer is the shorthand; AuthType with an AuthConfig is the long
 		// way round, and the only way to build the api_key, header and custom
