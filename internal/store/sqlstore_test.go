@@ -344,12 +344,12 @@ func TestMigrateBackfillsSlugs(t *testing.T) {
 		if n := indexCount(t, s, "upstreams_slug"); n != 1 {
 			t.Errorf("upstreams_slug index count = %d, want 1", n)
 		}
-		if v, err := s.currentSchemaVersion(); err != nil || v != 6 {
-			t.Errorf("schema version = %d err=%v, want 6", v, err)
+		if v, err := s.currentSchemaVersion(); err != nil || v != schemaVersion {
+			t.Errorf("schema version = %d err=%v, want the current schema version", v, err)
 		}
 		// Step 3 finds no groups and no virtual keys here, so every tool count
 		// stays zero: this fixture is about slugs.
-		wantSummary := MigrationSummary{Applied: true, Version: 6, SlugsDerived: 8, SlugsDeduplicated: 4, TimestampsRewritten: 8}
+		wantSummary := MigrationSummary{Applied: true, Version: schemaVersion, SlugsDerived: 8, SlugsDeduplicated: 4, TimestampsRewritten: 8}
 		if got := s.LastMigration(); got != wantSummary {
 			t.Errorf("LastMigration() = %+v, want %+v", got, wantSummary)
 		}
@@ -372,8 +372,8 @@ func TestMigrateBackfillsSlugs(t *testing.T) {
 		if n := indexCount(t, s2, "upstreams_slug"); n != 1 {
 			t.Errorf("after re-open, index count = %d, want 1", n)
 		}
-		if v, _ := s2.currentSchemaVersion(); v != 6 {
-			t.Errorf("after re-open, schema version = %d, want 6", v)
+		if v, _ := s2.currentSchemaVersion(); v != schemaVersion {
+			t.Errorf("after re-open, schema version = %d, want the current schema version", v)
 		}
 		if s2.LastMigration().Applied {
 			t.Errorf("re-open reported a migration: %+v", s2.LastMigration())
@@ -418,8 +418,8 @@ func TestMigrateBackfillsSlugs(t *testing.T) {
 				t.Errorf("upstream %s collided with the pre-set slug", id)
 			}
 		}
-		if v, _ := s.currentSchemaVersion(); v != 6 {
-			t.Errorf("schema version = %d, want 6", v)
+		if v, _ := s.currentSchemaVersion(); v != schemaVersion {
+			t.Errorf("schema version = %d, want the current schema version", v)
 		}
 	})
 
@@ -472,8 +472,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	// and only the index creation does any work; step 2 finds no agents table
 	// and passes straight through.
 	s := testStore(t)
-	if v, err := s.currentSchemaVersion(); err != nil || v != 6 {
-		t.Fatalf("schema version = %d err=%v, want 6", v, err)
+	if v, err := s.currentSchemaVersion(); err != nil || v != schemaVersion {
+		t.Fatalf("schema version = %d err=%v, want the current schema version", v, err)
 	}
 	if n := indexCount(t, s, "upstreams_slug"); n != 1 {
 		t.Fatalf("upstreams_slug index count = %d, want 1", n)
@@ -759,9 +759,11 @@ var v1DataRows = []string{
 }
 
 var (
+	// The trailing [] is http_methods, which step 7 adds with DEFAULT '[]' to
+	// every key migrated from before it (PORM-146).
 	wantVirtualKeyRows = []string{
-		"a1|cursor|hash-a1|lookup-a1|pory_a1a1a1a|upstream|u1|NULL|NULL|[]|[]|2026-01-05T10:00:00.000000000Z|NULL|NULL|",
-		`a2|claude|hash-a2|lookup-a2|pory_a2a2a2a|group|g1|60|2027-01-01T00:00:00.000000000Z|["safe_tool"]|["rm"]|2026-01-06T10:00:00.000000000Z|2026-01-07T10:00:00.000000000Z|2026-01-08T10:00:00.000000000Z|{"team":"x"}`,
+		"a1|cursor|hash-a1|lookup-a1|pory_a1a1a1a|upstream|u1|NULL|NULL|[]|[]|2026-01-05T10:00:00.000000000Z|NULL|NULL||[]",
+		`a2|claude|hash-a2|lookup-a2|pory_a2a2a2a|group|g1|60|2027-01-01T00:00:00.000000000Z|["safe_tool"]|["rm"]|2026-01-06T10:00:00.000000000Z|2026-01-07T10:00:00.000000000Z|2026-01-08T10:00:00.000000000Z|{"team":"x"}|[]`,
 	}
 	wantAuditRows = []string{
 		"l1|a1|cursor|",
@@ -837,8 +839,8 @@ func assertRenamed(t *testing.T, s *SQLStore) {
 			t.Errorf("old index %s still exists", old)
 		}
 	}
-	if v, err := s.currentSchemaVersion(); err != nil || v != 6 {
-		t.Errorf("schema version = %d err=%v, want 6", v, err)
+	if v, err := s.currentSchemaVersion(); err != nil || v != schemaVersion {
+		t.Errorf("schema version = %d err=%v, want the current schema version", v, err)
 	}
 	// The Go layer reads the renamed table, nullable columns included.
 	a, err := s.GetVirtualKeyByLookup(context.Background(), "lookup-a2")
@@ -866,7 +868,7 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 		// points at group g1, which v1Fixture never creates, so step 3 cannot
 		// know that key's members and leaves both of its entries alone. See
 		// TestMigrateRewritesToolIdentities for the rows it does rewrite.
-		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, ToolEntriesLeft: 2, TimestampsRewritten: 5}); got != want {
+		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: schemaVersion, ToolEntriesLeft: 2, TimestampsRewritten: 5}); got != want {
 			t.Errorf("LastMigration() = %+v, want %+v", got, want)
 		}
 		if err := s.Close(); err != nil {
@@ -893,7 +895,7 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 		}
 		defer s.Close()
 		assertRenamed(t, s)
-		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, SlugsDerived: 2, SlugsDeduplicated: 1, ToolEntriesLeft: 2, TimestampsRewritten: 6}); got != want {
+		if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: schemaVersion, SlugsDerived: 2, SlugsDeduplicated: 1, ToolEntriesLeft: 2, TimestampsRewritten: 6}); got != want {
 			t.Errorf("LastMigration() = %+v, want %+v", got, want)
 		}
 		if a, b := slugOf(t, s, "u1"), slugOf(t, s, "u2"); a != "github" || b != "github-2" {
@@ -920,7 +922,7 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 		}
 		defer s2.Close()
 		assertRenamed(t, s2)
-		if got, want := s2.LastMigration(), (MigrationSummary{Applied: true, Version: 6, ToolEntriesLeft: 2}); got != want {
+		if got, want := s2.LastMigration(), (MigrationSummary{Applied: true, Version: schemaVersion, ToolEntriesLeft: 2}); got != want {
 			t.Errorf("LastMigration() = %+v, want %+v", got, want)
 		}
 	})
@@ -942,8 +944,8 @@ func TestMigrateRenamesAgentsToVirtualKeys(t *testing.T) {
 			t.Fatalf("re-open an unstamped database with the new names: %v", err)
 		}
 		defer s2.Close()
-		if v, _ := s2.currentSchemaVersion(); v != 6 {
-			t.Errorf("schema version = %d, want 6", v)
+		if v, _ := s2.currentSchemaVersion(); v != schemaVersion {
+			t.Errorf("schema version = %d, want the current schema version", v)
 		}
 		if n := tableCount(t, s2, "virtual_keys"); n != 1 {
 			t.Errorf("virtual_keys table count = %d", n)
@@ -1484,7 +1486,7 @@ func TestMigrateRewritesToolIdentities(t *testing.T) {
 		// two entries with no target, and k5's unreadable column. Not k6's,
 		// which admits what it always did.
 		want := MigrationSummary{
-			Applied: true, Version: 6,
+			Applied: true, Version: schemaVersion,
 			ToolEntriesRewritten: 6, ToolEntriesLeft: 9,
 			ToolFiltersLeftInvalid: 1, GroupsRewritten: 1, VirtualKeysRewritten: 2,
 			TimestampsRewritten: 14,
@@ -1865,8 +1867,8 @@ func TestMigrateDropsVirtualKeysLookupIndex(t *testing.T) {
 	if n := indexCount(t, s2, "virtual_keys_lookup"); n != 0 {
 		t.Errorf("virtual_keys_lookup came back on the second Open (count %d)", n)
 	}
-	if v, err := s2.currentSchemaVersion(); err != nil || v != 6 {
-		t.Errorf("schema version = %d, %v; want 6", v, err)
+	if v, err := s2.currentSchemaVersion(); err != nil || v != schemaVersion {
+		t.Errorf("schema version = %d, %v; want the current schema version", v, err)
 	}
 }
 
@@ -2337,13 +2339,14 @@ func TestDecodeCursorAcceptsLegacyFormat(t *testing.T) {
 
 // v5Fixture builds a database as a version-5 server left it, without ever
 // running step 6: the base DDL and steps 1 to 5 through this binary's own
-// migrate helpers on a raw connection (the same statements a version-5 binary
-// ran on a fresh database; the diff that added step 6 touched none of them),
-// then rows in the RFC3339Nano spelling written raw, so nothing here goes
-// through fmtTime. The stamp reads 5 because step 5 wrote it, not because it
-// was rolled back, so the Open that follows runs step 6 and only step 6, and a
-// sqlite_master snapshot taken here sees exactly what that step does to the
-// schema (TestMigrateRewritesTimestampWidth).
+// migrate helpers on a raw connection, then rows in the RFC3339Nano spelling
+// written raw, so nothing here goes through fmtTime. The stamp reads 5 because
+// step 5 wrote it, not because it was rolled back, so the Open that follows
+// runs steps 6 and 7. Because this binary's migrateBase already carries the
+// step-7 columns (PORM-146), the fixture has them from the start and step 7
+// finds nothing to add, which is why the sqlite_master snapshot in
+// TestMigrateRewritesTimestampWidth still sees only what step 6 does. A
+// fixture that proves step 7's ALTERs run is v6Fixture, built from frozen DDL.
 func v5Fixture(t *testing.T, path string, rows ...string) {
 	t.Helper()
 	raw, err := sql.Open("sqlite", fileDSN(path))
@@ -2481,7 +2484,7 @@ func TestMigrateRewritesTimestampWidth(t *testing.T) {
 		t.Errorf("step 6 changed the schema:\n got %q\nwant %q", got, wantSchema)
 	}
 
-	if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, TimestampsRewritten: v5RowsRewritten}); got != want {
+	if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: schemaVersion, TimestampsRewritten: v5RowsRewritten}); got != want {
 		t.Errorf("LastMigration() = %+v, want %+v", got, want)
 	}
 	for _, tc := range timestampColumns {
@@ -2721,7 +2724,7 @@ func TestMigrateTimestampsLeavesNullAndEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: 6, TimestampsRewritten: 2}); got != want {
+	if got, want := s.LastMigration(), (MigrationSummary{Applied: true, Version: schemaVersion, TimestampsRewritten: 2}); got != want {
 		t.Errorf("LastMigration() = %+v, want %+v", got, want)
 	}
 	if got := rowTuples(t, s, `SELECT last_test_at FROM upstreams WHERE id = 'u1'`); strings.Join(got, "") != "NULL" {
@@ -2886,5 +2889,293 @@ func TestConnectUpstreamAuthRefusesNonOAuthRow(t *testing.T) {
 	}
 	if storedAuth(t, s, "row") == "" || storedAuth(t, s, "row") != sealWith(t, cur, `{"token":"x"}`) && !strings.HasPrefix(storedAuth(t, s, "row"), "v1:") {
 		t.Fatal("the bearer row was touched")
+	}
+}
+
+// v6DDL is the schema a version-6 binary created on a fresh database, frozen
+// here so that step 7's ALTERs are exercised by a fixture that does not carry
+// the new columns already (this binary's migrateBase does). Copied from
+// migrateBase as it stood at a0e5954, plus the slug index step 1 creates.
+var v6DDL = []string{
+	`CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+	`CREATE TABLE upstreams (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		slug TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		url TEXT NOT NULL,
+		transport TEXT NOT NULL,
+		auth_type TEXT NOT NULL,
+		auth_config TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		last_test_at TEXT,
+		last_test_ok INTEGER
+	)`,
+	`CREATE UNIQUE INDEX upstreams_slug ON upstreams (slug)`,
+	`CREATE TABLE groups (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		upstream_ids TEXT NOT NULL DEFAULT '[]',
+		tool_filter TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE TABLE virtual_keys (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		key_hash TEXT NOT NULL,
+		key_lookup TEXT NOT NULL UNIQUE,
+		key_prefix TEXT NOT NULL,
+		target_type TEXT NOT NULL,
+		target_id TEXT NOT NULL,
+		rate_limit INTEGER,
+		expires_at TEXT,
+		tool_allowlist TEXT NOT NULL DEFAULT '[]',
+		tool_denylist TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL,
+		last_used_at TEXT,
+		revoked_at TEXT,
+		metadata TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE audit_logs (
+		id TEXT PRIMARY KEY,
+		timestamp TEXT NOT NULL,
+		virtual_key_id TEXT NOT NULL,
+		virtual_key_name TEXT NOT NULL,
+		method TEXT NOT NULL,
+		tool_name TEXT NOT NULL DEFAULT '',
+		params TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		latency_ms INTEGER NOT NULL DEFAULT 0,
+		response_size_bytes INTEGER NOT NULL DEFAULT 0,
+		upstream_id TEXT NOT NULL DEFAULT '',
+		error_message TEXT NOT NULL DEFAULT '',
+		request_id TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX audit_logs_ts ON audit_logs (timestamp DESC)`,
+	`CREATE INDEX audit_logs_virtual_key ON audit_logs (virtual_key_id, timestamp DESC)`,
+	`CREATE TABLE admin_events (
+		id TEXT PRIMARY KEY,
+		timestamp TEXT NOT NULL,
+		actor TEXT NOT NULL,
+		action TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		resource_id TEXT NOT NULL,
+		resource_name TEXT NOT NULL DEFAULT '',
+		details TEXT NOT NULL DEFAULT '{}',
+		request_id TEXT NOT NULL DEFAULT '',
+		remote_addr TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX admin_events_ts ON admin_events (timestamp DESC)`,
+}
+
+// v6Fixture builds a database exactly as a version-6 binary left it: the
+// frozen v6DDL, one upstream and one virtual key in tsLayout spelling, and the
+// stamp 6, so the Open that follows runs step 7 and only step 7.
+func v6Fixture(t *testing.T, path string) {
+	t.Helper()
+	stmts := append([]string{}, v6DDL...)
+	stmts = append(stmts,
+		`INSERT INTO upstreams (id, name, slug, description, url, transport, auth_type, auth_config, enabled, created_at, updated_at)
+		 VALUES ('u1', 'GitHub', 'github', '', 'https://mcp.example/mcp', 'streamable-http', 'none', '', 1,
+		         '2026-01-01T10:00:00.000000000Z', '2026-01-01T10:00:00.000000000Z')`,
+		`INSERT INTO virtual_keys (id, name, key_hash, key_lookup, key_prefix, target_type, target_id, tool_allowlist, tool_denylist, created_at, metadata)
+		 VALUES ('k1', 'bot', '', 'l1', 'pory_k1', 'upstream', 'u1', '["read_issue"]', '[]', '2026-01-01T10:00:00.000000000Z', '')`,
+		`INSERT INTO schema_meta (key, value) VALUES ('schema_version', '6')`,
+	)
+	preChangeDB(t, path, stmts)
+}
+
+// TestMigrateStep7AddsRelayColumns covers PORM-146 security requirement 8 and
+// the migration criterion: a version-6 database opens, gains kind, test_path
+// and http_methods through step 7's ALTERs, and every existing row reads as an
+// MCP server with an empty method list.
+func TestMigrateStep7AddsRelayColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v6.db")
+	v6Fixture(t, path)
+	const upCols = `SELECT name FROM pragma_table_info('upstreams') WHERE name IN ('kind', 'test_path') ORDER BY name`
+	const keyCols = `SELECT name FROM pragma_table_info('virtual_keys') WHERE name = 'http_methods'`
+	if got := rawTuples(t, path, upCols); len(got) != 0 {
+		t.Fatalf("v6 fixture already has %v; the ALTERs would not run", got)
+	}
+	if got := rawTuples(t, path, keyCols); len(got) != 0 {
+		t.Fatalf("v6 fixture already has %v; the ALTERs would not run", got)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := s.LastMigration(); !got.Applied || got.Version != schemaVersion {
+		t.Errorf("LastMigration() = %+v, want Applied at %d", got, schemaVersion)
+	}
+	if got := rawTuples(t, path, upCols); strings.Join(got, ",") != "kind,test_path" {
+		t.Errorf("upstream columns after step 7 = %v, want kind,test_path", got)
+	}
+	if got := rawTuples(t, path, keyCols); strings.Join(got, ",") != "http_methods" {
+		t.Errorf("virtual key columns after step 7 = %v, want http_methods", got)
+	}
+	// The migrated table matches a fresh one column for column, DEFAULT text
+	// included, which is the byte-for-byte rule step 7's comment states.
+	fresh := testStore(t)
+	for _, table := range []string{"upstreams", "virtual_keys"} {
+		a, b := tableColumns(t, fresh, table), tableColumns(t, s, table)
+		if strings.Join(a, "\n") != strings.Join(b, "\n") {
+			t.Errorf("%s columns differ after step 7:\nfresh:    %v\nmigrated: %v", table, a, b)
+		}
+	}
+
+	ctx := context.Background()
+	u, err := s.GetUpstream(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Kind != models.KindMCP || u.TestPath != "" {
+		t.Errorf("pre-existing upstream reads kind=%q test_path=%q, want mcp and empty", u.Kind, u.TestPath)
+	}
+	k, err := s.GetVirtualKey(ctx, "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.HTTPMethods == nil || len(k.HTTPMethods) != 0 || k.MethodsMalformed || k.ListsMalformed {
+		t.Errorf("pre-existing key reads http_methods=%v malformed=%v lists_malformed=%v, want [] false false",
+			k.HTTPMethods, k.MethodsMalformed, k.ListsMalformed)
+	}
+	if got := rawTuples(t, path, `SELECT http_methods FROM virtual_keys WHERE id = 'k1'`); strings.Join(got, "") != "[]" {
+		t.Errorf("http_methods column after step 7 = %v, want the text []", got)
+	}
+}
+
+// TestCorruptHTTPMethodsSurviveAnUpdate is TestCorruptKeyListSurvivesAnUpdate
+// for http_methods (PORM-146 security requirement 8): a column that does not
+// read as a normalised array marks the key, and a rename, a rotation and a
+// revocation leave the bytes exactly as found, so the relay keeps refusing
+// instead of allowing every method.
+func TestCorruptHTTPMethodsSurviveAnUpdate(t *testing.T) {
+	// Subtests are named by hand: a name with "#" in it (which Go invents for
+	// an empty one) lands in the temp dir path, and a "#" in a file: DSN is a
+	// fragment delimiter, so the store would open a truncated path.
+	for _, c := range []struct{ name, raw string }{
+		{"not_json", `not json`}, {"empty", ``}, {"null", `null`}, {"unknown_verb", `["FETCH"]`},
+		{"lower_case", `["get"]`}, {"unsorted", `["POST","GET"]`}, {"duplicate", `["GET","GET"]`},
+	} {
+		corrupt := c.raw
+		t.Run(c.name, func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			k := &models.VirtualKey{
+				ID: "k1", Name: "bot", KeyHash: "h", KeyLookup: "l1", KeyPrefix: "pory_k1",
+				TargetType: models.TargetUpstream, TargetID: "u1", CreatedAt: time.Now().UTC(),
+				HTTPMethods: []string{"GET"},
+			}
+			if err := s.CreateVirtualKey(ctx, k); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.db.Exec(`UPDATE virtual_keys SET http_methods = ? WHERE id = 'k1'`, corrupt); err != nil {
+				t.Fatal(err)
+			}
+			column := func() string {
+				var v string
+				if err := s.db.QueryRow(`SELECT http_methods FROM virtual_keys WHERE id = 'k1'`).Scan(&v); err != nil {
+					t.Fatal(err)
+				}
+				return v
+			}
+			got, err := s.GetVirtualKey(ctx, "k1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.MethodsMalformed || got.HTTPMethods != nil {
+				t.Fatalf("seeded %q read back malformed=%v methods=%v; want marked and nil", corrupt, got.MethodsMalformed, got.HTTPMethods)
+			}
+			if got.ListsMalformed {
+				t.Fatalf("a corrupt http_methods must not read as corrupt tool lists")
+			}
+			// Rename, rotate (new lookup and prefix), revoke: the three writes
+			// that go through UpdateVirtualKey on a row read from the store.
+			got.Name = "renamed"
+			if err := s.UpdateVirtualKey(ctx, got); err != nil {
+				t.Fatalf("rename: %v", err)
+			}
+			got.KeyLookup, got.KeyPrefix = "l2", "pory_k2"
+			if err := s.UpdateVirtualKey(ctx, got); err != nil {
+				t.Fatalf("rotate: %v", err)
+			}
+			now := time.Now().UTC()
+			got.RevokedAt = &now
+			if err := s.UpdateVirtualKey(ctx, got); err != nil {
+				t.Fatalf("revoke: %v", err)
+			}
+			if v := column(); v != corrupt {
+				t.Errorf("http_methods = %q after the updates, want %q unchanged", v, corrupt)
+			}
+			after, err := s.GetVirtualKey(ctx, "k1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !after.MethodsMalformed {
+				t.Error("the key read back unmarked after an update; every method on it is permitted again")
+			}
+			if after.Name != "renamed" || after.RevokedAt == nil || after.KeyLookup != "l2" {
+				t.Errorf("the other columns did not land: %+v", after)
+			}
+		})
+	}
+}
+
+// TestVirtualKeyHTTPMethodsRoundTrip pins the column's one spelling: a
+// normalised list reads back equal, and a nil list is written as the text []
+// and reads back as an empty, non-nil list.
+func TestVirtualKeyHTTPMethodsRoundTrip(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	mk := func(id string, methods []string) *models.VirtualKey {
+		return &models.VirtualKey{
+			ID: id, Name: id, KeyHash: "h", KeyLookup: "l-" + id, KeyPrefix: "pory_" + id,
+			TargetType: models.TargetUpstream, TargetID: "u1", CreatedAt: time.Now().UTC(),
+			HTTPMethods: methods,
+		}
+	}
+	if err := s.CreateVirtualKey(ctx, mk("k1", []string{"GET", "POST"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateVirtualKey(ctx, mk("k2", nil)); err != nil {
+		t.Fatal(err)
+	}
+	k1, err := s.GetVirtualKey(ctx, "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(k1.HTTPMethods, ",") != "GET,POST" || k1.MethodsMalformed {
+		t.Errorf("k1 = %v malformed=%v", k1.HTTPMethods, k1.MethodsMalformed)
+	}
+	k2, err := s.GetVirtualKey(ctx, "k2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k2.HTTPMethods == nil || len(k2.HTTPMethods) != 0 || k2.MethodsMalformed {
+		t.Errorf("k2 = %#v malformed=%v, want an empty non-nil list", k2.HTTPMethods, k2.MethodsMalformed)
+	}
+	var raw string
+	if err := s.db.QueryRow(`SELECT http_methods FROM virtual_keys WHERE id = 'k2'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw != "[]" {
+		t.Errorf("nil list stored as %q, want []", raw)
+	}
+	// An update with nil writes [] too, never null.
+	k1.HTTPMethods = nil
+	if err := s.UpdateVirtualKey(ctx, k1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT http_methods FROM virtual_keys WHERE id = 'k1'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw != "[]" {
+		t.Errorf("nil list updated as %q, want []", raw)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -128,7 +129,7 @@ func TestMetaRoundTrip(t *testing.T) {
 	if v, err := s.Meta(ctx, EncryptionKeyFPKey); err != nil || v != "fedcba9876543210" {
 		t.Fatalf("after two upserts: got (%q, %v)", v, err)
 	}
-	if v, _ := s.Meta(ctx, schemaVersionKey); v != "6" {
+	if v, _ := s.Meta(ctx, schemaVersionKey); v != strconv.Itoa(schemaVersion) {
 		t.Fatalf("schema_version through Meta = %q", v)
 	}
 }
