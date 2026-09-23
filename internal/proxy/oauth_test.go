@@ -387,6 +387,38 @@ func TestReconnectEndsOpenStream(t *testing.T) {
 	}
 }
 
+// A reconnect at a vendor that issues no refresh token is still a new grant:
+// two sets with empty refresh tokens are told apart by their access tokens.
+func TestReconnectWithoutRefreshTokenEndsOpenStream(t *testing.T) {
+	setBudget(t, &streamRecheckBudget, 50*time.Millisecond)
+	f, s, ls, id, u, gone := openOAuthStream(t)
+	first := storedSet(t, f, u.ID)
+	first.RefreshToken = ""
+	raw, _ := json.Marshal(first)
+	enc, _ := f.H.keys.Seal(raw)
+	// The stream opened on a set with a refresh token; make the baseline a
+	// set without one through a refresh-shaped swap (bytes only).
+	if err := f.Store.SwapUpstreamAuth(context.Background(), u.ID, u.AuthConfig, []byte(enc)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond) // absorbed at a recheck
+	other := oauthSet(s, u.URL, time.Now().Add(time.Hour))
+	other.RefreshToken = ""
+	raw, _ = json.Marshal(other)
+	enc, _ = f.H.keys.Seal(raw)
+	if err := f.Store.ConnectUpstreamAuth(context.Background(), u.ID, []byte(enc), u.UpdatedAt, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ls.end(t, time.Second); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("stream ended with %v", err)
+	}
+	<-gone
+	row := oneRow(t, f, id)
+	if row.Status != models.StatusError || row.ErrorMessage != errUpstreamChanged.Error() {
+		t.Fatalf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
+	}
+}
+
 func TestDisconnectEndsOpenStream(t *testing.T) {
 	setBudget(t, &streamRecheckBudget, 50*time.Millisecond)
 	f, _, ls, id, u, gone := openOAuthStream(t)

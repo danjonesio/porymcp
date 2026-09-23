@@ -542,7 +542,7 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 // compares equal bytes rather than a rotated refresh token against the one
 // the stream opened with (PORM-139). A refresh and a rename inside one
 // recheck interval still end the stream; that window is the limit recorded
-// in docs/03-api.md.
+// in docs/07-security.md.
 func (h *Handler) recheck(r *http.Request, row *streamRow) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
@@ -629,8 +629,12 @@ func (h *Handler) upstreamChanged(was, now *models.Upstream) bool {
 }
 
 // sameGrant reports whether two sealed oauth blobs hold the same grant: the
-// same refresh token, client and issuer. One AES-GCM open per blob, on the
-// rare recheck where both the bytes and updated_at moved.
+// same refresh token, client and issuer. A vendor that issues no refresh
+// token leaves nothing but the access token to tell two sign-ins apart, so
+// two empty refresh tokens compare the access tokens instead: only a connect
+// moves updated_at together with such a set, and a connect is a new grant.
+// One AES-GCM open per blob, on the rare recheck where both the bytes and
+// updated_at moved.
 func (h *Handler) sameGrant(a, b []byte) bool {
 	var sets [2]models.OAuthTokenSet
 	for i, blob := range [][]byte{a, b} {
@@ -639,7 +643,13 @@ func (h *Handler) sameGrant(a, b []byte) bool {
 			return false
 		}
 	}
-	return sets[0].RefreshToken == sets[1].RefreshToken && sets[0].ClientID == sets[1].ClientID && sets[0].Issuer == sets[1].Issuer
+	if sets[0].ClientID != sets[1].ClientID || sets[0].Issuer != sets[1].Issuer {
+		return false
+	}
+	if sets[0].RefreshToken == "" && sets[1].RefreshToken == "" {
+		return sets[0].AccessToken == sets[1].AccessToken
+	}
+	return sets[0].RefreshToken == sets[1].RefreshToken
 }
 
 // StopStreams ends every open stream and every stream that starts after it:

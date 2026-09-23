@@ -377,7 +377,13 @@
   target checks: a key that is revoked, expired, rotated or retargeted, an
   upstream removed from the key's route, or an upstream whose URL, transport
   or credential changed since the stream opened, ends the stream; a store
-  error during that check is logged and the stream stays open.
+  error during that check is logged and the stream stays open. On an
+  `oauth` upstream a token refresh rewrites the credential without being a
+  change: the check adopts the refreshed row as its baseline, so a rename
+  after a refresh keeps the stream, while a connect or a disconnect (a new
+  grant, told apart by the refresh token, or by the access token when the
+  vendor issues none) ends it. A refresh and a rename that land inside the
+  same minute still end the stream; the next call reopens it.
 - **The routing headers are compared with the body before anything is
   forwarded.** The tool gate still reads the body and only the body, so a
   header can neither open nor close a rule; the comparison is there because a
