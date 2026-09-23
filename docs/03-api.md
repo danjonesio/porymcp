@@ -1220,6 +1220,7 @@ refusal. The management API's error shape is unchanged.
 | `400` | `path escapes the upstream base` | a dot segment or a join that leaves the base | `error`, no dial |
 | `400` | `request carries the virtual key` | the key in the path or the query | `error`, no dial |
 | `400` | `invalid body` | the body could not be read | none, as on `/mcp` |
+| `400` | `upstream is disabled` | the key's one HTTP API upstream is disabled | `error`, no dial, as on `/mcp` |
 | `413` | `request body too large` | more than 8 MiB | `error`, no dial |
 | `429` | `rate limit exceeded`, with `Retry-After` in whole seconds | the key's `rate_limit` | `blocked` |
 | `502` | `upstream request failed` | the credential could not be used, a `3xx` other than `304`, a transport failure, the 5 minute budget, an answer over 16 MiB, or a `1xx` status | `error`, with the cause on the row as on `/mcp` (`docs/03-api.md`, Upstream failures) |

@@ -353,6 +353,10 @@ func TestVirtualKeyHTTPMethodsAPI(t *testing.T) {
 	db.Close()
 	if got := getJSON(t, h, "/virtual-keys/"+kid); got["http_methods_malformed"] != true {
 		t.Fatalf("malformed not reported: %v", got)
+	} else if list, ok := got["http_methods"].([]any); !ok || len(list) != 0 {
+		// Never null on the wire: the flag says the list is unreadable, and
+		// the value reads [] as the docs and the OpenAPI file say.
+		t.Fatalf("http_methods on a malformed key = %v (%T), want []", got["http_methods"], got["http_methods"])
 	}
 	patchVirtualKeyJSON(t, h, kid, map[string]any{"name": "renamed again"})
 	if got := getJSON(t, h, "/virtual-keys/"+kid); got["http_methods_malformed"] != true {

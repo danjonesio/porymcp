@@ -555,6 +555,8 @@ export default function VirtualKeysPage() {
                       : 'This upstream is no longer there, so there are no tools to tick.'
                 }
               />
+              ) : groupTarget ? (
+                <Text>This group has no MCP servers, so there are no tools to tick.</Text>
               ) : null}
               {blocked ? <p className={errorLine}>{blocked}</p> : null}
             </FieldGroup>
