@@ -423,7 +423,7 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	typeChanged := in.AuthType.Has() && in.AuthType.Value != u.AuthType
 	acrossOAuth := typeChanged && (u.AuthType == models.AuthOAuth || in.AuthType.Value == models.AuthOAuth)
 	clearAuth := (in.AuthType.Has() && in.AuthType.Value == models.AuthNone) ||
-		(u.AuthType == models.AuthOAuth && urlChanged) ||
+		(u.AuthType == models.AuthOAuth && urlChanged && !in.AuthConfig.Has()) ||
 		(acrossOAuth && !in.AuthConfig.Has())
 	cleared := clearAuth && len(u.AuthConfig) > 0
 	// droppedTokens is the one removal the length test cannot see: a stored

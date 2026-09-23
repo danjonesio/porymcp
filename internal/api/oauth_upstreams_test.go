@@ -278,6 +278,38 @@ func TestPatchOAuthURLDropsTokens(t *testing.T) {
 	}
 }
 
+// A client or a credential sent in the same body as a URL change is kept:
+// the URL clause of clearAuth yields to a carried auth_config, as the type
+// clause does.
+func TestPatchOAuthURLChangeKeepsCarriedClient(t *testing.T) {
+	s, h, st := testAPI(t)
+	stub := oauthstub.New(t)
+	id, _ := mustUpstream(t, h, "Vendor", map[string]any{"url": stub.MCPURL(), "auth_type": "oauth"})
+	storeOAuthSet(t, s, st, id, connectedSet(stub, stub.MCPURL()))
+	rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"url": stub.URL() + "/other", "auth_config": map[string]string{"client_id": "mine"}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH: %d %s", rr.Code, rr.Body.String())
+	}
+	set, ok := storedOAuthSet(t, s, st, id)
+	if !ok || set.ClientID != "mine" || set.AccessToken != "" {
+		t.Fatalf("stored %+v ok=%v, want the carried client alone", set, ok)
+	}
+	if d := detailsOf(t, st, models.ActionUpstreamUpdate); !strings.Contains(d, `"cleared":["credential"]`) || !strings.Contains(d, `"auth_changed":true`) {
+		t.Fatalf("details %s", d)
+	}
+	// And out of oauth with a bearer token in the same body as the URL.
+	id2, _ := mustUpstream(t, h, "Vendor2", map[string]any{"url": stub.MCPURL(), "auth_type": "oauth"})
+	storeOAuthSet(t, s, st, id2, connectedSet(stub, stub.MCPURL()))
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+id2, "test-admin", map[string]any{"url": stub.URL() + "/other", "auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH 2: %d %s", rr.Code, rr.Body.String())
+	}
+	u2, _ := st.GetUpstream(context.Background(), id2)
+	if plain, err := credential.Read(s.keys, models.AuthBearer, u2.AuthConfig); err != nil || string(plain) != `{"token":"sk"}` {
+		t.Fatalf("stored %s %v", plain, err)
+	}
+}
+
 func TestPatchOAuthNameKeepsTokens(t *testing.T) {
 	s, h, st := testAPI(t)
 	stub := oauthstub.New(t)
