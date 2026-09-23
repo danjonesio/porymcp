@@ -199,6 +199,32 @@ func TestNoSecondCredentialCarryingHTTPClient(t *testing.T) {
 	}
 }
 
+// TestOAuthStubNeverImported keeps the test-only authorization server out of
+// the binary (PORM-139 security requirement 13). oauthstub is a non-test
+// package so five packages' tests can share it; nothing but a _test.go file
+// may import it.
+func TestOAuthStubNeverImported(t *testing.T) {
+	const stub = `"github.com/danjonesio/porymcp/internal/mcpclient/oauthstub"`
+	for _, root := range []string{"../../internal", "../../cmd"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(b), stub) {
+				t.Errorf("%s imports oauthstub, which is test-only", strings.TrimPrefix(filepath.ToSlash(path), "../../"))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // The shapes that build or reach for a client PoryMCP did not configure. The
 // selector list matters as much as the composite literal: http.DefaultClient
 // and the http.Get/Post/Head/PostForm helpers that use it have no
