@@ -94,6 +94,13 @@ export type Upstream = {
    * the browser.
    */
   auth_hint?: { header?: string }
+  /**
+   * Present on an oauth row whose stored blob is absent or opens (PORM-139).
+   * `expires_at` null means not connected. Never a token, a secret, an
+   * issuer URL, a scope or an endpoint. `client_source` is document,
+   * registered or supplied, or null before any client is known.
+   */
+  oauth?: UpstreamOAuth
   // Required and nullable, not the `field?: string` this file uses elsewhere: the
   // Status cell is three-state, so "never tested" has to arrive as an explicit
   // null rather than as a missing key, and an Upstream is only ever produced by
@@ -264,6 +271,56 @@ export type AdminEventDetails = {
   target_type?: string
   target_id?: string
   key_prefix?: string
+  /** The OAuth connect and disconnect events (PORM-139). */
+  client?: string
+  refresh_token?: boolean
+  issuer?: string
+  vendor_revocation?: string
+}
+
+export type UpstreamOAuth = {
+  expires_at: string | null
+  has_refresh_token: boolean
+  client_source: string | null
+}
+
+/** What POST /upstreams/{id}/oauth/start answers: the URL the browser is sent to. */
+export type OAuthStart = {
+  authorization_url: string
+  expires_in: number
+  issuer: string
+  client: string
+}
+
+/** What POST /upstreams/{id}/oauth/revoke answers: the row after the clear, and what the vendor said. */
+export type OAuthRevokeResult = {
+  upstream: Upstream
+  vendor_revocation: 'revoked' | 'failed' | 'not_offered' | 'no_token' | string
+}
+
+/** The Client ID Metadata Document, served without a key; the dashboard reads the redirect URI from it. */
+export type OAuthClientMetadata = {
+  client_id: string
+  redirect_uris: string[]
+}
+
+/**
+ * Start a sign-in for an oauth upstream. `client: 'registered'` forces
+ * dynamic registration where the vendor cannot fetch this PoryMCP's client
+ * document. body: '{}' follows discover: api() only sets Content-Type when
+ * there is a body.
+ */
+export function oauthStart(id: string, body?: { client?: 'document' | 'registered' }): Promise<OAuthStart> {
+  return api<OAuthStart>(`/upstreams/${id}/oauth/start`, { method: 'POST', body: JSON.stringify(body ?? {}) })
+}
+
+/** Disconnect an oauth upstream: the vendor is asked to revoke, then the stored value is removed. */
+export function oauthRevoke(id: string): Promise<OAuthRevokeResult> {
+  return api<OAuthRevokeResult>(`/upstreams/${id}/oauth/revoke`, { method: 'POST', body: '{}' })
+}
+
+export function oauthClientMetadata(): Promise<OAuthClientMetadata> {
+  return api<OAuthClientMetadata>('/oauth/client-metadata')
 }
 
 /** One successful management-plane change, as GET /api/v1/admin-events returns it. Every key is always present. */

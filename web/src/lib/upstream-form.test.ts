@@ -2,10 +2,19 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Upstream } from './api.ts'
 import {
+  AUTH_TYPE_LABELS,
+  CLIENT_SECRET_ALONE,
+  CONNECTION_FIELDS,
   DEFAULT_HEADER,
   TRANSPORT_LABELS,
+  authConfigFrom,
   blankUpstreamForm,
   clearStoredDescription,
+  clientSecretAlone,
+  credentialTyped,
+  oauthDescription,
+  urlChangeDescription,
+  urlChanged,
   credentialHelp,
   credentialRequired,
   editCredentialDescription,
@@ -150,6 +159,9 @@ test('blankUpstreamForm: equals the initial state the Add dialog has always had,
     token: '',
     header: DEFAULT_HEADER,
     value: '',
+    client_id: '',
+    client_secret: '',
+    register_client: false,
     enabled: true,
     clear_stored: false,
   })
@@ -381,4 +393,110 @@ test('upstreamPatchBody: sends streamable-http when the sse row is repaired', ()
 
 test('TRANSPORT_LABELS: offers streamable-http alone', () => {
   assert.deepEqual(Object.keys(TRANSPORT_LABELS), ['streamable-http'])
+})
+
+// PORM-139: the oauth auth type in the two dialogs.
+
+/** An oauth row as GET /upstreams returns it, connected with a refresh token. */
+function oauthUp(over: Partial<Upstream> = {}): Upstream {
+  return up({
+    auth_type: 'oauth',
+    auth_hint: undefined,
+    oauth: { expires_at: '2026-09-23T11:00:00Z', has_refresh_token: true, client_source: 'document' },
+    ...over,
+  })
+}
+
+test('AUTH_TYPE_LABELS: offers OAuth', () => {
+  assert.equal(AUTH_TYPE_LABELS.oauth, 'OAuth')
+})
+
+test('CONNECTION_FIELDS: the client boxes never reset the Discover panel', () => {
+  for (const f of ['client_id', 'client_secret', 'register_client']) {
+    assert.equal((CONNECTION_FIELDS as readonly string[]).includes(f), false, f)
+  }
+})
+
+test('credentialRequired: never for an oauth target, still for a switch away from oauth', () => {
+  assert.equal(credentialRequired(up(), edit(up(), { auth_type: 'oauth' })), false)
+  assert.equal(credentialRequired(up({ auth_type: 'none', auth_configured: false, auth_status: 'none' }), edit(up(), { auth_type: 'oauth' })), false)
+  assert.equal(credentialRequired(oauthUp(), edit(oauthUp())), false)
+  assert.equal(credentialRequired(oauthUp(), edit(oauthUp(), { auth_type: 'bearer' })), true)
+  assert.equal(credentialRequired(oauthUp(), edit(oauthUp(), { auth_type: 'none' })), false)
+})
+
+test('authConfigFrom: an oauth client goes with its id, alone or with a secret, never as a secret alone and never as {}-with-keys', () => {
+  const base = { auth_type: 'oauth', token: '', header: '', value: '' }
+  assert.deepEqual(authConfigFrom({ ...base, client_id: '', client_secret: '' }), {})
+  assert.deepEqual(authConfigFrom({ ...base, client_id: ' mine ', client_secret: '' }), { client_id: 'mine' })
+  assert.deepEqual(authConfigFrom({ ...base, client_id: 'mine', client_secret: 's' }), { client_id: 'mine', client_secret: 's' })
+  assert.deepEqual(authConfigFrom({ ...base, client_id: '', client_secret: 's' }), {})
+  assert.equal(clientSecretAlone({ ...base, client_id: '', client_secret: 's' }), true)
+  assert.equal(clientSecretAlone({ ...base, client_id: 'mine', client_secret: 's' }), false)
+  assert.equal(clientSecretAlone({ auth_type: 'bearer', client_id: '', client_secret: 's' }), false)
+  assert.equal(CLIENT_SECRET_ALONE, 'Enter the client ID that goes with this secret.')
+  assert.equal(credentialTyped({ ...base, client_id: 'mine' }), true)
+  assert.equal(credentialTyped({ ...base, client_id: '' }), false)
+})
+
+test('upstreamCreateBody: an oauth create with no client sends an empty auth_config, which stores nothing', () => {
+  const body = upstreamCreateBody({ ...blankUpstreamForm(), name: 'Linear', url: 'https://mcp.example/mcp', auth_type: 'oauth' }, false)
+  assert.equal(body.auth_type, 'oauth')
+  assert.deepEqual(body.auth_config, {})
+})
+
+test('upstreamPatchBody: sends the client only when an id was typed, and never on a rename', () => {
+  const before = oauthUp()
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { name: 'Renamed' })), { name: 'Renamed' })
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { client_id: 'mine', client_secret: 's' })), {
+    auth_config: { client_id: 'mine', client_secret: 's' },
+  })
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { client_secret: 's' })), {})
+  // A switch to oauth from bearer sends the type alone; the server clears the old blob.
+  assert.deepEqual(upstreamPatchBody(up(), edit(up(), { auth_type: 'oauth' })), { auth_type: 'oauth' })
+})
+
+test('urlChanged and urlChangeDescription: an oauth row disconnects on a URL change instead of moving its credential', () => {
+  const bearer = up()
+  assert.equal(urlChanged(bearer, { url: 'https://other.example/mcp' }), true)
+  assert.equal(urlChangeDescription(bearer, { url: 'https://other.example/mcp' }), 'PoryMCP sends the stored credential to the new address from the next request.')
+  assert.equal(urlChanged(oauthUp(), { url: 'https://other.example/mcp' }), false)
+  assert.equal(urlChangeDescription(oauthUp(), { url: 'https://other.example/mcp' }), 'Saving a new URL disconnects this upstream. Connect it again afterwards.')
+  assert.equal(urlChangeDescription(oauthUp({ auth_configured: false, auth_status: 'unreadable' }), { url: 'https://other.example/mcp' }), null)
+  assert.equal(urlChangeDescription(oauthUp(), { url: ' https://api.example.com/mcp ' }), null)
+  assert.equal(urlChangeDescription(undefined, { url: 'x' }), null)
+  assert.equal(urlChangeDescription(up({ auth_status: 'unreadable' }), { url: 'https://other.example/mcp' }), null)
+})
+
+test('editCredentialDescription: switching to OAuth says what the save does, by whether a credential is stored', () => {
+  assert.equal(editCredentialDescription(up(), edit(up(), { auth_type: 'oauth' })), 'Saving removes the stored credential. Connect the upstream after saving.')
+  const bare = up({ auth_type: 'none', auth_configured: false, auth_status: 'none' })
+  assert.equal(editCredentialDescription(bare, edit(bare, { auth_type: 'oauth' })), 'Connect the upstream after saving.')
+})
+
+test('oauthDescription and credentialHelp: one sentence per state, reading the same status the badge reads', () => {
+  const notConnected = oauthUp({ auth_configured: false, auth_status: 'unreadable', oauth: { expires_at: null, has_refresh_token: false, client_source: null } })
+  assert.equal(oauthDescription(notConnected), "Not connected. Press Connect on the upstream's row to sign in to the vendor.")
+  assert.equal(credentialHelp(notConnected, edit(notConnected)), oauthDescription(notConnected))
+  assert.equal(oauthDescription(oauthUp()), 'Connected. PoryMCP renews the access token before it expires.')
+  assert.equal(
+    oauthDescription(oauthUp({ oauth: { expires_at: '2026-09-23T11:00:00Z', has_refresh_token: false, client_source: 'document' } })),
+    'Connected. The vendor issued no refresh token, so the connection ends at the time shown in the table. Press Connect on the row again after that.',
+  )
+  assert.equal(
+    oauthDescription(oauthUp({ auth_status: 'expired' })),
+    "The vendor refused to renew the access token, or it lapsed with no refresh token. Press Connect on the upstream's row to sign in again.",
+  )
+  assert.equal(
+    oauthDescription(oauthUp({ auth_status: 'undecryptable' })),
+    'The stored token cannot be read with the current encryption key. Restore the key it was saved under, or press Connect to sign in again.',
+  )
+  assert.equal(editCredentialDescription(oauthUp(), edit(oauthUp())), oauthDescription(oauthUp()))
+})
+
+test('removeCredentialDescription: choosing None on a connected oauth row says the credential goes', () => {
+  assert.equal(
+    removeCredentialDescription(oauthUp(), edit(oauthUp(), { auth_type: 'none' })),
+    'Saving removes the stored credential. It cannot be recovered. Switching back later means entering it again.',
+  )
 })

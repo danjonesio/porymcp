@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { changedText, eventSentence } from './admin-event.ts'
+import { changedText, eventSentence, fromText } from './admin-event.ts'
 import type { AdminEvent, AdminEventDetails } from './api.ts'
 
 // Run with: npm test (node --test). The .ts extension above is required:
@@ -106,4 +106,32 @@ test('changedText: rotate shows the new prefix; revoke, delete and a no-op show 
 test('changedText: an unknown detail key is shown by name only, never its value', () => {
   const details = { fields: ['url'], region: { secret: 'never' } } as unknown as AdminEventDetails
   assert.equal(changedText(ev('upstream.update', details)), 'url, region')
+})
+
+// PORM-139: the three OAuth events.
+test('eventSentence: the OAuth verbs', () => {
+  assert.equal(eventSentence(ev('upstream.oauth_connect', {}, 'Linear')), 'Connected upstream Linear')
+  assert.equal(eventSentence(ev('upstream.oauth_refresh', {}, 'Linear')), 'Refreshed the token for upstream Linear')
+  assert.equal(eventSentence(ev('upstream.oauth_revoke', {}, 'Linear')), 'Disconnected upstream Linear')
+})
+
+test('changedText: the OAuth details read as words, and a refresh token that was issued says nothing', () => {
+  assert.equal(
+    changedText(ev('upstream.oauth_connect', { auth_type: 'oauth', client: 'document', refresh_token: true, issuer: 'mcp.example' })),
+    'client document, issuer mcp.example',
+  )
+  assert.equal(
+    changedText(ev('upstream.oauth_connect', { auth_type: 'oauth', client: 'registered', refresh_token: false, issuer: 'mcp.example' })),
+    'client registered, no refresh token, issuer mcp.example',
+  )
+  assert.equal(changedText(ev('upstream.oauth_refresh', {})), '')
+  assert.equal(changedText(ev('upstream.oauth_revoke', { cleared: ['credential'], vendor_revocation: 'revoked' })), 'credential cleared')
+  assert.equal(changedText(ev('upstream.oauth_revoke', { cleared: ['credential'], vendor_revocation: 'failed' })), 'credential cleared, vendor revocation failed')
+  assert.equal(changedText(ev('upstream.oauth_revoke', { cleared: ['credential'], vendor_revocation: 'not_offered' })), 'credential cleared, vendor revocation not offered')
+  assert.equal(changedText(ev('upstream.oauth_revoke', { cleared: ['credential'], vendor_revocation: 'no_token' })), 'credential cleared')
+})
+
+test('fromText: the address of the request, or the actor when there was none', () => {
+  assert.equal(fromText({ actor: 'admin', remote_addr: '203.0.113.10' }), '203.0.113.10')
+  assert.equal(fromText({ actor: 'proxy', remote_addr: '' }), 'proxy')
 })
