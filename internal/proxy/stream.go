@@ -567,7 +567,7 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 	if !up.Enabled {
 		return errUpstreamRemoved
 	}
-	if upstreamChanged(row.upstream, up) {
+	if h.upstreamChanged(row.upstream, up) {
 		return errUpstreamChanged
 	}
 	if vk.TargetType == models.TargetGroup {
@@ -596,9 +596,41 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 // upstreamChanged reports whether the fields a relayed request depends on
 // moved between the row read for the request and the row read now: where the
 // request goes and what credential it carries.
-func upstreamChanged(was, now *models.Upstream) bool {
-	return was.URL != now.URL || was.Transport != now.Transport ||
-		was.AuthType != now.AuthType || !bytes.Equal(was.AuthConfig, now.AuthConfig)
+//
+// For an oauth row the credential's bytes are not the credential (PORM-139):
+// a token refresh re-seals the blob about once an hour and leaves updated_at
+// alone, and a rekey re-seals every blob, neither of which is the upstream
+// the stream was opened against changing. So for two oauth rows a byte change
+// counts only when updated_at also moved (a connect, a disconnect or a PATCH
+// that wrote the credential) AND the two blobs open to different grants; a
+// rename after a refresh moves updated_at over new bytes and keeps the
+// stream, as d3b9df8 says a rename must. A blob that will not open counts as
+// changed.
+func (h *Handler) upstreamChanged(was, now *models.Upstream) bool {
+	if was.URL != now.URL || was.Transport != now.Transport || was.AuthType != now.AuthType {
+		return true
+	}
+	if bytes.Equal(was.AuthConfig, now.AuthConfig) {
+		return false
+	}
+	if was.AuthType != models.AuthOAuth || was.UpdatedAt.Equal(now.UpdatedAt) {
+		return was.AuthType != models.AuthOAuth
+	}
+	return !h.sameGrant(was.AuthConfig, now.AuthConfig)
+}
+
+// sameGrant reports whether two sealed oauth blobs hold the same grant: the
+// same refresh token, client and issuer. One AES-GCM open per blob, on the
+// rare recheck where both the bytes and updated_at moved.
+func (h *Handler) sameGrant(a, b []byte) bool {
+	var sets [2]models.OAuthTokenSet
+	for i, blob := range [][]byte{a, b} {
+		plain, _, err := h.keys.Open(string(blob))
+		if err != nil || json.Unmarshal(plain, &sets[i]) != nil {
+			return false
+		}
+	}
+	return sets[0].RefreshToken == sets[1].RefreshToken && sets[0].ClientID == sets[1].ClientID && sets[0].Issuer == sets[1].Issuer
 }
 
 // StopStreams ends every open stream and every stream that starts after it:
