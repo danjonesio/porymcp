@@ -317,9 +317,10 @@
   about 2.1 MiB of capture and a 32 KiB buffer, and is counted on the
   `stream opened` and `stream closed` log lines as `open_streams`. A cap is
   PORM-99. Once a minute an open stream re-runs the request path's key and
-  target checks: a key that is revoked, expired, rotated or retargeted, or an
-  upstream removed from the key's route, ends the stream; a store error during
-  that check is logged and the stream stays open.
+  target checks: a key that is revoked, expired, rotated or retargeted, an
+  upstream removed from the key's route, or an upstream edited since the
+  stream opened (a new URL, a rotated credential), ends the stream; a store
+  error during that check is logged and the stream stays open.
 - **The routing headers are compared with the body before anything is
   forwarded.** The tool gate still reads the body and only the body, so a
   header can neither open nor close a rule; the comparison is there because a

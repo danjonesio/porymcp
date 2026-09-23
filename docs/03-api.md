@@ -813,8 +813,9 @@ relayed as it arrives on a member or single-upstream endpoint: the headers and
 `X-Accel-Buffering: no` go out first, then every read reaches the client at
 once, keep-alive lines included. The stream stays open until the upstream or the
 client closes it, the upstream sends nothing for five minutes, the key stops
-being valid or the upstream stops being reachable through it (checked once a
-minute; a store error during that check leaves the stream open), or the proxy
+being valid or the upstream stops being reachable through it or is edited
+(checked once a minute; a store error during that check leaves the stream
+open), or the proxy
 stops; a client that closes it, or stops reading it for five minutes, cancels
 the upstream request. A `tools/list` answer, an answer with status 400 or above,
 an answer not labelled `text/event-stream`, and every answer on the group
@@ -1139,6 +1140,8 @@ and the raw body, as every row was before PORM-172.
 | The proxy stopped while a stream was open | `proxy stopped before the answer` |
 | The key was revoked, expired, rotated or retargeted while a stream was open | `virtual key no longer valid during the stream` |
 | The upstream was removed from the key's route while a stream was open | `upstream no longer reachable through the key during the stream` |
+| The upstream was edited (a new URL, a rotated credential) while a stream was open | `upstream changed during the stream` |
+| The upstream connection failed mid-stream | the read error, truncated to 256 bytes (`unexpected EOF` for a body that ended without its terminator) |
 
 A streamed row's `timestamp` is when the stream ended, its `latency_ms` the
 stream's whole life and its `response_size_bytes` the bytes relayed to the

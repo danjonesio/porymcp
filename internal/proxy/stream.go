@@ -181,7 +181,7 @@ func endByCause(ctx context.Context, r *http.Request, fallback streamEnd) (strea
 		return endIdle, cause
 	case errors.Is(cause, errStreamStopped):
 		return endStopped, cause
-	case errors.Is(cause, errStreamRevoked), errors.Is(cause, errUpstreamRemoved):
+	case errors.Is(cause, errStreamRevoked), errors.Is(cause, errUpstreamRemoved), errors.Is(cause, errUpstreamChanged):
 		return endRevoked, cause
 	case r.Context().Err() != nil:
 		return endClient, nil
@@ -243,6 +243,7 @@ type streamRow struct {
 	vk                                   *models.VirtualKey
 	requestID, method, auditMethod, tool string
 	upstreamID                           string
+	upstreamUpdatedAt                    time.Time
 	params                               json.RawMessage
 	start                                time.Time
 	wantID                               string
@@ -309,16 +310,25 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 	}
 	idleT := time.AfterFunc(idle, func() { cut(&budgetError{what: "sent nothing for", d: idle}) })
 	stop := context.AfterFunc(h.streams, func() { cut(errStreamStopped) })
+	// The re-check reads the store outside the lock, for up to its own 5 s,
+	// so a slow store cannot hold the idle and stop callbacks or the relay's
+	// exit; the done flag is read before it runs and again before it acts.
+	// The timer is assigned under the lock its callback reads it under.
 	var recheckT *time.Timer
+	mu.Lock()
 	recheckT = time.AfterFunc(recheck, func() {
-		var cause error
-		guard(func() { cause = h.recheck(r, row) })
-		if cause != nil {
+		live := false
+		guard(func() { live = true })
+		if !live {
+			return
+		}
+		if cause := h.recheck(r, row); cause != nil {
 			cut(cause)
 			return
 		}
 		guard(func() { recheckT.Reset(recheck) })
 	})
+	mu.Unlock()
 
 	open := h.openStreams.Add(1)
 	if h.log != nil {
@@ -401,13 +411,17 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 // recheck re-runs the request path's key and target checks for an open
 // stream. It returns the cause the stream ends with, or nil to keep it open. A
 // key that is gone, revoked, expired, rotated (its lookup changed) or pointed
-// at another target is no longer the key that was authenticated; an upstream
-// the route no longer resolves to is no longer reachable through it. The
-// checks are the ones the request path uses (VirtualKey.Status, resolveTargets,
-// resolveMember), not a second rule. A store that cannot be read leaves the
-// stream open and says so in the log: the proxy fails open here, because a
-// store hiccup ending every stream in the deployment would be worse than a
-// minute's delay on a revocation.
+// at another target is no longer the key that was authenticated
+// (VirtualKey.Status is the rule authenticate applies); an upstream that is
+// gone, disabled, or no longer in the group a member route serves is no
+// longer reachable through the key; an upstream edited since the stream
+// opened (its updated_at moved: a new URL, a rotated credential) is not the
+// upstream the stream was opened against. The rows are read one by one rather
+// than through resolveTargets, which skips a member it cannot read, so a read
+// that failed is told from a row that is gone. A store that cannot be read
+// leaves the stream open and says so in the log: the proxy fails open here,
+// because a store hiccup ending every stream in the deployment would be worse
+// than a minute's delay on a revocation.
 func (h *Handler) recheck(r *http.Request, row streamRow) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
@@ -429,27 +443,39 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 		vk.TargetType != row.vk.TargetType || vk.TargetID != row.vk.TargetID {
 		return errStreamRevoked
 	}
-	if row.memberPath {
-		up, _, err := h.resolveMember(ctx, vk, row.slug)
-		if err != nil {
-			warn(err)
-			return nil
-		}
-		if up == nil || up.ID != row.upstreamID {
-			return errUpstreamRemoved
-		}
-		return nil
-	}
-	ups, _, err := h.resolveTargets(ctx, vk)
+	up, err := h.store.GetUpstream(ctx, row.upstreamID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) || errors.Is(err, errUpstreamDisabled) || errors.Is(err, errNoUpstreams) {
+		if errors.Is(err, store.ErrNotFound) {
 			return errUpstreamRemoved
 		}
 		warn(err)
 		return nil
 	}
-	if len(ups) == 0 || ups[0].ID != row.upstreamID {
+	if !up.Enabled {
 		return errUpstreamRemoved
+	}
+	if !up.UpdatedAt.Equal(row.upstreamUpdatedAt) {
+		return errUpstreamChanged
+	}
+	if vk.TargetType == models.TargetGroup {
+		g, err := h.store.GetGroup(ctx, vk.TargetID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errUpstreamRemoved
+			}
+			warn(err)
+			return nil
+		}
+		member := false
+		for _, id := range g.UpstreamIDs {
+			if id == row.upstreamID {
+				member = true
+				break
+			}
+		}
+		if !member {
+			return errUpstreamRemoved
+		}
 	}
 	return nil
 }

@@ -74,6 +74,7 @@ var (
 	errStreamStopped   = errors.New("proxy stopped before the answer")
 	errStreamRevoked   = errors.New("virtual key no longer valid during the stream")
 	errUpstreamRemoved = errors.New("upstream no longer reachable through the key during the stream")
+	errUpstreamChanged = errors.New("upstream changed during the stream")
 )
 
 // upstreamContext derives the context one upstream request runs under. The

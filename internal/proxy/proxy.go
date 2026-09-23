@@ -606,7 +606,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 				disarm()
 				h.relayStream(w, r, ctx, cancel, resp, streamRow{
 					vk: vk, requestID: requestID, method: method, auditMethod: auditMethod,
-					tool: truncate(tool, auditFieldBytes), upstreamID: up.ID,
+					tool: truncate(tool, auditFieldBytes), upstreamID: up.ID, upstreamUpdatedAt: up.UpdatedAt,
 					params: boundedParams(req.Params), start: start,
 					wantID:     strings.TrimSpace(string(req.ID)),
 					memberPath: memberPath, slug: chi.URLParam(r, SlugParam),

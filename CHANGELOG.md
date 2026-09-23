@@ -21,8 +21,9 @@ Behaviour changes that affect a running deployment. Newest first.
 - **A streamed row is written when the stream ends**, with the bytes relayed
   and the latency to the end. **A `subscriptions/listen` row is `success` when
   the client closes the stream**, because closing it is how a listen ends.
-- **A key that is revoked, expired, rotated or retargeted, or an upstream
-  removed from it, ends its open streams within a minute.**
+- **A key that is revoked, expired, rotated or retargeted, an upstream removed
+  from it, or an upstream edited since the stream opened, ends its open
+  streams within a minute.**
 - **The proxy sets `X-Accel-Buffering: no` on streams.** nginx operators keep
   `proxy_buffering off` for the rest.
 - **Shutdown ends open streams and the audit queue is drained before exit**; a

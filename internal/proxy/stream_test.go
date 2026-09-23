@@ -690,12 +690,28 @@ func TestRevokedKeyEndsItsStream(t *testing.T) {
 	})
 }
 
-// failingKeyStore is the fixture's store with one read that fails, so the
-// re-check's fail-open rule can be seen.
-type failingKeyStore struct{ store.Store }
+// failAfterStore is the fixture's store with a read that fails once the test
+// says so: the stream opens against a working store, then the re-check reads
+// a store that is down, so its fail-open rule can be seen. The two flags
+// cover the key read and the upstream read; the second, on the member route,
+// used to be hidden inside a resolver that skips a member it cannot read.
+type failAfterStore struct {
+	store.Store
+	keys, upstreams atomic.Bool
+}
 
-func (failingKeyStore) GetVirtualKey(context.Context, string) (*models.VirtualKey, error) {
-	return nil, errors.New("store unavailable")
+func (s *failAfterStore) GetVirtualKey(ctx context.Context, id string) (*models.VirtualKey, error) {
+	if s.keys.Load() {
+		return nil, errors.New("store unavailable")
+	}
+	return s.Store.GetVirtualKey(ctx, id)
+}
+
+func (s *failAfterStore) GetUpstream(ctx context.Context, id string) (*models.Upstream, error) {
+	if s.upstreams.Load() {
+		return nil, errors.New("store unavailable")
+	}
+	return s.Store.GetUpstream(ctx, id)
 }
 
 // Security requirement 12: an upstream the route no longer resolves to ends the
@@ -761,30 +777,73 @@ func TestRemovedUpstreamEndsItsStream(t *testing.T) {
 			t.Fatalf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
 		}
 	})
-	t.Run("store-error-fails-open", func(t *testing.T) {
+	t.Run("edited-on-key-route", func(t *testing.T) {
 		t.Parallel()
 		gone := make(chan struct{})
 		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: holdOpen(gone, sseFrame(ackDoc))}, nil, nil)
-		f.rebuild(failingKeyStore{f.Store})
-		logs := captureLogs(f)
 		srv := f.serve()
 		resp, id := open(t, f, srv, "/a1/mcp", listenRPC)
+		defer resp.Body.Close()
 		ls := readLines(resp.Body)
 		ls.event(t, 2*time.Second)
-		time.Sleep(120 * time.Millisecond) // two re-checks, each failing
-		if n := f.H.openStreams.Load(); n != 1 {
-			t.Fatalf("open_streams=%d after a failing re-check, want the stream still open", n)
+		ctx := context.Background()
+		up, err := f.Store.GetUpstream(ctx, "u1")
+		if err != nil {
+			t.Fatal(err)
 		}
-		resp.Body.Close()
+		// What the management API's PATCH does: a new URL and a fresh stamp.
+		up.URL = "https://rotated.example/mcp"
+		up.UpdatedAt = time.Now().UTC()
+		if err := f.Store.UpdateUpstream(ctx, up, false, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := ls.end(t, time.Second); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("stream ended with %v", err)
+		}
 		<-gone
 		row := oneRow(t, f, id)
-		if row.Status != models.StatusSuccess {
+		if row.Status != models.StatusError || row.ErrorMessage != errUpstreamChanged.Error() {
 			t.Fatalf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
 		}
-		if !strings.Contains(logs.String(), "stream re-check could not read the store") {
-			t.Fatalf("no warning for the failed re-check: %s", logs.String())
-		}
 	})
+	for name, tc := range map[string]struct {
+		path  string
+		build func(t *testing.T, spec upstreamSpec) *fixture
+		fail  func(*failAfterStore)
+	}{
+		"key-read-error-on-key-route": {"/a1/mcp", func(t *testing.T, spec upstreamSpec) *fixture {
+			return newSingleFixture(t, spec, nil, nil)
+		}, func(s *failAfterStore) { s.keys.Store(true) }},
+		"upstream-read-error-on-member-route": {"/a1/solo/mcp", singleMember,
+			func(s *failAfterStore) { s.upstreams.Store(true) }},
+	} {
+		t.Run(name+"-fails-open", func(t *testing.T) {
+			t.Parallel()
+			gone := make(chan struct{})
+			f := tc.build(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: holdOpen(gone, sseFrame(ackDoc))})
+			st := &failAfterStore{Store: f.Store}
+			f.rebuild(st)
+			logs := captureLogs(f)
+			srv := f.serve()
+			resp, id := open(t, f, srv, tc.path, listenRPC)
+			ls := readLines(resp.Body)
+			ls.event(t, 2*time.Second)
+			tc.fail(st)
+			time.Sleep(120 * time.Millisecond) // two re-checks, each failing
+			if n := f.H.openStreams.Load(); n != 1 {
+				t.Fatalf("open_streams=%d after a failing re-check, want the stream still open", n)
+			}
+			resp.Body.Close()
+			<-gone
+			row := oneRow(t, f, id)
+			if row.Status != models.StatusSuccess {
+				t.Fatalf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
+			}
+			if !strings.Contains(logs.String(), "stream re-check could not read the store") {
+				t.Fatalf("no warning for the failed re-check: %s", logs.String())
+			}
+		})
+	}
 }
 
 // countingStore counts key reads, so a re-check that outlives its stream shows
@@ -1049,6 +1108,7 @@ func TestStreamVerdictTable(t *testing.T) {
 		{"call stopped", "tools/call", "", false, endStopped, errStreamStopped, models.StatusError, "proxy stopped before the answer"},
 		{"call idle", "tools/call", "", false, endIdle, &budgetError{what: "sent nothing for", d: time.Minute}, models.StatusError, "upstream sent nothing for 1m0s"},
 		{"call upstream removed", "tools/call", "", false, endRevoked, errUpstreamRemoved, models.StatusError, errUpstreamRemoved.Error()},
+		{"call upstream changed", "tools/call", "", false, endRevoked, errUpstreamChanged, models.StatusError, errUpstreamChanged.Error()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
