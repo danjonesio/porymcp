@@ -419,12 +419,12 @@ var (
 	pageBusy      = callbackPage{Title: "This upstream was busy", Body: "PoryMCP was renewing the token for this upstream. Nothing was stored. Press Connect to try again."}
 )
 
-// vendorErrorCodes is RFC 6749 §4.1.2.1: the only error values a page may
-// name. Anything else prints the fixed refusal.
 // oauthLockWait is how long the callback waits for the per-upstream lock.
 // A variable so a test can shorten it.
 var oauthLockWait = 12 * time.Second
 
+// vendorErrorCodes is RFC 6749 §4.1.2.1: the only error values a page may
+// name. Anything else prints the fixed refusal.
 var vendorErrorCodes = map[string]bool{
 	"access_denied": true, "invalid_request": true, "unauthorized_client": true, "unsupported_response_type": true,
 	"invalid_scope": true, "server_error": true, "temporarily_unavailable": true,
