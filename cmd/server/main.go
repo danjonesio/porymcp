@@ -230,6 +230,20 @@ func reportToolPolicyProblems(ctx context.Context, st store.Store, log *slog.Log
 			}
 			log.Warn("upstream transport is not implemented; the proxy refuses every request to this upstream while it is enabled; set transport to streamable-http to restore it", attrs...)
 		}
+		switch u.Kind {
+		case models.KindMCP:
+		case models.KindHTTP:
+			// An HTTP API advertises no tools, so it stays out of the member
+			// index: a tool rule on an http-only target is accepted and
+			// ignored (PORM-146) and must not be reported as matching nothing.
+			continue
+		default:
+			// A hand-edited kind is served on no door (proxy.resolveTargets).
+			// The value is never logged: it is operator-written text.
+			log.Warn("upstream kind is not recognised; it serves on no endpoint until it is set to mcp or http",
+				"upstream_id", u.ID, "upstream_name", u.Name, "enabled", u.Enabled)
+			continue
+		}
 		// The row still goes into the index. Its slug is what the catalogue
 		// composes with and what a rule scoped to this upstream names, so
 		// dropping it would turn one true error into a pile of warnings that
@@ -312,6 +326,15 @@ func reportToolPolicyProblems(ctx context.Context, st store.Store, log *slog.Log
 	}
 
 	for _, k := range keys {
+		if k.MethodsMalformed {
+			// Before the tool-list branch, which continues, so a key with both
+			// columns unreadable logs both. The same rule as the tool lists:
+			// a PATCH that supplies http_methods repairs it, rotate and revoke
+			// leave the column exactly as found (PORM-146). The stored text
+			// is never logged.
+			log.Warn("virtual key http_methods could not be decoded; every request on its /api/ endpoint is refused until a PATCH supplies http_methods",
+				"virtual_key_id", k.ID, "virtual_key_name", k.Name)
+		}
 		if k.ListsMalformed {
 			// The message names the one edit that fixes it. Rotating or
 			// revoking the key does not: the store leaves both columns exactly
@@ -477,6 +500,15 @@ func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *s
 	// /api/v1/** is a Mount, whose static node chi prefers over {keyID} with
 	// no backtracking, so everything under the API keeps its own 404.
 	r.HandleFunc(proxy.MemberRoute, px.ServeMember)
+	// The HTTP relay doors (PORM-146). The static "api" child wins over
+	// {slug} at the second segment and "api" is a reserved slug, so
+	// /{keyID}/api/mcp is the relay with remainder "mcp" and no member can
+	// shadow the door; /api/v1 at the root stays the Mount's. chi's /x/*
+	// does not match /x, so the base URL has a route of its own.
+	r.HandleFunc(proxy.HTTPBaseRoute, px.ServeRelay)
+	r.HandleFunc(proxy.HTTPRoute, px.ServeRelay)
+	r.HandleFunc(proxy.HTTPMemberBaseRoute, px.ServeRelayMember)
+	r.HandleFunc(proxy.HTTPMemberRoute, px.ServeRelayMember)
 
 	if spa != nil {
 		r.NotFound(spa.ServeHTTP)

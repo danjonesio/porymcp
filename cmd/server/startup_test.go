@@ -627,3 +627,85 @@ func TestReportsUnsupportedTransportAtStartup(t *testing.T) {
 		}
 	}
 }
+
+// corruptMethods writes a value into one key's http_methods column that no
+// exported call could produce, as corruptDenylist does for the tool lists.
+func corruptMethods(t *testing.T, path, keyID, value string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file://"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE virtual_keys SET http_methods = ? WHERE id = ?`, value, keyID); err != nil {
+		t.Fatalf("corrupt http_methods: %v", err)
+	}
+}
+
+// TestReportsRelayProblemsAtStartup covers PORM-146 security requirements 8
+// and 9 at start: an unreadable http_methods draws its own line (beside the
+// tool-list line when both are unreadable), an unrecognised kind draws one
+// naming no value, an HTTP API upstream draws nothing, and a tool rule on an
+// HTTP API target is not reported as matching nothing.
+func TestReportsRelayProblemsAtStartup(t *testing.T) {
+	st, path := seedPolicyStore(t, nil, []models.VirtualKey{
+		{ID: "k-methods", Name: "one", TargetType: models.TargetUpstream, TargetID: upGH},
+		{ID: "k-both", Name: "two", TargetType: models.TargetUpstream, TargetID: upGH},
+		{ID: "k-http-rule", Name: "three", TargetType: models.TargetUpstream, TargetID: "u-api",
+			ToolAllowlist: []string{"nope__x"}},
+		{ID: "k-fine", Name: "four", TargetType: models.TargetUpstream, TargetID: upGH, HTTPMethods: []string{"GET"}},
+	})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, u := range []models.Upstream{
+		{ID: "u-api", Name: "api", Slug: "api1", Kind: models.KindHTTP, Enabled: true},
+		{ID: "u-edited", Name: "hand-edited", Slug: "edited", Kind: "grpc", Enabled: true},
+	} {
+		u.URL, u.Transport, u.AuthType = "http://127.0.0.1:1/v1?token=secret-query", models.TransportStreamableHTTP, models.AuthNone
+		u.CreatedAt, u.UpdatedAt = now, now
+		if err := st.CreateUpstream(ctx, &u); err != nil {
+			t.Fatalf("seed upstream %s: %v", u.ID, err)
+		}
+	}
+	corruptMethods(t, path, "k-methods", "not json")
+	corruptMethods(t, path, "k-both", `["FETCH"]`)
+	corruptDenylist(t, path, "k-both")
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	reportToolPolicyProblems(context.Background(), st, log)
+
+	records := decodeLogRecords(t, &buf)
+	type line struct{ id, msg string }
+	var got []line
+	for _, rec := range records {
+		id, _ := rec["virtual_key_id"].(string)
+		if id == "" {
+			id, _ = rec["upstream_id"].(string)
+		}
+		msg, _ := rec["msg"].(string)
+		got = append(got, line{id, msg})
+		if rec["level"] != "WARN" {
+			t.Errorf("%s: level %v, want WARN", id, rec["level"])
+		}
+		for _, leak := range []string{"not json", "FETCH", "grpc", "secret-query", "unterminated"} {
+			if strings.Contains(buf.String(), leak) {
+				t.Errorf("the log carries %q:\n%s", leak, buf.String())
+			}
+		}
+	}
+	want := map[line]bool{
+		{"k-methods", "virtual key http_methods could not be decoded; every request on its /api/ endpoint is refused until a PATCH supplies http_methods"}:        true,
+		{"k-both", "virtual key http_methods could not be decoded; every request on its /api/ endpoint is refused until a PATCH supplies http_methods"}:           true,
+		{"k-both", "virtual key tool lists could not be decoded; every call on this key is blocked until a PATCH supplies both tool_allowlist and tool_denylist"}: true,
+		{"u-edited", "upstream kind is not recognised; it serves on no endpoint until it is set to mcp or http"}:                                                  true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d records, want %d:\n%s", len(got), len(want), buf.String())
+	}
+	for _, l := range got {
+		if !want[l] {
+			t.Errorf("unexpected record %+v", l)
+		}
+	}
+}

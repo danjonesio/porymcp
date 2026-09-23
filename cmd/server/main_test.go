@@ -113,6 +113,25 @@ func TestRouterTopology(t *testing.T) {
 		// whoever fixes one has to come here and change both.
 		{"trailing slash on the member URL falls through to the dashboard", http.MethodPost, "/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/github/mcp/", "", 200, "text/html", "SPA-MARKER root", ""},
 		{"health alias", http.MethodGet, "/health", "", 200, "", `"ok"`, "SPA-MARKER"},
+		// The HTTP relay doors (PORM-146). Every one is owned by the proxy
+		// and refuses with plain JSON before a body is read; a GET is the
+		// door's ordinary verb, so the refusal is the 401, not a 405.
+		{"relay door is owned by the proxy", http.MethodGet, "/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/api/x", "", 401, "application/json", `"invalid virtual key"`, "SPA-MARKER"},
+		{"relay base route reaches the relay", http.MethodGet, "/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/api", "", 401, "application/json", `"invalid virtual key"`, "SPA-MARKER"},
+		// Unlike /mcp/, the relay's trailing slash is a route: the wildcard
+		// binds an empty remainder, which is the base URL.
+		{"relay trailing slash is the base, not the dashboard", http.MethodGet, "/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/api/", "", 401, "application/json", `"invalid virtual key"`, "SPA-MARKER"},
+		{"member relay door is owned by the proxy", http.MethodGet, "/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/github/api/x", "", 401, "application/json", `"invalid virtual key"`, "SPA-MARKER"},
+		// chi binds an empty first segment to {keyID} here too. With no key
+		// it is the 401 every door answers; with a valid key the relay
+		// refuses the binding with 404 (TestRelayKeylessBindingIs404).
+		{"keyless relay door is owned by the proxy", http.MethodGet, "//api/x", "", 401, "application/json", `"invalid virtual key"`, "SPA-MARKER"},
+		{"keyless member relay door is owned by the proxy", http.MethodGet, "//github/api/x", "", 401, "application/json", `"invalid virtual key"`, "SPA-MARKER"},
+		// The API mount still wins at the root, and the relay owns the same
+		// path one segment down: /api/v1 is the management API, and
+		// /{key}/api/v1/... is a relayed path.
+		{"the API mount wins over the relay at the root", http.MethodGet, "/api/v1/upstreams", "test-admin", 200, "application/json", `"upstreams"`, "SPA-MARKER"},
+		{"the relay owns /api/v1 one segment down", http.MethodGet, "/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/api/v1/upstreams", "test-admin", 401, "application/json", `"invalid virtual key"`, "SPA-MARKER"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := do(tc.method, tc.path, tc.admin)
