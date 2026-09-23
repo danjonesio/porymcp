@@ -341,7 +341,7 @@ func newStub(spec upstreamSpec) *stub {
 // fixture is a proxy handler wired to real stores and stub upstreams, plus the
 // one virtual key the test authenticates with.
 type fixture struct {
-	t     *testing.T
+	t     testing.TB
 	H     *Handler
 	Key   string // the plaintext virtual key
 	Store store.Store
@@ -359,7 +359,7 @@ type fixture struct {
 	Router http.Handler
 }
 
-func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter json.RawMessage, allow, deny []string) *fixture {
+func newFixture(t testing.TB, specs map[string]upstreamSpec, group bool, filter json.RawMessage, allow, deny []string) *fixture {
 	t.Helper()
 	key, err := crypto.RandomKey()
 	if err != nil {
@@ -469,7 +469,7 @@ func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter 
 
 // newGroupFixture builds a group key over members, a map of upstream slug to
 // the tool names that upstream advertises.
-func newGroupFixture(t *testing.T, members map[string][]string, filter json.RawMessage, allow, deny []string) *fixture {
+func newGroupFixture(t testing.TB, members map[string][]string, filter json.RawMessage, allow, deny []string) *fixture {
 	specs := map[string]upstreamSpec{}
 	for slug, tools := range members {
 		specs[slug] = upstreamSpec{Tools: tools}
@@ -479,7 +479,7 @@ func newGroupFixture(t *testing.T, members map[string][]string, filter json.RawM
 
 // newSingleFixture builds a key bound to one upstream, with no group. The
 // upstream's slug is "solo".
-func newSingleFixture(t *testing.T, spec upstreamSpec, allow, deny []string) *fixture {
+func newSingleFixture(t testing.TB, spec upstreamSpec, allow, deny []string) *fixture {
 	return newFixture(t, map[string]upstreamSpec{"solo": spec}, false, nil, allow, deny)
 }
 
