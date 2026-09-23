@@ -44,14 +44,19 @@ func streamable(onAggregate bool, method string, resp *http.Response) bool {
 
 // streamCapture keeps what a stream's row needs and no more: head, the first
 // judgeHeadBytes, which holds an early error and the unframed-JSON case; last,
-// the most recent complete event, which is where a server puts its answer
-// before it closes the stream; and pending, the event in progress. Boundaries
-// (a blank line, "\n\n" or "\r\n\r\n") are found with a byte search over the
-// new bytes plus a three-byte overlap, never over the whole buffer, and
-// nothing is parsed while relaying. An event that passes judgeTailBytes is
-// dropped the moment it does, tailOverflowed is set, and only the last three
-// bytes are kept until the next boundary, so a stream that never sends a blank
-// line costs at most one read buffer of memory.
+// the most recent complete event that is not a comment, which is where a
+// server puts its answer before it closes the stream; and pending, the event
+// in progress. Boundaries (a blank line: a line terminator followed at once by
+// another, in any of the four CR and LF spellings) are found in one forward
+// pass over the new bytes, with a three-byte seam against the previous read so
+// a boundary split across two reads is seen, and nothing is parsed while
+// relaying. Only the last event of a read is copied, and pending is compacted
+// once per read. An event that would pass judgeTailBytes is never kept: the
+// event in progress is dropped the moment its next read would take it over,
+// and only its last three bytes stay until the next boundary, so a stream
+// that never sends a blank line costs at most one read buffer. A completed
+// event over the cap leaves last empty with lastOverflow set. Arrays that grew
+// past the cap are released the next time they are reset.
 type streamCapture struct {
 	head, last, pending []byte
 	// pendingOverflow: the event in progress passed judgeTailBytes and is
@@ -64,55 +69,145 @@ type streamCapture struct {
 // was larger than the judge keeps: an answer may have gone by unjudged.
 func (c *streamCapture) tailOverflowed() bool { return c.lastOverflow || c.pendingOverflow }
 
-var (
-	boundaryLF   = []byte("\n\n")
-	boundaryCRLF = []byte("\r\n\r\n")
-)
-
-// firstBoundary is the offset and length of the first event boundary in b, or
-// -1, 0 when there is none.
-func firstBoundary(b []byte) (int, int) {
-	i, n := bytes.Index(b, boundaryLF), len(boundaryLF)
-	if j := bytes.Index(b, boundaryCRLF); j >= 0 && (i < 0 || j < i) {
-		i, n = j, len(boundaryCRLF)
+// boundaryEnd is the offset just past the first blank line in b at or after
+// from, or -1. Only the end matters: it is where the next event starts.
+func boundaryEnd(b []byte, from int) int {
+	for j := from; j < len(b); {
+		k := bytes.IndexByte(b[j:], '\n')
+		if k < 0 {
+			return -1
+		}
+		j += k
+		switch {
+		case j+1 < len(b) && b[j+1] == '\n':
+			return j + 2
+		case j+2 < len(b) && b[j+1] == '\r' && b[j+2] == '\n':
+			return j + 3
+		}
+		j++
 	}
-	if i < 0 {
-		return -1, 0
-	}
-	return i, n
+	return -1
 }
+
+// seamBytes is how much of the previous read a boundary can straddle: "\r\n\r"
+// at the end of one read and "\n" at the start of the next.
+const seamBytes = 3
+
+// unknownStart marks an event whose start was dropped as oversized.
+const unknownStart = math.MinInt
 
 func (c *streamCapture) Write(p []byte) {
 	if len(c.head) < judgeHeadBytes {
 		n := min(len(p), judgeHeadBytes-len(c.head))
 		c.head = append(c.head, p[:n]...)
 	}
-	old := len(c.pending)
-	c.pending = append(c.pending, p...)
-	scan := max(0, old-3)
+	// The seam: a boundary that begins in the last bytes of pending and ends
+	// in p is found here, and the scan of p starts past it.
+	var seam [2 * seamBytes]byte
+	ov := c.pending
+	if len(ov) > seamBytes {
+		ov = ov[len(ov)-seamBytes:]
+	}
+	k := copy(seam[:], ov)
+	m := copy(seam[k:], p)
+	scan := 0
+	if e := boundaryEnd(seam[:k+m], 0); e > k {
+		scan = e - k
+	}
+	// Offsets are in p's coordinates; an event that began in pending starts
+	// at a negative offset, and one that began in a dropped oversized event
+	// at unknownStart.
+	start := -len(c.pending)
+	if c.pendingOverflow {
+		start = unknownStart
+	}
+	lastStart, lastEnd, found := 0, 0, false
+	consumed := false
+	firstByte := func(at int) byte {
+		if at < 0 {
+			return c.pending[len(c.pending)+at]
+		}
+		return p[at]
+	}
+	consume := func(end int) {
+		// A comment-only event (a keep-alive) never replaces the event that
+		// answered: its first byte is a colon, and a data event's is not.
+		consumed = true
+		if start == unknownStart || firstByte(start) != ':' {
+			lastStart, lastEnd, found = start, end, true
+		}
+		start = end
+	}
+	if scan > 0 {
+		consume(scan)
+	}
 	for {
-		i, n := firstBoundary(c.pending[scan:])
-		if i < 0 {
+		e := boundaryEnd(p, scan)
+		if e < 0 {
 			break
 		}
-		end := scan + i + n
-		if c.pendingOverflow {
-			// The oversized event ended; nothing of it was kept.
-			c.pendingOverflow, c.lastOverflow = false, true
-			c.last = c.last[:0]
-		} else {
-			c.lastOverflow = false
-			c.last = append(c.last[:0], c.pending[:end]...)
+		consume(e)
+		scan = e
+	}
+	if !consumed {
+		switch {
+		case c.pendingOverflow:
+			c.pending = tailOf(c.pending, c.pending, p)
+		case len(c.pending)+len(p) > judgeTailBytes:
+			// The event in progress would pass the cap: drop it now, keep the
+			// seam, and release the array it grew in.
+			c.pendingOverflow = true
+			c.pending = tailOf(make([]byte, 0, seamBytes), c.pending, p)
+		default:
+			c.pending = append(c.pending, p...)
 		}
-		c.pending = append(c.pending[:0], c.pending[end:]...)
-		scan = 0
+		return
 	}
-	if len(c.pending) > judgeTailBytes || (c.pendingOverflow && len(c.pending) > 3) {
-		// A fresh three-byte slice, not a re-slice: the array that grew past
-		// the cap is released, and only the overlap the next scan needs stays.
-		c.pendingOverflow = true
-		c.pending = append(make([]byte, 0, 3), c.pending[len(c.pending)-3:]...)
+	// The last non-comment event of this read is kept whole when it fits; a
+	// read that completed only comment events leaves last as it was.
+	switch {
+	case !found:
+	case lastStart == unknownStart || lastEnd-lastStart > judgeTailBytes:
+		c.lastOverflow = true
+		c.last = c.last[:0]
+	default:
+		c.lastOverflow = false
+		if cap(c.last) > judgeTailBytes {
+			c.last = nil
+		}
+		c.last = c.last[:0]
+		if lastStart < 0 {
+			c.last = append(c.last, c.pending[len(c.pending)+lastStart:]...)
+			c.last = append(c.last, p[:lastEnd]...)
+		} else {
+			c.last = append(c.last, p[lastStart:lastEnd]...)
+		}
 	}
+	// What follows the last boundary is the new event in progress: at most
+	// one read, so it cannot pass the cap here.
+	c.pendingOverflow = false
+	if cap(c.pending) > judgeTailBytes {
+		c.pending = nil
+	}
+	c.pending = append(c.pending[:0], p[start:]...)
+}
+
+// tailOf writes the last seamBytes of a followed by b into dst (reset to
+// empty) and returns it, allocating nothing when dst has the room.
+func tailOf(dst, a, b []byte) []byte {
+	dst = dst[:0]
+	need := seamBytes
+	if len(b) >= need {
+		return append(dst, b[len(b)-need:]...)
+	}
+	fromA := need - len(b)
+	if fromA > len(a) {
+		fromA = len(a)
+	}
+	var tmp [seamBytes]byte
+	n := copy(tmp[:], a[len(a)-fromA:])
+	n += copy(tmp[n:], b)
+	return append(dst, tmp[:n]...)
 }
 
 // answerDoc reports whether b holds the answer to the request carrying wantID:

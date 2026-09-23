@@ -1023,18 +1023,22 @@ func TestStreamLogsOpenAndClose(t *testing.T) {
 }
 
 // Security requirement 5: the capture reads the same head and last event
-// whatever the chunking, for both blank-line forms and a boundary split across
-// two writes, and a stream with no boundary at all stays bounded.
+// whatever the chunking, for every blank-line form and a boundary split across
+// two writes; a comment-only event never replaces the answer; an event over
+// the cap is never kept and the arrays it grew in are released; a stream with
+// no boundary at all stays bounded and costs no allocation while it is dropped.
 func TestStreamCaptureSplitAtEveryOffset(t *testing.T) {
-	t.Parallel()
 	sample := []byte("event: message\ndata: {\"a\":1}\n\n" +
 		"data: {\"b\":2}\r\n\r\n" +
 		": keepalive\n\n" +
-		"data: {\"c\":3}\ndata: more\n\n" +
-		"data: {\"d\":4}\r\n\r\n")
+		"data: {\"c\":3}\ndata: more\n\r\n" +
+		"data: {\"d\":4}\r\n\n" +
+		": keepalive\r\n\r\n" +
+		"data: {\"e\":5}\r\n\r\n" +
+		": keepalive\n\n")
 	var whole streamCapture
 	whole.Write(sample)
-	if string(whole.last) != "data: {\"d\":4}\r\n\r\n" || len(whole.pending) != 0 || whole.tailOverflowed() {
+	if string(whole.last) != "data: {\"e\":5}\r\n\r\n" || len(whole.pending) != 0 || whole.tailOverflowed() {
 		t.Fatalf("whole: last=%q pending=%q overflowed=%v", whole.last, whole.pending, whole.tailOverflowed())
 	}
 	for i := 1; i < len(sample); i++ {
@@ -1047,16 +1051,44 @@ func TestStreamCaptureSplitAtEveryOffset(t *testing.T) {
 	}
 	var partial streamCapture
 	partial.Write(sample[:len(sample)-5])
-	if string(partial.last) != "data: {\"c\":3}\ndata: more\n\n" || len(partial.pending) == 0 {
+	if string(partial.last) != "data: {\"e\":5}\r\n\r\n" || len(partial.pending) == 0 {
 		t.Fatalf("partial: last=%q pending=%q", partial.last, partial.pending)
 	}
+
+	// An event past the cap, ended by a boundary: not kept, flagged, and
+	// nothing retained past the cap; the next event is kept again.
+	var over streamCapture
+	big := []byte("data: " + strings.Repeat("x", judgeTailBytes-5) + "\n\n") // judgeTailBytes+3 bytes
+	for i := 0; i < len(big); i += 32 << 10 {
+		over.Write(big[i:min(i+32<<10, len(big))])
+	}
+	if !over.lastOverflow || len(over.last) != 0 || over.pendingOverflow || cap(over.pending) > judgeTailBytes || cap(over.last) > judgeTailBytes {
+		t.Fatalf("over the cap: lastOverflow=%v last=%d pendingOverflow=%v cap(pending)=%d cap(last)=%d",
+			over.lastOverflow, len(over.last), over.pendingOverflow, cap(over.pending), cap(over.last))
+	}
+	over.Write([]byte("data: {\"f\":6}\n\n"))
+	if over.tailOverflowed() || string(over.last) != "data: {\"f\":6}\n\n" {
+		t.Fatalf("after the oversized event: overflowed=%v last=%q", over.tailOverflowed(), over.last)
+	}
+	// An event of exactly the cap is kept whole.
+	var under streamCapture
+	under.Write([]byte("data: " + strings.Repeat("x", judgeTailBytes-8) + "\n\n")) // judgeTailBytes bytes
+	if under.tailOverflowed() || len(under.last) != judgeTailBytes {
+		t.Fatalf("under the cap: overflowed=%v last=%d", under.tailOverflowed(), len(under.last))
+	}
+
+	// 4 MiB with no blank line: dropped as it arrives, the seam kept, no
+	// allocation per read once the drop has started.
 	var endless streamCapture
 	chunk := bytes.Repeat([]byte("x"), 32<<10)
-	for i := 0; i < 128; i++ { // 4 MiB with no blank line
+	for i := 0; i < 40; i++ {
 		endless.Write(chunk)
 	}
-	if !endless.tailOverflowed() || cap(endless.pending) > judgeTailBytes || len(endless.head) != judgeHeadBytes {
-		t.Fatalf("endless: overflowed=%v cap(pending)=%d head=%d", endless.tailOverflowed(), cap(endless.pending), len(endless.head))
+	if !endless.pendingOverflow || len(endless.pending) != seamBytes || cap(endless.pending) > judgeTailBytes || len(endless.head) != judgeHeadBytes {
+		t.Fatalf("endless: overflowed=%v pending=%d cap(pending)=%d head=%d", endless.pendingOverflow, len(endless.pending), cap(endless.pending), len(endless.head))
+	}
+	if n := testing.AllocsPerRun(20, func() { endless.Write(chunk) }); n != 0 {
+		t.Fatalf("a read dropped in overflow allocates %v times", n)
 	}
 	endless.Write([]byte("\n\n"))
 	if !endless.tailOverflowed() || len(endless.last) != 0 {
@@ -1065,6 +1097,29 @@ func TestStreamCaptureSplitAtEveryOffset(t *testing.T) {
 	endless.Write([]byte("data: {\"e\":5}\n\n"))
 	if endless.tailOverflowed() || string(endless.last) != "data: {\"e\":5}\n\n" {
 		t.Fatalf("after a normal event: overflowed=%v last=%q", endless.tailOverflowed(), endless.last)
+	}
+}
+
+// BenchmarkStreamCaptureWrite is the cost of the capture per 32 KiB read, for
+// a read packed with the smallest events, with ordinary progress events, and
+// with one event. Figures for the pull request, not a gate.
+func BenchmarkStreamCaptureWrite(b *testing.B) {
+	chunk := 32 << 10
+	cases := map[string][]byte{
+		"blank-lines":    bytes.Repeat([]byte("\n\n"), chunk/2),
+		"keep-alives":    bytes.Repeat([]byte(":\n\n"), chunk/3),
+		"75-byte-events": bytes.Repeat([]byte(sseFrame(progressDoc))[:75], chunk/75),
+		"one-event":      append([]byte("data: "), bytes.Repeat([]byte("x"), chunk-8)...),
+	}
+	for name, in := range cases {
+		b.Run(name, func(b *testing.B) {
+			var c streamCapture
+			b.SetBytes(int64(len(in)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				c.Write(in)
+			}
+		})
 	}
 }
 
