@@ -58,11 +58,23 @@ type streamServer struct {
 	logs    *lockedLog
 }
 
+// slowInserts is the store the audit writer sees, with each insert delayed,
+// so a row queued at shutdown is in the store only if Close waited for it.
+type slowInserts struct {
+	store.Store
+	delay time.Duration
+}
+
+func (s slowInserts) InsertAuditLog(ctx context.Context, e *models.AuditLog) error {
+	time.Sleep(s.delay)
+	return s.Store.InsertAuditLog(ctx, e)
+}
+
 // newStreamServer builds the store, the upstream stub, the key, the router
 // (with the shutdown hook registered as main does) and serves it on a
-// loopback listener. The caller owns shutdown and auditor.Close, in that
-// order, which is main's order.
-func newStreamServer(t *testing.T, upstream http.HandlerFunc) *streamServer {
+// loopback listener. auditDelay slows the audit writer's inserts. The caller
+// owns shutdown and auditor.Close, in that order, which is main's order.
+func newStreamServer(t *testing.T, upstream http.HandlerFunc, auditDelay time.Duration) *streamServer {
 	t.Helper()
 	encKey, err := crypto.RandomKey()
 	if err != nil {
@@ -79,7 +91,7 @@ func newStreamServer(t *testing.T, upstream http.HandlerFunc) *streamServer {
 	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: encKey, PublicURL: "http://localhost:8080", ListenAddr: "127.0.0.1:0"}
 	logs := &lockedLog{}
 	log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	auditor := audit.New(st, log)
+	auditor := audit.New(slowInserts{Store: st, delay: auditDelay}, log)
 
 	now := time.Now().UTC()
 	ctx := context.Background()
@@ -188,7 +200,9 @@ func sseListenStub(gone chan struct{}) http.HandlerFunc {
 // would exit.
 func TestShutdownEndsOpenStreamsAndStoresRows(t *testing.T) {
 	gone := make(chan struct{})
-	s := newStreamServer(t, sseListenStub(gone))
+	// 50 ms per insert: the listen's row, queued by the shutdown hook, is in
+	// the store when auditor.Close returns only because Close waited for it.
+	s := newStreamServer(t, sseListenStub(gone), 50*time.Millisecond)
 	resp := s.open(t, `{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true}}}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
@@ -268,7 +282,7 @@ func TestRouterRelaysAStreamIncrementally(t *testing.T) {
 			_, _ = io.WriteString(w, e)
 			_ = rc.Flush()
 		}
-	})
+	}, 0)
 	defer s.auditor.Close()
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

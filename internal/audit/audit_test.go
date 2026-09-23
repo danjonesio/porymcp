@@ -96,13 +96,15 @@ func TestCloseDrainsQueuedRows(t *testing.T) {
 }
 
 // PORM-5 security requirement 7: a row recorded while Close runs, or after
-// it, is either stored or dropped with a log line, and nothing panics. Run
-// under -race: the send and the close share one lock.
+// it, is either stored or dropped with a log line, and nothing panics. The
+// store is slowed so the queue (1,024 slots) fills and the fallback send runs
+// and is parked when Close starts. Run under -race: the send and the close
+// share one lock.
 func TestRecordAfterCloseDoesNotPanic(t *testing.T) {
-	st := &countingStore{Store: openStore(t)}
+	st := &countingStore{Store: openStore(t), delay: 200 * time.Microsecond}
 	logs := &lockedBuffer{}
 	l := New(st, slog.New(slog.NewJSONHandler(logs, nil)))
-	const workers, each = 100, 10
+	const workers, each = 100, 15
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
@@ -113,7 +115,7 @@ func TestRecordAfterCloseDoesNotPanic(t *testing.T) {
 			}
 		}()
 	}
-	time.Sleep(time.Millisecond)
+	time.Sleep(2 * time.Millisecond)
 	l.Close()
 	wg.Wait()
 	l.Record(models.AuditLog{VirtualKeyID: "k", Method: "after", Status: models.StatusSuccess, RequestID: "late"})
@@ -123,6 +125,9 @@ func TestRecordAfterCloseDoesNotPanic(t *testing.T) {
 	if stored+dropped != workers*each+1 {
 		t.Fatalf("%d stored + %d dropped, want %d", stored, dropped, workers*each+1)
 	}
+	if l.parked.Load() == 0 {
+		t.Fatal("no send fell back to enqueue: the queue never filled, so the parked-send path was not exercised")
+	}
 	if dropped == 0 || !strings.Contains(logs.String(), `"method":"after"`) {
 		t.Fatalf("the late row was not logged as dropped: %s", logs.String())
 	}
@@ -130,5 +135,45 @@ func TestRecordAfterCloseDoesNotPanic(t *testing.T) {
 		if strings.Contains(rec, "error_message") || strings.Contains(rec, "params") {
 			t.Fatalf("a dropped-row line carries more than id, method and request id: %s", rec)
 		}
+	}
+}
+
+// blockingStore is a store whose inserts wait until the test releases them.
+type blockingStore struct {
+	store.Store
+	release chan struct{}
+}
+
+func (s *blockingStore) InsertAuditLog(ctx context.Context, e *models.AuditLog) error {
+	<-s.release
+	return s.Store.InsertAuditLog(ctx, e)
+}
+
+// PORM-5 security requirement 7: Close returns at the drain bound whatever the
+// store does, and says how many rows were still queued. A parked fallback send
+// gives way to Close instead of holding it.
+func TestCloseReturnsAtTheDrainBound(t *testing.T) {
+	old := drainTimeout
+	drainTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { drainTimeout = old })
+	st := &blockingStore{Store: openStore(t), release: make(chan struct{})}
+	t.Cleanup(func() { close(st.release) })
+	logs := &lockedBuffer{}
+	l := New(st, slog.New(slog.NewJSONHandler(logs, nil)))
+	// Fill the queue and park a fallback send on it.
+	for i := 0; i < 1024+8; i++ {
+		l.Record(models.AuditLog{VirtualKeyID: "k", Method: "tools/call", Status: models.StatusSuccess, RequestID: "r"})
+	}
+	time.Sleep(5 * time.Millisecond)
+	start := time.Now()
+	l.Close()
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("Close took %v with a blocked store, want about the 100 ms bound", took)
+	}
+	if !strings.Contains(logs.String(), "audit rows not written before exit") || !strings.Contains(logs.String(), `"pending":`) {
+		t.Fatalf("no pending line: %s", logs.String())
+	}
+	if dropped := strings.Count(logs.String(), "audit row dropped after close"); dropped == 0 {
+		t.Fatalf("the parked fallback sends did not give way: %s", logs.String())
 	}
 }
