@@ -40,6 +40,10 @@
 - Tool-level filtering UI ships (PORM-4): a group's filter and a virtual key's
   allow and deny lists are set from the dashboard, from a list of the target's
   tools
+- Plain HTTP APIs behind a virtual key ship (PORM-146): an upstream of kind
+  `http` holds a base URL and a credential, and a key on it relays any request
+  to `/{virtual_key_id}/api/<path>` request for request, with a per-key method
+  allowlist and one audit row per call. Per-key path rules are PORM-147
 - Log export as JSONL (PORM-7)
 - Prometheus metrics (PORM-8)
 - Key expiry enforcement ships: a key past its `expires_at` reports `expired`

@@ -417,7 +417,99 @@
   other than `POST` and `DELETE` is answered `405` before the key is read; it
   contacts no upstream and presents no credential, so it is not something an
   agent did, and the server log is where it appears. A `POST` with a wrong key
-  still writes a `blocked` row, because a credential was tried.
+  still writes a `blocked` row, because a credential was tried. On the HTTP
+  API relay the six verbs `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and `DELETE`
+  are the accepted set and anything else (`CONNECT`, `TRACE`, `PROPFIND`)
+  gets the same id-less `405`.
+- **The HTTP API relay (PORM-146) is a second door with the same gate.**
+  `/{virtual_key_id}/api/*` relays a plain HTTP request to an upstream of
+  kind `http`. It shares the MCP door's prelude (`admit`): the host rule,
+  the verb check, the request id, authentication, the rate limit (this door's
+  `429` carries `Retry-After`), expiry, revocation, the key-versus-path `403`
+  and `last_used_at`, in one order, proven by one test table run over both
+  doors. Each door serves only its own kind, decided in one place
+  (`resolveTargets`): an MCP upstream on `/api/` and an HTTP API on `/mcp`
+  both answer `404` before any credential is read, a stored `kind` that is
+  neither serves on no door, and the aggregate, the member listing, tool
+  discovery and the dashboard's tool pickers never send an MCP handshake or a
+  credential to an HTTP API's base URL. `kind` cannot change after create.
+  What the door checks and what it does not:
+  - A group's `tool_filter` and a key's `tool_allowlist`/`tool_denylist` do
+    not govern HTTP API members: there is no tool. The key's `http_methods`
+    judges the verb, within the six, and nothing judges the path yet
+    (PORM-147). A query-string method override such as `?_method=DELETE` is
+    not caught, because the API decides what it means; the header overrides
+    (`X-HTTP-Method-Override` and its kin) are dropped. An unreadable
+    `http_methods` fails closed on this door and is ignored on the MCP door.
+  - Scheme, host and port come from the upstream row only; the client
+    chooses path and query. The path is joined under the base URL after every
+    segment is decoded and checked (`models.PathSegmentsError`, the one rule
+    shared with `test_path`): `.` and `..` in any encoding, a NUL, and a
+    decoded segment still holding `%2e`, `%2f` or `%5c` are refused, the join
+    treats a host-only base as `/`, and the result must stay under the base
+    by whole segments (`/v1beta` is not under `/v1`). The remainder is read
+    from the escaped path, never from the router's wildcard, so what was
+    checked is what is sent. An http base URL carries no query string and no
+    userinfo, refused at create, PATCH and the probe.
+  - Inbound headers cross by denylist, because an unmodified SDK has to work:
+    dropped are the hop-by-hop set and everything `Connection` lists,
+    `Host`, `Content-Length`, `Expect`, the five credential names
+    (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key` in both
+    spellings), the forwarding and client-address names (an upstream IP
+    allowlist might trust them), the method- and URL-override names,
+    `Accept-Encoding`, any name containing `_` (CGI ambiguity), and any
+    header whose value contains the presented virtual key. That last sweep
+    runs before `mcpclient.ApplyAuth` writes the stored credential, so the
+    credential is never swept. A request whose path or query carries the key
+    is refused before any dial. `docs/03-api.md`, HTTP API relay, has the
+    lists.
+  - Outbound headers cross by denylist too, every value copied, except:
+    hop-by-hop and `Connection`'s names; `Content-Length` (recomputed from
+    the relayed body, except on `HEAD`) and `Content-Encoding`; cookies and
+    the two auth challenges (PORM-98's reasons hold); `Location` and
+    `Refresh`; every name that acts on PoryMCP's origin (`Access-Control-*`,
+    CSP, HSTS, framing, referrer, permissions, cross-origin, reporting,
+    client-hint and the rest), because that origin holds the admin session;
+    `Server`, `Via`, `Alt-Svc`, `Cache-Control`, `Vary`; and any name already
+    on the response, so nothing the upstream sends replaces what the
+    middleware or the door wrote. A body with no `Content-Type` is labelled
+    `application/octet-stream`, never sniffed into `text/html` on PoryMCP's
+    origin. A `304` is the one `3xx` relayed (a conditional `GET` is a REST
+    client's ordinary request; it carries no `Location`); every other `3xx`
+    is refused by the same `OpenRelay` that `Open` is, through the same
+    client, so PORM-94's rule and the egress guard PORM-79 will attach to
+    that client's dialer cover this door without a second seam.
+  - The relay's CORS answer is its own: the six verbs, a fixed request-header
+    list with nothing reflected, five exposed names, no
+    `Access-Control-Allow-Credentials`, no `Mcp-Param-*` reflection.
+  - Audit rows never carry a secret or a URL: the query is recorded as
+    strings redacted by name (`audit.RedactQuery`: the MCP set plus a
+    query-only set of `key`, `api-key`, `access-token`, `sig`, `signature`,
+    `code`, the AWS and Google signing names and the rest, matched with `-`
+    and `_` equal) and by value (anything containing the key); `tool_name`
+    and `content_type` are escaped and bounded; `X-Request-Id` is bounded on
+    this door; `error_message` comes from closed sentence sets and never a
+    `*url.Error`, and names a host only when it is safe to print. The
+    request body is not recorded (PORM-85/87 own body inspection). Refusals
+    never echo the request path, a header value or upstream text.
+  - Adding an HTTP API to a group widens every existing key on that group to
+    it on its next call, as adding an MCP member does, and the group's
+    `tool_filter` does not narrow it. Membership changes are admin events;
+    set `http_methods` on the keys where a read-only view is the intent.
+  - `auth_type: oauth` is refused on an `http` upstream, on create, on PATCH
+    and on Connect, and the dashboard resets the auth type when Kind switches
+    to HTTP API, so `FindAuthServer`'s MCP `initialize` challenge is never
+    POSTed to a REST API. A scope reduction, not a safety requirement; a
+    follow-up can let the flow skip the challenge for this kind.
+  - Until PORM-79 lands, a loopback base URL with the admin key stored as its
+    credential would let a virtual key reach the management API through this
+    door. That is the same capability an admin-key holder has always had
+    (above), reached by a longer path; the dialer guard closes it for both
+    doors at once.
+  - Of the PORM-77 controls, the ones that already apply here are the
+    per-key rate limit, expiry, revocation, the host rule, the verb
+    allowlist and the audit row; path rules (PORM-147), body inspection and
+    the egress guard do not yet.
 - **The proxy makes one kind of request nobody asked it for: the era probe.** A
   group's aggregate endpoint sends `server/discover`, with the member's real
   credential, to learn whether that member speaks the 2026-07-28 revision
@@ -819,11 +911,13 @@
   group's own aggregate catalogue did not already: every tool name there carries
   its member's slug.
 - Host validation on the proxy endpoints only (`/mcp`,
-  `/{virtual_key_id}/mcp` and `/{virtual_key_id}/{upstream_slug}/mcp`): the
+  `/{virtual_key_id}/mcp`, `/{virtual_key_id}/{upstream_slug}/mcp`,
+  `/{virtual_key_id}/api/*` and `/{virtual_key_id}/{upstream_slug}/api/*`): the
   resolved host is compared with the host of `PUBLIC_URL` and any
   `EXTRA_ALLOWED_HOSTS`. Forwarded host is honoured only when the socket is in
   `TRUSTED_PROXIES`. This is not a dashboard or `/api/v1` rebinding guard. CORS
-  is applied on all three proxy endpoints.
+  is applied on every proxy endpoint, with the relay's own header set on the
+  `/api/` routes.
 - When `PUBLIC_URL` is https and `ALLOW_INSECURE_HTTP` is unset, a
   non-loopback request whose resolved scheme is http is refused with
   `426 {"error":"insecure scheme","scheme":"http"}`. Loopback is exempt so

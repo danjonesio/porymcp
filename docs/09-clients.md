@@ -18,6 +18,12 @@ capabilities, prompts, resources and session), and every client here already
 knows how to show several servers at once. `GET /api/v1/virtual-keys/{id}`
 returns them as `endpoints[]`, and the create/rotate dialog lists them.
 
+A virtual key bound to an **HTTP API** upstream (`kind: http`, PORM-146) gets
+a URL ending in `/api/` instead, and an HTTP API member of a group gets
+`{PUBLIC_URL}/{virtual_key_id}/{upstream_slug}/api/`. Those are not MCP
+servers: see [HTTP APIs](#http-apis) below, and never give one to an MCP
+client.
+
 Example, a key over a group of `github` and `linear`:
 
 ```
@@ -304,6 +310,69 @@ curl -N -sS -X POST http://localhost:8080/{virtual_key_id}/mcp \
 
 `-N` stops curl buffering its output, so each event prints as it arrives. The
 stream stays open until you press Ctrl-C.
+
+---
+
+## HTTP APIs
+
+An upstream of kind `http` is a plain REST API, registered with its base URL
+(`https://api.github.com`, `https://api.example.com/v1`) and its credential.
+A virtual key on it is served at
+
+```
+{PUBLIC_URL}/{virtual_key_id}/api/<path>
+```
+
+and an HTTP API member of a group at
+`{PUBLIC_URL}/{virtual_key_id}/{upstream_slug}/api/<path>`. Whatever comes
+after `/api/` is joined under the base URL: with the base
+`https://api.example.com/v1`, a request to `…/api/users?page=2` reaches
+`https://api.example.com/v1/users?page=2` with the same verb, headers and
+body, and the virtual key swapped for the stored credential. The virtual key
+goes in `Authorization: Bearer` or, absent that, `X-Api-Key`; the two
+placements PoryMCP reads. `…/api` and `…/api/` with nothing after them reach
+the base URL as stored.
+
+```bash
+# one request
+curl -sS 'http://localhost:8080/{virtual_key_id}/api/user' \
+  -H "Authorization: Bearer pory_YOUR_VIRTUAL_KEY" \
+  -H "X-GitHub-Api-Version: 2022-11-28"
+
+# a write
+curl -sS -X POST 'http://localhost:8080/{virtual_key_id}/api/repos/o/r/issues' \
+  -H "Authorization: Bearer pory_YOUR_VIRTUAL_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"x"}'
+```
+
+An SDK works unchanged: set its base URL to
+`http://localhost:8080/{virtual_key_id}/api/` and its API key to the virtual
+key. Vendor headers such as `X-GitHub-Api-Version`, `Notion-Version`,
+`If-None-Match` and `Idempotency-Key` cross as sent; the SDK's own
+`Authorization`, `X-Api-Key` and `Cookie` are replaced or dropped. The
+upstream's status, body, `Content-Type`, `ETag`, `Link`, `Last-Modified`,
+`Retry-After` and `X-RateLimit-*` come back; its cookies, auth challenges and
+redirects do not (a `3xx` other than `304` fails the call with `502`).
+
+A refusal on this endpoint is plain JSON, not a JSON-RPC envelope:
+
+```json
+{"error":"method not allowed by virtual key","request_id":"…"}
+```
+
+`403` with that body is a verb outside the key's `http_methods`; `404
+{"error":"unknown endpoint"}` is an MCP upstream, a group on the single door,
+or a slug that is not an enabled HTTP API member; `400
+{"error":"path escapes the upstream base"}` is a `..` segment in any
+encoding; `400 {"error":"request carries the virtual key"}` is the key sent in
+the path or the query as well as the header; `413` is a body over 8 MiB; `429`
+carries `Retry-After`. Only `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and `DELETE`
+are relayed; anything else is `405` with `Allow`.
+
+Every call writes one audit row with the verb in Method and the path in Tool
+(`GET` and `/user`), so the Logs page shows what the key did. The request
+body is not recorded.
 
 ---
 

@@ -10,10 +10,13 @@ info:
     callback, which a browser lands on and which always answers HTML; an unknown path under
     `/api/v1` returns `404 {"error":"not found"}`. Consumers that validate enums must accept the
     values PORM-139 added: `oauth` in `auth_type`, `expired` in `auth_status`, `proxy` in
-    `AdminEvent.actor` and the three `upstream.oauth_*` actions.
-    The MCP proxy endpoints (`POST /{virtual_key_id}/{upstream_slug}/mcp`,
-    `POST /{virtual_key_id}/mcp` and `POST /mcp`) are not part of this spec; see
-    `docs/03-api.md`.
+    `AdminEvent.actor` and the three `upstream.oauth_*` actions; and the values PORM-146
+    added: `kind` (`mcp`, `http`) on an upstream, an endpoint and a discovery, and the six
+    verbs of `http_methods` (`GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`).
+    The proxy endpoints (`POST /{virtual_key_id}/{upstream_slug}/mcp`,
+    `POST /{virtual_key_id}/mcp` and `POST /mcp` for an MCP server;
+    `/{virtual_key_id}/api/*` and `/{virtual_key_id}/{upstream_slug}/api/*` for an HTTP
+    API, any of the six verbs) are not part of this spec; see `docs/03-api.md`.
 servers:
   - url: /api/v1
 security:
@@ -87,7 +90,11 @@ paths:
         "400":
           description: >-
             Invalid field or slug, or a credential sent beside `auth_type`
-            `none` (an omitted `auth_type` defaults to `none`)
+            `none` (an omitted `auth_type` defaults to `none`); `invalid kind`;
+            on `kind` `http`, `oauth is not available on an HTTP API upstream`,
+            a base URL with a query string or userinfo, or a `test_path` that
+            breaks its rules; on `kind` `mcp`, a non-empty `test_path`
+            (`test_path applies to an HTTP API upstream`)
         "409":
           description: Slug already taken, or no unique slug could be derived
   /upstreams/discover:
@@ -113,7 +120,10 @@ paths:
         404. The response carries no `slug` and no `scoped_name`: see
         `Discovery.slug`. The whole sequence is bounded at 10 seconds and the
         teardown at a further 2, so a hung upstream cannot hold an admin request
-        open.
+        open. With `kind` `http` in the body it is a probe instead: one GET
+        of the base URL joined with `test_path`, with the credential in the
+        body, no redirect followed, the body drained and never returned;
+        the answer carries `kind` `http`, `http_status` and an empty `tools`.
       requestBody:
         required: true
         content:
@@ -133,7 +143,10 @@ paths:
           description: >-
             Malformed body or missing url; `invalid transport` (anything but
             streamable-http, sse included) or `invalid auth_type`; an `oauth`
-            payload, which is discovered by the saved route once connected.
+            payload, which is discovered by the saved route once connected;
+            the kind rules POST /upstreams applies (`invalid kind`, a
+            `test_path` on an mcp payload, oauth or a base URL with a query
+            string or userinfo on an http one).
         "429":
           $ref: "#/components/responses/DiscoveryRateLimited"
   /upstreams/{id}/discover:
@@ -152,7 +165,10 @@ paths:
         an unauthenticated one instead would come back as a 401 that looks
         exactly like a bad token. The catalogue is neither stored nor cached, so
         the answer is what the server said just now; the run itself is recorded
-        on the upstream as `last_test_at` and `last_test_ok`.
+        on the upstream as `last_test_at` and `last_test_ok`. On an upstream of
+        kind `http` the run is the probe POST /upstreams/discover describes,
+        with the stored credential and the stored `test_path`, recorded the
+        same way; `ok` is a 2xx status.
       responses:
         "200":
           description: >-
@@ -358,6 +374,10 @@ paths:
         one was stored; on a row with nothing stored it changes nothing.
         `name`, `description` and `enabled` never reset it. The reset is in this
         response, not only in the next GET. Neither field can be set by a body.
+        A changed `test_path` resets both too. `kind` cannot change: a
+        different value is 400 `kind cannot be changed`, the stored value is a
+        no-op. The kind rules (oauth, a base URL with a query string or
+        userinfo, `test_path` on an mcp row) are checked on the merged row.
       requestBody:
         required: true
         content:
@@ -373,8 +393,9 @@ paths:
                 $ref: "#/components/schemas/Upstream"
         "400":
           description: >-
-            Invalid field, slug differs from the stored value, or a credential
-            sent beside `auth_type` `none`
+            Invalid field, slug or kind differs from the stored value, a
+            credential sent beside `auth_type` `none`, or a kind rule broken
+            on the merged row
         "503":
           description: >-
             `upstream is busy; try again`: a write on an `oauth` row takes the
@@ -454,6 +475,8 @@ paths:
                             $ref: "#/components/schemas/VirtualKeyEndpoint"
                         lists_malformed:
                           $ref: "#/components/schemas/ListsMalformed"
+                        http_methods_malformed:
+                          $ref: "#/components/schemas/MethodsMalformed"
     post:
       summary: Create a virtual key and return the plaintext key once
       requestBody:
@@ -478,6 +501,8 @@ paths:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
                   lists_malformed:
                     $ref: "#/components/schemas/ListsMalformed"
+                  http_methods_malformed:
+                    $ref: "#/components/schemas/MethodsMalformed"
   /virtual-keys/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -499,6 +524,8 @@ paths:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
                   lists_malformed:
                     $ref: "#/components/schemas/ListsMalformed"
+                  http_methods_malformed:
+                    $ref: "#/components/schemas/MethodsMalformed"
         "404":
           description: Not found
     patch:
@@ -530,6 +557,8 @@ paths:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
                   lists_malformed:
                     $ref: "#/components/schemas/ListsMalformed"
+                  http_methods_malformed:
+                    $ref: "#/components/schemas/MethodsMalformed"
         "404":
           description: Not found
     delete:
@@ -560,6 +589,8 @@ paths:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
                   lists_malformed:
                     $ref: "#/components/schemas/ListsMalformed"
+                  http_methods_malformed:
+                    $ref: "#/components/schemas/MethodsMalformed"
         "404":
           description: Not found
   /virtual-keys/{id}/revoke:
@@ -583,6 +614,8 @@ paths:
                       $ref: "#/components/schemas/VirtualKeyEndpoint"
                   lists_malformed:
                     $ref: "#/components/schemas/ListsMalformed"
+                  http_methods_malformed:
+                    $ref: "#/components/schemas/MethodsMalformed"
         "404":
           description: Not found
   /logs:
@@ -896,7 +929,7 @@ components:
         `auth_config` or the credential in any form: the stored credential is
         encrypted at rest and leaves the process only as a header on a call to
         this upstream's own URL.
-      required: [id, name, slug, url, transport, auth_type, enabled, auth_configured, auth_status, last_test_at, last_test_ok, created_at, updated_at]
+      required: [id, name, slug, kind, url, test_path, transport, auth_type, enabled, auth_configured, auth_status, last_test_at, last_test_ok, created_at, updated_at]
       properties:
         id:
           type: string
@@ -908,13 +941,31 @@ components:
         slug:
           type: string
           description: The stored slug, fixed at create. Its rules are on `UpstreamWrite.slug`.
+        kind:
+          type: string
+          enum: [mcp, http]
+          description: >-
+            What the URL is and which proxy door serves it (PORM-146): `mcp`,
+            an MCP server reached through `/{virtual_key_id}/mcp` and
+            `/{virtual_key_id}/{slug}/mcp`; `http`, a plain HTTP API reached
+            through `/{virtual_key_id}/api/*` and
+            `/{virtual_key_id}/{slug}/api/*`. Never empty; fixed at create.
         description:
           type: string
           description: Optional free text; absent when empty.
         url:
           type: string
           format: uri
-          description: The endpoint this upstream's credential is sent to. Its rules are on `UpstreamWrite.url`.
+          description: >-
+            The endpoint this upstream's credential is sent to: the MCP
+            endpoint on an mcp row, the API's base URL on an http row. Its
+            rules are on `UpstreamWrite.url`.
+        test_path:
+          type: string
+          description: >-
+            On an http row, the path the connection test requests, joined
+            under `url`; `""` means the base URL. Always `""` on an mcp row.
+            Its rules are on `UpstreamWrite.test_path`.
         transport:
           type: string
           enum: [streamable-http, sse]
@@ -1002,6 +1053,17 @@ components:
             400.
           pattern: "^([a-z0-9]([a-z0-9_-]{0,38}[a-z0-9])?)?$"
           maxLength: 40
+        kind:
+          type: string
+          enum: [mcp, http]
+          description: >-
+            Optional on create; omitted, `null` or `""` means `mcp`. Anything
+            but the two values is 400 `invalid kind`. Immutable after create:
+            PATCH with a different value returns 400 `kind cannot be changed`,
+            the stored value is a no-op. On `http`, `oauth` is refused as the
+            auth type, `url` must carry no query string and no userinfo, and
+            `test_path` is accepted; on `mcp` a non-empty `test_path` is 400
+            (PORM-146).
         description:
           type: [string, "null"]
           description: On PATCH, `null` or `""` clears it; absent keeps it.
@@ -1019,7 +1081,22 @@ components:
             check discovery applies before it opens a socket, so a stored value
             is one PoryMCP can actually dial; anything else is `400`. Whether
             that host should be dialled at all (loopback, link-local, cloud
-            metadata) is not checked yet (see PORM-79).
+            metadata) is not checked yet (see PORM-79). On an http upstream it
+            is the API's base URL, under which a caller's path is joined, and
+            it must carry no query string (`url must not carry a query
+            string`) and no userinfo (`url must not embed credentials`).
+        test_path:
+          type: [string, "null"]
+          maxLength: 256
+          pattern: "^(/.*)?$"
+          description: >-
+            On an http upstream, the path the connection test requests, joined
+            under `url` (`/user`). Must begin with `/`, be at most 256 bytes,
+            hold no `?`, `#` or control character and no `.` or `..` segment in
+            any encoding; the 400 names the rule. On PATCH, `null` or `""`
+            clears it and a change resets `last_test_at` and `last_test_ok`.
+            On an mcp upstream anything but empty is 400 `test_path applies to
+            an HTTP API upstream`.
         transport:
           type: string
           enum: [streamable-http]
@@ -1055,14 +1132,30 @@ components:
         upstream response header, or any byte of an upstream response body
         outside these fields and `upstream_message`. Discovery is made on an
         operator's behalf rather than a virtual key's, so it writes no audit row.
-      required: [ok, latency_ms, tools, tool_count, unnameable_tools, truncated]
+      required: [ok, kind, latency_ms, tools, tool_count, unnameable_tools, truncated]
       properties:
         ok:
           type: boolean
           description: >-
             Whether the upstream answered and listed its catalogue, by the
-            stateless 2026-07-28 exchange or by the handshake. The HTTP status
+            stateless 2026-07-28 exchange or by the handshake; on an http
+            upstream, whether the probe's GET answered 2xx. The HTTP status
             describes the request PoryMCP received; this describes the upstream.
+        kind:
+          type: string
+          enum: [mcp, http]
+          description: >-
+            The kind of upstream the run was for, on every response including
+            the failure paths, so a client can branch on it (PORM-146). On
+            `http` the run was a probe: `http_status` is set when the upstream
+            answered, `tools` is empty, and no server, era or version field is
+            present.
+        http_status:
+          type: integer
+          description: >-
+            On an http probe, the status the upstream answered with, when it
+            answered at all. Absent on an mcp discovery and on a transport
+            failure.
         error:
           type: string
           description: >-
@@ -1088,7 +1181,10 @@ components:
             whose access token lapsed with no refresh token, or whose refresh
             the vendor refused), `the token could not be refreshed; try again`
             (an `oauth` row whose vendor could not be reached after the token
-            lapsed), and the rest. A URL is never
+            lapsed), and the rest; on an http probe, `upstream rejected the
+            credential (401)` (or `403`), `upstream answered 404; check the
+            test path`, `upstream answered <status>` and the transport and
+            credential sentences above. A URL is never
             written into one: Go's own transport errors mask the password but
             keep the username, the path and the whole query string.
         upstream_message:
@@ -1335,6 +1431,22 @@ components:
             and what should survive a move.
           items:
             type: string
+        http_methods:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+          description: >-
+            The verbs this key may send through an `/api/` endpoint of an HTTP
+            API upstream (PORM-146). Accepted in any case and order; stored
+            and returned upper-cased, de-duplicated and in the enum's order. A
+            value outside the six is 400 `invalid http_methods: <value>`, a
+            repeat 400 `duplicate http_methods entry: <verb>`. Empty, the
+            default, means every one of the six. Judged on the relay door
+            only: the MCP endpoints never read it, and a key whose target has
+            no HTTP API may still hold one. Always present in a response,
+            never null.
         metadata:
           type: object
     VirtualKeyPatch:
@@ -1345,8 +1457,10 @@ components:
         keeps the stored value; `null` clears `rate_limit` (unlimited),
         `expires_at` (a key that had expired is active again), `tool_allowlist`
         and `tool_denylist` (to `[]`, and a null side counts as sent for the
-        both-lists rule) and `metadata`; a blank or null `name`, `target_type`
-        or `target_id` is 400. The list entry rules are VirtualKeyWrite's. See
+        both-lists rule), `http_methods` (to `[]`, every verb, recorded as
+        `cleared`) and `metadata`; a blank or null `name`, `target_type`
+        or `target_id` is 400. The list entry rules are VirtualKeyWrite's. A
+        body carrying `http_methods` also clears `http_methods_malformed`. See
         docs/03-api.md, Partial updates.
       properties:
         name:
@@ -1369,8 +1483,26 @@ components:
           type: [array, "null"]
           items:
             type: string
+        http_methods:
+          type: [array, "null"]
+          uniqueItems: true
+          items:
+            type: string
+            enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
         metadata:
           type: [object, "null"]
+    MethodsMalformed:
+      type: boolean
+      readOnly: true
+      description: >-
+        Present and `true` on every virtual-key response when the key's stored
+        `http_methods` could not be decoded as a normalised array (a
+        hand-edited row; this build never writes one); absent otherwise.
+        `http_methods` then reads `[]`, every request on the key's `/api/`
+        endpoint is refused with 403 and a blocked audit row, the MCP
+        endpoints are unaffected, and a rename, rotate or revoke leaves the
+        column alone. Response only. A PATCH that sends `http_methods` replaces
+        the value and clears it (PORM-146).
     ListsMalformed:
       type: boolean
       readOnly: true
@@ -1397,8 +1529,11 @@ components:
         `/{slug}/mcp` form is a group-only route. `proxy_url` on a group key is
         the aggregate endpoint and is never an entry. The array is always
         present, and empty when nothing is reachable; revoking or expiring the
-        key does not change it.
-      required: [upstream_id, slug, name, url]
+        key does not change it. An HTTP API member (PORM-146) has an entry of
+        kind `http` at `{PUBLIC_URL}/{virtual_key_id}/{slug}/api/`, and a key
+        on a single HTTP API upstream has one entry mirroring its `/api/`
+        `proxy_url`; a member whose stored kind is neither value has none.
+      required: [upstream_id, slug, name, kind, url]
       properties:
         upstream_id:
           type: string
@@ -1409,10 +1544,14 @@ components:
         name:
           type: string
           description: The upstream's display name. A sensible default server name in a client config.
+        kind:
+          type: string
+          enum: [mcp, http]
+          description: The upstream's kind, which says whether `url` is an MCP endpoint or an HTTP API relay base.
         url:
           type: string
           format: uri
-          description: "`{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp` for a group member; `proxy_url` for a single-upstream target."
+          description: "`{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp` (kind mcp) or `{PUBLIC_URL}/{virtual_key_id}/{slug}/api/` (kind http) for a group member; `proxy_url` for a single-upstream target."
     ToolFilter:
       type: object
       description: >-
@@ -1573,6 +1712,10 @@ components:
                 type: string
             slug:
               type: string
+            kind:
+              type: string
+              enum: [mcp, http]
+              description: On `upstream.create`, the kind the upstream was created with (PORM-146).
             auth_type:
               type: string
             auth_changed:

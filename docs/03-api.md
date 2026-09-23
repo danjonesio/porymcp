@@ -251,6 +251,15 @@ typed rather than where it is used. It is the same check discovery applies
 before it opens a socket (`mcpclient.CheckTarget`), and it is syntax only:
 whether the host should be dialled at all is PORM-79, see `docs/07-security.md`.
 
+On an `http` upstream (see Upstream kinds) the URL is the API's base URL and
+two more rules apply, on create, on `PATCH` and on the unsaved probe: it must
+carry no query string (`400 {"error":"url must not carry a query string"}`),
+because a caller's query is appended and the two must not merge, and no
+userinfo (`400 {"error":"url must not embed credentials"}`), because Go's
+transport would send it as `Authorization: Basic` (`mcpclient.CheckHTTPBase`).
+A path is fine, trailing slash or not: `https://api.example.com/v1` and
+`https://api.example.com/v1/` both put a caller's `users` at `/v1/users`.
+
 ### Upstream slugs
 `slug` is optional on `POST /upstreams`: an omitted, empty or whitespace-only
 value is derived from the name and de-duplicated (`github_enterprise`, then
@@ -270,6 +279,38 @@ deliberate: group tool filters and virtual-key allow/deny lists are written
 against the tool identity the slug composes (`{slug}__{tool}`, the same on
 every path), and a stale deny entry would fail open; the same is true of the
 per-member endpoint URLs clients configure, which carry the slug in the path.
+
+### Upstream kinds
+
+`kind` says what the URL is: `mcp` (the default when omitted, `null` or
+`""`; an MCP server, relayed as JSON-RPC) or `http` (a plain HTTP API,
+relayed request for request through `/{virtual_key_id}/api/*`, see HTTP API
+relay under Proxy endpoints; PORM-146). Anything else is
+`400 {"error":"invalid kind"}`. Every upstream response carries it, never
+empty. Like `slug` it is fixed at create: `PATCH /upstreams/{id}` with a
+different value answers `400 {"error":"kind cannot be changed"}`, the same
+value is a no-op that is not listed in the admin event's `fields`, and
+omitting it keeps it. Delete and recreate to change it. The four rules that
+follow `kind`, checked on create, on `PATCH` against the merged row, and on
+`POST /upstreams/discover`:
+
+| rule | on `http` | on `mcp` |
+| --- | --- | --- |
+| `test_path` (optional, `""` clears on `PATCH`) | a path the connection test requests, joined under `url`: must begin with `/`, be at most 256 bytes, hold no `?`, `#` or control character and no `.` or `..` segment in any encoding, else `400` with the reason (`test_path must begin with /`, `test_path is longer than 256 bytes`, `test_path must not contain a query or fragment`, `test_path must not contain a control character`, `test_path must not contain a .. segment`). A change resets `last_test_at` and `last_test_ok` and lists `test_path` in `fields` | anything but empty is `400 {"error":"test_path applies to an HTTP API upstream"}` |
+| `url` | no query string, no userinfo (see Upstream URLs) | as before |
+| `auth_type: oauth` | `400 {"error":"oauth is not available on an HTTP API upstream"}`, on create, on `PATCH` and on `POST /upstreams/{id}/oauth/start` | as before |
+| `transport` | validated as before and stored at its default; it means nothing on this kind | as before |
+
+`POST /upstreams` for an HTTP API:
+
+```json
+{"name":"GitHub","kind":"http","url":"https://api.github.com","test_path":"/user","auth_type":"bearer","auth_config":{"token":"ghp_…"}}
+```
+
+answers `201` with `"kind":"http"`, `"test_path":"/user"` and the other
+fields as on any upstream. The stored credential is presented to the base URL
+exactly as an MCP credential is: `bearer` as `Authorization: Bearer`,
+`api_key` as `X-API-Key`, `header` and `custom` in the named header.
 
 ### Discovering an upstream's tools
 
@@ -297,6 +338,29 @@ row, `last_test_at` and `last_test_ok`, on every run that completes, pass or
 fail, including a refused transport and an undecryptable stored credential. A
 `429`, a cancelled request, and a run whose upstream was edited or deleted while
 it ran record nothing. The catalogue itself is not stored (PORM-113).
+
+On an `http` upstream both routes run a **probe** instead of a handshake
+(PORM-146): one `GET` of `url` joined with `test_path` (`test_path` and
+`kind` are read from the body on the unsaved route), with the credential,
+`Accept: */*`, a 10 s budget and no redirect followed. The answer is
+
+```json
+{"ok":true,"kind":"http","http_status":200,"latency_ms":140,"tools":[],"tool_count":0,"unnameable_tools":0,"truncated":false}
+```
+
+`ok` is a 2xx status. `kind` is on every discovery response, `mcp` or `http`,
+on the failure paths too, so a client can branch on it; `http_status` is
+present when the upstream answered at all. `error` on a failed probe is one
+of `upstream rejected the credential (401)` (or `403`),
+`upstream answered 404; check the test path`, `upstream answered N`,
+`upstream redirected to <host>`, the transport sentences discovery uses
+(`cannot resolve <host>`, `cannot connect to <host>`,
+`tls handshake with <host> failed`), `upstream did not answer within 10s`, and
+the credential sentences shared with discovery. The response body is drained
+(at most 2 MiB) and never returned; `tools` is `[]` and no server, era or
+version field is present. The saved route records `last_test_at` and
+`last_test_ok` on the same terms as a handshake; `ok: false` from a `401` is
+a failed test.
 
 Both are admin-only, and both answer `200` whether or not the upstream answered:
 the HTTP status describes the request PoryMCP received, `ok` describes the
@@ -614,7 +678,24 @@ clears on `""` or `null`; `upstream_ids` and `tool_filter` clear on `null`.
 
 `PATCH /virtual-keys/{id}` is a partial update (see Partial updates):
 `rate_limit` and `expires_at` are removed with `null`; `tool_allowlist`,
-`tool_denylist` and `metadata` clear on `null`.
+`tool_denylist`, `http_methods` and `metadata` clear on `null`.
+
+`http_methods` (PORM-146) is the list of verbs the key may send through an
+`/api/` endpoint: a subset of `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and
+`DELETE`, accepted in any case and any order and stored upper-cased,
+de-duplicated and in that order (`["get","HEAD"]` reads back as
+`["GET","HEAD"]`). A value outside the six is
+`400 {"error":"invalid http_methods: FETCH"}` and a repeat, judged after
+upper-casing, `400 {"error":"duplicate http_methods entry: GET"}`. Empty,
+which every key has until it is set, means every one of the six. Every
+response carries it as an array, never `null`. On `PATCH` an omitted field
+keeps the stored list, and `[]` or `null` clears it, recorded as
+`cleared: ["http_methods"]` even when it was already empty. It is judged on
+the relay door only (`403` with `{"error":"method not allowed by virtual
+key"}` and a `blocked` row); the MCP endpoints never read it, a key whose
+target has no HTTP API can still hold one, and tool lists on a key whose
+target is only an HTTP API are accepted and never consulted. Edits are
+last-write-wins, as `rate_limit` is (PORM-119 owns a stale check).
 
 Every virtual-key response carries `lists_malformed: true` when the key's
 stored tool lists could not be decoded, and leaves the member out otherwise.
@@ -624,18 +705,31 @@ a client tells the two apart. A list that did decode is served as stored. It is 
 nothing. Sending both lists in one `PATCH` replaces them and clears it (see
 Tool lists).
 
+`http_methods_malformed: true` is its sibling for `http_methods`: present when
+the stored value is not a normalised array (a hand-edited row; this build
+never writes one). `http_methods` then reads back as `[]`, every request on
+the key's `/api/` endpoint is refused with `403` and a `blocked` row reading
+`blocked: virtual key http_methods could not be decoded`, the MCP endpoints
+are unaffected, a rename, rotate or revoke leaves the column alone, and a
+`PATCH` that sends `http_methods` (a list or `[]`) replaces it and clears the
+flag. The start log names such a key once, never its stored text.
+
 ### Endpoints
 
 Every virtual-key response carries `endpoints`: a read-only array computed per
 response from the target and never stored.
 
-Every entry is a URL that speaks **exactly one upstream, 1:1**: that upstream's
-own tool names, `initialize`, capabilities, instructions, prompts, resources and
-sessions. For a group target that is `{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp`,
-one entry per **enabled** member, in the group's `upstream_ids` order. For a
+Every entry is a URL that speaks **exactly one upstream, 1:1**: for an MCP
+server, that upstream's own tool names, `initialize`, capabilities,
+instructions, prompts, resources and sessions; for an HTTP API, that API's
+base URL. Each entry carries the upstream's `kind`. For a group target that
+is `{PUBLIC_URL}/{virtual_key_id}/{slug}/mcp` for an `mcp` member and
+`{PUBLIC_URL}/{virtual_key_id}/{slug}/api/` for an `http` member, one entry
+per **enabled** member, in the group's `upstream_ids` order. For a
 single-upstream target there is exactly one entry and its `url` **is**
-`proxy_url` itself, because that endpoint is already 1:1. The `/{slug}/mcp`
-form is a group-only route and answers `404` there.
+`proxy_url` itself, because that endpoint is already 1:1: `…/mcp` on an
+`mcp` upstream and `…/api/` on an `http` one. The `/{slug}/mcp` and
+`/{slug}/api/` forms are group-only routes and answer `404` there.
 
 A group key:
 
@@ -649,13 +743,22 @@ A group key:
       "upstream_id": "8e2a1f7c-6b0d-4a3e-9d21-0f4c5b8e7a10",
       "slug": "github",
       "name": "GitHub",
+      "kind": "mcp",
       "url": "https://porymcp.example.com/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/github/mcp"
     },
     {
       "upstream_id": "c14b93de-2f55-4c8a-b0e6-71a2d9f43c88",
       "slug": "linear",
       "name": "Linear",
+      "kind": "mcp",
       "url": "https://porymcp.example.com/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/linear/mcp"
+    },
+    {
+      "upstream_id": "5b7d2e90-1c4f-4a6b-8e3d-9f0a1b2c3d4e",
+      "slug": "github-api",
+      "name": "GitHub API",
+      "kind": "http",
+      "url": "https://porymcp.example.com/77232bc0-dd4a-44d5-8ae7-ef2f679879ec/github-api/api/"
     }
   ]
 }
@@ -673,13 +776,42 @@ A single-upstream key, one entry mirroring `proxy_url`:
       "upstream_id": "8e2a1f7c-6b0d-4a3e-9d21-0f4c5b8e7a10",
       "slug": "github",
       "name": "GitHub",
+      "kind": "mcp",
       "url": "https://porymcp.example.com/3f9c0a52-77bd-4f1e-9a35-2c6e8b1d40aa/mcp"
     }
   ]
 }
 ```
 
+A key on a single HTTP API upstream: `proxy_url` ends in `/api/` and the one
+entry mirrors it.
+
+```json
+{
+  "id": "9a1e4c2b-3d5f-4a7b-8c9d-0e1f2a3b4c5d",
+  "name": "gh-readonly",
+  "proxy_url": "https://porymcp.example.com/9a1e4c2b-3d5f-4a7b-8c9d-0e1f2a3b4c5d/api/",
+  "http_methods": ["GET", "HEAD"],
+  "endpoints": [
+    {
+      "upstream_id": "5b7d2e90-1c4f-4a6b-8e3d-9f0a1b2c3d4e",
+      "slug": "github-api",
+      "name": "GitHub API",
+      "kind": "http",
+      "url": "https://porymcp.example.com/9a1e4c2b-3d5f-4a7b-8c9d-0e1f2a3b4c5d/api/"
+    }
+  ]
+}
+```
+
 - `proxy_url` on a group key is the *aggregate* endpoint and is never an entry.
+  It is the `/mcp` URL whatever the members' kinds, even when every member is
+  an HTTP API (that aggregate then answers `400 group has no MCP members`);
+  an HTTP API member is reached by its own entry only.
+- `proxy_url` on a single-upstream key follows the upstream's `kind` whether
+  or not the upstream is enabled: a disabled HTTP API target still reports the
+  `/api/` URL, with `endpoints` `[]`.
+- A member whose stored `kind` is neither `mcp` nor `http` has no entry.
 - A member that is disabled, or removed from the group, has no entry, and its
   URL answers `404` on the next request.
 - An enabled member whose stored `transport` is `sse` keeps its entry. The
@@ -763,7 +895,12 @@ one, and forcing a rewrite on every retarget would only teach them to empty it.
 substring. That name is the one the client sent, so on the aggregate endpoint of
 a group it is the canonical `{upstream_slug}__{tool}` and on a per-member
 endpoint or a single-upstream key it is the upstream's own bare name. Filtering
-one group's calls for a tool therefore takes the spelling the path uses.
+one group's calls for a tool therefore takes the spelling the path uses. On a
+relayed HTTP API request (PORM-146) `tool_name` is the request path after
+`/api`, beginning with `/` and bounded at 256 bytes, so `?tool=/user` finds
+the calls to one path exactly and a path carrying an id is its own value;
+`?method=GET` finds every relayed `GET`. A facet or path grouping is
+PORM-149's.
 
 `limit` below 1 or not an integer is a `400`; above 200 it is treated as 50.
 
@@ -799,14 +936,14 @@ is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 
 | action | details keys |
 |---|---|
-| `upstream.create` | `slug`, `auth_type`, `auth_changed` (when a credential was stored) |
-| `upstream.update` | `fields`, `auth_changed` (when a credential was stored), `cleared` (`credential`, when the stored credential was removed), `auth_type` (when the credential or the type changed) |
+| `upstream.create` | `slug`, `kind`, `auth_type`, `auth_changed` (when a credential was stored) |
+| `upstream.update` | `fields` (`test_path` among the names it can hold), `auth_changed` (when a credential was stored), `cleared` (`credential`, when the stored credential was removed), `auth_type` (when the credential or the type changed) |
 | `upstream.delete` | none |
 | `group.create` | `upstream_count`, `tool_filter_set` (when a filter that filters something was supplied; `{}` does not count, as on update) |
 | `group.update` | `fields`, `upstream_count` (when the membership changed), `cleared` |
 | `group.delete` | none |
 | `virtual_key.create` | `target_type`, `target_id`, `key_prefix` |
-| `virtual_key.update` | `fields`, `cleared` |
+| `virtual_key.update` | `fields`, `cleared` (`http_methods` among the names either can hold) |
 | `virtual_key.rotate` | `key_prefix` |
 | `virtual_key.revoke` | none |
 | `virtual_key.delete` | none |
@@ -829,7 +966,7 @@ credential is the word `credential` in `cleared`, the one `cleared` entry that
 is not a field name. A `PATCH` with an empty body answers `200` and
 records `details: {}`. A value is recorded only when it is a bounded
 identifier, enum or count the API already returns in the clear (`slug`,
-`auth_type`, `key_prefix`, `target_type`, `target_id`, `upstream_count`,
+`kind`, `auth_type`, `key_prefix`, `target_type`, `target_id`, `upstream_count`,
 `client`, `refresh_token`, `vendor_revocation`, and `issuer` as a host and
 never a path); a
 name, description, URL, credential, ciphertext, plaintext key, metadata, tool
@@ -890,8 +1027,9 @@ the row; the resource keeps its own name.
 
 # Proxy endpoints (what agents use)
 
-All three take `Authorization: Bearer <api_key>`: the virtual key, never the
-admin key.
+Every proxy endpoint takes `Authorization: Bearer <api_key>`: the virtual key,
+never the admin key. The three MCP endpoints come first; the HTTP API relay
+(`/{virtual_key_id}/api/*`, PORM-146) has its own section below them.
 
 - Per member: `POST /{virtual_key_id}/{upstream_slug}/mcp`: **the primary
   endpoint for a group key**. A pure 1:1 proxy to that one member: its original
@@ -1020,6 +1158,128 @@ stored credential and `POST /api/v1/upstreams/discover` with one from the body),
 which an operator makes with the admin key: the same client construction, the
 same injection and the same refusal to follow a redirect, but no virtual key, no
 policy gate and no audit row. `docs/07-security.md` says what that means.
+
+## HTTP API relay
+
+An upstream of kind `http` (see Upstream kinds) is served by a second door
+beside `/mcp`. Four routes, all taking the six verbs `GET`, `HEAD`, `POST`,
+`PUT`, `PATCH` and `DELETE` plus `OPTIONS` for the preflight:
+
+- `/{virtual_key_id}/api/*` and `/{virtual_key_id}/api`: a key bound to one
+  `http` upstream.
+- `/{virtual_key_id}/{upstream_slug}/api/*` and
+  `/{virtual_key_id}/{upstream_slug}/api`: one `http` member of the key's
+  group, resolved among that group's enabled members as the `/mcp` member
+  route is.
+
+There is no shared `/api/*` door without the key id: `//api/x` answers `401`
+with no key and `404` with one. The management API's `/api/v1` prefix is a
+different path and is never reached through a key.
+
+What comes after `/api` is joined under the upstream's base URL as the client
+escaped it: `/{id}/api/repos/o/r?per_page=2` on the base
+`https://api.github.com` reaches `https://api.github.com/repos/o/r?per_page=2`
+with the same verb, the same query and the same body. `/api` and `/api/` with
+nothing after them reach the base URL exactly as stored. A `%2F` inside a
+segment crosses still encoded; `a//b` collapses to `a/b`. A segment that is
+`.` or `..` in any encoding (`..`, `%2e%2e`, `%252e%252e`, `..%5c`, `..;`),
+or a decoded segment that still holds `%2e`, `%2f` or `%5c`, is refused
+before any dial with `400 {"error":"path escapes the upstream base"}`, and so
+is a joined path that does not stay under the base (`../v1beta/x` under
+`/v1`). The scheme, host and port always come from the upstream row.
+
+The key goes in `Authorization: Bearer` or, absent that, `X-Api-Key`, the two
+placements `/mcp` reads. A request whose path or query also carries the
+key, in either form, is refused with
+`400 {"error":"request carries the virtual key"}` before any dial, so an SDK
+that puts its key in a query parameter never hands PoryMCP's credential to
+the vendor. A request header whose value contains the key is dropped for the
+same reason.
+
+**Refusals are plain JSON**, not a JSON-RPC envelope:
+
+```json
+{"error":"method not allowed by virtual key","request_id":"1b1c…"}
+```
+
+`request_id` is the client's `X-Request-Id` (bounded at 256 bytes on this
+door) or one PoryMCP minted. It is absent on the two refusals written before
+an id exists on either door: the `405` for a verb outside the six
+(`{"error":"method not allowed"}` with `Allow: GET, HEAD, POST, PUT, PATCH,
+DELETE, OPTIONS`) and the host refusal. The management API's error shape is
+unchanged.
+
+| status | body `error` | when | audit row |
+| --- | --- | --- | --- |
+| `401` | `invalid virtual key`, `virtual key revoked` or `virtual key expired`, as on `/mcp` | no key, an unknown, revoked or expired key | `blocked`, as on `/mcp` |
+| `403` | `virtual key does not match this endpoint` | the key belongs to another id | `blocked` |
+| `403` | `method not allowed by virtual key` | the verb is not in the key's `http_methods`, or the stored list could not be decoded | `blocked`, reading `blocked by virtual key http_methods` or `blocked: virtual key http_methods could not be decoded` |
+| `404` | `unknown endpoint` | the key's upstream is an MCP server, the key targets a group (single door), the slug is not an enabled `http` member (member door), or the row's `kind` is unknown | `blocked` |
+| `400` | `path escapes the upstream base` | a dot segment or a join that leaves the base | `error`, no dial |
+| `400` | `request carries the virtual key` | the key in the path or the query | `error`, no dial |
+| `400` | `invalid body` | the body could not be read | none, as on `/mcp` |
+| `413` | `request body too large` | more than 8 MiB | `error`, no dial |
+| `429` | `rate limit exceeded`, with `Retry-After` in whole seconds | the key's `rate_limit` | `blocked` |
+| `502` | `upstream request failed` | the credential could not be used, a `3xx` other than `304`, a transport failure, the 5 minute budget, an answer over 16 MiB, or a `1xx` status | `error`, with the cause on the row as on `/mcp` (`docs/03-api.md`, Upstream failures) |
+
+The MCP door's `429` does not carry `Retry-After`; its bytes are unchanged.
+
+**What crosses, inbound.** Every request header except: the hop-by-hop set
+and every name listed in `Connection`; `Host`, `Content-Length`, `Expect`;
+`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key`; the forwarding
+and client-address names (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`,
+`X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Cluster-Client-IP`,
+`Client-IP`); the method- and URL-override names (`X-HTTP-Method-Override`,
+`X-HTTP-Method`, `X-Method-Override`, `X-Original-URL`, `X-Rewrite-URL`);
+`Accept-Encoding` (the transport negotiates its own and hands back decoded
+bytes); any name containing `_`; and any header whose value contains the
+presented key. The stored credential is written last, so a client header of
+the same name as a `custom` auth header arrives with the stored value.
+`X-GitHub-Api-Version`, `Notion-Version`, `If-None-Match`, `If-Match`,
+`Idempotency-Key`, `Prefer`, `Accept` and the rest cross as sent, which is
+what lets an unmodified SDK work.
+
+**What crosses, outbound.** The upstream's status, every value of every
+response header, and the body, except: the hop-by-hop set and `Connection`'s
+names; `Content-Length` (set from the relayed body, except on `HEAD`, where
+the upstream's is copied) and `Content-Encoding` (the bytes are decoded);
+`Set-Cookie`, `Set-Cookie2`, `WWW-Authenticate`, `Proxy-Authenticate`;
+`Location`, `Refresh`; every `Access-Control-*` name, the security-policy,
+cross-origin, reporting and client-hint names (`Content-Security-Policy`,
+`Strict-Transport-Security`, `X-Frame-Options`, `Cross-Origin-*`, `Report-To`,
+`Clear-Site-Data`, `Accept-CH` and the rest); `Server`, `Via`, `Alt-Svc`,
+`Cache-Control`, `Vary`; and any name PoryMCP had already written on the
+response, so nothing an upstream sends replaces a header the middleware,
+the CORS block or the door set. A body with no upstream `Content-Type` is
+labelled `application/octet-stream`, never sniffed. A `304` is relayed with
+its headers and no body; every other `3xx` is a failed call (`502`) and
+nothing from it reaches the client. `Cache-Control: no-store` is on every
+answer.
+
+**CORS** on this door is its own: `Access-Control-Allow-Methods` names the
+six verbs and `OPTIONS`, `Access-Control-Allow-Headers` is the fixed list
+`Authorization, X-Api-Key, X-Request-Id, Content-Type, Accept,
+Accept-Language, If-None-Match, If-Match, If-Modified-Since, Idempotency-Key,
+Prefer` (nothing is reflected from the preflight), `Access-Control-Expose-Headers`
+is `ETag, Link, Last-Modified, Retry-After, X-Request-Id`, and there is no
+`Access-Control-Allow-Credentials` and no `Mcp-Param-*` reflection. The MCP
+door's preflight is unchanged.
+
+**The audit row** for a relayed request records the verb in `method`, the
+escaped path after `/api` in `tool_name` (beginning with `/`, bounded at 256
+bytes; `/` for the base), and in `params`
+`{"query":{…},"content_type":"…","request_bytes":N}`, where the query is
+one string per name with secret-looking names (`token`, `key`, `api-key`,
+`access_token`, `sig`, `X-Amz-Signature` and the rest) and any value
+containing the key replaced by `[redacted]`. The request body is never
+recorded and neither is the response body. `status` is `success` below 400
+and `error` at 400 and above (`error_message` `upstream answered N`),
+`response_size_bytes` is the relayed body's length, `upstream_id` the
+upstream reached, and `last_used_at` moves as on `/mcp`. A group's
+`tool_filter` and a key's tool lists do not govern this door: `http_methods`
+judges the verb and nothing judges the path (PORM-147). The relay is
+buffered: a response is read whole (16 MiB, five minutes) and then written;
+streaming is not offered on this door.
 
 ## Blocked tools
 
