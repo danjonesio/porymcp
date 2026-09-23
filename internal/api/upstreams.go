@@ -462,8 +462,8 @@ func usableUpstreamURL(raw string) bool {
 // validTransport is the write gate for the transport field: only
 // streamable-http is accepted on create, on PATCH and on the unsaved discover
 // route. models.TransportSSE stays a stored value that rows saved before
-// PORM-28 may still carry; the proxy refuses to dial it until PORM-5
-// implements the legacy HTTP+SSE client.
+// PORM-28 may still carry; the proxy refuses to dial it, because the legacy
+// HTTP+SSE client is not implemented.
 func validTransport(v string) bool {
 	return v == models.TransportStreamableHTTP
 }

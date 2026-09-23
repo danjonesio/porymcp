@@ -254,9 +254,9 @@ func TestUpstreamRedirectStatusCodes(t *testing.T) {
 // The refusal is a property of the one place a request is performed, not of
 // the POST path, so the verb the proxy replays for a session teardown is
 // refused the same way. GET left this list in PORM-30, which answers it 405
-// before any upstream is contacted; PORM-5 puts it back when a GET becomes a
-// real stream, and this is the assertion that streaming path rests on. The
-// loop stays so that is one string.
+// before any upstream is contacted, and stays out: a server's messages arrive
+// on the response to a POST, which the relay streams. The loop stays so a
+// verb that is added later is one string.
 func TestUpstreamRedirectRefusedOnEveryVerb(t *testing.T) {
 	for _, verb := range []string{http.MethodDelete} {
 		t.Run(verb, func(t *testing.T) {
@@ -561,9 +561,10 @@ func TestUpstreamRelayErrorMessageIsBounded(t *testing.T) {
 }
 
 // The policy lives on the shared client, not on the one function that reads a
-// body today, so a refactor that stops going through mcpclient.Send still
-// carries it. A tripwire for PORM-5's streaming path and PORM-64's discovery
-// client, both of which are meant to reuse this construction.
+// body, so a refactor that stops going through mcpclient.Send still carries
+// it. A tripwire for the streaming relay, which reads a live body through
+// mcpclient.Open, and for PORM-64's discovery client, both of which reuse this
+// construction.
 func TestProxyClientRefusesRedirectsByConstruction(t *testing.T) {
 	h := New(&config.Config{PublicURL: "http://localhost:8080"}, nil, nil, nil)
 	if h.client.CheckRedirect == nil {

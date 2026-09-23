@@ -79,9 +79,10 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 // For a browser the entry that matters is DELETE: GET, HEAD and POST are
 // CORS-safelisted methods, which a preflight never refuses on this header,
 // so naming GET or not changes nothing on the wire and the two headers are
-// kept equal so they cannot disagree. PORM-5 adds GET here and replaces the
-// branch in serve with a real stream; the header and the handler change
-// together, which is why they share this.
+// kept equal so they cannot disagree. GET stays out: in the 2026-07-28
+// revision a server's messages arrive on the response to a POST, which the
+// relay streams (stream.go). A verb added later changes the header and the
+// handler together, which is why they share this.
 const allowedMethods = "POST, DELETE, OPTIONS"
 
 // allowedHeaders is the fixed half of the endpoint's Access-Control-Allow-
@@ -195,7 +196,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// the shared /mcp door. Written here rather than beside the relay so the
 	// refusal paths and the preflight carry it too (uniformity, not a leak
 	// today: a preflight cache reads Access-Control-Max-Age, not this) and so
-	// PORM-5's streaming path inherits it before its first write.
+	// the streaming relay inherits it before its first write.
 	w.Header().Set("Cache-Control", "no-store")
 	if h.applyCORS(w, r) {
 		return
@@ -216,8 +217,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// it. After applyCORS so a preflight keeps its 204, and after the host
 	// check so a rewritten Host is diagnosed the same way on every verb.
 	// Allow goes on before writeRPCError, which commits the header block.
-	// PORM-5 replaces this branch with the streaming GET handler and adds GET
-	// to allowedMethods in the same change.
+	// GET stays refused: in the 2026-07-28 revision a server's messages
+	// arrive on the response to a POST, which the relay streams (stream.go),
+	// and a server may answer GET with 405 in every revision.
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.Header().Set("Allow", allowedMethods)
 		writeRPCError(w, http.StatusMethodNotAllowed, nil, -32000, "method not allowed")
@@ -1142,12 +1144,15 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// Methods the group endpoint cannot serve, refused the way the
 		// revision's transport prescribes for a method a server does not
 		// implement: 404 and -32601. subscriptions/listen needs a stream held
-		// open, which a buffered relay cannot give (PORM-5), and relayed to the
-		// first member it held that member's stream until the client timed out
-		// and tried again. A task handle belongs to the one member that issued
-		// it and the group has no way to know which; tasks are an extension
-		// this endpoint does not advertise. No member is contacted, so the row
-		// names none. A member endpoint relays all three to its member.
+		// open to one member, which this endpoint, which reads every member's
+		// answer whole to merge or reduce it, cannot give; relayed to the first
+		// member it once held that member's stream until the client timed out
+		// and tried again. A member endpoint and a single-upstream key relay
+		// the stream as it arrives (stream.go). A task handle belongs to the
+		// one member that issued it and the group has no way to know which;
+		// tasks are an extension this endpoint does not advertise. No member
+		// is contacted, so the row names none. A member endpoint relays all
+		// three to its member.
 		return answerRPC(req.ID, nil, &rpcError{Code: codeMethodNotFound, Message: msgMethodNotFound}), http.StatusNotFound, nil, "", nil
 	case "notifications/initialized":
 		// Both eras of the transport say an accepted notification is a 202 with
