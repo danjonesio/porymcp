@@ -355,7 +355,7 @@ type streamRow struct {
 	vk                                   *models.VirtualKey
 	requestID, method, auditMethod, tool string
 	upstreamID                           string
-	upstreamUpdatedAt                    time.Time
+	upstream                             *models.Upstream // as read for the request
 	params                               json.RawMessage
 	start                                time.Time
 	wantID                               string
@@ -526,9 +526,10 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 // at another target is no longer the key that was authenticated
 // (VirtualKey.Status is the rule authenticate applies); an upstream that is
 // gone, disabled, or no longer in the group a member route serves is no
-// longer reachable through the key; an upstream edited since the stream
-// opened (its updated_at moved: a new URL, a rotated credential) is not the
-// upstream the stream was opened against. The rows are read one by one rather
+// longer reachable through the key; an upstream whose URL, transport or
+// credential changed since the stream opened is not the upstream the stream
+// was opened against (a new name or description is not such a change, and
+// leaves the stream alone). The rows are read one by one rather
 // than through resolveTargets, which skips a member it cannot read, so a read
 // that failed is told from a row that is gone. A store that cannot be read
 // leaves the stream open and says so in the log: the proxy fails open here,
@@ -566,7 +567,7 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 	if !up.Enabled {
 		return errUpstreamRemoved
 	}
-	if !up.UpdatedAt.Equal(row.upstreamUpdatedAt) {
+	if upstreamChanged(row.upstream, up) {
 		return errUpstreamChanged
 	}
 	if vk.TargetType == models.TargetGroup {
@@ -590,6 +591,14 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 		}
 	}
 	return nil
+}
+
+// upstreamChanged reports whether the fields a relayed request depends on
+// moved between the row read for the request and the row read now: where the
+// request goes and what credential it carries.
+func upstreamChanged(was, now *models.Upstream) bool {
+	return was.URL != now.URL || was.Transport != now.Transport ||
+		was.AuthType != now.AuthType || !bytes.Equal(was.AuthConfig, now.AuthConfig)
 }
 
 // StopStreams ends every open stream and every stream that starts after it:

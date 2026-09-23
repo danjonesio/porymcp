@@ -22,8 +22,9 @@ Behaviour changes that affect a running deployment. Newest first.
   and the latency to the end. **A `subscriptions/listen` row is `success` when
   the client closes the stream**, because closing it is how a listen ends.
 - **A key that is revoked, expired, rotated or retargeted, an upstream removed
-  from it, or an upstream edited since the stream opened, ends its open
-  streams within a minute.**
+  from it, or an upstream whose URL, transport or credential changed since
+  the stream opened, ends its open streams within a minute.** A new name or
+  description leaves a stream alone.
 - **The proxy sets `X-Accel-Buffering: no` on streams.** nginx operators keep
   `proxy_buffering off` for the rest.
 - **Shutdown ends open streams and the audit queue is drained before exit**; a

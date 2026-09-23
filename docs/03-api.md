@@ -1141,7 +1141,7 @@ and the raw body, as every row was before PORM-172.
 | The proxy stopped while a stream was open | `proxy stopped before the answer` |
 | The key was revoked, expired, rotated or retargeted while a stream was open | `virtual key no longer valid during the stream` |
 | The upstream was removed from the key's route while a stream was open | `upstream no longer reachable through the key during the stream` |
-| The upstream was edited (a new URL, a rotated credential) while a stream was open | `upstream changed during the stream` |
+| The upstream's URL, transport or credential changed while a stream was open (a new name or description leaves the stream alone) | `upstream changed during the stream` |
 | The upstream connection failed mid-stream | the read error, truncated to 256 bytes (`unexpected EOF` for a body that ended without its terminator) |
 
 A streamed row's `timestamp` is when the stream ended, its `latency_ms` the

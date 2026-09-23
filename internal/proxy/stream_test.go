@@ -791,7 +791,18 @@ func TestRemovedUpstreamEndsItsStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// What the management API's PATCH does: a new URL and a fresh stamp.
+		// A rename is not an edit that moves the request: the stream stays.
+		up.Name = "Renamed"
+		up.Description = "a new description"
+		up.UpdatedAt = time.Now().UTC()
+		if err := f.Store.UpdateUpstream(ctx, up, false, false); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(120 * time.Millisecond) // two re-checks
+		if n := f.H.openStreams.Load(); n != 1 {
+			t.Fatalf("open_streams=%d after a rename, want the stream still open", n)
+		}
+		// What the management API's PATCH does for a moved URL: the stream ends.
 		up.URL = "https://rotated.example/mcp"
 		up.UpdatedAt = time.Now().UTC()
 		if err := f.Store.UpdateUpstream(ctx, up, false, false); err != nil {
