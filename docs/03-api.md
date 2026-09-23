@@ -816,8 +816,8 @@ client closes it, the upstream sends nothing for five minutes, the key stops
 being valid or the upstream stops being reachable through it or is edited
 (checked once a minute; a store error during that check leaves the stream
 open), or the proxy
-stops; a client that closes it, or stops reading it for five minutes, cancels
-the upstream request. A `tools/list` answer, an answer with status 400 or above,
+stops; a client that closes it, or that stops reading it until a write to it
+has waited five minutes, cancels the upstream request. A `tools/list` answer, an answer with status 400 or above,
 an answer not labelled `text/event-stream`, and every answer on the group
 endpoint are read whole, then sent as one body, as a JSON answer is. A stream
 that breaks after it started cannot change its status: if the upstream fails,
@@ -1134,7 +1134,7 @@ and the raw body, as every row was before PORM-172.
 | The upstream did not answer within the relay budget | `upstream did not answer within 5m0s`: five minutes for a buffered answer, or for a stream's headers |
 | The connection or the TLS handshake did not complete within the connect budget | `upstream did not connect within 10s` |
 | The connection was refused, or DNS failed | `Post "<the upstream's url>": dial tcp ...`, ending `connect: connection refused` or `no such host` |
-| The client closed a stream, or stopped reading it for five minutes, before the answer | `client closed the stream before the answer` |
+| The client closed a stream before the answer, or stopped reading it until a write to it had waited five minutes | `client closed the stream before the answer` |
 | The upstream closed a stream before the answer | `upstream closed the stream before the answer` |
 | The upstream sent nothing on a stream for five minutes | `upstream sent nothing for 5m0s` |
 | The proxy stopped while a stream was open | `proxy stopped before the answer` |
