@@ -78,7 +78,7 @@ func (s *Server) discoverUpstream(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, credential.ErrRefreshFailed):
 			msg = "the token could not be refreshed; try again"
 		}
-		d := mcpclient.Failed(msg)
+		d := mcpclient.Failed(u.Kind, msg)
 		s.recordTest(r, u, d)
 		writeJSON(w, http.StatusOK, d)
 		return

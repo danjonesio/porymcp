@@ -152,7 +152,14 @@ type Info struct {
 // no raw body byte reaches any field (Mcp-Session-Id is used and never
 // returned) and Error is built from the closed set of templates in this file.
 type Discovery struct {
-	OK              bool   `json:"ok"`
+	OK bool `json:"ok"`
+	// Kind is the upstream's kind the run was for, "mcp" or "http", on every
+	// path including a refusal decided before any request (Failed), so the
+	// dashboard branches on one field that is always there.
+	Kind string `json:"kind"`
+	// HTTPStatus is the status an HTTP API answered the probe with (PORM-146);
+	// absent on an MCP run and when nothing answered.
+	HTTPStatus      int    `json:"http_status,omitempty"`
 	LatencyMS       int    `json:"latency_ms"`
 	ProtocolVersion string `json:"protocol_version,omitempty"`
 	ServerInfo      *Info  `json:"server_info,omitempty"`
@@ -244,9 +251,53 @@ func TransportError(transport string) error {
 
 // Failed is a Discovery for a refusal decided before this package is reached,
 // the management API's "the stored credential will not decrypt", which must
-// stop before any request goes out. Same shape, same empty tool array.
-func Failed(msg string) Discovery {
-	return Discovery{Tools: []Tool{}, Error: bound(msg, MaxErrorBytes)}
+// stop before any request goes out. Same shape, same empty tool array, and
+// the upstream's kind, so the dashboard's branch on it holds on this path
+// too.
+func Failed(kind, msg string) Discovery {
+	return Discovery{Kind: kind, Tools: []Tool{}, Error: bound(msg, MaxErrorBytes)}
+}
+
+// preflight is everything Discover and Probe check before a single byte
+// leaves the process, in one function so the two doors cannot drift: the
+// stored transport, the URL (CheckTarget, plus CheckHTTPBase's two rules when
+// httpBase is set), the auth_config's header names and the credential's
+// presence. It returns the host to name in later sentences ("the upstream"
+// when the real one is not HostSafe) and, when something is refused, the
+// sentence to fail with. A refusal here costs the upstream nothing and never
+// repeats the operator's own value.
+func preflight(up *models.Upstream, plainAuth json.RawMessage, httpBase bool) (host, fail string) {
+	if err := TransportError(up.Transport); err != nil {
+		return "", err.Error()
+	}
+	u, err := url.Parse(up.URL)
+	if err != nil || CheckTarget(u) != nil {
+		return "", "url must be an absolute http or https URL"
+	}
+	if httpBase {
+		if err := CheckHTTPBase(u); err != nil {
+			return "", err.Error()
+		}
+	}
+	// The one variable ever interpolated into an error. A host that is not
+	// plain ASCII is not written down at all, see HostSafe.
+	host = "the upstream"
+	if HostSafe(u.Host) {
+		host = bound(u.Host, MaxErrorBytes)
+	}
+	if !authHeadersSendable(up.AuthType, plainAuth) {
+		// Otherwise net/http fails the request late and quotes the name back.
+		return host, "auth_config names a header that cannot be sent"
+	}
+	// After the header-name check on purpose: a partially decodable config
+	// fails json.Unmarshal AND leaves a bad name behind, and the name is the
+	// more specific sentence. Refusing here keeps an empty or unusable
+	// credential from dialling the upstream unauthenticated and reporting its
+	// 401 as a bad token (PORM-52).
+	if err := CheckCredential(up.AuthType, plainAuth); err != nil {
+		return host, errNeedsCredential
+	}
+	return host, ""
 }
 
 // Client discovers what an upstream offers. The only state it holds is the
@@ -278,7 +329,7 @@ func New() *Client {
 // credential, this package holds no key and reads no config, which is what
 // lets both internal/proxy and internal/api use it.
 func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth json.RawMessage) Discovery {
-	out := Discovery{Tools: []Tool{}}
+	out := Discovery{Kind: models.KindMCP, Tools: []Tool{}}
 	if models.ValidSlug(up.Slug) {
 		out.Slug = up.Slug
 	}
@@ -290,32 +341,9 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	// hanging or reporting a network failure is not. Never the value itself:
 	// the unsaved-payload route accepts whatever an operator types, so it is
 	// not PoryMCP's string to repeat. TransportError holds both rules.
-	if err := TransportError(up.Transport); err != nil {
-		return out.fail(err.Error())
-	}
-
-	u, err := url.Parse(up.URL)
-	if err != nil || CheckTarget(u) != nil {
-		return out.fail("url must be an absolute http or https URL")
-	}
-	// The one variable ever interpolated into an error. A host that is not
-	// plain ASCII is not written down at all, see HostSafe.
-	host := "the upstream"
-	if HostSafe(u.Host) {
-		host = bound(u.Host, MaxErrorBytes)
-	}
-
-	if !authHeadersSendable(up.AuthType, plainAuth) {
-		// Otherwise net/http fails the request late and quotes the name back.
-		return out.fail("auth_config names a header that cannot be sent")
-	}
-	// After the header-name check on purpose: a partially decodable config
-	// fails json.Unmarshal AND leaves a bad name behind, and the name is the
-	// more specific sentence. Refusing here keeps an empty or unusable
-	// credential from dialling the upstream unauthenticated and reporting its
-	// 401 as a bad token (PORM-52).
-	if err := CheckCredential(up.AuthType, plainAuth); err != nil {
-		return out.fail(errNeedsCredential)
+	host, fail := preflight(up, plainAuth, false)
+	if fail != "" {
+		return out.fail(fail)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, discoverBudget)
@@ -834,6 +862,22 @@ func (p *probe) transportFailure(step string, err error) string {
 	if errors.Is(err, ErrBodyTooLarge) {
 		return "upstream's answer to " + step + " is larger than discovery will read"
 	}
+	return TransportFailure(err, p.host)
+}
+
+// TransportFailure is the closed sentence set for a request that got no
+// answer: a refused redirect, a DNS failure, a TLS failure, a connection
+// failure, or anything else. host is the only thing ever interpolated and the
+// caller passes it only when it is HostSafe; an empty host reads as "the
+// upstream". Nothing here reads err's own text except the TLS check, and
+// nothing writes it: *url.Error keeps the path and the whole query string,
+// which on the relay door is the client's. Budget expiries are not here:
+// discovery's own method names its budget and the proxy's causeError names
+// its own, because the two are different numbers.
+func TransportFailure(err error, host string) string {
+	if host == "" {
+		host = "the upstream"
+	}
 	var redirect Redirect
 	if errors.As(err, &redirect) {
 		// The proxy's own sentence for the same refusal, composed from a
@@ -846,23 +890,23 @@ func (p *probe) transportFailure(step string, err error) string {
 	// Before *net.OpError, which a DNS failure arrives wrapped in.
 	var dns *net.DNSError
 	if errors.As(err, &dns) {
-		return "cannot resolve " + p.host
+		return "cannot resolve " + host
 	}
 	var verify *tls.CertificateVerificationError
 	if errors.As(err, &verify) {
-		return "tls handshake with " + p.host + " failed"
+		return "tls handshake with " + host + " failed"
 	}
 	// The rest of the TLS failures keep no type through *url.Error, a
 	// protocol version mismatch, a bad record header, an https request to a
 	// plaintext port. The text is read to classify and never to report.
 	if msg := err.Error(); strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:") {
-		return "tls handshake with " + p.host + " failed"
+		return "tls handshake with " + host + " failed"
 	}
 	var op *net.OpError
 	if errors.As(err, &op) {
-		return "cannot connect to " + p.host
+		return "cannot connect to " + host
 	}
-	return "cannot reach " + p.host
+	return "cannot reach " + host
 }
 
 // statusFailure is the sentence for the HTTP statuses worth naming. ok is
@@ -906,6 +950,26 @@ func CheckTarget(u *url.URL) error {
 		return errors.New("no host")
 	case u.Fragment != "":
 		return errors.New("url carries a fragment")
+	}
+	return nil
+}
+
+// CheckHTTPBase is CheckTarget plus the two rules an HTTP API's base URL adds
+// (PORM-146): no query string, because a relayed request's own query replaces
+// RawQuery and the base's would be dropped or merged in an order nobody
+// chose; and no userinfo, because Go's transport turns URL userinfo into an
+// Authorization: Basic header on a request that carries none, which the
+// probe of a none-auth upstream would then send. PORM-27 owns the wider rule
+// for credentials in stored URLs; this refuses new ones on this kind.
+func CheckHTTPBase(u *url.URL) error {
+	if err := CheckTarget(u); err != nil {
+		return err
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return errors.New("url must not carry a query string")
+	}
+	if u.User != nil {
+		return errors.New("url must not embed credentials")
 	}
 	return nil
 }
@@ -969,10 +1033,11 @@ func sendableHeaderName(name string) bool {
 			return false
 		}
 	}
+	if HopByHop(name) {
+		return false
+	}
 	switch strings.ToLower(name) {
-	case "host", "content-length", "transfer-encoding", "connection", "upgrade",
-		"proxy-authorization", "proxy-authenticate", "proxy-connection",
-		"keep-alive", "te", "trailer":
+	case "host", "content-length":
 		return false
 	case "accept", "mcp-session-id", "mcp-protocol-version", "mcp-method", "mcp-name":
 		return false

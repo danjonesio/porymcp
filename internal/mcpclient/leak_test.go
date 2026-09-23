@@ -393,7 +393,7 @@ func TestDiscoverErrorAllowlist(t *testing.T) {
 	t.Run("undecryptable credential", func(t *testing.T) {
 		// Decided by the management API, before this package is reached, and
 		// built through the same helper so the shape matches.
-		if got := Failed("stored credential cannot be decrypted"); got.Error != "stored credential cannot be decrypted" || got.OK {
+		if got := Failed(models.KindMCP, "stored credential cannot be decrypted"); got.Error != "stored credential cannot be decrypted" || got.OK {
 			t.Errorf("Failed() = %+v", got)
 		}
 	})

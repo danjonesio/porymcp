@@ -675,7 +675,7 @@ func TestDiscoverZeroTools(t *testing.T) {
 // Tools is never null. A dashboard that maps over it, and a client that loops,
 // both break on null where they cope with [].
 func TestDiscoveryMarshalsEmptyToolsAsArray(t *testing.T) {
-	if s := marshal(t, Failed("stored credential cannot be decrypted")); !strings.Contains(s, `"tools":[]`) {
+	if s := marshal(t, Failed(models.KindMCP, "stored credential cannot be decrypted")); !strings.Contains(s, `"tools":[]`) {
 		t.Errorf("Failed() marshals as %s, want tools:[]", s)
 	}
 	// Every early refusal inside Discover goes out through the same zero
