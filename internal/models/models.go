@@ -19,6 +19,13 @@ const (
 	// payload is OAuthTokenSet, not AuthConfig.
 	AuthOAuth = "oauth"
 
+	// KindMCP and KindHTTP are the two things an upstream URL can be: an MCP
+	// server reached through the /mcp doors, or a plain HTTP API relayed
+	// request for request through the /api/ doors (PORM-146). Each door serves
+	// only its own kind; a stored value that is neither serves on no door.
+	KindMCP  = "mcp"
+	KindHTTP = "http"
+
 	TargetUpstream = "upstream"
 	TargetGroup    = "group"
 
@@ -78,17 +85,30 @@ var AdminActions = []string{
 	ActionUpstreamOAuthConnect, ActionUpstreamOAuthRefresh, ActionUpstreamOAuthRevoke,
 }
 
-// Upstream is a real MCP server whose credentials stay inside PoryMCP.
+// Upstream is a real MCP server or HTTP API whose credentials stay inside
+// PoryMCP.
 type Upstream struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Slug        string          `json:"slug"`
-	Description string          `json:"description,omitempty"`
-	URL         string          `json:"url"`
-	Transport   string          `json:"transport"`
-	AuthType    string          `json:"auth_type"`
-	AuthConfig  json.RawMessage `json:"-"` // encrypted at rest; never serialised raw
-	Enabled     bool            `json:"enabled"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Description string `json:"description,omitempty"`
+	// Kind is KindMCP or KindHTTP and is fixed once the upstream is created,
+	// like Slug: a key's endpoints are derived from it, and flipping it would
+	// turn every key on the upstream from an MCP door into an HTTP door in
+	// silence. The store writes KindMCP for an empty value, so a row created
+	// before the column existed reads as an MCP server.
+	Kind string `json:"kind"`
+	// URL is the MCP endpoint on a KindMCP upstream and the base URL a
+	// relayed path is joined to on a KindHTTP one.
+	URL       string `json:"url"`
+	Transport string `json:"transport"`
+	// TestPath is the path the connection test requests on a KindHTTP
+	// upstream, joined to URL; empty means the base URL itself. Always "" on
+	// KindMCP. Validated by ValidateTestPath.
+	TestPath   string          `json:"test_path"`
+	AuthType   string          `json:"auth_type"`
+	AuthConfig json.RawMessage `json:"-"` // encrypted at rest; never serialised raw
+	Enabled    bool            `json:"enabled"`
 	// LastTestAt and LastTestOK record the last deliberate connection test, a
 	// press of Tools or Refresh in the dashboard, which is POST
 	// /upstreams/{id}/discover. Both are nil until the first one; they are
@@ -191,19 +211,24 @@ type VirtualKey struct {
 	// and the store writes it back unchanged so a rollback keeps that key
 	// working. Empty for keys created or rotated since. Goes with the
 	// key_hash column (PORM-188).
-	KeyHash       string          `json:"-"`
-	KeyLookup     string          `json:"-"`
-	KeyPrefix     string          `json:"key_prefix"`
-	TargetType    string          `json:"target_type"`
-	TargetID      string          `json:"target_id"`
-	RateLimit     *int            `json:"rate_limit,omitempty"`
-	ExpiresAt     *time.Time      `json:"expires_at,omitempty"`
-	ToolAllowlist []string        `json:"tool_allowlist,omitempty"`
-	ToolDenylist  []string        `json:"tool_denylist,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	LastUsedAt    *time.Time      `json:"last_used_at,omitempty"`
-	RevokedAt     *time.Time      `json:"revoked_at,omitempty"`
-	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	KeyHash       string     `json:"-"`
+	KeyLookup     string     `json:"-"`
+	KeyPrefix     string     `json:"key_prefix"`
+	TargetType    string     `json:"target_type"`
+	TargetID      string     `json:"target_id"`
+	RateLimit     *int       `json:"rate_limit,omitempty"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	ToolAllowlist []string   `json:"tool_allowlist,omitempty"`
+	ToolDenylist  []string   `json:"tool_denylist,omitempty"`
+	// HTTPMethods is the verbs this key may relay through an /api/ door,
+	// normalised by NormalizeHTTPMethods. Empty means every one of the six.
+	// It is ignored on the /mcp doors. No omitempty: a response always says
+	// [] so an operator can see the list is empty rather than missing.
+	HTTPMethods []string        `json:"http_methods"`
+	CreatedAt   time.Time       `json:"created_at"`
+	LastUsedAt  *time.Time      `json:"last_used_at,omitempty"`
+	RevokedAt   *time.Time      `json:"revoked_at,omitempty"`
+	Metadata    json.RawMessage `json:"metadata,omitempty"`
 	// ListsMalformed reports that ToolAllowlist or ToolDenylist could not be
 	// decoded out of storage. The list that did not decode is nil here, which
 	// is not the rule its operator wrote; one that did decode is kept.
@@ -221,6 +246,16 @@ type VirtualKey struct {
 	// so writing them would replace the unreadable rule with no rule at all.
 	// Clearing it is how a caller says it has new text for both columns.
 	ListsMalformed bool `json:"-"`
+	// MethodsMalformed is ListsMalformed's sibling for HTTPMethods: the stored
+	// http_methods was not a normalised JSON array (see NormalizeHTTPMethods),
+	// so HTTPMethods is nil here, which is not the rule its operator wrote.
+	// The relay door reads it as "refuse every request on this key"; the /mcp
+	// doors never read it. It is reported as the response-only field
+	// http_methods_malformed. On the way back into the store it means "leave
+	// the http_methods column alone", for the same reason as ListsMalformed:
+	// writing the nil back would replace a refuse-everything rule with an
+	// allow-every-method rule. A PATCH that carries http_methods clears it.
+	MethodsMalformed bool `json:"-"`
 }
 
 func (k VirtualKey) Status() string {
