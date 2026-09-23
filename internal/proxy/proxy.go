@@ -101,37 +101,192 @@ const allowedMethods = "POST, DELETE, OPTIONS"
 // by the same two names, never merged with this one.
 const allowedHeaders = "Authorization, Content-Type, Accept, MCP-Session-Id, Mcp-Session-Id, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID"
 
-// applyCORS writes the proxy's own CORS block when the request carries an
-// Origin, and answers a preflight. Every name in Access-Control-Expose-Headers
-// is one the proxy vetted on the response allowlist (copyResponseHeaders);
-// Content-Type needs no entry because it is CORS-safelisted.
-func (h *Handler) applyCORS(w http.ResponseWriter, r *http.Request) bool {
+// door is what differs between the MCP doors (/mcp) and the HTTP relay doors
+// (/api/, PORM-146) inside the shared prelude, admit. Everything a door does
+// not name is the same code on both: the two cannot drift on host checking,
+// authentication or the key-versus-path rule, because there is one copy.
+type door struct {
+	allow   string // Allow on the 405 and on a preflight, and Access-Control-Allow-Methods
+	headers string // Access-Control-Allow-Headers
+	expose  string // Access-Control-Expose-Headers
+	// mirrorParams is the MCP doors' reflection of Mcp-Param- names on a
+	// preflight (paramHeaderNames); the relay door reflects nothing.
+	mirrorParams bool
+	// retryAfter writes Retry-After on the 429 from the wait the limiter
+	// computed. The relay door does; the MCP doors keep their bytes.
+	retryAfter bool
+	// boundRequestID truncates a client's X-Request-Id to auditFieldBytes
+	// before it reaches a row or an error body. The relay door does; the MCP
+	// doors keep their bytes.
+	boundRequestID bool
+	// keyRequired refuses a request whose route bound an empty key id (chi
+	// binds //api/x with keyID "") with the uniform 404. The MCP doors keep
+	// today's behaviour, where an empty path key skips the check.
+	keyRequired bool
+	// tool, when set, is what the rows admit itself writes (the 401, the 429
+	// and the wrong-key 403) record as tool_name: on the relay door the
+	// bounded escaped path, so every relay row starts with "/". Computed from
+	// the request alone, before authentication. nil on the MCP doors.
+	tool   func(r *http.Request) string
+	verbOK func(method string) bool
+	// refuse writes the door's refusal body: a JSON-RPC envelope on the MCP
+	// doors, plain JSON with request_id on the relay door. It returns the
+	// bytes written.
+	refuse func(w http.ResponseWriter, status int, requestID, msg string) int
+}
+
+// mcpDoor is the /mcp doors as they always were. The values are the ones
+// serve wrote inline before the prelude was shared, and every existing proxy
+// test passes unmodified against them.
+var mcpDoor = door{
+	allow:        allowedMethods,
+	headers:      allowedHeaders,
+	expose:       "Mcp-Session-Id, MCP-Session-Id, Retry-After",
+	mirrorParams: true,
+	verbOK:       func(m string) bool { return m == http.MethodPost || m == http.MethodDelete },
+	refuse: func(w http.ResponseWriter, status int, _ string, msg string) int {
+		return writeRPCError(w, status, nil, -32000, msg)
+	},
+}
+
+// admitted is what the prelude hands the door that called it: the request
+// with the audit id on its context, the authenticated key, the plaintext the
+// client presented (the relay door sweeps it out of outbound headers and
+// redacts it from the row), the id, the door's tool_name and the clock.
+type admitted struct {
+	r         *http.Request
+	vk        *models.VirtualKey
+	token     string
+	requestID string
+	tool      string
+	start     time.Time
+}
+
+// admit is every step both doors take before anything door-specific, in the
+// order serve always took them: Cache-Control: no-store; the CORS block and
+// the preflight; the host check; the verb check (before the key is read, so a
+// probe with no credential buys no audit row and cannot tell a live key from
+// a dead one; the request id does not exist yet, so a 405 body carries none
+// on either door); the request id; authentication with its blocked row; the
+// key-versus-path rule. ok is false when the request was answered here.
+func (h *Handler) admit(w http.ResponseWriter, r *http.Request, d door) (admitted, bool) {
+	// Every proxy response is uncacheable. The upstream's own Cache-Control is
+	// not relayed (copyResponseHeaders): a per-key answer an upstream marked
+	// cacheable would be stored against a URL that does not name the key on
+	// the shared /mcp door. Written here rather than beside the relay so the
+	// refusal paths and the preflight carry it too (uniformity, not a leak
+	// today: a preflight cache reads Access-Control-Max-Age, not this) and so
+	// the streaming relay inherits it before its first write.
+	w.Header().Set("Cache-Control", "no-store")
+	if h.applyCORS(w, r, d) {
+		return admitted{}, false
+	}
+	if !h.hostAllowed(r) {
+		h.writeInvalidHost(w, r)
+		return admitted{}, false
+	}
+
+	// Refused on the verb alone, before the key is read. On the MCP doors
+	// anything other than a POST or a DELETE, the GET a Streamable HTTP
+	// client opens after initialize included, is answered here rather than
+	// replayed to the upstream with the real credential attached, which is
+	// what forward does with any verb it is handed. The answer is the same
+	// with a valid key, a wrong one and none, so a GET can no longer tell a
+	// caller whether a key is live, and no upstream round trip and no audit
+	// row is spent on a probe that presents no credential; requestLogger in
+	// cmd/server records it. After applyCORS so a preflight keeps its 204,
+	// and after the host check so a rewritten Host is diagnosed the same way
+	// on every verb. Allow goes on before the refusal, which commits the
+	// header block. GET stays refused on the MCP doors: in the 2026-07-28
+	// revision a server's messages arrive on the response to a POST, which
+	// the relay streams (stream.go), and a server may answer GET with 405 in
+	// every revision.
+	if !d.verbOK(r.Method) {
+		w.Header().Set("Allow", d.allow)
+		d.refuse(w, http.StatusMethodNotAllowed, "", "method not allowed")
+		return admitted{}, false
+	}
+
+	start := time.Now()
+	requestID := r.Header.Get("X-Request-Id")
+	if d.boundRequestID {
+		requestID = truncate(requestID, auditFieldBytes)
+	}
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	// The id the audit row will carry rides the context, so a token refresh
+	// made on this request's behalf (credential) records the same id and
+	// the Logs page can join the two.
+	r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
+	tool := ""
+	if d.tool != nil {
+		tool = d.tool(r)
+	}
+
+	vk, wait, err := h.authenticate(r)
+	if err != nil {
+		h.record(models.AuditLog{
+			RequestID: requestID, Method: r.Method, ToolName: tool, Status: models.StatusBlocked,
+			ErrorMessage: err.Error(), LatencyMS: int(time.Since(start).Milliseconds()),
+		})
+		status := http.StatusUnauthorized
+		if errors.Is(err, errRateLimited) {
+			status = http.StatusTooManyRequests
+			if d.retryAfter {
+				w.Header().Set("Retry-After", webutil.RetryAfterSeconds(wait))
+			}
+		}
+		d.refuse(w, status, requestID, err.Error())
+		return admitted{}, false
+	}
+	pathID := chi.URLParam(r, KeyParam)
+	if pathID == "" && d.keyRequired {
+		// The keyless binding is not a door: same body as every other miss, so
+		// a valid key cannot use it to learn anything.
+		size := d.refuse(w, http.StatusNotFound, requestID, "unknown endpoint")
+		h.finish(vk, requestID, r.Method, tool, "", models.StatusBlocked, "unknown endpoint: no key in path", start, size, nil)
+		return admitted{}, false
+	}
+	if pathID != "" && pathID != vk.ID {
+		size := d.refuse(w, http.StatusForbidden, requestID, "virtual key does not match this endpoint")
+		h.finish(vk, requestID, r.Method, tool, "", models.StatusBlocked, "virtual key does not match this endpoint", start, size, nil)
+		return admitted{}, false
+	}
+	return admitted{r: r, vk: vk, token: auth.BearerToken(r), requestID: requestID, tool: tool, start: start}, true
+}
+
+// applyCORS writes the door's CORS block when the request carries an Origin,
+// and answers a preflight. Every name in a door's Access-Control-Expose-
+// Headers is one that door vetted on its response copier; Content-Type needs
+// no entry because it is CORS-safelisted.
+func (h *Handler) applyCORS(w http.ResponseWriter, r *http.Request, d door) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Headers", allowedHeaders)
-		w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
-		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, MCP-Session-Id, Retry-After")
+		w.Header().Set("Access-Control-Allow-Headers", d.headers)
+		w.Header().Set("Access-Control-Allow-Methods", d.allow)
+		w.Header().Set("Access-Control-Expose-Headers", d.expose)
 		// A preflight asking to send mirrored parameters is answered with
 		// their names, in the spelling the proxy produced and only when the
 		// whole set is within the bound (paramHeaderNames). This is the one
 		// place client input is reflected into a response header, and it
-		// runs before authentication, so it is confined to OPTIONS: the
-		// block above is written on every request carrying an Origin and
-		// nothing else in it comes from the client. Vary is untouched. The
-		// answer depends on Access-Control-Request-Headers, but serve has
-		// already written Cache-Control: no-store, so no shared cache keys
-		// on it, and Set would drop Origin.
-		if r.Method == http.MethodOptions {
+		// runs before authentication, so it is confined to OPTIONS on the MCP
+		// doors: the block above is written on every request carrying an
+		// Origin and nothing else in it comes from the client. Vary is
+		// untouched. The answer depends on Access-Control-Request-Headers,
+		// but admit has already written Cache-Control: no-store, so no shared
+		// cache keys on it, and Set would drop Origin.
+		if d.mirrorParams && r.Method == http.MethodOptions {
 			if names := paramHeaderNames(r.Header.Values("Access-Control-Request-Headers")); len(names) > 0 {
-				w.Header().Set("Access-Control-Allow-Headers", allowedHeaders+", "+strings.Join(names, ", "))
+				w.Header().Set("Access-Control-Allow-Headers", d.headers+", "+strings.Join(names, ", "))
 			}
 		}
 	}
 	if r.Method == http.MethodOptions {
 		// A successful OPTIONS names the methods the resource supports (RFC
 		// 9110), Origin or not; the CORS block above is the browser's copy.
-		w.Header().Set("Allow", allowedMethods)
+		w.Header().Set("Allow", d.allow)
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
@@ -197,70 +352,12 @@ func (h *Handler) ServeMember(w http.ResponseWriter, r *http.Request) { h.serve(
 // serve is both endpoints. memberPath says which route this request arrived
 // on; everything else about the two is deliberately the same code.
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool) {
-	// Every proxy response is uncacheable. The upstream's own Cache-Control is
-	// not relayed (copyResponseHeaders): a per-key answer an upstream marked
-	// cacheable would be stored against a URL that does not name the key on
-	// the shared /mcp door. Written here rather than beside the relay so the
-	// refusal paths and the preflight carry it too (uniformity, not a leak
-	// today: a preflight cache reads Access-Control-Max-Age, not this) and so
-	// the streaming relay inherits it before its first write.
-	w.Header().Set("Cache-Control", "no-store")
-	if h.applyCORS(w, r) {
+	a, ok := h.admit(w, r, mcpDoor)
+	if !ok {
 		return
 	}
-	if !h.hostAllowed(r) {
-		h.writeInvalidHost(w, r)
-		return
-	}
-
-	// Refused on the verb alone, before the key is read. Anything other than
-	// a POST or a DELETE, the GET a Streamable HTTP client opens after
-	// initialize included, is answered here rather than replayed to the
-	// upstream with the real credential attached, which is what forward does
-	// with any verb it is handed. The answer is the same with a valid key, a
-	// wrong one and none, so a GET can no longer tell a caller whether a key
-	// is live, and no upstream round trip and no audit row is spent on a
-	// probe that presents no credential; requestLogger in cmd/server records
-	// it. After applyCORS so a preflight keeps its 204, and after the host
-	// check so a rewritten Host is diagnosed the same way on every verb.
-	// Allow goes on before writeRPCError, which commits the header block.
-	// GET stays refused: in the 2026-07-28 revision a server's messages
-	// arrive on the response to a POST, which the relay streams (stream.go),
-	// and a server may answer GET with 405 in every revision.
-	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		w.Header().Set("Allow", allowedMethods)
-		writeRPCError(w, http.StatusMethodNotAllowed, nil, -32000, "method not allowed")
-		return
-	}
-
-	start := time.Now()
-	requestID := r.Header.Get("X-Request-Id")
-	if requestID == "" {
-		requestID = uuid.NewString()
-	}
-	// The id the audit row will carry rides the context, so a token refresh
-	// made on this request's behalf (credential) records the same id and
-	// the Logs page can join the two.
-	r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
-
-	vk, err := h.authenticate(r)
-	if err != nil {
-		h.record(models.AuditLog{
-			RequestID: requestID, Method: r.Method, Status: models.StatusBlocked,
-			ErrorMessage: err.Error(), LatencyMS: int(time.Since(start).Milliseconds()),
-		})
-		status := http.StatusUnauthorized
-		if errors.Is(err, errRateLimited) {
-			status = http.StatusTooManyRequests
-		}
-		writeRPCError(w, status, nil, -32000, err.Error())
-		return
-	}
-	if pathID := chi.URLParam(r, KeyParam); pathID != "" && pathID != vk.ID {
-		h.finish(vk, requestID, r.Method, "", "", models.StatusBlocked, "virtual key does not match this endpoint", start, 0, nil)
-		writeRPCError(w, http.StatusForbidden, nil, -32000, "virtual key does not match this endpoint")
-		return
-	}
+	r, vk, requestID, start := a.r, a.vk, a.requestID, a.start
+	var err error
 
 	// The bound on what the proxy forwards blind, before the body is read so
 	// a header flood does not also buy an 8 MiB read, and after authenticate
@@ -276,7 +373,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes))
 	if err != nil {
 		writeRPCError(w, http.StatusBadRequest, nil, -32000, "invalid body")
 		return
@@ -338,7 +435,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	)
 	if memberPath {
 		slug := chi.URLParam(r, SlugParam)
-		member, group, err = h.resolveMember(r.Context(), vk, slug)
+		member, group, err = h.resolveMember(r.Context(), vk, slug, models.KindMCP)
 		if member == nil {
 			// One answer for every miss: unknown, foreign, disabled, removed,
 			// a single-upstream key, an empty group and a store failure are
@@ -373,11 +470,21 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		// reach, so the forward branch below needs no case of its own.
 		upstreams = []*models.Upstream{member}
 	} else {
-		upstreams, group, err = h.resolveTargets(r.Context(), vk)
+		upstreams, group, err = h.resolveTargets(r.Context(), vk, models.KindMCP)
+		if errors.Is(err, errKindMismatch) {
+			// A key bound to one HTTP API upstream is served at its /api/
+			// door; its /mcp door does not exist. The same uniform 404 as a
+			// member miss, and no credential work has happened.
+			size := writeRPCError(w, http.StatusNotFound, req.ID, -32000, "unknown endpoint")
+			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "",
+				models.StatusBlocked, err.Error(), start, size, boundedParams(req.Params))
+			return
+		}
 		if err != nil {
 			// No upstream is contacted on this path (a valid key against a
-			// disabled upstream or an empty group provokes it) so the row is
-			// bounded like every other one the proxy writes for free.
+			// disabled upstream, an empty group or a group with no MCP member
+			// provokes it) so the row is bounded like every other one the
+			// proxy writes for free.
 			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes), "", models.StatusError,
 				truncate(err.Error(), auditFieldBytes), start, 0, nil)
 			writeRPCError(w, http.StatusBadRequest, req.ID, -32000, err.Error())
@@ -716,35 +823,47 @@ func (h *Handler) writeInvalidHost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) authenticate(r *http.Request) (*models.VirtualKey, error) {
+// authenticate resolves the presented virtual key, or the reason it is refused.
+// wait is the limiter's own answer to a rate-limited caller, which the relay
+// door writes as Retry-After; the MCP doors ignore it.
+func (h *Handler) authenticate(r *http.Request) (vk *models.VirtualKey, wait time.Duration, err error) {
 	token := auth.BearerToken(r)
 	if token == "" {
-		return nil, errUnauthorized
+		return nil, 0, errUnauthorized
 	}
-	vk, err := h.store.GetVirtualKeyByLookup(r.Context(), auth.LookupDigest(token))
+	vk, err = h.store.GetVirtualKeyByLookup(r.Context(), auth.LookupDigest(token))
 	if err != nil {
-		return nil, errUnauthorized
+		return nil, 0, errUnauthorized
 	}
 	if err := auth.VerifyLookup(token, vk.KeyLookup); err != nil {
-		return nil, errUnauthorized
+		return nil, 0, errUnauthorized
 	}
 	if vk.RevokedAt != nil {
-		return nil, errRevoked
+		return nil, 0, errRevoked
 	}
 	if vk.ExpiresAt != nil && time.Now().After(*vk.ExpiresAt) {
-		return nil, errExpired
+		return nil, 0, errExpired
 	}
 	rpm := 0
 	if vk.RateLimit != nil {
 		rpm = *vk.RateLimit
 	}
-	if !h.limit.Allow(vk.ID, rpm) {
-		return nil, errRateLimited
+	if ok, retry := h.limit.Consume(vk.ID, rpm); !ok {
+		return nil, retry, errRateLimited
 	}
-	return vk, nil
+	return vk, 0, nil
 }
 
-func (h *Handler) resolveTargets(ctx context.Context, vk *models.VirtualKey) ([]*models.Upstream, *models.Group, error) {
+// resolveTargets is the upstreams a key can reach through a door of kind
+// want, and the group when the key is bound to one. The kind filter lives
+// here and nowhere else (PORM-146): each door serves only rows whose kind is
+// exactly its own constant, so a stored value that is neither (a hand-edited
+// row) is served on no door, which is also what internal/api's endpointsFor
+// mirrors. A single upstream of another kind is errKindMismatch, the uniform
+// 404; a group whose enabled members are all of another kind is
+// errNoMCPMembers on the MCP door and, like any group, a 404 on the relay
+// door, which serves members by slug only.
+func (h *Handler) resolveTargets(ctx context.Context, vk *models.VirtualKey, want string) ([]*models.Upstream, *models.Group, error) {
 	switch vk.TargetType {
 	case models.TargetUpstream:
 		u, err := h.store.GetUpstream(ctx, vk.TargetID)
@@ -754,6 +873,9 @@ func (h *Handler) resolveTargets(ctx context.Context, vk *models.VirtualKey) ([]
 		if !u.Enabled {
 			return nil, nil, errUpstreamDisabled
 		}
+		if u.Kind != want {
+			return nil, nil, errKindMismatch
+		}
 		return []*models.Upstream{u}, nil, nil
 	case models.TargetGroup:
 		g, err := h.store.GetGroup(ctx, vk.TargetID)
@@ -761,14 +883,22 @@ func (h *Handler) resolveTargets(ctx context.Context, vk *models.VirtualKey) ([]
 			return nil, nil, err
 		}
 		var ups []*models.Upstream
+		otherKind := 0
 		for _, id := range g.UpstreamIDs {
 			u, err := h.store.GetUpstream(ctx, id)
 			if err != nil || !u.Enabled {
 				continue
 			}
+			if u.Kind != want {
+				otherKind++
+				continue
+			}
 			ups = append(ups, u)
 		}
 		if len(ups) == 0 {
+			if otherKind > 0 && want == models.KindMCP {
+				return nil, nil, errNoMCPMembers
+			}
 			return nil, nil, errNoUpstreams
 		}
 		return ups, g, nil
@@ -793,7 +923,7 @@ func (h *Handler) resolveTargets(ctx context.Context, vk *models.VirtualKey) ([]
 // err is non-nil only for a failure that is not a configuration state (not
 // ErrNotFound, errUpstreamDisabled or errNoUpstreams). The client is told the
 // same thing either way; the operator's row and log line say "resolve failed".
-func (h *Handler) resolveMember(ctx context.Context, vk *models.VirtualKey, slug string) (*models.Upstream, *models.Group, error) {
+func (h *Handler) resolveMember(ctx context.Context, vk *models.VirtualKey, slug, want string) (*models.Upstream, *models.Group, error) {
 	// The path segment is judged by the rule stored slugs are judged by,
 	// before any lookup: "", "..", "%2f", a decoded NUL, "GitHub" and anything
 	// over MaxSlugLen are not slugs, and asking the store about them would
@@ -801,9 +931,12 @@ func (h *Handler) resolveMember(ctx context.Context, vk *models.VirtualKey, slug
 	if !models.ValidSlug(slug) {
 		return nil, nil, nil
 	}
-	ups, group, err := h.resolveTargets(ctx, vk)
+	// want is passed straight through, so a member of the other kind is the
+	// same miss as a slug no member carries: the same walk, the same nil.
+	ups, group, err := h.resolveTargets(ctx, vk, want)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) || errors.Is(err, errUpstreamDisabled) || errors.Is(err, errNoUpstreams) {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, errUpstreamDisabled) ||
+			errors.Is(err, errNoUpstreams) || errors.Is(err, errNoMCPMembers) || errors.Is(err, errKindMismatch) {
 			return nil, nil, nil
 		}
 		return nil, nil, err
@@ -1766,4 +1899,18 @@ var (
 	errUpstreamDisabled = errors.New("upstream is disabled")
 	errNoUpstreams      = errors.New("group has no enabled upstreams")
 	errInvalidTarget    = errors.New("invalid virtual key target")
+	// errNoMCPMembers is the MCP door's answer for a group whose enabled
+	// members are all HTTP APIs (PORM-146): reachable at their own /api/
+	// doors, but nothing for /mcp to merge.
+	errNoMCPMembers = errors.New("group has no MCP members")
+	// errKindMismatch is a key bound to one upstream knocked on the door of
+	// the other kind. The client sees the uniform 404; this is the row's
+	// reason.
+	errKindMismatch = errors.New("unknown endpoint: upstream is not served on this door")
 )
+
+// maxRequestBytes bounds the body either door reads from a client. The MCP
+// doors read up to it and parse what arrived; the relay door reads one byte
+// past it and answers 413 (httprelay.go), because a truncated body relayed
+// with a real credential is a corrupt write, not a refusal.
+const maxRequestBytes = 8 << 20
