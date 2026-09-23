@@ -527,9 +527,16 @@ that one path from the rule (it carries no secret and needs no key), or tick
 "Register PoryMCP with the vendor instead of publishing its client document"
 in the upstream's Edit dialog before pressing Connect (the API form is
 `POST /upstreams/{id}/oauth/start` with `{"client":"registered"}`). A
-registration, once stored, is used by later connects, so the choice sticks.
+registration, once stored, is used by later connects, so the choice sticks
+until Disconnect, which forgets the registration with the token set.
 Cloudflare does not cache the document or the callback by default; nothing
 needs an edge rule.
+
+The callback route has a budget of ten hits per client address per minute.
+Behind an edge that is not listed in `TRUSTED_PROXIES` every caller shares
+the edge's address and that one budget, so set `TRUSTED_PROXIES` for the
+edge (section 2) before connecting an OAuth upstream through it; otherwise
+a scan of the public route can hold a sign-in off for a minute.
 
 Pending sign-ins and the refresh lock live in one process. Behind several
 replicas the callback must land on the replica that started the flow (one

@@ -129,18 +129,27 @@ redirect URI still match; the client metadata document when the vendor
 advertises support, `PUBLIC_URL` is https and its host is not loopback;
 dynamic registration; else
 `400 {"error":"the authorization server offers no way to register PoryMCP; enter a client ID"}`.
+`{"client": "document"}` on an http or loopback `PUBLIC_URL` is refused
+before anything is dialled:
+`400 {"error":"a client metadata document needs an https PUBLIC_URL the vendor can fetch; use registered or enter a client ID"}`.
 A supplied client is bound to the issuer that first accepted it; a different
 issuer later answers
 `400 {"error":"the stored client ID belongs to another authorization server; enter it again"}`.
 `PUBLIC_URL` is the redirect URI's origin: it must be https, or http on a
 loopback host, or http with `ALLOW_INSECURE_HTTP`, else
 `400 {"error":"PUBLIC_URL must be an https address to connect an OAuth upstream"}`;
+a `PUBLIC_URL` that does not parse as an http or https address is
+`400 {"error":"PUBLIC_URL is not a valid URL; set it to the address the browser uses"}`;
 a loopback `PUBLIC_URL` reached from another address is refused with both
 values. A metadata, host-rule, redirect or registration failure is `502`
 with one fixed sentence from the OAuth client's closed set, never a byte the
 vendor sent, and one Warn line with the stage, the status and the host. The
-route spends the discovery budgets and records nothing; the connect is
-recorded by the callback. The authorization URL carries `code_challenge`
+metadata walk and a registration share one ten-second budget. The route
+spends the discovery budgets and records nothing; the connect is recorded
+by the callback. Sixty-four sign-ins may be pending at once, one per
+upstream (a new start replaces that upstream's earlier one); past that the
+route answers `429 {"error":"too many pending sign-ins; wait for one to expire"}`
+with `Retry-After: 60`. The authorization URL carries `code_challenge`
 (S256), `state`, `redirect_uri={PUBLIC_URL}/api/v1/oauth/callback` and
 `resource=<upstream url>` (RFC 8707). Anyone holding a live authorization
 URL can connect the upstream to their own vendor account within ten
@@ -161,7 +170,10 @@ started with and still be `oauth`, else `409` (or `404` when it is gone);
 the code is exchanged at the pinned token endpoint on the server's own
 context, so a browser that goes away cannot abandon a redeemed code (`502`
 on a failure); the token set is sealed and written under the per-upstream
-lock; `upstream.oauth_connect` is recorded and the page reads `200`. On a
+lock, waited for up to twelve seconds so a refresh in flight on the same
+row finishes first (`503` with a page that says the upstream was busy and
+nothing was stored, when it does not); `upstream.oauth_connect` is recorded
+and the page reads `200`. On a
 `200` the row reads `auth_status: "ok"`, `auth_configured: true` and an
 `oauth` object with `expires_at`, `has_refresh_token` and `client_source`.
 The same state a second time is `400` and records nothing.
@@ -193,9 +205,13 @@ the local clear always happens once the vendor was asked, and `failed` says
 the vendor did not confirm it. `no_token` is a row that held only a client
 identity (cleared) or nothing (no write, no event). A grant that landed on
 the row after the vendor call is never cleared:
-`409 {"error":"upstream changed; try Disconnect again"}`. `PATCH
-{"auth_type": "none"}` on an `oauth` row removes the token set without asking
-the vendor (see Removing a credential).
+`409 {"error":"upstream changed; try Disconnect again"}`. The lock is waited
+for on the request's own context; when it cannot be taken the answer is
+`503 {"error":"upstream is busy; try again"}`, as it is for a `PATCH` that
+writes an `oauth` row. `PATCH {"auth_type": "none"}` on an `oauth` row
+removes the token set without asking the vendor (see Removing a
+credential). Disconnect also forgets a dynamic registration; the next
+Connect registers again or uses the document.
 
 ### OAuth client metadata
 `GET /oauth/client-metadata` serves the Client ID Metadata Document, without
@@ -267,6 +283,15 @@ work.
 
 Nothing is cached on either route (the list is what the server said just now),
 and `POST /upstreams/discover` persists nothing at all.
+An `oauth` upstream is discovered by the saved route only, after it is
+connected: the unsaved route answers
+`400 {"error":"oauth upstreams are discovered after they are connected: create the upstream, connect it, then call POST /upstreams/{id}/discover"}`.
+On the saved route the stored token is presented and renewed as the proxy
+renews it (see Connecting an OAuth upstream); a set whose access token has
+lapsed with no refresh token, or whose refresh the vendor refused, answers
+`200` with `ok: false` and `error: "stored credential has expired; connect again"`,
+and a vendor that could not be reached after the token lapsed answers
+`ok: false` with `error: "the token could not be refreshed; try again"`.
 `POST /upstreams/{id}/discover` writes exactly two fields on the upstream's own
 row, `last_test_at` and `last_test_ok`, on every run that completes, pass or
 fail, including a refused transport and an undecryptable stored credential. A

@@ -239,10 +239,11 @@
   pending sign-in per upstream and 64 in all, with the upstream id, the PKCE
   verifier and the four endpoints recorded server-side and never taken from
   the query; the write is a compare-and-swap on `updated_at`, so a row edited
-  during the sign-in stores nothing. Failed callbacks are limited to ten per
-  client address per minute, a budget of its own so a scan of the public
-  route cannot lock the admin out; behind an edge that is not in
-  `TRUSTED_PROXIES` every caller shares one address and one budget. Every
+  during the sign-in stores nothing. Callbacks are limited to ten per client
+  address per minute, redeemed or not, a budget of its own so a scan of the
+  public route cannot lock the admin out; behind an edge that is not in
+  `TRUSTED_PROXIES` every caller shares one address and one budget, so a
+  scan from anywhere can hold a legitimate sign-in off for a minute. Every
   URL learned from an upstream or its authorization server (the
   `resource_metadata` URL, each listed issuer, the well-known documents, the
   four endpoints) passes the same gate as an upstream URL, must be https
