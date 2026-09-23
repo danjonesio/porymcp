@@ -467,3 +467,17 @@ func TestClientSecretNeverInURL(t *testing.T) {
 		t.Fatalf("basic %q %q", user, pass)
 	}
 }
+
+// A server that cannot be reached at all is reported as unreachable, with
+// the host, and never as one that publishes no metadata.
+func TestFindAuthServerUnreachableNamesHost(t *testing.T) {
+	ct := &countingTransport{}
+	_, _, err := clientWith(ct).FindAuthServer(context.Background(), "https://mcp.unreachable.invalid/mcp")
+	oe := oauthErr(t, err, ErrOAuthUnreachable)
+	if oe.Stage != "protected_resource" || oe.Host != "mcp.unreachable.invalid" {
+		t.Fatalf("stage %q host %q", oe.Stage, oe.Host)
+	}
+	if ct.count() == 0 {
+		t.Fatal("nothing was dialled")
+	}
+}

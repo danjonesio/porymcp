@@ -157,6 +157,11 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 
 	var pr ProtectedResource
 	found := false
+	// The last candidate that could not be reached at all: when every one
+	// fails that way the answer is "unreachable" with its host, not "not
+	// published", so a DNS or TLS failure is not read as a vendor that
+	// publishes nothing.
+	var unreachable error
 	for _, cand := range cands {
 		target, err := oauthTarget(cand.url, up)
 		if err != nil {
@@ -167,6 +172,9 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 		if err != nil {
 			if isRedirect(err) {
 				return ProtectedResource{}, AuthServer{}, err
+			}
+			if errors.Is(err, ErrOAuthUnreachable) {
+				unreachable = err
 			}
 			continue
 		}
@@ -180,6 +188,11 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 		break
 	}
 	if !found {
+		if unreachable != nil {
+			oe := unreachable.(*OAuthError)
+			oe.Stage = "protected_resource"
+			return ProtectedResource{}, AuthServer{}, oe
+		}
 		return ProtectedResource{}, AuthServer{}, &OAuthError{Stage: "protected_resource", Err: ErrOAuthNoMetadata}
 	}
 
@@ -214,6 +227,7 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 		Iss                      bool     `json:"authorization_response_iss_parameter_supported"`
 	}
 	found = false
+	unreachable = nil
 	for _, cand := range asCands {
 		target, err := oauthTarget(cand, up)
 		if err != nil {
@@ -224,6 +238,9 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 			if isRedirect(err) {
 				return ProtectedResource{}, AuthServer{}, err
 			}
+			if errors.Is(err, ErrOAuthUnreachable) {
+				unreachable = err
+			}
 			continue
 		}
 		if status != http.StatusOK || raw.TokenEndpoint == "" || raw.AuthorizationEndpoint == "" {
@@ -233,6 +250,11 @@ func (c *Client) FindAuthServer(ctx context.Context, upstreamURL string) (Protec
 		break
 	}
 	if !found {
+		if unreachable != nil {
+			oe := unreachable.(*OAuthError)
+			oe.Stage = "authorization_server"
+			return ProtectedResource{}, AuthServer{}, oe
+		}
 		return ProtectedResource{}, AuthServer{}, &OAuthError{Stage: "authorization_server", Err: ErrOAuthNoMetadata, Host: bound(iu.Host, MaxErrorBytes)}
 	}
 	if trimSlash(raw.Issuer) != issuer {
