@@ -1,0 +1,48 @@
+# Weekly vulnerability watch. ci.yml runs the same two make targets on every
+# push to main and every pull request; this file runs them against main on a
+# schedule, so an advisory published in a week with no push still fails a
+# run. GitHub emails a failed scheduled run to the user who created this
+# file, or to a later user who changed the cron line below or re-enabled the
+# schedule, and disables the schedule after 60 days without repository
+# activity.
+name: audit
+
+on:
+  schedule:
+    # Monday 06:17 UTC. Not on the hour: GitHub delays runs queued at :00.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vuln:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # setup-go reads the toolchain line in go.mod, installs that release and
+      # sets GOTOOLCHAIN=local for the job, as in ci.yml.
+      - run: make vuln
+
+  web-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+      # npm audit reads package-lock.json and needs no node_modules, so
+      # nothing is installed here and no package's install script runs on an
+      # unattended runner. ci.yml installs first because its build needs the
+      # tree.
+      - run: make web-audit
