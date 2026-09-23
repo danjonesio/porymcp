@@ -83,17 +83,18 @@ type Server struct {
 	// AccessTokenBytes, when set, makes every issued access token this long.
 	AccessTokenBytes int
 
-	mu       sync.Mutex
-	seq      int
-	codes    map[string]codeRecord
-	access   map[string]bool
-	refresh  map[string]bool
-	clients  map[string]string // client_id -> secret ("" for a public client)
-	requests []Request
-	grants   map[string]int
-	revokes  int
-	regs     int
-	hold     chan struct{}
+	mu           sync.Mutex
+	lastVerifier string
+	seq          int
+	codes        map[string]codeRecord
+	access       map[string]bool
+	refresh      map[string]bool
+	clients      map[string]string // client_id -> secret ("" for a public client)
+	requests     []Request
+	grants       map[string]int
+	revokes      int
+	regs         int
+	hold         chan struct{}
 }
 
 type codeRecord struct {
@@ -186,6 +187,14 @@ func (s *Server) Registrations() int {
 }
 
 // Requests returns every call the MCP resource recorded.
+// LastVerifier is the PKCE verifier the token endpoint saw last, for a test
+// that checks the verifier never reaches a log or an event.
+func (s *Server) LastVerifier() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastVerifier
+}
+
 func (s *Server) Requests() []Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -447,6 +456,9 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request) {
 			s.tokenError(w, http.StatusUnauthorized, "invalid_client", "bad secret")
 			return
 		}
+		s.mu.Lock()
+		s.lastVerifier = r.PostForm.Get("code_verifier")
+		s.mu.Unlock()
 		if s256(r.PostForm.Get("code_verifier")) != rec.challenge {
 			s.tokenError(w, http.StatusBadRequest, "invalid_grant", "pkce mismatch")
 			return

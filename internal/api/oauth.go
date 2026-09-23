@@ -45,9 +45,14 @@ const (
 	oauthExchangeBudget = 8 * time.Second
 	// oauthWriteBudget bounds the store write after the vendor answered.
 	oauthWriteBudget = 2 * time.Second
-	// callbackFailRPM is the per-address budget for callbacks that do not
-	// redeem: a bad, reused or expired state. Separate from adminFails so a
-	// scan of the public route cannot lock the admin out.
+	// oauthStartBudget bounds the whole of start's vendor work: the metadata
+	// walk and a registration together, so one slow document cannot hold a
+	// discovery slot for the sum of the client's per-call backstops.
+	oauthStartBudget = 10 * time.Second
+	// callbackFailRPM is the per-address budget for callbacks. Every hit
+	// counts, redeemed or not, and it is separate from adminFails so a scan
+	// of the public route cannot lock the admin out. Ten a minute is far
+	// above what one operator's sign-ins need.
 	callbackFailRPM = 10
 	// oauthHostBytes bounds the request host quoted in one message.
 	oauthHostBytes = 256
@@ -62,6 +67,7 @@ const (
 	errClientOtherIssuer    = "the stored client ID belongs to another authorization server; enter it again"
 	errClientChoice         = "client must be document or registered"
 	errDocumentNotSupported = "the authorization server does not accept a client metadata document; use registered or enter a client ID"
+	errDocumentNeedsHTTPS   = "a client metadata document needs an https PUBLIC_URL the vendor can fetch; use registered or enter a client ID"
 	errTooManyFlows         = "too many pending sign-ins; wait for one to expire"
 )
 
@@ -272,6 +278,13 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	https := strings.HasPrefix(strings.ToLower(s.cfg.PublicURL), "https://")
+	if in.Client == "document" && (!https || loopback) {
+		// The vendor would fetch the document from an address it cannot
+		// reach; refused before anything is dialled.
+		writeError(w, http.StatusBadRequest, errDocumentNeedsHTTPS)
+		return
+	}
 	select {
 	case s.discovering <- struct{}{}:
 		defer func() { <-s.discovering }()
@@ -281,7 +294,9 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pr, as, err := s.mcp.FindAuthServer(r.Context(), u.URL)
+	sctx, scancel := context.WithTimeout(r.Context(), oauthStartBudget)
+	defer scancel()
+	pr, as, err := s.mcp.FindAuthServer(sctx, u.URL)
 	if err != nil {
 		s.oauthStartFailed(w, u, err)
 		return
@@ -300,7 +315,6 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	redirect := s.redirectURI()
-	https := strings.HasPrefix(strings.ToLower(s.cfg.PublicURL), "https://")
 	set := models.OAuthTokenSet{Resource: u.URL, Scope: strings.Join(pr.Scopes, " ")}
 	switch {
 	case stored.ClientSource == "supplied" && stored.ClientID != "":
@@ -317,7 +331,7 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 	case in.Client != "registered" && as.ClientIDMetadataDocumentSupported && https && !loopback:
 		set.ClientID, set.ClientSource, set.ClientIssuer = s.clientMetadataURL(), "document", as.Issuer
 	case as.RegistrationEndpoint != "":
-		id, secret, rerr := s.mcp.Register(r.Context(), as, redirect)
+		id, secret, rerr := s.mcp.Register(sctx, as, redirect)
 		if rerr != nil {
 			s.oauthStartFailed(w, u, rerr)
 			return
@@ -402,10 +416,15 @@ var (
 	pageExchange  = callbackPage{Title: "The upstream could not be connected", Body: "The authorization server did not accept the sign-in. Nothing was stored. The server log has the reason. Press Connect to try again."}
 	pageChanged   = callbackPage{Title: "This upstream changed during sign-in", Body: "It was deleted, or its URL or auth type changed. Nothing was stored."}
 	pageBudget    = callbackPage{Title: "Too many failed sign-in attempts", Body: "Wait a minute, then reload this page."}
+	pageBusy      = callbackPage{Title: "This upstream was busy", Body: "PoryMCP was renewing the token for this upstream. Nothing was stored. Press Connect to try again."}
 )
 
 // vendorErrorCodes is RFC 6749 §4.1.2.1: the only error values a page may
 // name. Anything else prints the fixed refusal.
+// oauthLockWait is how long the callback waits for the per-upstream lock.
+// A variable so a test can shorten it.
+var oauthLockWait = 12 * time.Second
+
 var vendorErrorCodes = map[string]bool{
 	"access_denied": true, "invalid_request": true, "unauthorized_client": true, "unsupported_response_type": true,
 	"invalid_scope": true, "server_error": true, "temporarily_unavailable": true,
@@ -506,12 +525,15 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		writeCallbackPage(w, http.StatusBadGateway, pageExchange)
 		return
 	}
-	lctx, lcancel := context.WithTimeout(context.Background(), oauthWriteBudget)
+	// The lock may be held by a refresh in flight (vendor call plus store
+	// write, 10 s at most), so the wait outlasts that rather than sending
+	// an operator who has just signed in back to Connect.
+	lctx, lcancel := context.WithTimeout(context.Background(), oauthLockWait)
 	unlock, err := credential.LockUpstream(lctx, u.ID)
 	lcancel()
 	if err != nil {
 		warn("busy")
-		writeCallbackPage(w, http.StatusConflict, pageChanged)
+		writeCallbackPage(w, http.StatusServiceUnavailable, pageBusy)
 		return
 	}
 	wctx, wcancel := context.WithTimeout(context.Background(), oauthWriteBudget)

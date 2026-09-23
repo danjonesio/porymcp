@@ -872,6 +872,54 @@ func TestOAuthRevokeRacingReconnectIs409(t *testing.T) {
 
 // Security requirement 9: the three flows write their lines and nothing
 // secret reaches the log or an admin_events row.
+// An invalid PUBLIC_URL is refused with a fixed sentence before anything is
+// dialled, and a forced client document on an http or loopback PUBLIC_URL
+// likewise.
+func TestOAuthStartRefusesInvalidPublicURLAndForcedDocumentOnHTTP(t *testing.T) {
+	_, h, _, stub, id := oauthServer(t, "not-a-url")
+	rr, _ := start(t, h, id, nil)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), errPublicURLInvalid) {
+		t.Fatalf("invalid PUBLIC_URL: %d %s", rr.Code, rr.Body.String())
+	}
+	if len(stub.Requests()) != 0 {
+		t.Fatal("the stub was dialled")
+	}
+	_, h, _, stub, id = oauthServer(t, "http://localhost:8080")
+	rr = doJSON(t, h, http.MethodPost, "http://localhost:8080/upstreams/"+id+"/oauth/start", "test-admin", map[string]string{"client": "document"})
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), errDocumentNeedsHTTPS) {
+		t.Fatalf("forced document on loopback: %d %s", rr.Code, rr.Body.String())
+	}
+	if len(stub.Requests()) != 0 {
+		t.Fatal("the stub was dialled")
+	}
+}
+
+// A callback that cannot take the per-upstream lock answers the busy page:
+// the state is spent, nothing is stored, and the operator is told to press
+// Connect again.
+func TestOAuthCallbackBusyPage(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	saved := oauthLockWait
+	oauthLockWait = 50 * time.Millisecond
+	t.Cleanup(func() { oauthLockWait = saved })
+	path := approve(t, stub, mustStart(t, h, id, nil))
+	unlock, err := credential.LockUpstream(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := callback(t, h, path)
+	unlock()
+	if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), pageBusy.Title) || !strings.Contains(rr.Body.String(), pageBusy.Body) {
+		t.Fatalf("busy callback: %d %s", rr.Code, rr.Body.String())
+	}
+	if _, ok := storedOAuthSet(t, s, st, id); ok {
+		t.Fatal("a token set was stored")
+	}
+	if rr := callback(t, h, path); rr.Code != http.StatusBadRequest {
+		t.Fatalf("the state survived the busy answer: %d", rr.Code)
+	}
+}
+
 func TestOAuthLogsNothingSecret(t *testing.T) {
 	s, h, st, stub, id := oauthServer(t, testPublicURL)
 	stub.ErrorDescriptionMarker = "VENDOR_WORDS_MARKER"
@@ -880,6 +928,12 @@ func TestOAuthLogsNothingSecret(t *testing.T) {
 	// The Presenter holds the logger it was built with, as it does in the
 	// binary; rebuild it on the buffer so the refresh line is captured too.
 	s.present = credential.NewPresenter(s.keys, s.store, s.mcp, s.log)
+	// A supplied client with a secret, so the secret is in play on every
+	// path the test drives.
+	stub.AllowClient("supplied-client", "CLIENT_SECRET_MARKER")
+	if rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"auth_config": map[string]string{"client_id": "supplied-client", "client_secret": "CLIENT_SECRET_MARKER"}}); rr.Code != http.StatusOK {
+		t.Fatalf("PATCH client: %d %s", rr.Code, rr.Body.String())
+	}
 
 	out := mustStart(t, h, id, nil)
 	state := authQuery(t, out).Get("state")
@@ -898,6 +952,24 @@ func TestOAuthLogsNothingSecret(t *testing.T) {
 		t.Fatalf("discovery %v", d)
 	}
 	renewed, _ := storedOAuthSet(t, s, st, id)
+	// A transient refresh failure inside the window: the Warn fires, the
+	// call still succeeds on the stored token.
+	stub.RejectRefreshTransient = true
+	soon := renewed
+	soon.ExpiresAt = time.Now().Add(30 * time.Second).UTC()
+	storeOAuthSet(t, s, st, id, soon)
+	if d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil)); d["ok"] != true {
+		t.Fatalf("discovery inside the window %v", d)
+	}
+	stub.RejectRefreshTransient = false
+	// A failed callback on a known state: the Warn fires and names the
+	// allowlisted code only.
+	second := mustStart(t, h, id, nil)
+	state2 := authQuery(t, second).Get("state")
+	if rr := callback(t, h, "/oauth/callback?state="+url.QueryEscape(state2)+"&error=access_denied&error_description=VENDOR_WORDS_MARKER"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("refused callback: %d", rr.Code)
+	}
+	knownWarns := strings.Count(logs.String(), "upstream oauth callback failed")
 	if rr := callback(t, h, "/oauth/callback?state=junk&code=JUNK_CODE_MARKER"); rr.Code != http.StatusBadRequest {
 		t.Fatalf("junk callback: %d", rr.Code)
 	}
@@ -908,8 +980,9 @@ func TestOAuthLogsNothingSecret(t *testing.T) {
 	all := logs.String() + serialiseEvents(t, adminEvents(t, st))
 	for name, secret := range map[string]string{
 		"access token": set.AccessToken, "refresh token": set.RefreshToken, "renewed access": renewed.AccessToken,
-		"renewed refresh": renewed.RefreshToken, "code": code, "state": state, "junk code": "JUNK_CODE_MARKER",
-		"vendor words": "VENDOR_WORDS_MARKER", "auth_config key": "auth_config",
+		"renewed refresh": renewed.RefreshToken, "code": code, "state": state, "second state": state2,
+		"junk code": "JUNK_CODE_MARKER", "vendor words": "VENDOR_WORDS_MARKER", "auth_config key": "auth_config",
+		"client secret": "CLIENT_SECRET_MARKER", "pkce verifier": stub.LastVerifier(),
 	} {
 		if secret == "" {
 			t.Fatalf("%s fixture is empty", name)
@@ -918,13 +991,13 @@ func TestOAuthLogsNothingSecret(t *testing.T) {
 			t.Fatalf("%s reached the log or an event: %s", name, all)
 		}
 	}
-	for _, line := range []string{"upstream oauth connected", "upstream oauth token refreshed", "upstream oauth disconnected", "upstream credential cleared"} {
+	for _, line := range []string{"upstream oauth connected", "upstream oauth token refreshed", "upstream oauth refresh failed", `"reason":"vendor_error:access_denied"`, "upstream oauth disconnected", "upstream credential cleared"} {
 		if !strings.Contains(logs.String(), line) {
 			t.Errorf("log line %q missing:\n%s", line, logs.String())
 		}
 	}
-	if strings.Contains(logs.String(), "upstream oauth callback failed") {
-		t.Fatal("an unknown state produced a Warn line, which is a flooding lever")
+	if knownWarns != 1 || strings.Count(logs.String(), "upstream oauth callback failed") != knownWarns {
+		t.Fatalf("callback Warn lines: %d before the junk callback, %d after; want exactly one from the known state", knownWarns, strings.Count(logs.String(), "upstream oauth callback failed"))
 	}
 	events := adminEvents(t, st)
 	for _, action := range []string{models.ActionUpstreamOAuthConnect, models.ActionUpstreamOAuthRefresh, models.ActionUpstreamOAuthRevoke} {
