@@ -859,13 +859,21 @@ func (c *countingStore) GetVirtualKey(ctx context.Context, id string) (*models.V
 }
 
 // Security requirement 15: no timer outlives its stream. With the re-check at
-// 1 ms a leaked timer would read the store hundreds of times after the stream
-// ended; a second request on the same connection is served as usual.
+// 1 ms a leaked re-check would read the store hundreds of times after the
+// stream ended. With the idle bound at 100 ms and the next request on the same
+// connection answered after 150 ms, a leaked idle timer would set that
+// connection's write deadline to now in the middle of the second answer, and
+// the client would not get it whole.
 func TestStreamCallbacksDoNotOutliveTheStream(t *testing.T) {
 	setBudget(t, &streamRecheckBudget, time.Millisecond)
-	setBudget(t, &streamIdleBudget, 200*time.Millisecond)
+	setBudget(t, &streamIdleBudget, 100*time.Millisecond)
 	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: func(w http.ResponseWriter, r *http.Request) {
 		if rpcMethodOf(r) == "tools/list" {
+			select {
+			case <-time.After(150 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`)
 			return
@@ -891,8 +899,9 @@ func TestStreamCallbacksDoNotOutliveTheStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("the next request on the connection answered %d", resp2.StatusCode)
+	body, err := io.ReadAll(resp2.Body)
+	if err != nil || resp2.StatusCode != http.StatusOK || !strings.Contains(string(body), `"tools":[]`) {
+		t.Fatalf("the next request on the connection answered %d %q (%v): a leaked idle timer cut it", resp2.StatusCode, body, err)
 	}
 }
 
@@ -1167,8 +1176,9 @@ func TestStreamVerdictTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// The raw message: the bound on a read error's text is
+			// streamVerdict's own, and this is where it is proved.
 			status, msg := streamVerdict(tc.method, 200, ct, capOf(tc.body, tc.overflowed), "1", tc.end, tc.err)
-			msg = truncate(msg, auditFieldBytes)
 			if status != tc.status || msg != tc.msg {
 				t.Fatalf("status=%q msg=%q, want %q / %q", status, msg, tc.status, tc.msg)
 			}

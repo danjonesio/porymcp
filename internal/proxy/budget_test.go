@@ -36,7 +36,11 @@ func BenchmarkRelayJSON(b *testing.B) {
 // setBudget shortens one of budget.go's package vars for a test and restores
 // it afterwards. The relay reads each var once per request, so the restore
 // cannot race a request that is still running only if the test waits for its
-// own requests to end before returning, which every test here does.
+// own requests to end before returning, which every test here does. The rule
+// for t.Parallel: a test that calls setBudget stays sequential; its own
+// subtests may run in parallel, because the parent's Cleanup restores the var
+// only after they finish; a test that shortens no var may call t.Parallel,
+// because Go starts parallel tests after every sequential test has finished.
 func setBudget(t *testing.T, v *time.Duration, d time.Duration) {
 	t.Helper()
 	old := *v
@@ -74,9 +78,11 @@ func answerAfter(d time.Duration) http.HandlerFunc {
 }
 
 // Criterion 2: a call that takes longer than the old 60 s completes. At test
-// scale the budget is 50 ms and the upstream answers at 25 ms.
+// scale the budget is 200 ms and the upstream answers at 25 ms: the wide
+// margin is what keeps this from flaking on a loaded runner, and it costs the
+// suite only the 25 ms.
 func TestSlowAnswerWithinBudgetCompletes(t *testing.T) {
-	setBudget(t, &answerBudget, 50*time.Millisecond)
+	setBudget(t, &answerBudget, 200*time.Millisecond)
 	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: answerAfter(25 * time.Millisecond)}, nil, nil)
 	rr := f.post(toolCall("1", "ping_tool"))
 	if rr.Code != http.StatusOK {
