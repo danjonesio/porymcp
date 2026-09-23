@@ -721,3 +721,103 @@ func listedNames(t *testing.T, body []byte) []string {
 	sort.Strings(out)
 	return out
 }
+
+// serve puts the fixture's router on a real listener. A streamed answer can
+// only be observed over a connection: httptest.ResponseRecorder cannot be
+// read while the handler runs, and cannot disconnect. Requests carry the
+// fixture's public host so hostAllowed accepts them (streamRequest). Close
+// waits for every handler to return, so a test ends its streams first.
+func (f *fixture) serve() *httptest.Server {
+	f.t.Helper()
+	srv := httptest.NewServer(f.Router)
+	f.t.Cleanup(srv.Close)
+	return srv
+}
+
+// streamRequest builds a POST for srv at path (one of the router's three
+// patterns) with the fixture's bearer, a JSON body and a request id of its
+// own, so the row it produces can be found with rows. hdr adds or overrides
+// headers.
+func (f *fixture) streamRequest(srv *httptest.Server, path, rpc string, hdr map[string]string) (*http.Request, string) {
+	f.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(rpc))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	req.Host = "localhost:8080"
+	id := "req-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	req.Header.Set("Authorization", "Bearer "+f.Key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", mcpclient.AcceptMCP)
+	req.Header.Set("X-Request-Id", id)
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	return req, id
+}
+
+// rows waits for the audit rows of one request id and returns them, after a
+// short settle so a second row written late would be seen. models.LogFilter
+// has no request id, so the rows are read for the key and picked here. Every
+// streaming test asserts exactly one.
+func (f *fixture) rows(requestID string) []models.AuditLog {
+	f.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	pick := func() []models.AuditLog {
+		logs, _, err := f.Store.ListAuditLogs(context.Background(), models.LogFilter{Limit: 200})
+		if err != nil {
+			return nil
+		}
+		var out []models.AuditLog
+		for _, l := range logs {
+			if l.RequestID == requestID {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	for {
+		if got := pick(); len(got) > 0 {
+			time.Sleep(30 * time.Millisecond)
+			return pick()
+		}
+		if time.Now().After(deadline) {
+			f.t.Fatalf("no audit row for request %s within 2s", requestID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitNoStreams waits for every stream on the fixture's handler to have
+// returned, so a test's Cleanup cannot restore a budget var under a relay that
+// is still reading it, and so httptest.Server.Close is not left waiting.
+func (f *fixture) waitNoStreams() {
+	f.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.H.openStreams.Load() != 0 {
+		if time.Now().After(deadline) {
+			f.t.Fatalf("%d streams still open after 2s", f.H.openStreams.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// syncBuffer is a bytes.Buffer with a lock: the handler logs from its own
+// goroutine while a test over a real server reads the log, and the race
+// detector would otherwise report the read.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}

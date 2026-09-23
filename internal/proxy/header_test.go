@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 // PORM-98. The 1:1 forward path copies back three upstream response headers
@@ -113,4 +116,60 @@ func TestUpstreamResponseHeadersAreAllowlisted(t *testing.T) {
 		}, true, nil, nil, nil)
 		check(t, f.postMemberWith("alpha", initialize, origin))
 	})
+}
+
+// PORM-5 security requirement 3: on a streamed answer the same three names
+// cross and nothing else, and the one header PoryMCP adds is its own
+// X-Accel-Buffering: no, whatever the upstream said about buffering. No
+// Content-Length: the stream is chunked.
+func TestUpstreamResponseHeadersAreAllowlistedOnAStream(t *testing.T) {
+	t.Parallel()
+	f := newSingleFixture(t, upstreamSpec{
+		Tools: []string{"ping_tool"},
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("Content-Type", "text/event-stream")
+			h.Set("X-Accel-Buffering", "yes")
+			h.Set("Location", "https://elsewhere.example/x")
+			h.Set("WWW-Authenticate", `Bearer resource_metadata="https://idp.example/.well-known/x"`)
+			h.Set("Set-Cookie", "sid=abc")
+			h.Set("Mcp-Session-Id", "sess-9")
+			h.Set("Retry-After", "5")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, sseFrame(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
+		},
+	}, nil, nil)
+	srv := f.serve()
+	req, id := f.streamRequest(srv, "/a1/mcp", toolCall("1", "ping_tool"), nil)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HTTP code=%d", resp.StatusCode)
+	}
+	for k, want := range map[string]string{
+		"Content-Type":      "text/event-stream",
+		"Mcp-Session-Id":    "sess-9",
+		"Retry-After":       "5",
+		"X-Accel-Buffering": "no",
+		"Cache-Control":     "no-store",
+	} {
+		if got := resp.Header.Get(k); got != want {
+			t.Errorf("%s=%q want %q", k, got, want)
+		}
+	}
+	for _, k := range []string{"Location", "WWW-Authenticate", "Set-Cookie", "Content-Length"} {
+		if vs := resp.Header.Values(k); len(vs) != 0 {
+			t.Errorf("%s=%q reached the client", k, vs)
+		}
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	f.waitNoStreams()
+	if rows := f.rows(id); len(rows) != 1 || rows[0].Status != models.StatusSuccess {
+		t.Fatalf("rows=%+v want one success row", rows)
+	}
 }

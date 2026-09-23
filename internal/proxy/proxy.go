@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/audit"
@@ -39,16 +40,25 @@ type Handler struct {
 	// server/discover once and not on every walk. In memory only: nothing an
 	// upstream said is persisted (PORM-58).
 	eras *eraCache
+	// streams is done once StopStreams has run; every relayed stream watches
+	// it (relayStream). openStreams counts the streams open right now, for the
+	// two log lines that are the only place they can be seen.
+	streams     context.Context
+	stopStreams context.CancelFunc
+	openStreams atomic.Int64
 }
 
 func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger) *Handler {
+	streams, stop := context.WithCancel(context.Background())
 	return &Handler{
-		cfg:   cfg,
-		keys:  cfg.Keyring(),
-		store: st,
-		audit: al,
-		limit: auth.NewLimiter(),
-		log:   log,
+		cfg:         cfg,
+		keys:        cfg.Keyring(),
+		store:       st,
+		audit:       al,
+		limit:       auth.NewLimiter(),
+		log:         log,
+		streams:     streams,
+		stopStreams: stop,
 		// The no-redirect policy and the wrapped default transport are
 		// mcpclient's, not this handler's: every client that carries an
 		// upstream credential has them, and NewHTTPClient is the only place
@@ -577,13 +587,36 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			}
 		}
 		if err == nil {
-			// One request, one budget: five minutes for a buffered answer, and
-			// the connect budget in front of it (upstreamContext). The cancel
-			// runs as soon as the body is read so the timers do not outlive the
-			// request; a budget that fired is the sentence the row records.
-			ctx, _, cancel := upstreamContext(r.Context(), answerBudget)
-			respBody, statusCode, headers, err = h.forwardRead(ctx, r, up, sent, relay)
-			cancel(nil)
+			// One request, one budget: five minutes for a buffered answer or
+			// for a stream's headers, and the connect budget in front of it
+			// (upstreamContext). A buffered answer releases the budget as soon
+			// as the body is read; a stream disarms the answer timer once the
+			// headers are in and holds the context for as long as it lives. A
+			// budget that fired is the sentence the row records (causeError).
+			ctx, disarm, cancel := upstreamContext(r.Context(), answerBudget)
+			var resp *http.Response
+			resp, err = h.forward(ctx, r, up, sent, relay)
+			switch {
+			case err != nil:
+				err = causeError(ctx, err)
+				cancel(nil)
+			case streamable(onAggregate, method, resp):
+				disarm()
+				h.relayStream(w, r, ctx, cancel, resp, streamRow{
+					vk: vk, requestID: requestID, method: method, auditMethod: auditMethod,
+					tool: truncate(tool, auditFieldBytes), upstreamID: up.ID,
+					params: boundedParams(req.Params), start: start,
+					wantID:     strings.TrimSpace(string(req.ID)),
+					memberPath: memberPath, slug: chi.URLParam(r, SlugParam),
+				})
+				return
+			default:
+				respBody, statusCode, headers, err = mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
+				if err != nil {
+					err = causeError(ctx, err)
+				}
+				cancel(nil)
+			}
 		}
 		if onAggregate && err == nil {
 			// On this endpoint PoryMCP is the server: the member's answer is

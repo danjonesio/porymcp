@@ -74,10 +74,10 @@ func answerAfter(d time.Duration) http.HandlerFunc {
 }
 
 // Criterion 2: a call that takes longer than the old 60 s completes. At test
-// scale the budget is 100 ms and the upstream answers at 50 ms.
+// scale the budget is 50 ms and the upstream answers at 25 ms.
 func TestSlowAnswerWithinBudgetCompletes(t *testing.T) {
-	setBudget(t, &answerBudget, 100*time.Millisecond)
-	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: answerAfter(50 * time.Millisecond)}, nil, nil)
+	setBudget(t, &answerBudget, 50*time.Millisecond)
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: answerAfter(25 * time.Millisecond)}, nil, nil)
 	rr := f.post(toolCall("1", "ping_tool"))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("HTTP code=%d want 200: %s", rr.Code, rr.Body.String())
@@ -91,15 +91,15 @@ func TestSlowAnswerWithinBudgetCompletes(t *testing.T) {
 // Criterion 2's other half: past the budget the call fails, and the row says
 // which budget in the proxy's own words, not the transport's.
 func TestAnswerPastBudgetFails(t *testing.T) {
-	setBudget(t, &answerBudget, 100*time.Millisecond)
-	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: answerAfter(200 * time.Millisecond)}, nil, nil)
+	setBudget(t, &answerBudget, 50*time.Millisecond)
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: answerAfter(150 * time.Millisecond)}, nil, nil)
 	rr := f.post(toolCall("1", "ping_tool"))
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("HTTP code=%d want 502: %s", rr.Code, rr.Body.String())
 	}
 	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
-	if row.Status != models.StatusError || row.ErrorMessage != "upstream did not answer within 100ms" {
-		t.Fatalf("row status=%q error_message=%q, want error / upstream did not answer within 100ms", row.Status, row.ErrorMessage)
+	if row.Status != models.StatusError || row.ErrorMessage != "upstream did not answer within 50ms" {
+		t.Fatalf("row status=%q error_message=%q, want error / upstream did not answer within 50ms", row.Status, row.ErrorMessage)
 	}
 }
 
@@ -132,7 +132,7 @@ func TestUnreachableUpstreamFailsFast(t *testing.T) {
 // a host that accepts the connection and never completes the handshake fails
 // at connectBudget, and the row names that budget.
 func TestConnectBudgetBoundsAStalledHandshake(t *testing.T) {
-	setBudget(t, &connectBudget, 100*time.Millisecond)
+	setBudget(t, &connectBudget, 50*time.Millisecond)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -168,8 +168,8 @@ func TestConnectBudgetBoundsAStalledHandshake(t *testing.T) {
 		t.Fatalf("HTTP code=%d want 502", rr.Code)
 	}
 	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
-	if row.Status != models.StatusError || row.ErrorMessage != "upstream did not connect within 100ms" {
-		t.Fatalf("row status=%q error_message=%q, want error / upstream did not connect within 100ms", row.Status, row.ErrorMessage)
+	if row.Status != models.StatusError || row.ErrorMessage != "upstream did not connect within 50ms" {
+		t.Fatalf("row status=%q error_message=%q, want error / upstream did not connect within 50ms", row.Status, row.ErrorMessage)
 	}
 }
 
@@ -177,7 +177,7 @@ func TestConnectBudgetBoundsAStalledHandshake(t *testing.T) {
 // listBudget instead, so a member that never answers tools/list still costs
 // the walk that budget and no more, and the other member's tools are served.
 func TestGroupListingStillBoundedBySilentMember(t *testing.T) {
-	setBudget(t, &listBudget, 100*time.Millisecond)
+	setBudget(t, &listBudget, 50*time.Millisecond)
 	silent := func(w http.ResponseWriter, r *http.Request) {
 		if rpcMethodOf(r) == "tools/list" {
 			<-r.Context().Done()
@@ -208,7 +208,7 @@ func TestGroupListingStillBoundedBySilentMember(t *testing.T) {
 // member endpoint, and a budget that fires there is recorded as the budget,
 // not as a cancelled context.
 func TestRoutedCallPastBudgetRecordsTheBudget(t *testing.T) {
-	setBudget(t, &answerBudget, 100*time.Millisecond)
+	setBudget(t, &answerBudget, 50*time.Millisecond)
 	f := newFixture(t, map[string]upstreamSpec{
 		"alpha": {Tools: []string{"a_tool"}, Handler: func(w http.ResponseWriter, r *http.Request) {
 			switch rpcMethodOf(r) {
@@ -229,8 +229,8 @@ func TestRoutedCallPastBudgetRecordsTheBudget(t *testing.T) {
 		t.Fatalf("HTTP code=%d want 502: %s", rr.Code, rr.Body.String())
 	}
 	row := f.waitAudit(models.LogFilter{Tool: "alpha__a_tool"})[0]
-	if row.Status != models.StatusError || row.ErrorMessage != "upstream did not answer within 100ms" {
-		t.Fatalf("row status=%q error_message=%q, want error / upstream did not answer within 100ms", row.Status, row.ErrorMessage)
+	if row.Status != models.StatusError || row.ErrorMessage != "upstream did not answer within 50ms" {
+		t.Fatalf("row status=%q error_message=%q, want error / upstream did not answer within 50ms", row.Status, row.ErrorMessage)
 	}
 }
 
