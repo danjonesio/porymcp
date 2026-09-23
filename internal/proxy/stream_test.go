@@ -500,25 +500,59 @@ func TestStreamIdleBoundCloses(t *testing.T) {
 	}
 }
 
-// Security requirement 6: a client that stops reading cannot hold the handler.
-// The write to it carries the idle bound as a deadline, so the relay returns
-// within the bound and writes its one row.
+// pausedFlood is a stub that writes a large event, pauses for less than the
+// idle bound, and repeats: an upstream that is never silent, against a client
+// that stopped reading. The pause is what gave the idle timer a head start
+// over the write deadline before the timer was stopped during a write.
+func pausedFlood(pause time.Duration) http.HandlerFunc {
+	chunk := "data: " + strings.Repeat("x", 256<<10) + "\n\n"
+	return func(w http.ResponseWriter, r *http.Request) {
+		sseHeader(w)
+		rc := http.NewResponseController(w)
+		for r.Context().Err() == nil {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+			_ = rc.Flush()
+			select {
+			case <-time.After(pause):
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}
+}
+
+// Security requirement 6, Design item 5: a client that stops reading cannot
+// hold the handler, and its row says the client stopped, not that the upstream
+// went quiet. The write to it carries the idle bound as a deadline and the idle
+// timer is stopped while the write is in flight, so the relay returns within
+// the bound with the client's message whatever the upstream's rhythm.
 func TestStreamIdleBoundEndsAStreamWhoseClientStoppedReading(t *testing.T) {
 	setBudget(t, &streamIdleBudget, 50*time.Millisecond)
-	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: flood()}, nil, nil)
-	srv := f.serve()
-	_, id := rawStreamClient(t, f, srv, "/a1/mcp", toolCall("1", "ping_tool"))
-	deadline := time.Now().Add(2 * time.Second)
-	for f.H.openStreams.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	start := time.Now()
-	f.waitNoStreams()
-	if took := time.Since(start); took > 1500*time.Millisecond {
-		t.Fatalf("the relay held a stalled client for %v", took)
-	}
-	if rows := f.rows(id); len(rows) != 1 || rows[0].Status != models.StatusError {
-		t.Fatalf("rows=%+v want one error row", rows)
+	for name, handler := range map[string]http.HandlerFunc{
+		"flood":         flood(),
+		"paused-writer": pausedFlood(35 * time.Millisecond),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: handler}, nil, nil)
+			srv := f.serve()
+			_, id := rawStreamClient(t, f, srv, "/a1/mcp", toolCall("1", "ping_tool"))
+			deadline := time.Now().Add(2 * time.Second)
+			for f.H.openStreams.Load() == 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			start := time.Now()
+			f.waitNoStreams()
+			if took := time.Since(start); took > 1500*time.Millisecond {
+				t.Fatalf("the relay held a stalled client for %v", took)
+			}
+			rows := f.rows(id)
+			if len(rows) != 1 || rows[0].Status != models.StatusError || rows[0].ErrorMessage != "client closed the stream before the answer" {
+				t.Fatalf("rows=%+v want one error row that names the client", rows)
+			}
+		})
 	}
 }
 

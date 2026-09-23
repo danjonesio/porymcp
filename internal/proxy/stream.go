@@ -358,6 +358,11 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			capture.Write(buf[:n])
+			// The idle bound measures the upstream's silence and nothing
+			// else: it is stopped while the write to the client is in
+			// flight, so a client that stopped reading is ended by the
+			// write's own deadline, and its row says so.
+			idleT.Stop()
 			_ = rc.SetWriteDeadline(time.Now().Add(idle))
 			if ctx.Err() != nil {
 				// A callback set the deadline to now a moment ago; do not
