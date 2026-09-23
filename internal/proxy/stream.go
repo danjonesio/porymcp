@@ -129,11 +129,28 @@ func (c *streamCapture) Write(p []byte) {
 		}
 		return p[at]
 	}
+	// commentOnly reports whether every line of the event [from, to) starts
+	// with a colon: a keep-alive, which never replaces the event that
+	// answered. An event that opens with a comment line and carries data
+	// lines after it is data. Only an event whose first byte is a colon is
+	// walked, so the cost falls on keep-alives, which are a few bytes.
+	commentOnly := func(from, to int) bool {
+		if firstByte(from) != ':' {
+			return false
+		}
+		lineStart := false
+		for i := from; i < to; i++ {
+			b := firstByte(i)
+			if lineStart && b != ':' && b != '\n' && b != '\r' {
+				return false
+			}
+			lineStart = b == '\n' || b == '\r'
+		}
+		return true
+	}
 	consume := func(end int) {
-		// A comment-only event (a keep-alive) never replaces the event that
-		// answered: its first byte is a colon, and a data event's is not.
 		consumed = true
-		if start == unknownStart || firstByte(start) != ':' {
+		if start == unknownStart || !commentOnly(start, end) {
 			lastStart, lastEnd, found = start, end, true
 		}
 		start = end

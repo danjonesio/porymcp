@@ -1043,11 +1043,11 @@ func TestStreamCaptureSplitAtEveryOffset(t *testing.T) {
 		"data: {\"c\":3}\ndata: more\n\r\n" +
 		"data: {\"d\":4}\r\n\n" +
 		": keepalive\r\n\r\n" +
-		"data: {\"e\":5}\r\n\r\n" +
-		": keepalive\n\n")
+		": ping\ndata: {\"e\":5}\r\n\r\n" + // a comment line, then data: data
+		": keepalive\n: again\n\n")
 	var whole streamCapture
 	whole.Write(sample)
-	if string(whole.last) != "data: {\"e\":5}\r\n\r\n" || len(whole.pending) != 0 || whole.tailOverflowed() {
+	if string(whole.last) != ": ping\ndata: {\"e\":5}\r\n\r\n" || len(whole.pending) != 0 || whole.tailOverflowed() {
 		t.Fatalf("whole: last=%q pending=%q overflowed=%v", whole.last, whole.pending, whole.tailOverflowed())
 	}
 	for i := 1; i < len(sample); i++ {
@@ -1060,7 +1060,7 @@ func TestStreamCaptureSplitAtEveryOffset(t *testing.T) {
 	}
 	var partial streamCapture
 	partial.Write(sample[:len(sample)-5])
-	if string(partial.last) != "data: {\"e\":5}\r\n\r\n" || len(partial.pending) == 0 {
+	if string(partial.last) != ": ping\ndata: {\"e\":5}\r\n\r\n" || len(partial.pending) == 0 {
 		t.Fatalf("partial: last=%q pending=%q", partial.last, partial.pending)
 	}
 

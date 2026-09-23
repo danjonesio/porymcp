@@ -821,12 +821,13 @@ has waited five minutes, cancels the upstream request. A `tools/list` answer, an
 an answer not labelled `text/event-stream`, and every answer on the group
 endpoint are read whole, then sent as one body, as a JSON answer is. A stream
 that breaks after it started cannot change its status: if the upstream fails,
-goes silent, or the key or upstream is removed, the proxy drops the connection
-so the client sees the stream cut short, and the audit row says why. A
+goes silent, or is removed or edited, or the key stops being valid, the proxy
+drops the connection so the client sees the stream cut short, and the audit
+row says why. A
 `subscriptions/listen` ends when the client, the upstream or the proxy closes
 it, or when the upstream goes quiet, and that is its normal end: its row is
 `success` unless the stream carried a JSON-RPC error for it, the key stopped
-being valid, the upstream was removed, or the read failed.
+being valid, the upstream was removed or edited, or the read failed.
 
 For a `POST` or a `DELETE`, the proxy:
 1. Validates the virtual key

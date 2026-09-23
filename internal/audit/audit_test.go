@@ -97,11 +97,13 @@ func TestCloseDrainsQueuedRows(t *testing.T) {
 
 // PORM-5 security requirement 7: a row recorded while Close runs, or after
 // it, is either stored or dropped with a log line, and nothing panics. The
-// store is slowed so the queue (1,024 slots) fills and the fallback send runs
-// and is parked when Close starts. Run under -race: the send and the close
-// share one lock.
+// store's inserts are held behind a gate until a send has been parked on the
+// full queue (1,024 slots), so the fallback path is on the table when Close
+// runs, whatever the scheduler does; then the gate opens and Close drains.
+// Run under -race: the send and the close share one lock.
 func TestRecordAfterCloseDoesNotPanic(t *testing.T) {
-	st := &countingStore{Store: openStore(t), delay: 200 * time.Microsecond}
+	gate := make(chan struct{})
+	st := &countingStore{Store: &blockingStore{Store: openStore(t), release: gate}}
 	logs := &lockedBuffer{}
 	l := New(st, slog.New(slog.NewJSONHandler(logs, nil)))
 	const workers, each = 100, 15
@@ -115,7 +117,14 @@ func TestRecordAfterCloseDoesNotPanic(t *testing.T) {
 			}
 		}()
 	}
-	time.Sleep(2 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for l.parked.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no send was parked within 5s: the queue never filled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
 	l.Close()
 	wg.Wait()
 	l.Record(models.AuditLog{VirtualKeyID: "k", Method: "after", Status: models.StatusSuccess, RequestID: "late"})
