@@ -28,13 +28,13 @@ func BenchmarkClassifyAnswer(b *testing.B) {
 		sb.WriteString(sseFrame(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
 		return []byte(sb.String())
 	}
-	past := stream(maxPickDocumentsForBench)
-	within := stream(maxPickDocumentsForBench - 1)
+	past := stream(mcpclient.MaxPickDocuments)
+	within := stream(mcpclient.MaxPickDocuments - 1)
 	// The two bound inputs are what their names say, or the constant below
 	// has drifted from mcpclient's and the numbers would measure the wrong
 	// path.
 	if _, err := mcpclient.PickResponse("text/event-stream", past, "1"); err == nil {
-		b.Fatal("sse-past-bound reduces: maxPickDocumentsForBench no longer mirrors maxPickDocuments")
+		b.Fatal("sse-past-bound reduces: the input is not past MaxPickDocuments")
 	}
 	if _, err := mcpclient.PickResponse("text/event-stream", within, "1"); err != nil {
 		b.Fatalf("sse-4095-then-answer does not reduce: %v", err)
@@ -73,7 +73,3 @@ func BenchmarkClassifyAnswer(b *testing.B) {
 		})
 	}
 }
-
-// maxPickDocumentsForBench mirrors mcpclient's maxPickDocuments, which is not
-// exported; a change there moves this constant in the same commit.
-const maxPickDocumentsForBench = 4096
