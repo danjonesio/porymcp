@@ -541,3 +541,121 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	page.Body = u.Name + " is connected."
 	writeCallbackPage(w, http.StatusOK, page)
 }
+
+// Disconnect (10c).
+
+// errUpstreamChangedRevoke is the 409 for a disconnect that found another
+// grant on the row after it asked the vendor to revoke the one it read: the
+// new grant was never revoked, so it is not cleared.
+const errUpstreamChangedRevoke = "upstream changed; try Disconnect again"
+
+// The vendor_revocation values a disconnect answers with.
+const (
+	revokedAtVendor     = "revoked"
+	revokeFailed        = "failed"
+	revokeNotOffered    = "not_offered"
+	revokeNoToken       = "no_token"
+	errUpstreamBusyText = "upstream is busy; try again"
+)
+
+// oauthRevoke disconnects: under the per-upstream lock it asks the vendor to
+// revoke the stored grant when there is one and an endpoint to ask, then
+// clears the blob (the client identity included: criterion 7 says
+// auth_configured false) with the compare-and-swap on updated_at. The local
+// clear always happens once the vendor was asked; it never clears a grant
+// it did not revoke.
+func (s *Server) oauthRevoke(w http.ResponseWriter, r *http.Request) {
+	if !s.allowDiscovery(w) {
+		return
+	}
+	u, err := s.store.GetUpstream(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	if u.AuthType != models.AuthOAuth {
+		writeError(w, http.StatusBadRequest, errNotOAuthRow)
+		return
+	}
+	unlock, err := credential.LockUpstream(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, errUpstreamBusyText)
+		return
+	}
+	defer unlock()
+	// The row again, under the lock: a refresh that was in flight has landed
+	// or not, and what is stored now is what gets revoked.
+	if u, err = s.store.GetUpstream(r.Context(), u.ID); err != nil {
+		storeError(w, err)
+		return
+	}
+	if u.AuthType != models.AuthOAuth {
+		writeError(w, http.StatusBadRequest, errNotOAuthRow)
+		return
+	}
+	if len(u.AuthConfig) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"upstream": s.presentUpstream(u), "vendor_revocation": revokeNoToken})
+		return
+	}
+	var set models.OAuthTokenSet
+	if plain, _, oerr := s.keys.Open(string(u.AuthConfig)); oerr == nil {
+		_ = json.Unmarshal(plain, &set)
+	}
+	vendor := revokeNoToken
+	if set.Connected() {
+		vendor = revokeNotOffered
+		if set.RevocationEndpoint != "" {
+			vctx, cancel := context.WithTimeout(context.Background(), oauthExchangeBudget)
+			rerr := s.mcp.Revoke(vctx, set)
+			cancel()
+			vendor = revokedAtVendor
+			if rerr != nil {
+				vendor = revokeFailed
+				var oe *mcpclient.OAuthError
+				status, host := 0, ""
+				if errors.As(rerr, &oe) {
+					status, host = oe.Status, oe.Host
+				}
+				s.log.Warn("upstream oauth vendor revocation failed", "upstream_id", u.ID, "status", status, "host", host)
+			}
+		}
+	}
+	now := time.Now().UTC()
+	wctx, wcancel := context.WithTimeout(context.Background(), oauthWriteBudget)
+	err = s.store.ConnectUpstreamAuth(wctx, u.ID, nil, u.UpdatedAt, now)
+	wcancel()
+	if errors.Is(err, store.ErrNotFound) {
+		// The row moved under the lock: only a writer that does not take it
+		// can do that. Re-read; the same grant means only updated_at moved
+		// and the clear is retried once; another grant is left alone.
+		again, gerr := s.store.GetUpstream(context.Background(), u.ID)
+		if gerr != nil {
+			storeError(w, gerr)
+			return
+		}
+		var theirs models.OAuthTokenSet
+		if plain, _, oerr := s.keys.Open(string(again.AuthConfig)); oerr == nil {
+			_ = json.Unmarshal(plain, &theirs)
+		}
+		if again.AuthType != models.AuthOAuth || theirs.AccessToken != set.AccessToken || theirs.RefreshToken != set.RefreshToken {
+			writeError(w, http.StatusConflict, errUpstreamChangedRevoke)
+			return
+		}
+		wctx, wcancel := context.WithTimeout(context.Background(), oauthWriteBudget)
+		err = s.store.ConnectUpstreamAuth(wctx, u.ID, nil, again.UpdatedAt, now)
+		wcancel()
+	}
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	s.log.Info("upstream credential cleared", "upstream_id", u.ID, "cleared", []string{"credential"})
+	s.log.Info("upstream oauth disconnected", "upstream_id", u.ID, "vendor_revocation", vendor)
+	s.recordAdmin(r, models.ActionUpstreamOAuthRevoke, u.ID, u.Name, adminDetails{Cleared: []string{"credential"}, VendorRevocation: vendor})
+	fresh, err := s.store.GetUpstream(r.Context(), u.ID)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"upstream": s.presentUpstream(fresh), "vendor_revocation": vendor})
+}

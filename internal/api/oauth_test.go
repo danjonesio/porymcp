@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/credential"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/mcpclient/oauthstub"
 	"github.com/danjonesio/porymcp/internal/models"
@@ -686,6 +688,255 @@ func TestPublicRoutesArePinned(t *testing.T) {
 	for key := range public {
 		if !seen[key] {
 			t.Errorf("public route %s is not served", key)
+		}
+	}
+}
+
+// Disconnect (10c).
+
+func revoke(t *testing.T, h http.Handler, id string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	rr := doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/oauth/revoke", "test-admin", nil)
+	var out map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	return rr, out
+}
+
+// Criterion 7.
+func TestOAuthRevoke(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	if rr, _ := connect(t, h, stub, id); rr.Code != http.StatusOK {
+		t.Fatalf("connect: %d", rr.Code)
+	}
+	rr, out := revoke(t, h, id)
+	if rr.Code != http.StatusOK || out["vendor_revocation"] != revokedAtVendor {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	row := out["upstream"].(map[string]any)
+	if row["auth_status"] != "unreadable" || row["auth_configured"] != false || row["oauth"].(map[string]any)["expires_at"] != nil {
+		t.Fatalf("row %v", row)
+	}
+	if stub.Revocations() != 1 {
+		t.Fatalf("revocations %d", stub.Revocations())
+	}
+	if _, ok := storedOAuthSet(t, s, st, id); ok {
+		t.Fatal("the blob survived")
+	}
+	events := eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthRevoke)
+	if len(events) != 1 || !strings.Contains(string(events[0].Details), `"cleared":["credential"]`) || !strings.Contains(string(events[0].Details), `"vendor_revocation":"revoked"`) {
+		t.Fatalf("events %+v", events)
+	}
+	if got := getJSON(t, h, "/upstreams/"+id); got["auth_status"] != "unreadable" || got["auth_configured"] != false {
+		t.Fatalf("GET %v", got)
+	}
+	if rr, _ := revoke(t, h, "00000000-0000-4000-8000-000000000000"); rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown: %d", rr.Code)
+	}
+	bid, _ := mustUpstream(t, h, "Bearer", map[string]any{"auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})
+	if rr, _ := revoke(t, h, bid); rr.Code != http.StatusBadRequest {
+		t.Fatalf("bearer row: %d", rr.Code)
+	}
+}
+
+func TestOAuthRevokeVendorFailureStillClears(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }))
+	defer failing.Close()
+	set := connectedSet(stub, stub.MCPURL())
+	set.RevocationEndpoint = failing.URL + "/revoke"
+	storeOAuthSet(t, s, st, id, set)
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewJSONHandler(&logs, nil))
+	rr, out := revoke(t, h, id)
+	if rr.Code != http.StatusOK || out["vendor_revocation"] != revokeFailed {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if _, ok := storedOAuthSet(t, s, st, id); ok {
+		t.Fatal("the blob survived a vendor failure")
+	}
+	if !strings.Contains(logs.String(), "upstream oauth vendor revocation failed") || !strings.Contains(logs.String(), "upstream oauth disconnected") {
+		t.Fatalf("log %s", logs.String())
+	}
+	if d := detailsOf(t, st, models.ActionUpstreamOAuthRevoke); !strings.Contains(d, `"vendor_revocation":"failed"`) {
+		t.Fatalf("details %s", d)
+	}
+	// No revocation endpoint at all.
+	id2, _ := mustUpstream(t, h, "Vendor2", map[string]any{"url": stub.MCPURL(), "auth_type": "oauth"})
+	set2 := connectedSet(stub, stub.MCPURL())
+	set2.RevocationEndpoint = ""
+	storeOAuthSet(t, s, st, id2, set2)
+	if rr, out := revoke(t, h, id2); rr.Code != http.StatusOK || out["vendor_revocation"] != revokeNotOffered {
+		t.Fatalf("not offered: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestOAuthRevokeNoTokenClientOnlyRow(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	if rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"auth_config": map[string]string{"client_id": "mine"}}); rr.Code != http.StatusOK {
+		t.Fatalf("patch: %d", rr.Code)
+	}
+	rr, out := revoke(t, h, id)
+	if rr.Code != http.StatusOK || out["vendor_revocation"] != revokeNoToken || stub.Revocations() != 0 {
+		t.Fatalf("%d %s revocations %d", rr.Code, rr.Body.String(), stub.Revocations())
+	}
+	if _, ok := storedOAuthSet(t, s, st, id); ok {
+		t.Fatal("the client survived")
+	}
+	if out["upstream"].(map[string]any)["auth_configured"] != false {
+		t.Fatalf("row %v", out["upstream"])
+	}
+	if n := len(eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthRevoke)); n != 1 {
+		t.Fatalf("events %d", n)
+	}
+}
+
+func TestOAuthRevokeNothingStored(t *testing.T) {
+	_, h, st, _, id := oauthServer(t, testPublicURL)
+	rr, out := revoke(t, h, id)
+	if rr.Code != http.StatusOK || out["vendor_revocation"] != revokeNoToken {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if n := len(eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthRevoke)); n != 0 {
+		t.Fatalf("an empty row recorded %d events", n)
+	}
+}
+
+// racingStore makes the first ConnectUpstreamAuth of a disconnect land after
+// another writer moved the row, the way a writer that does not take the lock
+// would.
+type racingStore struct {
+	store.Store
+	first  sync.Once
+	before func(st store.Store)
+}
+
+func (r *racingStore) ConnectUpstreamAuth(ctx context.Context, id string, next []byte, seen, at time.Time) error {
+	r.first.Do(func() { r.before(r.Store) })
+	return r.Store.ConnectUpstreamAuth(ctx, id, next, seen, at)
+}
+
+func TestOAuthRevokeRacingNameEditStillClears(t *testing.T) {
+	var rs *racingStore
+	s, h, st, _ := testAPIWrappedStore(t, testPublicURL, func(inner store.Store) store.Store {
+		rs = &racingStore{Store: inner}
+		return rs
+	})
+	stub := oauthstub.New(t)
+	id, _ := mustUpstream(t, h, "Vendor", map[string]any{"url": stub.MCPURL(), "auth_type": "oauth"})
+	storeOAuthSet(t, s, st, id, connectedSet(stub, stub.MCPURL()))
+	rs.before = func(inner store.Store) {
+		u, _ := inner.GetUpstream(context.Background(), id)
+		u.Name = "Renamed"
+		u.UpdatedAt = time.Now().UTC().Add(time.Second)
+		_ = inner.UpdateUpstream(context.Background(), u, store.KeepTest, store.KeepAuth)
+	}
+	rr, out := revoke(t, h, id)
+	if rr.Code != http.StatusOK || out["vendor_revocation"] != revokedAtVendor || out["upstream"].(map[string]any)["auth_configured"] != false {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if n := len(eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthRevoke)); n != 1 {
+		t.Fatalf("events %d", n)
+	}
+}
+
+// Security requirement 12: a grant that landed after the vendor revoke is
+// not cleared, because it was never revoked.
+func TestOAuthRevokeRacingReconnectIs409(t *testing.T) {
+	var rs *racingStore
+	s, h, st, _ := testAPIWrappedStore(t, testPublicURL, func(inner store.Store) store.Store {
+		rs = &racingStore{Store: inner}
+		return rs
+	})
+	stub := oauthstub.New(t)
+	id, _ := mustUpstream(t, h, "Vendor", map[string]any{"url": stub.MCPURL(), "auth_type": "oauth"})
+	storeOAuthSet(t, s, st, id, connectedSet(stub, stub.MCPURL()))
+	theirs := connectedSet(stub, stub.MCPURL())
+	rs.before = func(inner store.Store) {
+		u, _ := inner.GetUpstream(context.Background(), id)
+		raw, _ := json.Marshal(theirs)
+		enc, _ := s.keys.Seal(raw)
+		_ = inner.ConnectUpstreamAuth(context.Background(), id, []byte(enc), u.UpdatedAt, time.Now().UTC().Add(time.Second))
+	}
+	rr, _ := revoke(t, h, id)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), errUpstreamChangedRevoke) {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	stored, ok := storedOAuthSet(t, s, st, id)
+	if !ok || stored.AccessToken != theirs.AccessToken {
+		t.Fatalf("stored %+v ok=%v, want the newer grant untouched", stored, ok)
+	}
+	if n := len(eventsFor(adminEvents(t, st), models.ActionUpstreamOAuthRevoke)); n != 0 {
+		t.Fatalf("events %d", n)
+	}
+}
+
+// Security requirement 9: the three flows write their lines and nothing
+// secret reaches the log or an admin_events row.
+func TestOAuthLogsNothingSecret(t *testing.T) {
+	s, h, st, stub, id := oauthServer(t, testPublicURL)
+	stub.ErrorDescriptionMarker = "VENDOR_WORDS_MARKER"
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewJSONHandler(&logs, nil))
+	// The Presenter holds the logger it was built with, as it does in the
+	// binary; rebuild it on the buffer so the refresh line is captured too.
+	s.present = credential.NewPresenter(s.keys, s.store, s.mcp, s.log)
+
+	out := mustStart(t, h, id, nil)
+	state := authQuery(t, out).Get("state")
+	path := approve(t, stub, out)
+	q, _ := url.ParseQuery(strings.TrimPrefix(path, "/oauth/callback?"))
+	code := q.Get("code")
+	if rr := callback(t, h, path); rr.Code != http.StatusOK {
+		t.Fatalf("connect: %d %s", rr.Code, rr.Body.String())
+	}
+	set, _ := storedOAuthSet(t, s, st, id)
+	// A refresh through Tools, and a failed callback, and a disconnect.
+	lapsed := set
+	lapsed.ExpiresAt = time.Now().Add(-time.Minute).UTC()
+	storeOAuthSet(t, s, st, id, lapsed)
+	if d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil)); d["ok"] != true {
+		t.Fatalf("discovery %v", d)
+	}
+	renewed, _ := storedOAuthSet(t, s, st, id)
+	if rr := callback(t, h, "/oauth/callback?state=junk&code=JUNK_CODE_MARKER"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("junk callback: %d", rr.Code)
+	}
+	if rr, _ := revoke(t, h, id); rr.Code != http.StatusOK {
+		t.Fatalf("revoke: %d", rr.Code)
+	}
+
+	all := logs.String() + serialiseEvents(t, adminEvents(t, st))
+	for name, secret := range map[string]string{
+		"access token": set.AccessToken, "refresh token": set.RefreshToken, "renewed access": renewed.AccessToken,
+		"renewed refresh": renewed.RefreshToken, "code": code, "state": state, "junk code": "JUNK_CODE_MARKER",
+		"vendor words": "VENDOR_WORDS_MARKER", "auth_config key": "auth_config",
+	} {
+		if secret == "" {
+			t.Fatalf("%s fixture is empty", name)
+		}
+		if strings.Contains(all, secret) {
+			t.Fatalf("%s reached the log or an event: %s", name, all)
+		}
+	}
+	for _, line := range []string{"upstream oauth connected", "upstream oauth token refreshed", "upstream oauth disconnected", "upstream credential cleared"} {
+		if !strings.Contains(logs.String(), line) {
+			t.Errorf("log line %q missing:\n%s", line, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), "upstream oauth callback failed") {
+		t.Fatal("an unknown state produced a Warn line, which is a flooding lever")
+	}
+	events := adminEvents(t, st)
+	for _, action := range []string{models.ActionUpstreamOAuthConnect, models.ActionUpstreamOAuthRefresh, models.ActionUpstreamOAuthRevoke} {
+		if n := len(eventsFor(events, action)); n != 1 {
+			t.Errorf("%s: %d events, want 1", action, n)
+		}
+	}
+	// The connect and revoke carry the admin's address; the refresh through
+	// Tools does too, with the admin actor.
+	for _, e := range eventsFor(events, models.ActionUpstreamOAuthRefresh) {
+		if e.Actor != models.ActorAdmin {
+			t.Errorf("refresh actor %q", e.Actor)
 		}
 	}
 }

@@ -142,6 +142,7 @@ func (s *Server) Routes() http.Handler {
 		// Connect (PORM-139): learns the authorization server and answers the
 		// URL the browser is sent to; POST for the same reason as discover.
 		r.Post("/upstreams/{id}/oauth/start", s.oauthStart)
+		r.Post("/upstreams/{id}/oauth/revoke", s.oauthRevoke)
 		r.Get("/upstreams/{id}", s.getUpstream)
 		r.Patch("/upstreams/{id}", s.patchUpstream)
 		r.Delete("/upstreams/{id}", s.deleteUpstream)

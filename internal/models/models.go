@@ -75,6 +75,7 @@ var AdminActions = []string{
 	ActionGroupCreate, ActionGroupUpdate, ActionGroupDelete,
 	ActionVirtualKeyCreate, ActionVirtualKeyUpdate, ActionVirtualKeyRotate,
 	ActionVirtualKeyRevoke, ActionVirtualKeyDelete,
+	ActionUpstreamOAuthConnect, ActionUpstreamOAuthRefresh, ActionUpstreamOAuthRevoke,
 }
 
 // Upstream is a real MCP server whose credentials stay inside PoryMCP.
