@@ -231,6 +231,7 @@ Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
 ## Project structure (Go example)
 /
 ├── .github/workflows/ci.yml   # go, web and docker checks on every pull request; publish to GHCR
+├── .github/workflows/audit.yml # govulncheck and npm audit against main every Monday
 ├── cmd/server/main.go
 ├── internal/
 │   ├── api/          # Management REST handlers

@@ -20,9 +20,11 @@
 # merge, and fewer grouped PRs cost fewer CI runs. Each lane carries two
 # groups, so a bump month is one PR and an advisory wave is one PR.
 #
-# github-actions (/): version lane. 13 of 13 uses: lines in .github/workflows
-# are SHA-pinned (grep -rEho 'uses: [^ ]+@[0-9a-f]{40}'), so nothing moves
-# them but this, and the workflow files are not part of the image.
+# github-actions (/): version lane. Every uses: line in .github/workflows is
+# SHA-pinned (grep -rEho 'uses: [^ ]+@[0-9a-f]{40}'), so nothing moves them
+# but this, and the workflow files are not part of the image. audit.yml
+# repeats three of ci.yml's pins, and one grouped pull request moves both
+# files.
 #
 # gomod (/): version lane. go.sum is copied into the image (Dockerfile, COPY
 # go.mod go.sum); the go job's govulncheck step is the check a bump has to
@@ -58,7 +60,8 @@
 #     ranges, and a version range also holds back a security update whose
 #     every fixed version is inside it (dependabot-core ignore_condition.rb,
 #     read 2026-09-22); the alert still shows on the Security tab, and make
-#     web-audit in the web job fails at high or critical on the next push.
+#     web-audit fails at high or critical on push (the web job) and weekly
+#     (.github/workflows/audit.yml, Mondays, against main).
 #     Both are build and lint tools; no code from them ships in web/out or
 #     the image.
 #   - docker: every node major, because a Node major moves web/.nvmrc, the
