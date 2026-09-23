@@ -495,6 +495,43 @@ func TestPresentStoreErrorStillPresentsNewToken(t *testing.T) {
 	}
 }
 
+// A store that cannot be read on the conflict path must not cost a grant the
+// vendor has already rotated: the call succeeds on the new token.
+type conflictThenReadFail struct {
+	store.Store
+	swaps int
+}
+
+func (c *conflictThenReadFail) SwapUpstreamAuth(ctx context.Context, id string, expect, next []byte) error {
+	c.swaps++
+	if c.swaps == 1 {
+		return store.ErrNotFound
+	}
+	return c.Store.SwapUpstreamAuth(ctx, id, expect, next)
+}
+
+func (c *conflictThenReadFail) GetUpstream(ctx context.Context, id string) (*models.Upstream, error) {
+	if c.swaps >= 1 {
+		return nil, errors.New("database is locked")
+	}
+	return c.Store.GetUpstream(ctx, id)
+}
+
+func TestPresentConflictReadErrorStillPresentsNewToken(t *testing.T) {
+	r := newRig(t)
+	set := r.set(r.now.Add(-time.Minute))
+	u := r.row(set)
+	r.p = NewPresenter(r.keys, &conflictThenReadFail{Store: r.st}, mcpclient.New(), slog.New(slog.NewJSONHandler(r.log, nil)))
+	r.p.SetClock(func() time.Time { return r.now })
+	plain, err := r.p.Present(context.Background(), u, proxyCaller)
+	if err != nil || !r.stub.AccessValid(decode(t, plain).AccessToken) || decode(t, plain).AccessToken == set.AccessToken {
+		t.Fatalf("got %s %v", plain, err)
+	}
+	if !strings.Contains(r.log.String(), "not stored after refresh") || strings.Contains(r.log.String(), "database is locked") {
+		t.Fatalf("log %s", r.log.String())
+	}
+}
+
 func TestPresentRecordsOneRefreshEventWithCaller(t *testing.T) {
 	r := newRig(t)
 	u := r.row(r.set(r.now.Add(-time.Minute)))
@@ -560,8 +597,8 @@ func TestPresentLockWaitRespectsContext(t *testing.T) {
 	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := r.p.Present(ctx, u, proxyCaller); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err=%v, want the caller's deadline", err)
+	if _, err := r.p.Present(ctx, u, proxyCaller); !errors.Is(err, ErrRefreshFailed) {
+		t.Fatalf("err=%v, want the bare ErrRefreshFailed for a caller that gave up", err)
 	}
 	if r.stub.Grants("refresh_token") != 0 {
 		t.Fatal("a waiter refreshed")

@@ -152,9 +152,18 @@ func (p *Presenter) Present(ctx context.Context, u *models.Upstream, by Caller) 
 
 	unlock, err := LockUpstream(ctx, u.ID)
 	if err != nil {
-		return nil, err
+		// The caller gave up waiting: a bare sentinel, because the text
+		// reaches an audit row.
+		return nil, ErrRefreshFailed
 	}
-	defer unlock()
+	unlocked := false
+	release := func() {
+		if !unlocked {
+			unlocked = true
+			unlock()
+		}
+	}
+	defer release()
 
 	// The row again, under the lock: a waiter finds the leader's set here and
 	// never calls the vendor; a stale reader (one that read before an earlier
@@ -164,7 +173,8 @@ func (p *Presenter) Present(ctx context.Context, u *models.Upstream, by Caller) 
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrUnreadable
 		}
-		return nil, err
+		p.log.Error("upstream oauth row could not be read before a refresh", "upstream_id", u.ID, "request_id", by.RequestID, "err_class", errClass(err))
+		return nil, ErrRefreshFailed
 	}
 	if fresh.AuthType != models.AuthOAuth {
 		return nil, ErrUnreadable
@@ -228,7 +238,15 @@ func (p *Presenter) Present(ctx context.Context, u *models.Upstream, by Caller) 
 		// in which case the new set is the only valid one and is written
 		// against the new bytes; or another writer replaced the grant, and
 		// theirs wins.
-		again, gerr := p.store.GetUpstream(context.Background(), u.ID)
+		rctx, rcancel := context.WithTimeout(context.Background(), refreshWriteBudget)
+		again, gerr := p.store.GetUpstream(rctx, u.ID)
+		rcancel()
+		if gerr != nil && !errors.Is(gerr, store.ErrNotFound) {
+			// The vendor has the new grant; a store that cannot even be read
+			// must not cost it. This call succeeds on the new token.
+			p.log.Error("upstream oauth token set not stored after refresh; the upstream may need Connect again", "upstream_id", u.ID, "request_id", by.RequestID, "err_class", errClass(gerr))
+			return renewedPlain, nil
+		}
 		if gerr != nil || again.AuthType != models.AuthOAuth || len(again.AuthConfig) == 0 {
 			return nil, ErrUnreadable
 		}
@@ -254,6 +272,9 @@ func (p *Presenter) Present(ctx context.Context, u *models.Upstream, by Caller) 
 		return renewedPlain, nil
 	}
 
+	// The lock is released before the event insert: a callback or a revoke
+	// waiting on it should not queue behind an audit write.
+	release()
 	audit.RecordAdmin(context.Background(), p.store, p.log, models.AdminEvent{
 		Actor:        by.Actor,
 		Action:       models.ActionUpstreamOAuthRefresh,
