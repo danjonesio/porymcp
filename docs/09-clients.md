@@ -368,7 +368,8 @@ or a slug that is not an enabled HTTP API member; `400
 encoding; `400 {"error":"request carries the virtual key"}` is the key sent in
 the path or the query as well as the header; `413` is a body over 8 MiB; `429`
 carries `Retry-After`. Only `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and `DELETE`
-are relayed; anything else is `405` with `Allow`. (To see the `400` for a
+are relayed; anything else is `405` (with `Allow` and a JSON body for a
+method the router knows, bare for one it does not). (To see the `400` for a
 dot segment from curl, pass `--path-as-is`: curl decodes `%2e%2e` and drops
 the segment before the request leaves, as any normalising intermediary may.)
 

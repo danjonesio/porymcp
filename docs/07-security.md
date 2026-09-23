@@ -419,8 +419,10 @@
   agent did, and the server log is where it appears. A `POST` with a wrong key
   still writes a `blocked` row, because a credential was tried. On the HTTP
   API relay the six verbs `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and `DELETE`
-  are the accepted set and anything else (`CONNECT`, `TRACE`, `PROPFIND`)
-  gets the same id-less `405`.
+  are the accepted set and any other method the router knows (`CONNECT`,
+  `TRACE`) gets the same id-less `405` with `Allow`; a method token the
+  router does not know (`PROPFIND`) is refused by the router itself with a
+  bare `405` and no body, as on the MCP door.
 - **The HTTP API relay (PORM-146) is a second door with the same gate.**
   `/{virtual_key_id}/api/*` relays a plain HTTP request to an upstream of
   kind `http`. It shares the MCP door's prelude (`admit`): the host rule,

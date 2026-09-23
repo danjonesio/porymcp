@@ -698,7 +698,7 @@ func TestReportsRelayProblemsAtStartup(t *testing.T) {
 		{"k-methods", "virtual key http_methods could not be decoded; every request on its /api/ endpoint is refused until a PATCH supplies http_methods"}:        true,
 		{"k-both", "virtual key http_methods could not be decoded; every request on its /api/ endpoint is refused until a PATCH supplies http_methods"}:           true,
 		{"k-both", "virtual key tool lists could not be decoded; every call on this key is blocked until a PATCH supplies both tool_allowlist and tool_denylist"}: true,
-		{"u-edited", "upstream kind is not recognised; it serves on no endpoint until it is set to mcp or http"}:                                                  true,
+		{"u-edited", "upstream kind is not recognised; it serves on no endpoint; delete the upstream and register it again"}:                                      true,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d records, want %d:\n%s", len(got), len(want), buf.String())

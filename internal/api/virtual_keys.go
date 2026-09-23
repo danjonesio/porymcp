@@ -250,6 +250,12 @@ func (s *Server) presentVirtualKeyWithEndpoints(a *models.VirtualKey, plaintext 
 		MethodsUnreadable: a.MethodsMalformed,
 		Endpoints:         eps,
 	}
+	// Never null on the wire: a key whose stored list could not be decoded
+	// carries no list (the store leaves it nil), and reads back as [] beside
+	// http_methods_malformed, which is the field that says which it is.
+	if out.HTTPMethods == nil {
+		out.HTTPMethods = []string{}
+	}
 	if plaintext != "" {
 		out.APIKey = plaintext
 	}

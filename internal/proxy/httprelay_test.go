@@ -1118,16 +1118,52 @@ func TestHTTPRelayBudget(t *testing.T) {
 
 // TestHTTPRelay1xxIs502: a status outside 200 to 599 is not relayed.
 func TestHTTPRelay1xxIs502(t *testing.T) {
+	// net/http swallows every 1xx but 101 before the door sees a status, so
+	// the one 1xx that can reach the guard is a 101, written raw on the
+	// hijacked connection because a handler cannot send one through
+	// WriteHeader.
 	f := relayGET(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusEarlyHints)
-		w.WriteHeader(http.StatusEarlyHints)
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\nConnection: Upgrade\r\n\r\n")
+		_ = buf.Flush()
 	})
-	// net/http turns a bare 103 into a 200 with no body on the wire, so the
-	// door's own check is reached with 200 here; the guard is pinned on the
-	// function instead.
 	rr := f.send(http.MethodGet, "/a1/api/x", "", nil)
-	if rr.Code != http.StatusOK && rr.Code != http.StatusBadGateway {
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	if m := jsonBody(t, rr.Body.Bytes()); m["error"] != "upstream request failed" {
+		t.Errorf("body %s", rr.Body.String())
+	}
+	if row := f.lastRow(1); row.Status != models.StatusError || row.ErrorMessage != "upstream answered 101" {
+		t.Errorf("row = %+v", row)
+	}
+}
+
+// TestHTTPRelayTouchesKey covers security requirement 16's last clause: a
+// relayed request stamps the key's last_used_at, as the MCP door does after
+// a forwarded call, and a refused one does not.
+func TestHTTPRelayTouchesKey(t *testing.T) {
+	f := relayGET(t, nil)
+	f.setHTTPMethods([]string{"GET"})
+	ctx := context.Background()
+	if rr := f.send(http.MethodPost, "/a1/api/x", "", nil); rr.Code != http.StatusForbidden {
 		t.Fatalf("status %d", rr.Code)
+	}
+	f.lastRow(1)
+	if k, err := f.Store.GetVirtualKey(ctx, "a1"); err != nil || k.LastUsedAt != nil {
+		t.Fatalf("a refused request touched the key: %v %+v", err, k.LastUsedAt)
+	}
+	if rr := f.send(http.MethodGet, "/a1/api/x", "", nil); rr.Code != http.StatusOK {
+		t.Fatalf("status %d", rr.Code)
+	}
+	f.lastRow(2)
+	if k, err := f.Store.GetVirtualKey(ctx, "a1"); err != nil || k.LastUsedAt == nil {
+		t.Fatalf("a relayed request left last_used_at unset: %v", err)
 	}
 }
 

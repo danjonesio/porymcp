@@ -3140,7 +3140,7 @@ func TestVirtualKeyHTTPMethodsRoundTrip(t *testing.T) {
 			HTTPMethods: methods,
 		}
 	}
-	if err := s.CreateVirtualKey(ctx, mk("k1", []string{"GET", "POST"})); err != nil {
+	if err := s.CreateVirtualKey(ctx, mk("k1", []string{"get", "POST"})); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateVirtualKey(ctx, mk("k2", nil)); err != nil {

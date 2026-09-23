@@ -477,6 +477,12 @@ paths:
                           $ref: "#/components/schemas/ListsMalformed"
                         http_methods_malformed:
                           $ref: "#/components/schemas/MethodsMalformed"
+                        http_methods:
+                          type: array
+                          items:
+                            type: string
+                            enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+                          description: The stored verb allowlist, always present and never null; `[]` means every verb (PORM-146).
     post:
       summary: Create a virtual key and return the plaintext key once
       requestBody:
@@ -503,6 +509,12 @@ paths:
                     $ref: "#/components/schemas/ListsMalformed"
                   http_methods_malformed:
                     $ref: "#/components/schemas/MethodsMalformed"
+                  http_methods:
+                    type: array
+                    items:
+                      type: string
+                      enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+                    description: The stored verb allowlist, always present and never null; `[]` means every verb (PORM-146).
   /virtual-keys/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -526,6 +538,12 @@ paths:
                     $ref: "#/components/schemas/ListsMalformed"
                   http_methods_malformed:
                     $ref: "#/components/schemas/MethodsMalformed"
+                  http_methods:
+                    type: array
+                    items:
+                      type: string
+                      enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+                    description: The stored verb allowlist, always present and never null; `[]` means every verb (PORM-146).
         "404":
           description: Not found
     patch:
@@ -559,6 +577,12 @@ paths:
                     $ref: "#/components/schemas/ListsMalformed"
                   http_methods_malformed:
                     $ref: "#/components/schemas/MethodsMalformed"
+                  http_methods:
+                    type: array
+                    items:
+                      type: string
+                      enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+                    description: The stored verb allowlist, always present and never null; `[]` means every verb (PORM-146).
         "404":
           description: Not found
     delete:
@@ -591,6 +615,12 @@ paths:
                     $ref: "#/components/schemas/ListsMalformed"
                   http_methods_malformed:
                     $ref: "#/components/schemas/MethodsMalformed"
+                  http_methods:
+                    type: array
+                    items:
+                      type: string
+                      enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+                    description: The stored verb allowlist, always present and never null; `[]` means every verb (PORM-146).
         "404":
           description: Not found
   /virtual-keys/{id}/revoke:
@@ -616,6 +646,12 @@ paths:
                     $ref: "#/components/schemas/ListsMalformed"
                   http_methods_malformed:
                     $ref: "#/components/schemas/MethodsMalformed"
+                  http_methods:
+                    type: array
+                    items:
+                      type: string
+                      enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+                    description: The stored verb allowlist, always present and never null; `[]` means every verb (PORM-146).
         "404":
           description: Not found
   /logs:

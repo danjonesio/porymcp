@@ -35,6 +35,19 @@ export type KeyForm = {
  */
 export const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
 
+/**
+ * Whether the secret dialog shows the MCP half (the aggregate Proxy URL, the
+ * connection shape and the MCP client configs): when the key reaches an MCP
+ * server, or when it reaches nothing yet but its door is an MCP one (an empty
+ * group, a disabled MCP upstream). A key on a disabled HTTP API upstream has
+ * no endpoint either, but its proxy_url ends in /api/, and an MCP client
+ * config pointing there would be wrong.
+ */
+export function mcpDoorShown(vk: Pick<VirtualKey, 'proxy_url' | 'endpoints'>): boolean {
+  if (vk.endpoints.some((e) => e.kind !== 'http')) return true
+  return vk.endpoints.length === 0 && !(vk.proxy_url ?? '').endsWith('/api/')
+}
+
 export function blankVirtualKeyForm(): KeyForm {
   return {
     name: '',

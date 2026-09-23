@@ -1206,8 +1206,10 @@ same reason.
 door) or one PoryMCP minted. It is absent on the two refusals written before
 an id exists on either door: the `405` for a verb outside the six
 (`{"error":"method not allowed"}` with `Allow: GET, HEAD, POST, PUT, PATCH,
-DELETE, OPTIONS`) and the host refusal. The management API's error shape is
-unchanged.
+DELETE, OPTIONS`, for a method the router knows, such as `CONNECT` or
+`TRACE`; a token it does not know, such as `PROPFIND`, gets the router's own
+bare `405` with no body and no `Allow`, as on the MCP door) and the host
+refusal. The management API's error shape is unchanged.
 
 | status | body `error` | when | audit row |
 | --- | --- | --- | --- |

@@ -123,6 +123,10 @@ type door struct {
 	// binds //api/x with keyID "") with the uniform 404. The MCP doors keep
 	// today's behaviour, where an empty path key skips the check.
 	keyRequired bool
+	// refusalSize records the wrong-key 403's body length on its row. The
+	// relay door does; the MCP doors keep the 0 serve recorded before admit
+	// existed, so their rows do not change.
+	refusalSize bool
 	// tool, when set, is what the rows admit itself writes (the 401, the 429
 	// and the wrong-key 403) record as tool_name: on the relay door the
 	// bounded escaped path, so every relay row starts with "/". Computed from
@@ -256,6 +260,9 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request, d door) (admitte
 	}
 	if pathID != "" && pathID != vk.ID {
 		size := d.refuse(w, http.StatusForbidden, requestID, "virtual key does not match this endpoint")
+		if !d.refusalSize {
+			size = 0
+		}
 		h.finish(vk, requestID, r.Method, tool, "", models.StatusBlocked, "virtual key does not match this endpoint", start, size, nil)
 		return admitted{}, false
 	}

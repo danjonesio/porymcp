@@ -240,7 +240,7 @@ func reportToolPolicyProblems(ctx context.Context, st store.Store, log *slog.Log
 		default:
 			// A hand-edited kind is served on no door (proxy.resolveTargets).
 			// The value is never logged: it is operator-written text.
-			log.Warn("upstream kind is not recognised; it serves on no endpoint until it is set to mcp or http",
+			log.Warn("upstream kind is not recognised; it serves on no endpoint; delete the upstream and register it again",
 				"upstream_id", u.ID, "upstream_name", u.Name, "enabled", u.Enabled)
 			continue
 		}

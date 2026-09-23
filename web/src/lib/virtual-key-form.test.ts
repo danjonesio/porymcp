@@ -11,6 +11,7 @@ import {
   methodsSent,
   virtualKeyCreateBody,
   virtualKeyPatchBody,
+  mcpDoorShown,
 } from './virtual-key-form.ts'
 
 // Run with: npm test (node --test).
@@ -193,4 +194,15 @@ test('an unreadable http_methods is sent only after Replace the stored methods',
   assert.deepEqual(virtualKeyPatchBody(before, { ...f, methodsReplace: true }).http_methods, [])
   assert.deepEqual(keyRulesBadge(before), { label: 'Methods unreadable', tone: 'pink' })
   assert.deepEqual(keyRulesBadge(key({ lists_malformed: true, http_methods_malformed: true })), { label: 'Rules unreadable', tone: 'pink' })
+})
+
+test('mcpDoorShown follows the door, not the endpoint count', () => {
+  const mcp = { upstream_id: 'u1', slug: 'github', name: 'GitHub', kind: 'mcp', url: 'http://p/k/github/mcp' }
+  const http = { upstream_id: 'u2', slug: 'api', name: 'API', kind: 'http', url: 'http://p/k/api/api/' }
+  assert.equal(mcpDoorShown({ proxy_url: 'http://p/k/mcp', endpoints: [mcp, http] }), true)
+  assert.equal(mcpDoorShown({ proxy_url: 'http://p/k/mcp', endpoints: [http] }), false)
+  // Nothing reachable yet: an empty group or a disabled MCP upstream keeps
+  // its /mcp door; a disabled HTTP API upstream has no MCP door to show.
+  assert.equal(mcpDoorShown({ proxy_url: 'http://p/k/mcp', endpoints: [] }), true)
+  assert.equal(mcpDoorShown({ proxy_url: 'http://p/k/api/', endpoints: [] }), false)
 })

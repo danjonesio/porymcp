@@ -530,10 +530,14 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	// The kind rules on the merged row (PORM-146), after every field they
 	// read has been applied: a test_path on an MCP row, oauth or a base URL
-	// with a query or userinfo on an HTTP API row.
-	if msg := checkUpstreamKindRules(u.Kind, u.URL, u.AuthType, u.TestPath); msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
-		return
+	// with a query or userinfo on an HTTP API row. A stored kind that is
+	// neither (a hand-edited row) is skipped: the row serves on no door, and
+	// refusing every PATCH would leave the operator unable to disable it.
+	if u.Kind == models.KindMCP || u.Kind == models.KindHTTP {
+		if msg := checkUpstreamKindRules(u.Kind, u.URL, u.AuthType, u.TestPath); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
 	}
 	// The same refusal as create, keyed on what this request named: auth_type
 	// none and a credential in one body. It sits after the auth_type block, so

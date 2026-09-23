@@ -64,6 +64,7 @@ var relayDoor = door{
 	retryAfter:     true,
 	boundRequestID: true,
 	keyRequired:    true,
+	refusalSize:    true,
 	tool:           relayTool,
 	verbOK:         func(m string) bool { return slices.Contains(models.HTTPMethodsAllowed, m) },
 	refuse:         writePlainError,

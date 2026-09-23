@@ -34,6 +34,7 @@ import {
   virtualKeyCreateBody,
   virtualKeyPatchBody,
   type KeyForm,
+  mcpDoorShown,
 } from '@/lib/virtual-key-form'
 import clsx from 'clsx'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
@@ -219,7 +220,9 @@ export default function VirtualKeysPage() {
    * new target clears both lists, and the catalogue with its rate-limit line.
    */
   function retarget(patch: Partial<KeyForm>) {
-    setForm((f) => ({ ...f, ...patch, tool_allowlist: [], tool_denylist: [] }))
+    // The ticked verbs go too: the Allowed methods fieldset may be hidden
+    // under the new target, and a hidden value is never sent.
+    setForm((f) => ({ ...f, ...patch, tool_allowlist: [], tool_denylist: [], http_methods: [], methodsReplace: false }))
     setCatalogueKey((n) => n + 1)
   }
 
@@ -343,9 +346,9 @@ export default function VirtualKeysPage() {
   const mcpEndpoints = endpoints.filter((e) => e.kind !== 'http')
   const httpEndpoints = endpoints.filter((e) => e.kind === 'http')
   // The aggregate URL and its shape are shown when the key reaches an MCP
-  // server, and for an empty group, whose aggregate URL is still the one to
-  // hand out once it has members.
-  const showMCP = mcpEndpoints.length > 0 || endpoints.length === 0
+  // server, and for an empty group or a disabled MCP upstream, whose /mcp URL
+  // is still the one to hand out; never for a key whose door is /api/.
+  const showMCP = secret ? mcpDoorShown(secret) : false
   const canSplit = splitAvailable(secret)
   // canSplit implies at least one endpoint, so the example below always has a
   // real slug; the fallback only keeps the dialog rendering if that ever changes.
@@ -365,9 +368,7 @@ export default function VirtualKeysPage() {
     testPath: upstreams.find((u) => u.id === e.upstream_id)?.test_path,
   }))
   const servers = [...mcpServers, ...httpServers]
-  const clientKinds: ClientKind[] = mcpEndpoints.length > 0 || endpoints.length === 0
-    ? (Object.keys(clientLabels) as ClientKind[])
-    : ['curl']
+  const clientKinds: ClientKind[] = showMCP ? (Object.keys(clientLabels) as ClientKind[]) : ['curl']
   // A key with no MCP endpoint has only curl to offer: derived here rather
   // than written into state, so the select never shows a client config that
   // would print nothing, and the operator's last choice survives for the next

@@ -1623,6 +1623,13 @@ func methodsJSON(m []string) string {
 	if m == nil {
 		return "[]"
 	}
+	// The API normalises before it writes, and so does this, so a caller
+	// that stores ["get","POST"] reads ["GET","POST"] back rather than a
+	// malformed row. A list the validator refuses is written as given: the
+	// API has already refused it, and the strict read reports it.
+	if n, err := models.NormalizeHTTPMethods(m); err == nil {
+		m = n
+	}
 	return jsonBytes(m)
 }
 
