@@ -49,7 +49,8 @@ export default function LogsPage() {
 
       <Subheading className="mt-10">Proxy calls</Subheading>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
-        Every proxied MCP method is recorded. Secrets in params are redacted.
+        Every proxied MCP method and HTTP API request is recorded. Secrets in params are redacted. HTTP API request
+        bodies are not recorded.
       </p>
       {error ? <p className="mt-4 text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400">{error}</p> : null}
 
@@ -113,7 +114,12 @@ export default function LogsPage() {
                 <TableCell className="tabular-nums text-zinc-500">{new Date(log.timestamp).toLocaleString()}</TableCell>
                 <TableCell>{log.virtual_key_name}</TableCell>
                 <TableCell>{log.method}</TableCell>
-                <TableCell>{log.tool_name || ABSENT}</TableCell>
+                {/* On a relayed HTTP API call the tool is the request path
+                    (PORM-146), which can run to 256 bytes: clipped like the
+                    Upstreams URL cell, and whole in the detail dialog. */}
+                <TableCell className="max-w-xs truncate" dir="ltr">
+                  {log.tool_name || ABSENT}
+                </TableCell>
                 <TableCell>
                   <Badge color={log.status === 'success' ? 'lime' : log.status === 'blocked' ? 'amber' : 'pink'}>
                     {log.status}
@@ -138,6 +144,16 @@ export default function LogsPage() {
               <div>
                 <dt className="text-base/7 font-medium sm:text-sm/6">Upstream</dt>
                 <dd className="mt-1 text-base/7 sm:text-sm/6">{selected.upstream_id || ABSENT}</dd>
+              </div>
+              <div>
+                <dt className="text-base/7 font-medium sm:text-sm/6">Method</dt>
+                <dd className="mt-1 font-mono text-base/7 break-all sm:text-sm/6">{selected.method}</dd>
+              </div>
+              <div>
+                <dt className="text-base/7 font-medium sm:text-sm/6">Tool</dt>
+                <dd dir="ltr" className="mt-1 font-mono text-base/7 break-all sm:text-sm/6">
+                  {selected.tool_name || ABSENT}
+                </dd>
               </div>
               {selected.error_message ? (
                 <div className="sm:col-span-2">

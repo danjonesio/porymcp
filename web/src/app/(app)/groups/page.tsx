@@ -414,7 +414,11 @@ export default function GroupsPage() {
         <Alert open={confirmBlocks} onClose={() => setConfirmBlocks(false)}>
           <AlertTitle>This filter blocks every tool.</AlertTitle>
           <AlertDescription>
-            {`${form.name.trim() || 'This group'} would advertise no tools, and every call through a key on it is refused.`}
+            {`${form.name.trim() || 'This group'} would advertise no tools, and every call through a key on it is refused.${
+              form.upstream_ids.some((id) => upstreams.find((u) => u.id === id)?.kind === 'http')
+                ? ' Its HTTP API members are not affected.'
+                : ''
+            }`}
           </AlertDescription>
           <AlertActions>
             <Button type="button" plain onClick={() => setConfirmBlocks(false)}>

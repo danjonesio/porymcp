@@ -9,7 +9,7 @@ import { Code, Text } from '@/components/text'
 import type { DiscoveredTool, Discovery } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
 import { truncatedNote, unnameableNote } from '@/lib/catalogue'
-import { PLAIN_HTTP_NOTE, hostOf, plainHTTPCredential, protocolSummary } from '@/lib/discovery'
+import { PLAIN_HTTP_NOTE, hostOf, plainHTTPCredential, probeRequestLine, protocolSummary } from '@/lib/discovery'
 import { scopedToolName } from '@/lib/tool-entry'
 import clsx from 'clsx'
 import { useEffect, useRef, useState } from 'react'
@@ -81,6 +81,37 @@ export function DiscoverySummary({ result }: { result: Discovery }) {
         </div>
       ) : null}
     </>
+  )
+}
+
+/**
+ * The facts an HTTP API's probe learned (PORM-146), in the DiscoverySummary
+ * recipe: the status it answered with, the one request that was sent, and how
+ * long it took. Rendered only when a status came back.
+ */
+export function ProbeSummary({ result, testPath }: { result: Discovery; testPath?: string }) {
+  return (
+    <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div>
+        <dt className="text-base/7 font-medium sm:text-sm/6">Status</dt>
+        <dd className="mt-1 text-base/7 text-zinc-500 tabular-nums sm:text-sm/6 dark:text-zinc-400">
+          {result.http_status}
+        </dd>
+      </div>
+      <div>
+        <dt className="text-base/7 font-medium sm:text-sm/6">Request</dt>
+        {/* The test path is operator-written: left-to-right, and it wraps. */}
+        <dd dir="ltr" className="mt-1 font-mono text-base/7 wrap-break-word text-zinc-500 sm:text-sm/6 dark:text-zinc-400">
+          {probeRequestLine(testPath)}
+        </dd>
+      </div>
+      <div>
+        <dt className="text-base/7 font-medium sm:text-sm/6">Latency</dt>
+        <dd className="mt-1 text-base/7 text-zinc-500 tabular-nums sm:text-sm/6 dark:text-zinc-400">
+          {result.latency_ms} ms
+        </dd>
+      </div>
+    </dl>
   )
 }
 
@@ -224,8 +255,19 @@ export function DiscoveryPanel({
   authType,
   slug,
   surface,
+  kind,
+  testPath,
   className,
 }: DiscoveryState & {
+  /**
+   * The upstream's kind, from the row or the form and never from the result:
+   * a refusal before any request answers with the kind too, but a pending
+   * panel has no result to read it from. An HTTP API (PORM-146) is a probe,
+   * one GET, with a status line instead of a catalogue.
+   */
+  kind?: string
+  /** An HTTP API's test path, for the Request row. */
+  testPath?: string
   /** The URL this discovery was aimed at, for the pending line and the plain-http note. */
   url: string
   authType: string
@@ -276,6 +318,36 @@ export function DiscoveryPanel({
     if (copyTimer.current) clearTimeout(copyTimer.current)
     setCopied({ name: scoped, ok })
     copyTimer.current = setTimeout(() => setCopied(null), 1500)
+  }
+
+  if (kind === 'http') {
+    // A probe, not a handshake: the failure line when there is one, the
+    // status the API answered with when one came back, and what PoryMCP
+    // keeps. No catalogue and no naming disclosure, because an API has no
+    // tools. A transport failure has no status and shows the line alone.
+    return (
+      <section aria-live="polite" aria-busy={pending} className={className}>
+        {pending ? <Text>{host ? `Connecting to ${host}…` : 'Connecting…'}</Text> : null}
+        {failure ? (
+          <p className="text-base/7 wrap-break-word text-pink-600 sm:text-sm/6 dark:text-pink-400">{failure}</p>
+        ) : null}
+        {result && plainHTTPCredential(url, authType) ? (
+          <Text className="mt-2">{PLAIN_HTTP_NOTE}</Text>
+        ) : null}
+        {result?.http_status ? (
+          <div className={clsx(notes && 'mt-6')}>
+            <ProbeSummary result={result} testPath={testPath} />
+          </div>
+        ) : null}
+        {result ? (
+          <Text className="mt-3">
+            {surface === 'saved'
+              ? 'PoryMCP records when this upstream was last tested and whether it passed. The Status column shows it.'
+              : 'Tested just now with these settings. Nothing is saved.'}
+          </Text>
+        ) : null}
+      </section>
+    )
   }
 
   return (

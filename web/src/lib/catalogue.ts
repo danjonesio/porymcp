@@ -159,6 +159,9 @@ export function unnameableNote(n: number): string {
 /** Under a disabled member of a group. The discover route has no enabled check, so its tools still load and can still be ticked. */
 export const MEMBER_DISABLED = 'Disabled. A virtual key on this group gets no endpoint for it.'
 
+/** Under an HTTP API member in the group dialog (PORM-146): it is reached by its own door and holds no tools. */
+export const MEMBER_HTTP_API = "HTTP API. Reached at its own /api/ endpoint, not through the group's MCP endpoint."
+
 /** Under a member whose transport PoryMCP does not speak (PORM-28). Discovery fails before it dials, so there is nothing to try again. */
 export const MEMBER_NOT_IMPLEMENTED =
   "Not implemented. This member's endpoint fails, and so does the group endpoint, until the transport is Streamable HTTP or the member is disabled."

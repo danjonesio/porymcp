@@ -6,7 +6,7 @@ import { Description, Field, FieldGroup, Fieldset, Label, Legend } from '@/compo
 import { Input } from '@/components/input'
 import { Text } from '@/components/text'
 import type { Upstream } from '@/lib/api'
-import { MEMBER_DISABLED, MEMBER_NOT_IMPLEMENTED, type Catalogue } from '@/lib/catalogue'
+import { MEMBER_DISABLED, MEMBER_HTTP_API, MEMBER_NOT_IMPLEMENTED, type Catalogue } from '@/lib/catalogue'
 import type { GroupForm } from '@/lib/group-form'
 import { transportUnsupported } from '@/lib/upstream-transport'
 
@@ -87,6 +87,7 @@ export function GroupFields({
                   onChange={(checked) => toggle(u.id, checked)}
                 />
                 <Label>{u.name}</Label>
+                {u.kind === 'http' ? <Description>{MEMBER_HTTP_API}</Description> : null}
                 {u.enabled ? null : <Description>{MEMBER_DISABLED}</Description>}
                 {/* Only while enabled: a disabled sse member is off the proxy's
                     path and the Disabled line above is the whole story. */}
@@ -106,6 +107,15 @@ export function GroupFields({
         rateLimited={rateLimited}
         onLoad={onLoadTools}
         blocked={blocked}
+        emptyHint={
+          // The catalogue holds MCP members only (PORM-146), so a group whose
+          // ticked members are all HTTP APIs has nothing to load, and "tick an
+          // upstream" would ask for what is already ticked.
+          form.upstream_ids.length > 0 &&
+          form.upstream_ids.every((id) => upstreams.find((u) => u.id === id)?.kind === 'http')
+            ? 'The ticked upstreams are HTTP APIs, which have no tools to choose.'
+            : undefined
+        }
       />
     </FieldGroup>
   )
