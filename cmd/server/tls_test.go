@@ -59,7 +59,7 @@ func TestListenAndServeTLS(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auditor := audit.New(st, log)
 	defer auditor.Close()
-	handler := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
+	handler, _ := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -164,7 +164,7 @@ func TestEnforceHTTPSBeforeDashboardCORS(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auditor := audit.New(st, log)
 	defer auditor.Close()
-	r := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
+	r, _ := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
 
 	req := httptest.NewRequest(http.MethodOptions, "http://porymcp.example.com/api/v1/health", nil)
 	req.RemoteAddr = "203.0.113.9:1"
@@ -198,7 +198,7 @@ func TestHealthAliasReportsPolicy(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auditor := audit.New(st, log)
 	defer auditor.Close()
-	r := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
+	r, _ := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost:8080/health", nil)
 	rr := httptest.NewRecorder()

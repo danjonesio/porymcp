@@ -77,8 +77,14 @@ func main() {
 	auditor := audit.New(st, log)
 	defer auditor.Close()
 
-	r := newRouter(cfg, st, auditor, log, dashboard(log), encryption)
+	r, stopStreams := newRouter(cfg, st, auditor, log, dashboard(log), encryption)
 	srv := newHTTPServer(cfg, r)
+	// Shutdown waits for connections to go idle and never cancels a handler,
+	// so a relayed event stream held open by a client would hold it for its
+	// whole budget and lose its audit row. The hook ends every open stream
+	// first; each writes its row and returns, and the deferred auditor.Close
+	// drains the queue before the process exits (PORM-5).
+	srv.RegisterOnShutdown(stopStreams)
 
 	go func() {
 		// tls is a boolean on purpose, cert paths must not appear in logs.
@@ -442,8 +448,9 @@ func serve(srv *http.Server, cfg *config.Config) error {
 // built). It is a function rather than inline in main so tests can exercise
 // the real route table, the API mount, the proxy routes and the dashboard
 // fallback all compete for the same paths, and only the assembled router
-// shows who wins.
-func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *slog.Logger, spa *webutil.SPA, encryption string) *chi.Mux {
+// shows who wins. The second value ends every relayed stream the proxy holds
+// open; main registers it with the server's shutdown (PORM-5).
+func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *slog.Logger, spa *webutil.SPA, encryption string) (*chi.Mux, func()) {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -474,7 +481,7 @@ func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *s
 	if spa != nil {
 		r.NotFound(spa.ServeHTTP)
 	}
-	return r
+	return r, px.StopStreams
 }
 
 func healthAlias(st store.Store, cfg *config.Config, encryption string, log *slog.Logger) http.HandlerFunc {
