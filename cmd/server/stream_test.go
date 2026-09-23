@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -234,5 +235,78 @@ func TestServerNeverSetsWriteTimeout(t *testing.T) {
 	}
 	if srv.ReadHeaderTimeout == 0 {
 		t.Fatal("ReadHeaderTimeout is 0; the header bound is what protects the server from a slow client")
+	}
+}
+
+// PORM-5 criterion 1 through the shipping middleware chain: requestLogger
+// wraps the writer in chi's WrapResponseWriter, and the relay's flush has to
+// reach the connection through it. The upstream writes event 2 only after the
+// test has read event 1, so a wrapper that swallowed the flush would never
+// deliver event 1 and the test fails on its deadline. The http log line the
+// logger writes when the stream ends counts the stream's bytes.
+func TestRouterRelaysAStreamIncrementally(t *testing.T) {
+	next := make(chan struct{})
+	events := []string{
+		"event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}\n\n",
+		"event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n\n",
+	}
+	s := newStreamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		rc := http.NewResponseController(w)
+		_ = rc.Flush()
+		for i, e := range events {
+			if i > 0 {
+				select {
+				case <-next:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			_, _ = io.WriteString(w, e)
+			_ = rc.Flush()
+		}
+	})
+	defer s.auditor.Close()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.srv.Shutdown(ctx)
+	}()
+	resp := s.open(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow"}}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("code=%d", resp.StatusCode)
+	}
+	br := bufio.NewReader(resp.Body)
+	if ev := readEvent(t, br, 5*time.Second); ev != events[0] {
+		t.Fatalf("event 1 = %q", ev)
+	}
+	next <- struct{}{}
+	if ev := readEvent(t, br, 5*time.Second); ev != events[1] {
+		t.Fatalf("event 2 = %q", ev)
+	}
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Fatalf("after the last event: %v, want EOF", err)
+	}
+	want := len(events[0]) + len(events[1])
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if strings.Contains(s.logs.String(), `"msg":"http"`) && strings.Contains(s.logs.String(), `"path":"/k1/mcp"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no http log line for the stream: %s", s.logs.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var httpLine string
+	for _, line := range strings.Split(s.logs.String(), "\n") {
+		if strings.Contains(line, `"msg":"http"`) && strings.Contains(line, `"path":"/k1/mcp"`) {
+			httpLine = line
+		}
+	}
+	if !strings.Contains(httpLine, `"bytes":`+strconv.Itoa(want)) {
+		t.Fatalf("http line %s, want bytes=%d", httpLine, want)
 	}
 }
