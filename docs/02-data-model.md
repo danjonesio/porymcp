@@ -29,8 +29,19 @@ Represents a real MCP server.
   request routed to such a row and discovery reports it as not implemented,
   and the row is repaired by a `PATCH` sending `streamable-http`. Nothing
   rewrites the stored value.
-- `auth_type`: `"none"` | `"bearer"` | `"header"` | `"api_key"` | `"custom"`
-- `auth_config` (JSON): e.g. `{"header": "Authorization", "value": "Bearer sk-..."}`
+- `auth_type`: `"none"` | `"bearer"` | `"header"` | `"api_key"` | `"custom"` | `"oauth"`
+- `auth_config` (JSON): e.g. `{"header": "Authorization", "value": "Bearer sk-..."}`.
+  For `oauth` the stored value is the token set PoryMCP obtained by the
+  operator signing in at the vendor (PORM-139): `access_token`,
+  `refresh_token`, `expires_at` (UTC, from PoryMCP's own clock),
+  `token_endpoint`, `revocation_endpoint`, `issuer`, `client_id`,
+  `client_secret` (absent for a public client), `client_source` (`document`,
+  `registered` or `supplied`), `client_issuer`, `client_redirect_uri`,
+  `scope` and `resource` (the upstream URL the token was minted for). Before
+  Connect it is absent, or holds only a `client_id` and `client_secret` the
+  operator typed. The API accepts `client_id` and `client_secret` alone for
+  this type; the rest is written by the connect callback and the refresh
+  path, never by a caller.
 - `enabled` (bool)
 - `last_test_at` (nullable): when the last deliberate connection test ran. A
   press of **Tools** or **Refresh** in the dashboard is that test
@@ -58,6 +69,14 @@ builds before PORM-52 are bare base64 with no AAD and are read for ever;
 `PATCH` that carries `auth_config` (a `PATCH` that does not leaves the column
 out of its statement, so an edit that raced a rekey cannot put an old-key value
 back), by a `PATCH` naming `auth_type: none` over a stored value, which empties
+it, by a `PATCH` that changes the URL of an `oauth` row or the auth type into
+or out of `oauth` (the token set goes, recorded as `cleared: ["credential"]`),
+by the OAuth connect callback (a compare-and-swap on `updated_at`, so a row
+edited during the sign-in stores nothing), by a token refresh (a
+compare-and-swap on the ciphertext that leaves `updated_at` and the test
+columns alone: a refresh is not an edit), by a refresh the vendor refused
+(the `refresh_token` member is dropped so the row reads `expired` once the
+access token lapses), by `POST /upstreams/{id}/oauth/revoke`, which empties
 it, and by `rekey`, and by nothing else. An object with no members (`{}`, what
 the dashboard sends for a blank box) stores nothing. An `auth_type: none` row
 may still hold a value, whether an earlier build wrote it or a `PATCH` carried

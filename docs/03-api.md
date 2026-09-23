@@ -97,6 +97,116 @@ now clears those fields where it previously left them alone.
 - `DELETE /upstreams/{id}`
 - `POST   /upstreams/discover`
 - `POST   /upstreams/{id}/discover`
+- `POST   /upstreams/{id}/oauth/start`
+- `POST   /upstreams/{id}/oauth/revoke`
+- `GET    /oauth/callback` (no admin key; answers HTML)
+- `GET    /oauth/client-metadata` (no admin key)
+
+### Connecting an OAuth upstream
+An upstream with `auth_type: "oauth"` (PORM-139) holds no credential an
+operator can paste. `POST /upstreams` with that type and no `auth_config`
+answers `201` with `auth_status: "unreadable"`, `auth_configured: false` and
+an `oauth` object (`expires_at: null`, `has_refresh_token: false`,
+`client_source: null`): the row is not connected. `auth_config` for this type
+accepts `client_id` and optionally `client_secret`, the client identity a
+vendor issued in its own settings, and nothing else:
+`400 {"error":"auth_config for oauth accepts client_id and client_secret only"}`.
+Writing a new client drops any stored token set, recorded as
+`cleared: ["credential"]`.
+
+`POST /upstreams/{id}/oauth/start` learns the authorization server from the
+upstream (the `WWW-Authenticate` challenge's `resource_metadata`, then the
+RFC 9728 well-known path, then the origin root; then the RFC 8414 document),
+chooses the client identity, holds the sign-in in memory for ten minutes and
+answers `200 {"authorization_url", "expires_in": 600, "issuer": "<host>",
+"client": "document"|"registered"|"supplied"}` with `Cache-Control:
+no-store`. The body is optional: `{"client": "registered"}` forces RFC 7591
+dynamic registration where the vendor cannot fetch this PoryMCP's client
+metadata document (an allowlisted or private deployment); `document` forces
+the document. The client identity is chosen in this order: a supplied
+client; a registration stored from an earlier connect whose issuer and
+redirect URI still match; the client metadata document when the vendor
+advertises support, `PUBLIC_URL` is https and its host is not loopback;
+dynamic registration; else
+`400 {"error":"the authorization server offers no way to register PoryMCP; enter a client ID"}`.
+A supplied client is bound to the issuer that first accepted it; a different
+issuer later answers
+`400 {"error":"the stored client ID belongs to another authorization server; enter it again"}`.
+`PUBLIC_URL` is the redirect URI's origin: it must be https, or http on a
+loopback host, or http with `ALLOW_INSECURE_HTTP`, else
+`400 {"error":"PUBLIC_URL must be an https address to connect an OAuth upstream"}`;
+a loopback `PUBLIC_URL` reached from another address is refused with both
+values. A metadata, host-rule, redirect or registration failure is `502`
+with one fixed sentence from the OAuth client's closed set, never a byte the
+vendor sent, and one Warn line with the stage, the status and the host. The
+route spends the discovery budgets and records nothing; the connect is
+recorded by the callback. The authorization URL carries `code_challenge`
+(S256), `state`, `redirect_uri={PUBLIC_URL}/api/v1/oauth/callback` and
+`resource=<upstream url>` (RFC 8707). Anyone holding a live authorization
+URL can connect the upstream to their own vendor account within ten
+minutes; the admin event shows the connect.
+
+`GET /oauth/callback?code&state[&iss]` is the one route that needs no admin
+key and the one that answers `text/html`: the vendor sends the operator's
+browser here. Every answer is a fixed page with `Cache-Control: no-store`
+and a link to the Upstreams page, and nothing from the query enters a page.
+In order: a per-address budget of ten callbacks a minute answers `429` with
+`Retry-After` before the state is touched, so a reload keeps its state; the
+state is taken and deleted (single use, ten minutes); `error=` from the
+vendor is `400` (the page names the code only when it is one of the seven
+RFC 6749 values); `iss` is compared with the issuer pinned at start before
+any exchange (RFC 9207), and is required when the server advertised it:
+`502` on a mismatch; the row must still read the `updated_at` the flow
+started with and still be `oauth`, else `409` (or `404` when it is gone);
+the code is exchanged at the pinned token endpoint on the server's own
+context, so a browser that goes away cannot abandon a redeemed code (`502`
+on a failure); the token set is sealed and written under the per-upstream
+lock; `upstream.oauth_connect` is recorded and the page reads `200`. On a
+`200` the row reads `auth_status: "ok"`, `auth_configured: true` and an
+`oauth` object with `expires_at`, `has_refresh_token` and `client_source`.
+The same state a second time is `400` and records nothing.
+
+From then on the proxy and `POST /upstreams/{id}/discover` present the
+access token and renew it: when `expires_at` is within sixty seconds the
+refresh grant is posted to the stored token endpoint under a process-wide
+per-upstream lock, so ten concurrent calls cost one refresh, and the new set
+replaces the old by a compare-and-swap that leaves `updated_at` alone. One
+`upstream.oauth_refresh` event is recorded per refresh (actor `proxy` on a
+proxied call, `admin` from the discover route), about one per token lifetime
+per upstream. Inside that window the stored token is still presented when
+the vendor cannot be reached, and the vendor is not asked again for thirty
+seconds. A refresh the vendor refuses (`invalid_grant`, `invalid_client`)
+drops the refresh token: the row reads `auth_status: "expired"` once the
+access token lapses, and the fix is Connect again. A vendor that issued no
+refresh token gives the same outcome at `expires_at`. `expired` is derived
+from the stored set on every read, never stored.
+
+### Disconnecting an OAuth upstream
+`POST /upstreams/{id}/oauth/revoke` takes the per-upstream lock, asks the
+vendor's revocation endpoint (RFC 7009) to revoke the refresh token (or the
+access token when there is none) when the stored set names one, then empties
+the column, the client identity included, and records
+`upstream.oauth_revoke` with `cleared: ["credential"]` and
+`vendor_revocation`. It answers
+`200 {"upstream": <the row>, "vendor_revocation": "revoked"|"failed"|"not_offered"|"no_token"}`:
+the local clear always happens once the vendor was asked, and `failed` says
+the vendor did not confirm it. `no_token` is a row that held only a client
+identity (cleared) or nothing (no write, no event). A grant that landed on
+the row after the vendor call is never cleared:
+`409 {"error":"upstream changed; try Disconnect again"}`. `PATCH
+{"auth_type": "none"}` on an `oauth` row removes the token set without asking
+the vendor (see Removing a credential).
+
+### OAuth client metadata
+`GET /oauth/client-metadata` serves the Client ID Metadata Document, without
+a key and with `Cache-Control: public, max-age=300`: PoryMCP's client id is
+this document's own URL, and a vendor's authorization server fetches it when
+PoryMCP identifies itself that way. It carries `client_id`, `client_name`,
+`redirect_uris` (`{PUBLIC_URL}/api/v1/oauth/callback`), `grant_types`,
+`response_types`, `token_endpoint_auth_method: none` and `application_type:
+web`, built from `PUBLIC_URL` alone and never from the request's `Host`. It
+is the one OAuth document PoryMCP publishes: PoryMCP is a client of an
+upstream's authorization server, never an authorization server itself.
 
 ### Removing a credential
 `PATCH /upstreams/{id}` with `{"auth_type": "none"}` stops the upstream
@@ -435,8 +545,18 @@ the stored value: the key changed, and the fix is a key; `unreadable`: nothing
 is stored (a blank credential box stores nothing), or the value opens but holds
 nothing the auth type can send: the fix is the credential, never the key. The proxy
 refuses to call an `undecryptable` or `unreadable` upstream (see Upstream
-failures). Invariants: `auth_status` is `"none"` iff `auth_type` is `"none"`,
-whatever the dashboard stored; `auth_hint` is present only when `ok`;
+failures). A fifth value, `expired`, belongs to `oauth` rows (PORM-139): the access
+token has lapsed and there is no refresh token to renew it, because the
+vendor issued none or refused the last refresh; the fix is Connect again.
+The proxy refuses to call an `expired` upstream (`credential expired` on the
+audit row). A lapsed token that still has a refresh token reads `ok`: the
+next call renews it. An `oauth` row that is not yet connected reads
+`unreadable`, with `auth_configured: true` when a client identity is stored
+and `false` otherwise; the `oauth` object's `expires_at: null` is what says
+"not connected". Invariants: `auth_status` is `"none"` iff `auth_type` is `"none"`,
+whatever the dashboard stored; `auth_hint` is present only when `ok` and
+never on an `oauth` row; `oauth` is present only on an `oauth` row whose
+stored value is absent or opens;
 `auth_configured` keeps its meaning (a blob is stored) and is independent: a
 `bearer` upstream with no credential yet reads `auth_configured: false,
 auth_status: "unreadable"`, and `auth_configured: true` with
@@ -631,9 +751,13 @@ schema version 6 still works after the upgrade.
 
 Every successful state-changing management call writes one row to
 `admin_events` before it answers: create, update and delete of an upstream or
-a group, and create, update, rotate, revoke and delete of a virtual key
-(PORM-54). A row carries `id`, `timestamp`, `actor` (the literal `admin` until
-dashboard users land), `action`, `resource_type`, `resource_id`,
+a group, create, update, rotate, revoke and delete of a virtual key
+(PORM-54), and the OAuth connect, refresh and disconnect of an upstream
+(PORM-139). A row carries `id`, `timestamp`, `actor` (the literal `admin`
+until dashboard users land, or `proxy` for a token refresh PoryMCP made on
+its own while presenting a credential; a connect is `admin`, because the
+admin started the flow, with the browser's address on an unauthenticated
+route), `action`, `resource_type`, `resource_id`,
 `resource_name`, `details`, `request_id` and `remote_addr`: the client address
 after the trusted-proxy rule, so a deployment behind a reverse proxy records
 the client rather than the proxy, or the literal `unknown` when there is no
@@ -661,6 +785,9 @@ is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 | `virtual_key.rotate` | `key_prefix` |
 | `virtual_key.revoke` | none |
 | `virtual_key.delete` | none |
+| `upstream.oauth_connect` | `auth_type`, `client` (`document`, `registered` or `supplied`), `refresh_token` (whether the vendor issued one), `issuer` (the authorization server's host) |
+| `upstream.oauth_refresh` | none; `request_id` is the proxied call's, so the row joins its audit row. One per token lifetime per upstream, about a day's worth on the Logs page per hourly token |
+| `upstream.oauth_revoke` | `cleared` (`credential`), `vendor_revocation` (`revoked`, `failed`, `not_offered` or `no_token`) |
 
 `details` is a closed object composed by the server, never the request body.
 It is always an object, `{}` when there is nothing to add. `fields` names the
@@ -677,7 +804,9 @@ credential is the word `credential` in `cleared`, the one `cleared` entry that
 is not a field name. A `PATCH` with an empty body answers `200` and
 records `details: {}`. A value is recorded only when it is a bounded
 identifier, enum or count the API already returns in the clear (`slug`,
-`auth_type`, `key_prefix`, `target_type`, `target_id`, `upstream_count`); a
+`auth_type`, `key_prefix`, `target_type`, `target_id`, `upstream_count`,
+`client`, `refresh_token`, `vendor_revocation`, and `issuer` as a host and
+never a path); a
 name, description, URL, credential, ciphertext, plaintext key, metadata, tool
 filter, tool list or member id list never appears as a value, and the string
 `auth_config` never appears at all.
@@ -697,7 +826,9 @@ the row; the resource keeps its own name.
 
 ## Meta
 - `GET /health`: also served unauthenticated at `/health` (root). The
-  management-API copy is `/api/v1/health` (likewise unauthenticated).
+  management-API copy is `/api/v1/health` (likewise unauthenticated). The
+  only other routes served without the admin key are `GET /oauth/callback`
+  and `GET /oauth/client-metadata` (see Connecting an OAuth upstream).
 
   | Field | When present | Meaning |
   | --- | --- | --- |
@@ -726,6 +857,9 @@ the row; the resource keeps its own name.
   and `upstreams_under_previous_key` (still sealed under an
   `ENCRYPTION_KEY_PREVIOUS` key, so a rotation `porymcp rekey` has not finished;
   the runbook waits for `0`). `auth_type: none` upstreams are never counted.
+  An `oauth` upstream that is not yet connected counts as unreadable, as its
+  row reads; an `expired` one counts as fine, because the sweep judges what
+  is stored and not when it lapses.
 
 ---
 
@@ -1130,6 +1264,8 @@ and the raw body, as every row was before PORM-172.
 | --- | --- |
 | No configured `ENCRYPTION_KEY` opens the stored credential (the key changed) | `credential undecryptable`: no request was built; the fix is the key, and `auth_status` on the upstream reads `undecryptable` |
 | The stored credential is empty or holds nothing its auth type can send | `credential unreadable`: no request was built; the fix is the credential, and `auth_status` reads `unreadable` |
+| An OAuth access token lapsed and the vendor refused to renew it, or issued no refresh token | `credential expired`: no request was built; the fix is Connect again, and `auth_status` reads `expired` |
+| An OAuth access token lapsed and the vendor's token endpoint could not be reached or answered something unusable | `credential refresh failed`: no request was built; the next call retries after thirty seconds, and `auth_status` still reads `ok` |
 | The stored `transport` is `sse` or an unknown value | `the sse transport is not implemented yet; use streamable-http`, or `unsupported transport` for a value that is not `sse` (the value itself is never written): no request was built; the fix is a `PATCH` sending `transport: "streamable-http"`, and the row shows an Unsupported badge in the dashboard and one WARN line at startup |
 | The upstream answered `3xx` | `upstream redirected to <host>`: the host from `Location`, never the full URL |
 | The upstream did not answer within the relay budget | `upstream did not answer within 5m0s`: five minutes for a buffered answer, or for a stream's headers |

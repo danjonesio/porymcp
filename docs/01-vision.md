@@ -29,7 +29,10 @@ PoryMCP presents one endpoint per agent and shapes it to whatever set of tools t
 - API-first, with a dashboard for the same actions
 
 ## Non-goals for MVP
-- Full OAuth client flows for agents
+- Full OAuth client flows for agents. OAuth to an upstream is in scope: an
+  operator connects an upstream that needs OAuth once, from the dashboard,
+  and the proxy renews the token (PORM-139); agents still hold only a
+  virtual key
 - Complex multi-tenant orgs / RBAC beyond virtual keys
 - LLM gateway features
 - Heavy policy engines

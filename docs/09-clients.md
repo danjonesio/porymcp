@@ -185,7 +185,7 @@ For one combined server instead, use one `[mcp_servers.my_agent]` table pointing
 }
 ```
 
-`oauth` must be `false` on every entry so OpenCode does not treat 401 as an OAuth challenge.
+`oauth` must be `false` on every entry so OpenCode does not treat 401 as an OAuth challenge. An upstream that itself needs OAuth (PORM-139) needs nothing on the client side: the operator connects it once from the dashboard, PoryMCP renews the token, and the client keeps its virtual key.
 
 For one combined server instead, use one `mcp` entry pointing at
 `http://localhost:8080/{virtual_key_id}/mcp`.
@@ -386,7 +386,7 @@ A `502` with `{"code":-32000,"message":"upstream request failed"}` means the rea
 
 A `401` on a proxy URL has two causes and looks the same either way: the virtual key is wrong, expired or revoked, or the upstream rejected the credential PoryMCP holds for it. PoryMCP sends no `WWW-Authenticate` in either case, and it does not copy the upstream's, so a client that would otherwise read that header and start an OAuth flow against the upstream's own authorization server does not. An operator can tell the two causes apart on the Logs page: a `blocked` row means the virtual key, an `error` row carrying an upstream id means the upstream.
 
-PoryMCP publishes no OAuth metadata. A probe for protected-resource metadata is an unmatched path, so it returns the dashboard page rather than a `404`, and a client that discovers by probing fails on the HTML instead of falling through cleanly. Set `oauth` to `false` where a client offers it, as the OpenCode block above does.
+PoryMCP publishes no protected-resource or authorization-server metadata. It publishes one OAuth client metadata document, at `/api/v1/oauth/client-metadata`, which names PoryMCP as a client of an upstream's authorization server (PORM-139) and says nothing to an MCP client. A probe for protected-resource metadata is an unmatched path, so it returns the dashboard page rather than a `404`, and a client that discovers by probing fails on the HTML instead of falling through cleanly. Set `oauth` to `false` where a client offers it, as the OpenCode block above does.
 
 A `429` carries `Retry-After` when the upstream sent one. PoryMCP's own rate limiter answers `429` without it, so treat a missing `Retry-After` as an ordinary backoff rather than an immediate retry.
 
