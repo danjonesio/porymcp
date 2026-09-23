@@ -11,11 +11,21 @@ import { Heading } from '@/components/heading'
 import { errorLine } from '@/components/primitives'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { Text } from '@/components/text'
-import { ApiError, api, discoverUpstream, discoverUpstreamPayload, type Discovery, type Upstream } from '@/lib/api'
+import {
+  ApiError,
+  api,
+  discoverUpstream,
+  discoverUpstreamPayload,
+  oauthRevoke,
+  oauthStart,
+  type Discovery,
+  type Upstream,
+} from '@/lib/api'
 import { discoverable, discoveryErrorMessage } from '@/lib/discovery'
 import { editErrorMessage } from '@/lib/edit-error'
+import { authorizationURLIsWeb, connectErrorMessage, revokeResultLine } from '@/lib/oauth-connect'
 import { deriveSlug } from '@/lib/slug'
-import { authState } from '@/lib/upstream-auth'
+import { authState, connectLabel, oauthConnected } from '@/lib/upstream-auth'
 import {
   CONNECTION_FIELDS,
   authConfigFrom,
@@ -53,6 +63,14 @@ function TestStateLine({ upstream, nowMs }: { upstream: Upstream; nowMs: number 
   )
 }
 
+/**
+ * The type, then what the stored credential is worth, one rendering per tone
+ * of authState: a pink badge for a setup problem, an amber one for a lapsed
+ * oauth token (the fix is Connect again, so it is held rather than broken),
+ * plain "Not connected" text for an oauth row before its first sign-in, "set"
+ * for a credential PoryMCP can use, with the expiry when the vendor issued no
+ * refresh token, and nothing for none.
+ */
 function AuthCell({ upstream }: { upstream: Upstream }) {
   const a = authState(upstream)
   return (
@@ -60,8 +78,20 @@ function AuthCell({ upstream }: { upstream: Upstream }) {
       <span>{upstream.auth_type}</span>
       {a.tone === 'broken' ? (
         <Badge color="pink">{a.label}</Badge>
+      ) : a.tone === 'held' ? (
+        <Badge color="amber">{a.label}</Badge>
+      ) : a.tone === 'idle' ? (
+        <span className="text-zinc-500 dark:text-zinc-400">· {a.label}</span>
       ) : a.tone === 'ok' ? (
-        <span className="text-zinc-500 dark:text-zinc-400">· set</span>
+        <span className="text-zinc-500 dark:text-zinc-400">
+          · {a.expiresAt ? a.label : 'set'}
+          {a.expiresAt ? (
+            <>
+              {' '}
+              <time dateTime={a.expiresAt}>{new Date(a.expiresAt).toLocaleString()}</time>
+            </>
+          ) : null}
+        </span>
       ) : null}
     </span>
   )
@@ -97,6 +127,22 @@ export default function UpstreamsPage() {
   const [pendingDelete, setPendingDelete] = useState<Upstream | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  /**
+   * The oauth flow (PORM-139). connecting is the row whose Connect was pressed:
+   * start makes up to ten seconds of outbound calls and then the page
+   * navigates, so the button says so and every Connect is held meanwhile.
+   * connectError answers a press and is announced. registerFor remembers,
+   * per row, the "register PoryMCP with the vendor" choice ticked in the Edit
+   * dialog, which the next Connect sends. pendingRevoke is the row the
+   * Disconnect Alert is asking about; revokeLine is what the vendor said.
+   */
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [connectError, setConnectError] = useState('')
+  const [registerFor, setRegisterFor] = useState<Record<string, boolean>>({})
+  const [pendingRevoke, setPendingRevoke] = useState<Upstream | null>(null)
+  const [revoking, setRevoking] = useState(false)
+  const [revokeError, setRevokeError] = useState('')
+  const [revokeLine, setRevokeLine] = useState('')
   // Discovery has a ten-second budget, so a second press can easily land while
   // the first is in flight. Each surface counts its own requests and paints only
   // the newest one.
@@ -275,7 +321,8 @@ export default function UpstreamsPage() {
   function openEdit(u: Upstream) {
     setEditing(u)
     setFormError('')
-    setForm(formFromUpstream(u))
+    setRevokeLine('')
+    setForm({ ...formFromUpstream(u), register_client: registerFor[u.id] ?? false })
     resetFormDiscovery()
     opened()
   }
@@ -348,6 +395,11 @@ export default function UpstreamsPage() {
   async function save() {
     const row = editing
     if (!row) return
+    // The register choice is the dialog's to set and the row's Connect to
+    // read; it is never a field of the row, so it is kept here and not sent.
+    if (row.auth_type === 'oauth' || form.auth_type === 'oauth') {
+      setRegisterFor((m) => ({ ...m, [row.id]: form.register_client }))
+    }
     const body = upstreamPatchBody(row, form)
     if (Object.keys(body).length === 0) {
       close()
@@ -376,6 +428,62 @@ export default function UpstreamsPage() {
   function closeDelete() {
     setPendingDelete(null)
     setDeleteError('')
+  }
+
+  /**
+   * Connect: ask the server for the vendor's sign-in URL, then take this tab
+   * there. Same tab on purpose: the admin key lives in this tab's session
+   * storage and survives the round trip, a popup would be blocked after the
+   * awaited request, and the callback page brings the operator straight back
+   * to this list. Only an http or https URL is ever assigned.
+   */
+  async function connect(u: Upstream) {
+    setConnectError('')
+    setConnecting(u.id)
+    try {
+      const out = await oauthStart(u.id, registerFor[u.id] ? { client: 'registered' } : undefined)
+      if (!authorizationURLIsWeb(out.authorization_url)) {
+        setConnectError('The server answered with an address this browser cannot open.')
+        setConnecting(null)
+        return
+      }
+      window.location.assign(out.authorization_url)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) void load()
+      setConnectError(connectErrorMessage(err))
+      setConnecting(null)
+    }
+  }
+
+  function closeRevoke() {
+    setPendingRevoke(null)
+    setRevokeError('')
+  }
+
+  /**
+   * Disconnect the row the Alert is asking about: the vendor is asked to
+   * revoke, then the stored value goes. The dialog underneath keeps showing
+   * the row, so it is re-seeded from the answer, and the line under the button
+   * says what the vendor did.
+   */
+  async function revoke() {
+    const row = pendingRevoke
+    if (!row) return
+    const wasConnected = oauthConnected(row)
+    setRevoking(true)
+    setRevokeError('')
+    try {
+      const result = await oauthRevoke(row.id)
+      setItems((list) => list.map((x) => (x.id === result.upstream.id ? result.upstream : x)))
+      setEditing((e) => (e && e.id === result.upstream.id ? result.upstream : e))
+      setRevokeLine(revokeResultLine(result, wasConnected))
+      closeRevoke()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) void load()
+      setRevokeError(editErrorMessage(err, 'upstream', 'save'))
+    } finally {
+      setRevoking(false)
+    }
   }
 
   /** Delete the row the Alert is asking about. A failure keeps the Alert open with its reason. */
@@ -408,6 +516,12 @@ export default function UpstreamsPage() {
         Real MCP servers. Credentials are encrypted at rest and never shown again.
       </p>
       {error ? <p className={clsx('mt-4', errorLine)}>{error}</p> : null}
+      {connectError ? (
+        // role="alert" because this answers a Connect the operator just pressed.
+        <p role="alert" className={clsx('mt-4', errorLine)}>
+          {connectError}
+        </p>
+      ) : null}
 
       {items.length === 0 ? (
         <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">No upstreams yet. Add the first real MCP server.</p>
@@ -458,6 +572,21 @@ export default function UpstreamsPage() {
                 </TableCell>
                 <TableCell className="text-right">
                   <span className="inline-flex gap-2">
+                    {/* Connect is a row action, not a dialog button: Create
+                        closes the dialog, and the Expired fix is one press. It
+                        renders on every oauth row whatever its state, so it
+                        never unmounts under keyboard focus. */}
+                    {u.auth_type === 'oauth' ? (
+                      <Button
+                        type="button"
+                        plain
+                        disabled={connecting !== null}
+                        aria-label={`${connectLabel(u)} ${u.name}`}
+                        onClick={() => connect(u)}
+                      >
+                        {connecting === u.id ? 'Connecting…' : connectLabel(u)}
+                      </Button>
+                    ) : null}
                     <Button type="button" plain onClick={() => openTools(u)}>
                       Tools
                     </Button>
@@ -509,14 +638,15 @@ export default function UpstreamsPage() {
                   <Button
                     type="button"
                     outline
-                    disabled={!discoverable(form.url) || formDiscovery.pending}
+                    disabled={!discoverable(form.url) || formDiscovery.pending || form.auth_type === 'oauth'}
                     onClick={discoverForm}
                   >
                     {formDiscovery.pending ? 'Discovering…' : 'Discover tools'}
                   </Button>
                   <Text className="mt-2">
-                    Connects to the URL above using these credentials and lists the tools that server offers. Nothing
-                    is saved, and this check is not recorded as a test.
+                    {form.auth_type === 'oauth'
+                      ? 'Discovery needs a token. Create the upstream, connect it, then use Tools on its row.'
+                      : 'Connects to the URL above using these credentials and lists the tools that server offers. Nothing is saved, and this check is not recorded as a test.'}
                   </Text>
                 </div>
                 <DiscoveryPanel
@@ -527,6 +657,35 @@ export default function UpstreamsPage() {
                   slug={form.slug.trim()}
                   surface="draft"
                 />
+              </>
+            ) : null}
+            {mode === 'edit' && editing?.auth_type === 'oauth' ? (
+              // Disconnect sits at the foot of the body for the same reason
+              // Discover does: it is not the dialog's primary action. On a row
+              // holding only a supplied client there is no token to revoke, so
+              // the button and the confirm say what actually goes.
+              <>
+                <Divider soft className="my-8" />
+                <div>
+                  <Button
+                    type="button"
+                    outline
+                    disabled={!editing.auth_configured || revoking}
+                    onClick={() => setPendingRevoke(editing)}
+                  >
+                    {oauthConnected(editing) ? 'Disconnect' : 'Remove client ID'}
+                  </Button>
+                  <Text className="mt-2">
+                    {oauthConnected(editing)
+                      ? 'Asks the vendor to revoke the token, then removes it from PoryMCP. Calls through this upstream fail until it is connected again.'
+                      : 'Removes the client ID and secret stored for this upstream.'}
+                  </Text>
+                  {revokeLine ? (
+                    <Text className="mt-2" role="status">
+                      {revokeLine}
+                    </Text>
+                  ) : null}
+                </div>
               </>
             ) : null}
           </DialogBody>
@@ -572,6 +731,33 @@ export default function UpstreamsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Alert open={!!pendingRevoke} onClose={closeRevoke}>
+        <AlertTitle>
+          {pendingRevoke && oauthConnected(pendingRevoke) ? 'Disconnect this upstream?' : 'Remove the stored client ID?'}
+        </AlertTitle>
+        <AlertDescription>
+          {pendingRevoke
+            ? oauthConnected(pendingRevoke)
+              ? `${pendingRevoke.name} stops sending a token. PoryMCP asks the vendor to revoke it, then removes it. Calls through this upstream fail until it is connected again.` +
+                (pendingRevoke.oauth?.client_source === 'supplied' ? ' The client ID and secret you entered are removed too.' : '')
+              : `${pendingRevoke.name} forgets the client ID and secret you entered. Connect then uses the vendor’s own registration.`
+            : ''}
+        </AlertDescription>
+        {revokeError ? (
+          <p role="alert" className="mt-2 text-center text-base/7 text-pink-600 sm:text-left sm:text-sm/6 dark:text-pink-400">
+            {revokeError}
+          </p>
+        ) : null}
+        <AlertActions>
+          <Button type="button" plain onClick={closeRevoke}>
+            Cancel
+          </Button>
+          <Button type="button" color="red" disabled={revoking} onClick={revoke}>
+            {revoking ? 'Disconnecting…' : pendingRevoke && oauthConnected(pendingRevoke) ? 'Disconnect' : 'Remove'}
+          </Button>
+        </AlertActions>
+      </Alert>
 
       <Alert open={!!pendingDelete} onClose={closeDelete}>
         <AlertTitle>Delete this upstream?</AlertTitle>

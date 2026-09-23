@@ -3,7 +3,7 @@
 import { Field, Label } from '@/components/fieldset'
 import { Select } from '@/components/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
-import { changedText, eventSentence } from '@/lib/admin-event'
+import { changedText, eventSentence, fromText } from '@/lib/admin-event'
 import { api, type AdminEvent } from '@/lib/api'
 import { ABSENT } from '@/lib/placeholder'
 import { useEffect, useState } from 'react'
@@ -20,7 +20,9 @@ import { useEffect, useState } from 'react'
  * its answer lands. A failed re-fetch shows the error and keeps the rows it
  * had, as the proxy table above does. remote_addr renders verbatim: the
  * server writes the literal "unknown" when it could not parse the socket
- * address, and that is a value the row has, not one it lacks.
+ * address, and that is a value the row has, not one it lacks. A row with no
+ * address at all (a token refresh the proxy made on its own, PORM-139) shows
+ * its actor instead: fromText.
  */
 export function AdminEvents() {
   const [events, setEvents] = useState<AdminEvent[]>([])
@@ -90,7 +92,7 @@ export function AdminEvents() {
                 <TableCell className="tabular-nums text-zinc-500">{new Date(e.timestamp).toLocaleString()}</TableCell>
                 <TableCell>{eventSentence(e)}</TableCell>
                 <TableCell>{changedText(e) || ABSENT}</TableCell>
-                <TableCell className="font-mono">{e.remote_addr}</TableCell>
+                <TableCell className="font-mono">{fromText(e)}</TableCell>
               </TableRow>
             ))}
           </TableBody>

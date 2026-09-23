@@ -21,9 +21,18 @@ import { ChevronDownIcon } from '@heroicons/react/16/solid'
  * because nothing opens without a deliberate press, and the dialog around this
  * one is welcome to take Escape for itself.
  */
-export function HelpDisclosure({ label, children }: { label: string; children: React.ReactNode }) {
+export function HelpDisclosure({
+  label,
+  children,
+  defaultOpen = false,
+}: {
+  label: string
+  children: React.ReactNode
+  /** Start expanded: for a panel whose fields already hold a stored value the operator should see. */
+  defaultOpen?: boolean
+}) {
   return (
-    <Headless.Disclosure>
+    <Headless.Disclosure defaultOpen={defaultOpen}>
       <Headless.DisclosureButton className="group relative flex items-center gap-1 rounded-lg text-left text-base/6 font-medium text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:text-sm/6 dark:text-white">
         <span
           aria-hidden="true"
