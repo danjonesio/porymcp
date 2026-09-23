@@ -209,8 +209,8 @@ handshake server answering `-32601` is the common case.
 
 The whole sequence, probe included, is bounded at 10 seconds and the teardown at
 a further 2, so a hung upstream cannot hold an admin request open; the proxy's
-own 60 s budget is for relaying a client's call, not for answering the
-dashboard. A server slower than five seconds to answer `server/discover` is
+own relay budget (five minutes for a buffered answer) is for a client's call,
+not for answering the dashboard. A server slower than five seconds to answer `server/discover` is
 treated as legacy and gets what is left of the ten for its handshake.
 
 ```json
@@ -787,7 +787,7 @@ rather than the composed one: write `delete_`, or `github__delete_` to scope it.
 See `docs/07-security.md`.
 
 Transport to upstreams: **Streamable HTTP**, and nothing else. The legacy
-HTTP+SSE transport is not implemented (PORM-5); `sse` is refused on write since
+HTTP+SSE transport is not implemented; `sse` is refused on write since
 PORM-28, and a row stored with it before then is refused on every request (see
 Upstream failures below). `POST` carries every call. A `GET`, which a client
 opens after `initialize` to listen for server-initiated messages, is answered
@@ -801,12 +801,31 @@ the router recognises, `HEAD`, `PUT` and `PATCH` included, gets the same
 `405`; a method token the router does not know is refused by the router itself
 with a bare `405` and no `Allow`. A refused verb contacts no upstream and
 presents no credential, so it appears in the server log and not in
-`audit_logs`. Server-initiated streaming over `GET` is PORM-5, and `Allow`
-gains `GET` when it lands.
+`audit_logs`. A `GET` stays refused: in the 2026-07-28 revision a server's
+messages arrive on the response to a `POST`.
 
 ```json
 {"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed"}}
 ```
+
+An upstream that answers a `POST` with `text/event-stream` and a 2xx status is
+relayed as it arrives on a member or single-upstream endpoint: the headers and
+`X-Accel-Buffering: no` go out first, then every read reaches the client at
+once, keep-alive lines included. The stream stays open until the upstream or the
+client closes it, the upstream sends nothing for five minutes, the key stops
+being valid or the upstream stops being reachable through it (checked once a
+minute; a store error during that check leaves the stream open), or the proxy
+stops; a client that closes it, or stops reading it for five minutes, cancels
+the upstream request. A `tools/list` answer, an answer with status 400 or above,
+an answer not labelled `text/event-stream`, and every answer on the group
+endpoint are read whole, then sent as one body, as a JSON answer is. A stream
+that breaks after it started cannot change its status: if the upstream fails,
+goes silent, or the key or upstream is removed, the proxy drops the connection
+so the client sees the stream cut short, and the audit row says why. A
+`subscriptions/listen` ends when the client, the upstream or the proxy closes
+it, or when the upstream goes quiet, and that is its normal end: its row is
+`success` unless the stream carried a JSON-RPC error for it, the key stopped
+being valid, the upstream was removed, or the read failed.
 
 For a `POST` or a `DELETE`, the proxy:
 1. Validates the virtual key
@@ -824,7 +843,9 @@ For a `POST` or a `DELETE`, the proxy:
    any `cacheScope` the upstream sent as `private` when it can read the list; the aggregate endpoint's
    merged list is PoryMCP's own document (see "The group endpoint as a server")
 9. Writes an AuditLog entry
-10. Returns the response
+10. Returns the response: relayed as it arrives when the answer is a streamed
+    event stream (the row is then written when the stream ends), or sent whole
+    otherwise
 
 Policy is applied **before** credentials are injected, so a blocked call
 contacts no upstream and never presents the real secret. A call that *is*
@@ -989,8 +1010,9 @@ Refused by PoryMCP, with no member contacted and an `error` row that names no
 upstream:
 
 - `subscriptions/listen`, `tasks/get` and `tasks/update`: HTTP `404` with
-  JSON-RPC `-32601` and the message `method not found`. A subscription needs a
-  stream held open, which this proxy does not do yet (PORM-5), and a task
+  JSON-RPC `-32601` and the message `method not found`. A subscription is a
+  stream held open to one member, which the group endpoint does not merge; open
+  it on that member's endpoint, where it is relayed as it arrives. A task
   handle belongs to the one member that issued it. A member endpoint relays all
   three to its member.
 - A request that declares a stateless revision other than `2026-07-28`: HTTP
@@ -1108,8 +1130,24 @@ and the raw body, as every row was before PORM-172.
 | The stored credential is empty or holds nothing its auth type can send | `credential unreadable`: no request was built; the fix is the credential, and `auth_status` reads `unreadable` |
 | The stored `transport` is `sse` or an unknown value | `the sse transport is not implemented yet; use streamable-http`, or `unsupported transport` for a value that is not `sse` (the value itself is never written): no request was built; the fix is a `PATCH` sending `transport: "streamable-http"`, and the row shows an Unsupported badge in the dashboard and one WARN line at startup |
 | The upstream answered `3xx` | `upstream redirected to <host>`: the host from `Location`, never the full URL |
-| The upstream did not answer within 60 s | `Post "<the upstream's url>": context deadline exceeded (Client.Timeout exceeded while awaiting headers)` |
-| The connection was refused, or DNS failed | the same shape, ending `connect: connection refused` or `no such host` |
+| The upstream did not answer within the relay budget | `upstream did not answer within 5m0s`: five minutes for a buffered answer, or for a stream's headers |
+| The connection or the TLS handshake did not complete within the connect budget | `upstream did not connect within 10s` |
+| The connection was refused, or DNS failed | `Post "<the upstream's url>": dial tcp ...`, ending `connect: connection refused` or `no such host` |
+| The client closed a stream, or stopped reading it for five minutes, before the answer | `client closed the stream before the answer` |
+| The upstream closed a stream before the answer | `upstream closed the stream before the answer` |
+| The upstream sent nothing on a stream for five minutes | `upstream sent nothing for 5m0s` |
+| The proxy stopped while a stream was open | `proxy stopped before the answer` |
+| The key was revoked, expired, rotated or retargeted while a stream was open | `virtual key no longer valid during the stream` |
+| The upstream was removed from the key's route while a stream was open | `upstream no longer reachable through the key during the stream` |
+
+A streamed row's `timestamp` is when the stream ended, its `latency_ms` the
+stream's whole life and its `response_size_bytes` the bytes relayed to the
+client. The row is judged from the last complete event, then from the first 64
+KiB of the stream; an answer event larger than 1 MiB is not judged and reads as
+`success` when the upstream ended the stream. A `subscriptions/listen` ended by
+the client, the upstream, the idle bound or the proxy is a `success` row. An
+upstream that accepts the connection and never answers is caught by the
+five-minute budget, not the connect budget.
 
 **A redirect is a failure, not a route.** The proxy never follows an upstream
 `Location`: it makes no second request, copies no header from the `3xx` back to

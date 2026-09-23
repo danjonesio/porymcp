@@ -111,12 +111,11 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
 ## Features
 
 - Streamable HTTP to upstreams: `POST` carries every call and `DELETE` ends a
-  session; SSE-framed upstream responses are relayed on a member or
-  single-upstream endpoint and reduced to one JSON document on a group
-  endpoint, and a client's `GET` for
-  a server-initiated stream is answered `405` until PORM-5. The legacy HTTP+SSE
-  upstream transport is not implemented (PORM-5); `sse` is refused on write
-  since PORM-28.
+  session; SSE-framed upstream responses are relayed as they arrive on a member
+  or single-upstream endpoint and reduced to one JSON document on a group
+  endpoint, and a client's `GET` is answered `405`. The legacy HTTP+SSE
+  upstream transport is not implemented; `sse` is refused on write since
+  PORM-28.
 - Encrypted storage of upstream secrets (AES-256-GCM)
 - Virtual keys stored as a SHA-256 digest, never in plaintext; plaintext shown only on create or rotate
 - Virtual key rotation and revocation

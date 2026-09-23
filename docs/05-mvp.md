@@ -25,7 +25,7 @@
 ## Known gaps
 - `openapi.yaml` describes the management API, no route serves it, and several
   of its responses carry a description and no schema (PORM-22).
-- The legacy HTTP+SSE upstream transport is not implemented (PORM-5). `sse` is
+- The legacy HTTP+SSE upstream transport is not implemented. `sse` is
   refused on write since PORM-28; a row stored with it before then is refused on
   every request until its transport is set to `streamable-http`.
 - A group key's aggregate endpoint `/{virtual_key_id}/mcp` answers `initialize`
