@@ -6,7 +6,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -48,9 +47,11 @@ func (l *lockedLog) String() string {
 }
 
 // streamServer is the shipping server over one streaming upstream and one key.
+// The http.Server is the one newHTTPServer builds, run inside an httptest
+// server so the test client is httptest's own (nothing here builds an
+// http.Client: TestNoSecondCredentialCarryingHTTPClient in mcpclient).
 type streamServer struct {
-	srv     *http.Server
-	ln      net.Listener
+	ts      *httptest.Server
 	st      store.Store
 	auditor *audit.Logger
 	key     string
@@ -59,7 +60,7 @@ type streamServer struct {
 
 // newStreamServer builds the store, the upstream stub, the key, the router
 // (with the shutdown hook registered as main does) and serves it on a
-// loopback listener. The caller owns Shutdown and auditor.Close, in that
+// loopback listener. The caller owns shutdown and auditor.Close, in that
 // order, which is main's order.
 func newStreamServer(t *testing.T, upstream http.HandlerFunc) *streamServer {
 	t.Helper()
@@ -101,21 +102,22 @@ func newStreamServer(t *testing.T, upstream http.HandlerFunc) *streamServer {
 	}
 
 	r, stopStreams := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
-	srv := newHTTPServer(cfg, r)
-	srv.RegisterOnShutdown(stopStreams)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = srv.Serve(ln) }()
-	return &streamServer{srv: srv, ln: ln, st: st, auditor: auditor, key: plain, logs: logs}
+	ts := httptest.NewUnstartedServer(r)
+	ts.Config = newHTTPServer(cfg, r)
+	ts.Config.RegisterOnShutdown(stopStreams)
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return &streamServer{ts: ts, st: st, auditor: auditor, key: plain, logs: logs}
 }
+
+// shutdown is main's srv.Shutdown on the server that ships.
+func (s *streamServer) shutdown(ctx context.Context) error { return s.ts.Config.Shutdown(ctx) }
 
 // open sends one proxy request to the key's endpoint over the listener, with
 // the public host the host check expects.
 func (s *streamServer) open(t *testing.T, rpc string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, "http://"+s.ln.Addr().String()+"/k1/mcp", strings.NewReader(rpc))
+	req, err := http.NewRequest(http.MethodPost, s.ts.URL+"/k1/mcp", strings.NewReader(rpc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +125,7 @@ func (s *streamServer) open(t *testing.T, rpc string) *http.Response {
 	req.Header.Set("Authorization", "Bearer "+s.key)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	resp, err := (&http.Client{}).Do(req)
+	resp, err := s.ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestShutdownEndsOpenStreamsAndStoresRows(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	start := time.Now()
-	if err := s.srv.Shutdown(ctx); err != nil {
+	if err := s.shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	if took := time.Since(start); took > time.Second {
@@ -271,7 +273,7 @@ func TestRouterRelaysAStreamIncrementally(t *testing.T) {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = s.srv.Shutdown(ctx)
+		_ = s.shutdown(ctx)
 	}()
 	resp := s.open(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow"}}`)
 	defer resp.Body.Close()
