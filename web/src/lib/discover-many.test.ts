@@ -14,11 +14,12 @@ function members(n: number): Member[] {
     name: `Upstream ${i}`,
     enabled: true,
     transport: 'streamable_http',
+    kind: 'mcp',
   }))
 }
 
 function answer(tools: string[]): Discovery {
-  return { ok: true, latency_ms: 1, tool_count: tools.length, tools: tools.map((name) => ({ name })), truncated: false, unnameable_tools: 0 }
+  return { ok: true, kind: 'mcp', latency_ms: 1, tool_count: tools.length, tools: tools.map((name) => ({ name })), truncated: false, unnameable_tools: 0 }
 }
 
 const tick = () => new Promise<void>((r) => setImmediate(r))

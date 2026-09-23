@@ -21,7 +21,7 @@ import { filterPermits } from './tool-entry.ts'
 // Run with: npm test (node --test).
 
 function member(slug: string, over: Partial<Member> = {}): Member {
-  return { upstream_id: 'id-' + slug, slug, name: slug.toUpperCase(), enabled: true, transport: 'streamable_http', ...over }
+  return { upstream_id: 'id-' + slug, slug, name: slug.toUpperCase(), enabled: true, transport: 'streamable_http', kind: 'mcp', ...over }
 }
 
 function loaded(slug: string, tools: string[], over: Partial<MemberCatalogue> = {}): MemberCatalogue {
@@ -33,7 +33,7 @@ function cat(...members: MemberCatalogue[]): Catalogue {
 }
 
 test('memberFromDiscovery: ok carries the tools; not ok is a failure with the server sentence', () => {
-  const ok: Discovery = { ok: true, latency_ms: 1, tool_count: 1, tools: [{ name: 'search' }], truncated: true, unnameable_tools: 2 }
+  const ok: Discovery = { ok: true, kind: 'mcp', latency_ms: 1, tool_count: 1, tools: [{ name: 'search' }], truncated: true, unnameable_tools: 2 }
   assert.deepEqual(memberFromDiscovery(member('gh'), ok), {
     ...member('gh'),
     state: 'ok',
@@ -42,7 +42,7 @@ test('memberFromDiscovery: ok carries the tools; not ok is a failure with the se
     unnameable: 2,
     error: '',
   })
-  const bad: Discovery = { ok: false, latency_ms: 1, tool_count: 0, tools: [], truncated: false, unnameable_tools: 0, error: 'Refused.', upstream_message: 'nope' }
+  const bad: Discovery = { ok: false, kind: 'mcp', latency_ms: 1, tool_count: 0, tools: [], truncated: false, unnameable_tools: 0, error: 'Refused.', upstream_message: 'nope' }
   const got = memberFromDiscovery(member('gh'), bad)
   assert.equal(got.state, 'failed')
   assert.equal(got.error, 'Refused. The server said: nope')

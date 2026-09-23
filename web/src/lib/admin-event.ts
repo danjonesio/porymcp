@@ -31,6 +31,8 @@ const FIELD_LABELS: Record<string, string> = {
   expires_at: 'expiry',
   tool_allowlist: 'allowlist',
   tool_denylist: 'denylist',
+  http_methods: 'allowed methods',
+  test_path: 'test path',
   target_type: 'target',
   target_id: 'target',
 }
@@ -40,6 +42,7 @@ const KNOWN_KEYS = new Set([
   'fields',
   'cleared',
   'slug',
+  'kind',
   'auth_type',
   'auth_changed',
   'upstream_count',
@@ -113,6 +116,7 @@ export function changedText(e: AdminEvent): string {
     parts.push(`${label(c)} cleared`)
   }
   if (typeof d.slug === 'string' && d.slug) parts.push(`slug ${d.slug}`)
+  if (create && typeof d.kind === 'string' && d.kind) parts.push(`kind ${d.kind}`)
   if (create && typeof d.auth_type === 'string' && d.auth_type) parts.push(`auth type ${d.auth_type}`)
   if (d.auth_changed === true) parts.push(create ? 'credential set' : 'credential')
   if (create && typeof d.upstream_count === 'number') parts.push(plural(d.upstream_count, 'upstream'))

@@ -128,7 +128,11 @@ export default function VirtualKeysPage() {
     const ids = groupTarget ? (groups.find((g) => g.id === targetId)?.upstream_ids ?? []) : targetId ? [targetId] : []
     return ids.flatMap((id) => {
       const u = upstreams.find((x) => x.id === id)
-      return u ? [{ upstream_id: u.id, slug: u.slug, name: u.name, enabled: u.enabled, transport: u.transport }] : []
+      // An HTTP API member (PORM-146) has no tools to load, so it stays out
+      // of the catalogue rather than being probed and stamped for nothing.
+      return u && u.kind !== 'http'
+        ? [{ upstream_id: u.id, slug: u.slug, name: u.name, enabled: u.enabled, transport: u.transport, kind: u.kind }]
+        : []
     })
   }, [groupTarget, targetId, groups, upstreams])
   const { catalogue, rateLimited, load: loadTools } = useCatalogue(members, catalogueKey)

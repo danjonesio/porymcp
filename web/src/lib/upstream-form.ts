@@ -11,8 +11,12 @@ export type UpstreamForm = {
   name: string
   slug: string
   description: string
+  /** `mcp` or `http` (PORM-146). Chosen on Add; shown read-only on Edit and never sent by upstreamPatchBody. */
+  kind: string
   url: string
   transport: string
+  /** The connection test's path on an http row; '' means the base URL. Never sent on an mcp row. */
+  test_path: string
   auth_type: string
   token: string
   header: string
@@ -42,10 +46,40 @@ export type UpstreamForm = {
  * was. Name, slug and description are not here: they only change previewed tool
  * names, which recompute on render.
  */
-export const CONNECTION_FIELDS = ['url', 'transport', 'auth_type', 'token', 'header', 'value'] as const
+export const CONNECTION_FIELDS = ['kind', 'url', 'transport', 'test_path', 'auth_type', 'token', 'header', 'value'] as const
 
 /** The header name the Add dialog starts with. PORM-39 changes it here and nowhere else. */
 export const DEFAULT_HEADER = 'Authorization'
+
+/**
+ * What the Kind radio and the Kind column show for each stored value. One
+ * map for both, so the table and the dialog name a thing the same way.
+ */
+export const KIND_LABELS: Record<string, string> = {
+  mcp: 'MCP server',
+  http: 'HTTP API',
+}
+
+export function kindLabel(kind: string): string {
+  return KIND_LABELS[kind] ?? kind
+}
+
+/**
+ * The form after the Kind radio changed. Typed values stay, with one rule:
+ * an HTTP API row cannot be oauth (the server refuses it), so a form that
+ * had OAuth selected falls back to None and drops the client boxes rather
+ * than leave a native select showing an option that is not the state.
+ */
+export function applyKindChange(f: UpstreamForm, kind: string): UpstreamForm {
+  const next = { ...f, kind }
+  if (kind === 'http' && f.auth_type === 'oauth') {
+    next.auth_type = 'none'
+    next.client_id = ''
+    next.client_secret = ''
+    next.register_client = false
+  }
+  return next
+}
 
 /** What the auth type select shows for each stored value. */
 export const AUTH_TYPE_LABELS: Record<string, string> = {
@@ -82,8 +116,10 @@ export function blankUpstreamForm(): UpstreamForm {
     name: '',
     slug: '',
     description: '',
+    kind: 'mcp',
     url: '',
     transport: 'streamable-http',
+    test_path: '',
     auth_type: 'none',
     token: '',
     header: DEFAULT_HEADER,
@@ -111,8 +147,10 @@ export function formFromUpstream(u: Upstream): UpstreamForm {
     name: u.name,
     slug: u.slug,
     description: u.description ?? '',
+    kind: u.kind,
     url: u.url,
     transport: u.transport,
+    test_path: u.test_path ?? '',
     auth_type: u.auth_type,
     token: '',
     header: u.auth_hint?.header ?? '',
@@ -173,18 +211,25 @@ export function clientSecretAlone(f: Pick<UpstreamForm, 'auth_type' | 'client_id
   return f.auth_type === 'oauth' && f.client_secret !== '' && f.client_id.trim() === ''
 }
 
-/** The `POST /upstreams` body, exactly as the Add dialog has always sent it. */
+/**
+ * The `POST /upstreams` body, exactly as the Add dialog has always sent it,
+ * plus kind (always) and test_path (an http row's, when set: the server
+ * refuses one on an mcp row).
+ */
 export function upstreamCreateBody(f: UpstreamForm, slugTouched: boolean): Record<string, unknown> {
-  return {
+  const body: Record<string, unknown> = {
     name: f.name,
     slug: slugTouched ? f.slug : '',
     description: f.description,
+    kind: f.kind,
     url: f.url,
     transport: f.transport,
     auth_type: f.auth_type,
     auth_config: authConfigFrom(f),
     enabled: f.enabled,
   }
+  if (f.kind === 'http' && f.test_path.trim() !== '') body.test_path = f.test_path.trim()
+  return body
 }
 
 /**
@@ -210,6 +255,10 @@ export function upstreamPatchBody(before: Upstream, f: UpstreamForm): Record<str
   const url = f.url.trim()
   if (url !== before.url) body.url = url
   if (f.transport !== before.transport) body.transport = f.transport
+  // kind never goes: the server refuses any change and the dialog has no
+  // input for it on Edit. test_path goes when it changed, on an http row
+  // only; the server refuses one on an mcp row.
+  if (before.kind === 'http' && f.test_path.trim() !== (before.test_path ?? '')) body.test_path = f.test_path.trim()
   if (f.auth_type !== before.auth_type || (f.auth_type === 'none' && f.clear_stored)) body.auth_type = f.auth_type
   if (f.enabled !== before.enabled) body.enabled = f.enabled
   if (credentialTyped(f)) {

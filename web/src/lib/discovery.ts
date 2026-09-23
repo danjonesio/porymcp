@@ -89,3 +89,11 @@ export function protocolSummary(result: Pick<Discovery, 'era' | 'protocol_versio
   const how = result.era === 'modern' ? 'stateless' : 'handshake'
   return version ? `${version}, ${how}` : `${how}, no version agreed`
 }
+
+/**
+ * The Request row of an HTTP API test's summary (PORM-146): the one GET the
+ * probe sends, to the test path or to the base URL when there is none.
+ */
+export function probeRequestLine(testPath: string | undefined): string {
+  return `GET ${testPath || '/'}`
+}

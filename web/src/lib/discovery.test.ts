@@ -6,6 +6,7 @@ import {
   discoveryErrorMessage,
   hostOf,
   plainHTTPCredential,
+  probeRequestLine,
   protocolSummary,
 } from './discovery.ts'
 
@@ -106,4 +107,11 @@ test('protocolSummary shows the version alone when the response carries no era',
 
 test('protocolSummary is empty when there is nothing to show', () => {
   assert.equal(protocolSummary({}), '')
+})
+
+// PORM-146: the Request row of an HTTP API test.
+test('probeRequestLine names the test path or the base', () => {
+  assert.equal(probeRequestLine('/user'), 'GET /user')
+  assert.equal(probeRequestLine(''), 'GET /')
+  assert.equal(probeRequestLine(undefined), 'GET /')
 })

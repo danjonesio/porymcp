@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { VirtualKey } from './api.ts'
 import {
+  HTTP_METHODS,
   blankVirtualKeyForm,
   formFromVirtualKey,
   keyPolicyStale,
   keyRulesBadge,
   keySaveBlocked,
+  methodsSent,
   virtualKeyCreateBody,
   virtualKeyPatchBody,
 } from './virtual-key-form.ts'
@@ -22,6 +24,7 @@ function key(over: Partial<VirtualKey> = {}): VirtualKey {
     target_id: 'g1',
     status: 'active',
     created_at: '2026-09-01T00:00:00Z',
+    http_methods: [],
     endpoints: [],
     ...over,
   }
@@ -157,4 +160,37 @@ test('keyRulesBadge: counts, the unreadable mark, or nothing', () => {
   })
   // The list that did not decode is absent on such a key, so without the flag it would read as "no rules".
   assert.deepEqual(keyRulesBadge(key({ lists_malformed: true })), { label: 'Rules unreadable', tone: 'pink' })
+})
+
+// PORM-146: http_methods.
+test('HTTP_METHODS is the six verbs in the order the server stores them', () => {
+  assert.deepEqual([...HTTP_METHODS], ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])
+})
+
+test('the create body sends http_methods only when something is ticked', () => {
+  const f = { ...blankVirtualKeyForm(), name: 'k', target_id: 'u1' }
+  assert.equal('http_methods' in virtualKeyCreateBody(f), false)
+  assert.deepEqual(virtualKeyCreateBody({ ...f, http_methods: ['GET', 'HEAD'] }).http_methods, ['GET', 'HEAD'])
+})
+
+test('formFromVirtualKey seeds http_methods and the patch body sends it only when the set changed', () => {
+  const before = key({ http_methods: ['GET', 'HEAD'] })
+  const f = formFromVirtualKey(before)
+  assert.deepEqual(f.http_methods, ['GET', 'HEAD'])
+  assert.equal(f.methodsReplace, false)
+  assert.equal('http_methods' in virtualKeyPatchBody(before, f), false)
+  assert.equal('http_methods' in virtualKeyPatchBody(before, { ...f, http_methods: ['HEAD', 'GET'] }), false)
+  assert.deepEqual(virtualKeyPatchBody(before, { ...f, http_methods: ['GET'] }).http_methods, ['GET'])
+  assert.deepEqual(virtualKeyPatchBody(before, { ...f, http_methods: [] }).http_methods, [])
+  assert.deepEqual(formFromVirtualKey(key({ http_methods: undefined as unknown as string[] })).http_methods, [])
+})
+
+test('an unreadable http_methods is sent only after Replace the stored methods', () => {
+  const before = key({ http_methods: [], http_methods_malformed: true })
+  const f = formFromVirtualKey(before)
+  assert.equal(methodsSent(before, f), false)
+  assert.equal('http_methods' in virtualKeyPatchBody(before, { ...f, http_methods: ['GET'] }), false)
+  assert.deepEqual(virtualKeyPatchBody(before, { ...f, methodsReplace: true }).http_methods, [])
+  assert.deepEqual(keyRulesBadge(before), { label: 'Methods unreadable', tone: 'pink' })
+  assert.deepEqual(keyRulesBadge(key({ lists_malformed: true, http_methods_malformed: true })), { label: 'Rules unreadable', tone: 'pink' })
 })

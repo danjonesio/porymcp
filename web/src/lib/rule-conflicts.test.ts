@@ -17,7 +17,7 @@ import {
 // Run with: npm test (node --test). PORM-181.
 
 function loaded(slug: string, tools: string[], over: Partial<MemberCatalogue> = {}): MemberCatalogue {
-  const m = { upstream_id: 'id-' + slug, slug, name: slug, enabled: true, transport: 'streamable-http' }
+  const m = { upstream_id: 'id-' + slug, slug, name: slug, enabled: true, transport: 'streamable-http', kind: 'mcp' }
   return { ...idleMember(m), state: 'ok', tools: tools.map((name) => ({ name })), ...over }
 }
 const cat = (...members: MemberCatalogue[]): Catalogue => ({ members })
@@ -91,7 +91,7 @@ test('prefixMatches names every advertised tool the prefix reaches, on a complet
   assert.equal(prefixMatches('firecrawl_s', cat(loaded('a', tools), loaded('b', ['firecrawl_scrape']))).length, 4)
   // Nothing is claimed from a partial catalogue, and nothing is said about a prefix that matches nothing.
   assert.deepEqual(prefixMatches('firecrawl__firecrawl_search', cat(loaded('firecrawl', tools, { truncated: true }))), [])
-  assert.equal(prefixMatchNote('firecrawl__firecrawl_search', cat(loaded('firecrawl', tools), idleMember({ upstream_id: 'x', slug: 'x', name: 'x', enabled: true, transport: '' }))), '')
+  assert.equal(prefixMatchNote('firecrawl__firecrawl_search', cat(loaded('firecrawl', tools), idleMember({ upstream_id: 'x', slug: 'x', name: 'x', enabled: true, transport: '', kind: 'mcp' }))), '')
   assert.equal(prefixMatchNote('zzz', c), '')
 })
 

@@ -7,8 +7,13 @@ import { matchToolEntry, scopedToolName, splitEntry, entryProblem } from './tool
 // rate limited or truncated would otherwise make a working deny entry read as
 // dead, and an operator who believes that deletes it.
 
-/** One upstream a group or a virtual key reaches. */
-export type Member = { upstream_id: string; slug: string; name: string; enabled: boolean; transport: string }
+/**
+ * One upstream a group or a virtual key reaches. kind is `mcp` or `http`
+ * (PORM-146): the pages hand useCatalogue MCP members only, because an HTTP
+ * API has no tools to list and a Load tools press would probe it and stamp
+ * its test for nothing.
+ */
+export type Member = { upstream_id: string; slug: string; name: string; enabled: boolean; transport: string; kind: string }
 
 export type MemberCatalogue = Member & {
   state: 'idle' | 'loading' | 'ok' | 'failed'
