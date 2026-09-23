@@ -83,8 +83,8 @@ func checkEncryption(ctx context.Context, st *store.SQLStore, cfg *config.Config
 	}
 
 	if rep.Unreadable >= 1 {
-		log.Warn("stored credentials are not usable for their auth type; re-enter them, or switch the upstream to auth_type none",
-			"unreadable", rep.Unreadable, "upstream_ids", rep.UnreadableIDs, "upstream_names", rep.UnreadableNames,
+		log.Warn("stored credentials are not usable for their auth type; re-enter them, connect an OAuth upstream on the Upstreams page, or switch the upstream to auth_type none",
+			"unreadable", rep.Unreadable, "unconnected_oauth", rep.Unconnected, "upstream_ids", rep.UnreadableIDs, "upstream_names", rep.UnreadableNames,
 			"not_listed", rep.UnreadableNotListed)
 	}
 	if rep.UnderPrevious >= 1 {

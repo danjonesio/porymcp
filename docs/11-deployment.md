@@ -2,7 +2,9 @@
 
 PoryMCP listens on plain HTTP at `:8080` by default. `PUBLIC_URL` defaults to
 `http://localhost:8080`, so a laptop checkout does not enforce TLS. That
-default is for localhost only.
+default is for localhost only. `PUBLIC_URL` is also the address an OAuth
+vendor sends the operator's browser back to (§15), so it must be the address
+the browser uses.
 
 ## 1. TLS is required off localhost
 
@@ -241,7 +243,7 @@ a PaaS router), not in PoryMCP. The process does not emit it.
 
 | Variable | Default | When to set it |
 | --- | --- | --- |
-| `ALLOW_INSECURE_HTTP` | unset / false | TLS terminates somewhere PoryMCP cannot observe (some kube HTTP probes, an outer mesh that strips TLS before the pod). Non-loopback HTTP is then allowed even when `PUBLIC_URL` is https. |
+| `ALLOW_INSECURE_HTTP` | unset / false | TLS terminates somewhere PoryMCP cannot observe (some kube HTTP probes, an outer mesh that strips TLS before the pod). Non-loopback HTTP is then allowed even when `PUBLIC_URL` is https, and an http `PUBLIC_URL` off loopback is accepted as an OAuth redirect URI (§15). |
 | `ALLOW_LOCALHOST` | unset / false | Accept `localhost` / `127.0.0.1` / `::1` Host values when `PUBLIC_URL` is not itself localhost. |
 | `EXTRA_ALLOWED_HOSTS` | empty | Extra Host values (comma-separated, no scheme) accepted on the proxy endpoints besides `PUBLIC_URL`. |
 
@@ -358,7 +360,7 @@ docker compose exec porymcp /porymcp rekey
 curl -s -H "Authorization: Bearer $(grep '^ADMIN_API_KEY=' .env | cut -d= -f2-)" \
   http://127.0.0.1:8080/api/v1/stats | jq .upstreams_under_previous_key   # 0
 curl -s -H "Authorization: Bearer $(grep '^ADMIN_API_KEY=' .env | cut -d= -f2-)" \
-  http://127.0.0.1:8080/api/v1/upstreams | jq '.upstreams[].auth_status'  # ok | none
+  http://127.0.0.1:8080/api/v1/upstreams | jq '.upstreams[].auth_status'  # ok | none (an OAuth upstream not yet connected reads unreadable, a lapsed one expired)
 docker compose up -d --force-recreate porymcp      # both keys still set
 # The two log checks assume the default LOG_LEVEL=info: Warn and Info records
 # are invisible at LOG_LEVEL=error, and an empty log greps as a false pass.
@@ -501,3 +503,49 @@ docker compose --profile postgres exec postgres psql -U porymcp -d porymcp -c "S
 
 Stop every replica of the previous build before starting the newer one: a
 previous-build replica answers 401 to keys the newer one creates.
+
+## 15. OAuth upstreams
+
+An upstream with `auth_type: oauth` is connected by the operator signing in at
+the vendor from the dashboard (PORM-139). Three deployment facts decide
+whether that works.
+
+`PUBLIC_URL` is the redirect URI's origin: the vendor sends the operator's
+browser to `{PUBLIC_URL}/api/v1/oauth/callback`, so it must be the address the
+browser uses. It must be https, or http on a loopback host (the laptop
+default), or http with `ALLOW_INSECURE_HTTP`; the start route refuses anything
+else with a `400` that says so, and a loopback `PUBLIC_URL` reached from
+another address is refused with both values in the message.
+
+The client metadata document, `{PUBLIC_URL}/api/v1/oauth/client-metadata`, is
+fetched by the vendor's authorization server from its own network when
+PoryMCP identifies itself by URL, which it does whenever the vendor supports
+it and `PUBLIC_URL` is https off loopback. A deployment the vendor cannot
+reach (an IP allowlist, a Cloudflare access rule or challenge, a tailnet, a
+LAN name) fails at the vendor's own page, where PoryMCP logs nothing. Exempt
+that one path from the rule (it carries no secret and needs no key), or tick
+"Register PoryMCP with the vendor instead of publishing its client document"
+in the upstream's Edit dialog, press Save, then press Connect on the row
+(Cancel drops the tick; the API form is `POST /upstreams/{id}/oauth/start`
+with `{"client":"registered"}`). A
+registration, once stored, is used by later connects, so the choice sticks
+until Disconnect, which forgets the registration with the token set.
+Cloudflare does not cache the document or the callback by default; nothing
+needs an edge rule.
+
+The callback route has a budget of ten hits per client address per minute.
+Behind an edge that is not listed in `TRUSTED_PROXIES` every caller shares
+the edge's address and that one budget, so set `TRUSTED_PROXIES` for the
+edge (section 2) before connecting an OAuth upstream through it; otherwise
+a scan of the public route can hold a sign-in off for a minute.
+
+Pending sign-ins and the refresh lock live in one process. Behind several
+replicas the callback must land on the replica that started the flow (one
+replica, or session affinity), and two replicas refreshing one upstream at
+once can trip a vendor's refresh-token reuse detection and disconnect it. A
+database-held flow and refresh lease are a follow-up.
+
+A token refresh PoryMCP makes writes one `upstream.oauth_refresh` event and
+one Info line; a refresh the vendor refuses writes a Warn line and the row
+reads `expired` on the Upstreams page (never on the boot line, whose sweep
+judges what is stored). Nothing about an OAuth upstream needs a restart.

@@ -434,7 +434,7 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 		if !live {
 			return
 		}
-		if cause := h.recheck(r, row); cause != nil {
+		if cause := h.recheck(r, &row); cause != nil {
 			cut(cause)
 			return
 		}
@@ -535,7 +535,15 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 // leaves the stream open and says so in the log: the proxy fails open here,
 // because a store hiccup ending every stream in the deployment would be worse
 // than a minute's delay on a revocation.
-func (h *Handler) recheck(r *http.Request, row streamRow) error {
+//
+// row is updated in place: a recheck that finds the upstream unchanged
+// adopts the row it just read as the stream's baseline, so a token refresh
+// (new bytes, same grant) is absorbed at the next recheck and a later rename
+// compares equal bytes rather than a rotated refresh token against the one
+// the stream opened with (PORM-139). A refresh and a rename inside one
+// recheck interval still end the stream; that window is the limit recorded
+// in docs/07-security.md.
+func (h *Handler) recheck(r *http.Request, row *streamRow) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
 	warn := func(err error) {
@@ -567,9 +575,10 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 	if !up.Enabled {
 		return errUpstreamRemoved
 	}
-	if upstreamChanged(row.upstream, up) {
+	if h.upstreamChanged(row.upstream, up) {
 		return errUpstreamChanged
 	}
+	row.upstream = up
 	if vk.TargetType == models.TargetGroup {
 		g, err := h.store.GetGroup(ctx, vk.TargetID)
 		if err != nil {
@@ -596,9 +605,51 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 // upstreamChanged reports whether the fields a relayed request depends on
 // moved between the row read for the request and the row read now: where the
 // request goes and what credential it carries.
-func upstreamChanged(was, now *models.Upstream) bool {
-	return was.URL != now.URL || was.Transport != now.Transport ||
-		was.AuthType != now.AuthType || !bytes.Equal(was.AuthConfig, now.AuthConfig)
+//
+// For an oauth row the credential's bytes are not the credential (PORM-139):
+// a token refresh re-seals the blob about once an hour and leaves updated_at
+// alone, and a rekey re-seals every blob, neither of which is the upstream
+// the stream was opened against changing. So for two oauth rows a byte change
+// counts only when updated_at also moved (a connect, a disconnect or a PATCH
+// that wrote the credential) AND the two blobs open to different grants; a
+// rename after a refresh moves updated_at over new bytes and keeps the
+// stream, as d3b9df8 says a rename must. A blob that will not open counts as
+// changed.
+func (h *Handler) upstreamChanged(was, now *models.Upstream) bool {
+	if was.URL != now.URL || was.Transport != now.Transport || was.AuthType != now.AuthType {
+		return true
+	}
+	if bytes.Equal(was.AuthConfig, now.AuthConfig) {
+		return false
+	}
+	if was.AuthType != models.AuthOAuth || was.UpdatedAt.Equal(now.UpdatedAt) {
+		return was.AuthType != models.AuthOAuth
+	}
+	return !h.sameGrant(was.AuthConfig, now.AuthConfig)
+}
+
+// sameGrant reports whether two sealed oauth blobs hold the same grant: the
+// same refresh token, client and issuer. A vendor that issues no refresh
+// token leaves nothing but the access token to tell two sign-ins apart, so
+// two empty refresh tokens compare the access tokens instead: only a connect
+// moves updated_at together with such a set, and a connect is a new grant.
+// One AES-GCM open per blob, on the rare recheck where both the bytes and
+// updated_at moved.
+func (h *Handler) sameGrant(a, b []byte) bool {
+	var sets [2]models.OAuthTokenSet
+	for i, blob := range [][]byte{a, b} {
+		plain, _, err := h.keys.Open(string(blob))
+		if err != nil || json.Unmarshal(plain, &sets[i]) != nil {
+			return false
+		}
+	}
+	if sets[0].ClientID != sets[1].ClientID || sets[0].Issuer != sets[1].Issuer {
+		return false
+	}
+	if sets[0].RefreshToken == "" && sets[1].RefreshToken == "" {
+		return sets[0].AccessToken == sets[1].AccessToken
+	}
+	return sets[0].RefreshToken == sets[1].RefreshToken
 }
 
 // StopStreams ends every open stream and every stream that starts after it:

@@ -1,25 +1,32 @@
 'use client'
 
+import { Button } from '@/components/button'
 import { Checkbox, CheckboxField, CheckboxGroup } from '@/components/checkbox'
 import { Description, Field, FieldGroup, Label } from '@/components/fieldset'
 import { HelpDisclosure } from '@/components/help-disclosure'
 import { Input } from '@/components/input'
 import { Select } from '@/components/select'
 import { Strong, Text } from '@/components/text'
-import type { Upstream } from '@/lib/api'
+import { oauthClientMetadata, type Upstream } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
 import { PLAIN_HTTP_NOTE, plainHTTPCredential } from '@/lib/discovery'
+import { LOADING } from '@/lib/placeholder'
 import {
   AUTH_TYPE_LABELS,
+  CLIENT_SECRET_ALONE,
   TRANSPORT_LABELS,
   clearStoredDescription,
+  clientSecretAlone,
   credentialRequired,
   editCredentialDescription,
   headerRequired,
   headerShaped,
   removeCredentialDescription,
+  urlChangeDescription,
   type UpstreamForm,
 } from '@/lib/upstream-form'
 import { transportUnsupported } from '@/lib/upstream-transport'
+import { useEffect, useRef, useState } from 'react'
 
 export type UpstreamFieldsProps = {
   className?: string
@@ -52,8 +59,20 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
   }
 
   const credentialNote = credentialDescription()
-  const urlChanged = !!row && form.url.trim() !== row.url && row.auth_status === 'ok'
+  // Both URL sentences come from the lib: the "sends to the new address" line
+  // for a credential that moves with the row, and the "disconnects" line for
+  // an oauth token that was minted for the old address (PORM-139).
+  const urlNote = urlChangeDescription(row, form)
   const plainHTTP = !!row && plainHTTPCredential(form.url, form.auth_type)
+  const isOAuth = form.auth_type === 'oauth'
+  // What the Auth type select says on an oauth row: the state and the press
+  // that fixes it (edit), or where Connect lives (create).
+  const oauthNote = isOAuth
+    ? row
+      ? editCredentialDescription(row, form)
+      : "After Create, press Connect on the upstream's row to sign in to the vendor."
+    : null
+  const secretAlone = clientSecretAlone(form)
   // Both sentences come from the lib, where node --test pins their exact text
   // and the conditions they render under (PORM-120).
   const removesCredential = removeCredentialDescription(row, form)
@@ -92,9 +111,7 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
         <Field>
           <Label>URL</Label>
           <Input type="url" name="url" value={form.url} onChange={(e) => onChange({ url: e.target.value })} required />
-          {urlChanged ? (
-            <Description>PoryMCP sends the stored credential to the new address from the next request.</Description>
-          ) : null}
+          {urlNote ? <Description>{urlNote}</Description> : null}
           {plainHTTP ? <Description>{PLAIN_HTTP_NOTE}</Description> : null}
         </Field>
         <div className="mt-3">
@@ -164,7 +181,68 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
           ))}
         </Select>
         {removesCredential ? <Description>{removesCredential}</Description> : null}
+        {oauthNote ? <Description>{oauthNote}</Description> : null}
       </Field>
+      {isOAuth ? (
+        // The client identity is optional and most vendors register PoryMCP
+        // themselves, so the two boxes sit behind the house disclosure and
+        // open on their own only when a supplied client is already stored.
+        <div>
+          <HelpDisclosure label="Did the vendor give you a client ID?" defaultOpen={row?.oauth?.client_source === 'supplied'}>
+            <p>
+              Only if the vendor gave you one. Most servers register PoryMCP themselves. Some need a client created
+              in the vendor’s settings first, with this redirect URL allowed:
+            </p>
+            <RedirectURILine />
+            <Field>
+              <Label>Client ID</Label>
+              <Input
+                name="client_id"
+                value={form.client_id}
+                autoComplete="off"
+                required={form.client_secret !== ''}
+                onChange={(e) => onChange({ client_id: e.target.value })}
+              />
+            </Field>
+            <Field>
+              <Label>Client secret</Label>
+              <Input
+                type="password"
+                name="client_secret"
+                value={form.client_secret}
+                autoComplete="new-password"
+                aria-invalid={secretAlone || undefined}
+                onChange={(e) => onChange({ client_secret: e.target.value })}
+              />
+              <Description>
+                {secretAlone
+                  ? CLIENT_SECRET_ALONE
+                  : row
+                    ? 'Leave blank to keep the stored client. Saving a new one disconnects this upstream.'
+                    : 'Optional. A public client has no secret.'}
+              </Description>
+            </Field>
+            {row ? (
+              // The choice is read by the row's Connect and remembered per row
+              // id, which Add does not have yet: it shows once the row exists.
+              <CheckboxGroup>
+                <CheckboxField>
+                  <Checkbox
+                    name="register_client"
+                    checked={form.register_client}
+                    onChange={(checked) => onChange({ register_client: checked })}
+                  />
+                  <Label>Register PoryMCP with the vendor instead of publishing its client document</Label>
+                  <Description>
+                    Use this when the vendor cannot reach this PoryMCP address. It applies to the next Connect on the
+                    row.
+                  </Description>
+                </CheckboxField>
+              </CheckboxGroup>
+            ) : null}
+          </HelpDisclosure>
+        </div>
+      ) : null}
       {form.auth_type === 'bearer' ? (
         <Field>
           <Label>Bearer token</Label>
@@ -225,5 +303,46 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
         ) : null}
       </CheckboxGroup>
     </FieldGroup>
+  )
+}
+
+/**
+ * The redirect URL a vendor's own client registration must allow: read from
+ * the client metadata document the server publishes, so it is the exact
+ * string PUBLIC_URL produces and never the address this page happens to be
+ * open at, which can differ behind a proxy. Mounted only inside the oauth
+ * disclosure, so the fetch runs when the operator can see it.
+ */
+function RedirectURILine() {
+  const [redirect, setRedirect] = useState<string | null | undefined>(undefined)
+  const [copied, setCopied] = useState<boolean | null>(null)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    let alive = true
+    oauthClientMetadata()
+      .then((d) => alive && setRedirect(d.redirect_uris[0] ?? null))
+      .catch(() => alive && setRedirect(null))
+    return () => {
+      alive = false
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+    }
+  }, [])
+
+  async function copy(url: string) {
+    const ok = await copyText(url)
+    if (copyTimer.current) clearTimeout(copyTimer.current)
+    setCopied(ok)
+    copyTimer.current = setTimeout(() => setCopied(null), 1500)
+  }
+
+  if (redirect === undefined) return <p>{LOADING}</p>
+  if (redirect === null) return <p>Could not load the redirect URL. Reload the page to try again.</p>
+  return (
+    <p className="flex flex-wrap items-center gap-2">
+      <span className="font-mono wrap-break-word">{redirect}</span>
+      <Button type="button" plain aria-label="Copy the redirect URL" onClick={() => copy(redirect)}>
+        {copied === null ? 'Copy' : copied ? 'Copied' : 'Copy failed'}
+      </Button>
+    </p>
   )
 }

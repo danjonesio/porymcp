@@ -223,6 +223,63 @@
   request body is re-sent too. Following a `Location` would also let an upstream
   steer the proxy at an address the operator never configured. So a redirecting
   upstream is a misconfiguration to fix, not a route to follow.
+- **OAuth upstreams (PORM-139).** For an `oauth` upstream the real credential
+  is a refresh token and a short-lived access token, obtained once by the
+  operator signing in at the vendor and renewed by PoryMCP. Both live in the
+  encrypted `auth_config` column like every other credential, are never
+  returned by any route (`auth_hint` and the `oauth` object carry no token,
+  secret, scope, endpoint or issuer URL), and go when the credential is
+  cleared, on a URL change, on a type change or on disconnect. A refresh
+  token is spent exactly once per process: one lock per upstream shared by
+  the proxy and the management API, a re-read under it, a compare-and-swap
+  write that never retries blind, and a vendor call on its own context so a
+  caller that gives up cannot abandon a rotated token. `GET /oauth/callback`
+  is the first unauthenticated write route and is bound to the `state`
+  alone: 32 random bytes, held by their SHA-256, single use, ten minutes, one
+  pending sign-in per upstream and 64 in all, with the upstream id, the PKCE
+  verifier and the four endpoints recorded server-side and never taken from
+  the query; the write is a compare-and-swap on `updated_at`, so a row edited
+  during the sign-in stores nothing. Callbacks are limited to ten per client
+  address per minute, redeemed or not, a budget of its own so a scan of the
+  public route cannot lock the admin out; behind an edge that is not in
+  `TRUSTED_PROXIES` every caller shares one address and one budget, so a
+  scan from anywhere can hold a legitimate sign-in off for a minute. Every
+  URL learned from an upstream or its authorization server (the
+  `resource_metadata` URL, each listed issuer, the well-known documents, the
+  four endpoints) passes the same gate as an upstream URL, must be https
+  unless the upstream itself is http, is dialled on the no-redirect client,
+  and is read under 64 KiB; a `3xx` ends the flow. Against a hostile upstream
+  naming the real vendor's sign-in page beside its own token endpoint
+  (RFC 9700, mix-up), the resource metadata must name the resource it was
+  fetched for, the issuer document must name the issuer it was fetched for,
+  S256 must be advertised, `iss` is checked before any exchange when the
+  server promises it, and when it does not both endpoints must sit on the
+  issuer's origin or start refuses. The endpoints are pinned at start and
+  stored with the token set: refresh and revoke never read metadata again. A
+  client identity is bound to the issuer that accepted it, `client_secret`
+  travels by HTTP Basic and never in a URL, and the API accepts only
+  `client_id` and `client_secret` for this type, so no caller can plant a
+  token endpoint or a refresh token. Until PORM-79 lands the gate is syntax
+  only: an upstream's metadata can point PoryMCP at an internal address, the
+  same exposure an upstream URL has today. The one secret a response carries
+  is the `state` inside the authorization URL the start route answers, with
+  `Cache-Control: no-store`: anyone holding that URL can connect the upstream
+  to their own vendor account within ten minutes, and the connect event
+  shows it. Nothing from a vendor's answer reaches a log, an audit row, an
+  event or a page: the sentences are a closed set, the audit row's
+  `error_message` is a bare sentinel (`credential expired`, `credential
+  refresh failed`), the refresh log line carries the upstream id, the HTTP
+  status and an RFC 6749 error code from the closed set, and the callback
+  page is fixed text with no script that echoes neither the code, the
+  state, the `iss` nor `error_description`; the access log records the path
+  and never the query. `GET /oauth/client-metadata` is served without a key
+  because a vendor's authorization server fetches it; it names PoryMCP as a
+  client and nothing about the deployment beyond `PUBLIC_URL`, and it does
+  identify the host as a PoryMCP. Several replicas each hold their own lock
+  and their own pending sign-ins, so Connect needs one replica or session
+  affinity, and a vendor that detects refresh-token reuse can disconnect an
+  upstream two replicas refresh at once; a database-held flow and lease are
+  a follow-up.
 - **Two things about how a credential leaves PoryMCP are worth stating
   plainly.** A plain `http://` upstream URL is allowed and will stay allowed
   (`http://mcp-server:3000` on a Docker network is the documented deployment), so
@@ -320,7 +377,13 @@
   target checks: a key that is revoked, expired, rotated or retargeted, an
   upstream removed from the key's route, or an upstream whose URL, transport
   or credential changed since the stream opened, ends the stream; a store
-  error during that check is logged and the stream stays open.
+  error during that check is logged and the stream stays open. On an
+  `oauth` upstream a token refresh rewrites the credential without being a
+  change: the check adopts the refreshed row as its baseline, so a rename
+  after a refresh keeps the stream, while a connect or a disconnect (a new
+  grant, told apart by the refresh token, or by the access token when the
+  vendor issues none) ends it. A refresh and a rename that land inside the
+  same minute still end the stream; the next call reopens it.
 - **The routing headers are compared with the body before anything is
   forwarded.** The tool gate still reads the body and only the body, so a
   header can neither open nor close a rule; the comparison is there because a
@@ -710,7 +773,9 @@
   observable without it; nothing else is. Failed admin-auth attempts are
   limited to 10 per client IP per minute; the eleventh returns
   `429 {"error":"too many requests"}` with `Retry-After`. Successful requests
-  never consume that budget. Failures are logged at warn with the resolved IP,
+  never consume that budget. The OAuth callback has a budget of its own, ten
+  callbacks per client IP per minute, checked before the state is touched
+  (docs/03-api.md, Connecting an OAuth upstream). Failures are logged at warn with the resolved IP,
   never the presented key. The counter is not exposed on `/health`.
 - Client IP for that limiter comes from the socket address unless
   `TRUSTED_PROXIES` lists CIDRs that cover the socket. Only then are

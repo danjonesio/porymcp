@@ -5,8 +5,12 @@ info:
   description: |
     REST API for registering MCP upstreams, grouping them, minting per-agent virtual keys,
     and querying audit logs and admin events. All routes below are served under `/api/v1` and require
-    `Authorization: Bearer <ADMIN_API_KEY>` except `GET /health`. Errors are JSON
-    `{"error": "..."}`; an unknown path under `/api/v1` returns `404 {"error":"not found"}`.
+    `Authorization: Bearer <ADMIN_API_KEY>` except `GET /health`, `GET /oauth/callback` and
+    `GET /oauth/client-metadata`. Errors are JSON `{"error": "..."}`, except on the OAuth
+    callback, which a browser lands on and which always answers HTML; an unknown path under
+    `/api/v1` returns `404 {"error":"not found"}`. Consumers that validate enums must accept the
+    values PORM-139 added: `oauth` in `auth_type`, `expired` in `auth_status`, `proxy` in
+    `AdminEvent.actor` and the three `upstream.oauth_*` actions.
     The MCP proxy endpoints (`POST /{virtual_key_id}/{upstream_slug}/mcp`,
     `POST /{virtual_key_id}/mcp` and `POST /mcp`) are not part of this spec; see
     `docs/03-api.md`.
@@ -126,7 +130,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Discovery"
         "400":
-          description: Malformed body or missing url; `invalid transport` (anything but streamable-http, sse included) or `invalid auth_type`
+          description: >-
+            Malformed body or missing url; `invalid transport` (anything but
+            streamable-http, sse included) or `invalid auth_type`; an `oauth`
+            payload, which is discovered by the saved route once connected.
         "429":
           $ref: "#/components/responses/DiscoveryRateLimited"
   /upstreams/{id}/discover:
@@ -159,6 +166,172 @@ paths:
           description: Unknown upstream id. Byte-identical to GET /upstreams/{id}.
         "429":
           $ref: "#/components/responses/DiscoveryRateLimited"
+  /upstreams/{id}/oauth/start:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Start the sign-in that connects an OAuth upstream
+      description: >-
+        Learns the authorization server from the upstream (the WWW-Authenticate
+        challenge, then the RFC 9728 and RFC 8414 documents), chooses the
+        client identity (a supplied client, a stored registration, this
+        PoryMCP's client metadata document, or RFC 7591 registration), holds
+        the sign-in in memory for ten minutes and answers the URL the browser
+        is sent to. The body is optional. Records nothing: the connect is
+        recorded by the callback. Shares the discovery budgets. PUBLIC_URL is
+        the redirect URI's origin and must be https, or http on a loopback
+        host, or http with ALLOW_INSECURE_HTTP. Anyone holding the answered
+        URL can connect the upstream to their own vendor account within ten
+        minutes.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                client:
+                  type: string
+                  enum: [document, registered]
+                  description: >-
+                    Force the client identity: `registered` where the vendor
+                    cannot fetch this PoryMCP's client metadata document. Absent
+                    means automatic.
+      responses:
+        "200":
+          description: "The sign-in is pending. The answer carries `Cache-Control: no-store`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthStart"
+        "400":
+          description: >-
+            `upstream auth_type is not oauth`; `client must be document or
+            registered`; a PUBLIC_URL the browser cannot return to, or that
+            does not parse; `document` forced on an http or loopback
+            PUBLIC_URL; the authorization server offers no way to register
+            PoryMCP; a supplied client bound to another authorization server.
+        "404":
+          description: Unknown upstream id. Byte-identical to GET /upstreams/{id}.
+        "429":
+          description: >-
+            The discovery budget (`Retry-After: 5`), or sixty-four sign-ins
+            already pending: `too many pending sign-ins; wait for one to
+            expire` with `Retry-After: 60`.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+        "502":
+          description: >-
+            A metadata, host-rule, redirect or registration failure, as one
+            fixed sentence; never a byte the authorization server sent.
+  /upstreams/{id}/oauth/revoke:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Disconnect an OAuth upstream
+      description: >-
+        Asks the vendor's revocation endpoint to revoke the stored grant when
+        there is one and an endpoint to ask, then removes the stored value,
+        the client identity included. The local clear always happens once the
+        vendor was asked; `vendor_revocation` says whether the vendor
+        confirmed. The request body is ignored. Records `upstream.oauth_revoke`
+        when the stored value changed.
+      responses:
+        "200":
+          description: The row after the clear, and what the vendor said.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthRevokeResult"
+        "400":
+          description: "`upstream auth_type is not oauth`"
+        "404":
+          description: Unknown upstream id. Byte-identical to GET /upstreams/{id}.
+        "409":
+          description: >-
+            `upstream changed; try Disconnect again`: another grant landed on
+            the row after the vendor call, and a grant that was never revoked
+            is not cleared.
+        "429":
+          $ref: "#/components/responses/DiscoveryRateLimited"
+        "503":
+          description: "`upstream is busy; try again`: the per-upstream lock could not be taken before the request gave up."
+  /oauth/callback:
+    get:
+      security: []
+      summary: The redirect back from an OAuth vendor
+      description: >-
+        The one route that needs no admin key and the one that answers HTML:
+        the vendor sends the operator's browser here with the code. Bound to
+        the `state` alone (single use, ten minutes). Every answer is a fixed
+        page with `Cache-Control: no-store` and a link to the Upstreams page;
+        nothing from the query enters a page. Ten callbacks per client address
+        per minute, checked before the state is touched. GET only; HEAD is
+        405 and spends nothing.
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: iss
+          in: query
+          schema:
+            type: string
+          description: Checked against the issuer pinned at start before any exchange (RFC 9207); required when the server advertised it.
+        - name: error
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Connected; the page returns the browser to `/upstreams/`. Records `upstream.oauth_connect`.
+          content:
+            text/html: {}
+        "400":
+          description: A missing, unknown, reused or expired state (records nothing), or a vendor `error`.
+          content:
+            text/html: {}
+        "404":
+          description: The upstream was deleted during the sign-in.
+          content:
+            text/html: {}
+        "409":
+          description: The upstream was edited during the sign-in; nothing was stored.
+          content:
+            text/html: {}
+        "429":
+          description: Over the per-address budget; `Retry-After` is set and the state survives.
+          content:
+            text/html: {}
+        "502":
+          description: An `iss` mismatch, or the authorization server did not accept the exchange; nothing was stored.
+          content:
+            text/html: {}
+        "503":
+          description: The upstream was busy (a refresh held its lock for longer than the callback waits); nothing was stored, the state is spent, Connect again.
+          content:
+            text/html: {}
+  /oauth/client-metadata:
+    get:
+      security: []
+      summary: The Client ID Metadata Document
+      description: >-
+        PoryMCP's client id is this document's own URL; a vendor's
+        authorization server fetches it. Built from PUBLIC_URL alone.
+        `Cache-Control: public, max-age=300`.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthClientMetadata"
   /upstreams/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -202,6 +375,11 @@ paths:
           description: >-
             Invalid field, slug differs from the stored value, or a credential
             sent beside `auth_type` `none`
+        "503":
+          description: >-
+            `upstream is busy; try again`: a write on an `oauth` row takes the
+            per-upstream lock, and it could not be taken before the request
+            gave up.
     delete:
       summary: Delete an upstream
       responses:
@@ -636,6 +814,81 @@ components:
         upstreams_under_previous_key:
           type: integer
           description: Upstreams still sealed under an ENCRYPTION_KEY_PREVIOUS key; `porymcp rekey` finishes the rotation.
+    UpstreamOAuth:
+      type: object
+      description: >-
+        Present on an oauth row whose stored value is absent or opens
+        (PORM-139). Never a token, a secret, an issuer URL, a scope or an
+        endpoint.
+      required: [expires_at, has_refresh_token, client_source]
+      properties:
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the access token lapses; null means not connected.
+        has_refresh_token:
+          type: boolean
+        client_source:
+          type: [string, "null"]
+          enum: [document, registered, supplied, null]
+          description: Which client identity the row uses; null before any is known.
+    OAuthStart:
+      type: object
+      required: [authorization_url, expires_in, issuer, client]
+      properties:
+        authorization_url:
+          type: string
+          format: uri
+          description: The URL the browser is sent to. It carries the PKCE challenge, the state, the redirect URI and the resource indicator.
+        expires_in:
+          type: integer
+          description: Seconds the pending sign-in stays redeemable (600).
+        issuer:
+          type: string
+          description: The authorization server's host, never a path.
+        client:
+          type: string
+          enum: [document, registered, supplied]
+    OAuthRevokeResult:
+      type: object
+      required: [upstream, vendor_revocation]
+      properties:
+        upstream:
+          $ref: "#/components/schemas/Upstream"
+        vendor_revocation:
+          type: string
+          enum: [revoked, failed, not_offered, no_token]
+          description: >-
+            What the vendor did: `revoked`; `failed` (the local clear still
+            happened; remove PoryMCP's access in the vendor's settings);
+            `not_offered` (no revocation endpoint); `no_token` (the row held
+            only a client identity, or nothing).
+    OAuthClientMetadata:
+      type: object
+      required: [client_id, client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method, application_type]
+      properties:
+        client_id:
+          type: string
+          format: uri
+        client_name:
+          type: string
+        redirect_uris:
+          type: array
+          items:
+            type: string
+            format: uri
+        grant_types:
+          type: array
+          items:
+            type: string
+        response_types:
+          type: array
+          items:
+            type: string
+        token_endpoint_auth_method:
+          type: string
+        application_type:
+          type: string
     Upstream:
       type: object
       description: >-
@@ -673,21 +926,28 @@ components:
             with a PATCH sending `streamable-http`.
         auth_type:
           type: string
-          enum: [none, bearer, header, api_key, custom]
-          description: How the stored credential is presented to the upstream.
+          enum: [none, bearer, header, api_key, custom, oauth]
+          description: >-
+            How the stored credential is presented to the upstream. `oauth`
+            (PORM-139): a token set obtained by the operator signing in at the
+            vendor and renewed by PoryMCP.
         auth_configured:
           type: boolean
           description: Whether a credential is stored for this upstream. Never the credential itself.
         auth_status:
           type: string
-          enum: [none, ok, undecryptable, unreadable]
+          enum: [none, ok, undecryptable, unreadable, expired]
           description: >-
             Whether PoryMCP can use the stored credential. `none` iff auth_type
             is none, whatever is stored beside it; `undecryptable`: no
             configured encryption key opens it (the key changed; the proxy and
             discovery refuse this upstream); `unreadable`: nothing stored, or
-            nothing the auth type can send, likewise refused; `ok`. Computed
-            live on every read.
+            nothing the auth type can send, likewise refused (an oauth
+            upstream not yet connected); `expired`: an oauth access token
+            lapsed with no refresh token to renew it, likewise refused, and the
+            fix is Connect again; `ok`. Computed live on every read.
+        oauth:
+          $ref: "#/components/schemas/UpstreamOAuth"
         auth_hint:
           type: object
           additionalProperties:
@@ -770,10 +1030,13 @@ components:
             `streamable-http` (PORM-28).
         auth_type:
           type: string
-          enum: [none, bearer, header, api_key, custom]
+          enum: [none, bearer, header, api_key, custom, oauth]
           description: >-
             On PATCH, `none` also removes the stored credential. On POST and
-            PATCH a credential sent beside `none` is 400.
+            PATCH a credential sent beside `none` is 400. A change into or out
+            of `oauth` with no auth_config in the body removes the stored
+            value, and so does a URL change on an `oauth` row; an auth_config
+            carried in the same body is stored instead.
         auth_config:
           type: [object, "null"]
           description: >-
@@ -821,7 +1084,11 @@ components:
             usable for this auth type` (nothing stored, or a value that opens
             but holds nothing the auth type can send), `this auth type
             needs a credential; add one or choose None` (an unsaved draft),
-            and the rest. A URL is never
+            `stored credential has expired; connect again` (an `oauth` row
+            whose access token lapsed with no refresh token, or whose refresh
+            the vendor refused), `the token could not be refreshed; try again`
+            (an `oauth` row whose vendor could not be reached after the token
+            lapsed), and the rest. A URL is never
             written into one: Go's own transport errors mask the password but
             keep the username, the path and the whole query string.
         upstream_message:
@@ -1251,13 +1518,21 @@ components:
           format: date-time
         actor:
           type: string
-          description: The literal `admin` until dashboard users land.
+          enum: [admin, proxy]
+          description: >-
+            The literal `admin` until dashboard users land, or `proxy` for a
+            token refresh PoryMCP made on its own while presenting a
+            credential (PORM-139), which has no request and no address behind
+            it.
         action:
           type: string
           enum:
             - upstream.create
             - upstream.update
             - upstream.delete
+            - upstream.oauth_connect
+            - upstream.oauth_refresh
+            - upstream.oauth_revoke
             - group.create
             - group.update
             - group.delete
@@ -1312,9 +1587,21 @@ components:
               type: string
             key_prefix:
               type: string
+            client:
+              type: string
+              description: On a connect, the client identity used (document, registered or supplied).
+            refresh_token:
+              type: boolean
+              description: On a connect, whether the vendor issued a refresh token.
+            issuer:
+              type: string
+              description: On a connect, the authorization server's host, never a path.
+            vendor_revocation:
+              type: string
+              description: On a disconnect, what the vendor did (revoked, failed, not_offered or no_token).
         request_id:
           type: string
-          description: The request id the access log carries, cut at 256 bytes.
+          description: The request id the access log carries, cut at 256 bytes. On a refresh, the proxied call's id, so the row joins its audit row.
         remote_addr:
           type: string
-          description: The client address after the trusted-proxy rule, or the literal `unknown`.
+          description: The client address after the trusted-proxy rule, or the literal `unknown`; empty on a refresh the proxy made on its own.

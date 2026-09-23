@@ -118,6 +118,17 @@ func upstreamMutationCases() []mutationCase {
 				return "/upstreams/" + id, nil, id
 			},
 		},
+		{
+			// A disconnect of a row holding only a supplied client: the one
+			// oauth write the API alone can set up (a token set needs the
+			// callback, TestOAuthRevoke covers that one).
+			name: "upstream.oauth_revoke", method: http.MethodPost, route: "/upstreams/{id}/oauth/revoke", action: models.ActionUpstreamOAuthRevoke,
+			wantStatus: http.StatusOK, wantName: "Vendor", wantKeys: []string{"cleared", "vendor_revocation"},
+			prepare: func(t *testing.T, h http.Handler) (string, any, string) {
+				id, _ := mustUpstream(t, h, "Vendor", map[string]any{"auth_type": "oauth", "auth_config": map[string]string{"client_id": "cid"}})
+				return "/upstreams/" + id + "/oauth/revoke", nil, id
+			},
+		},
 	}
 }
 
@@ -245,10 +256,11 @@ func TestAdminEventPerMutation(t *testing.T) {
 // TestAdminActionsWellFormed covers security requirement 13: every action is
 // "{resource_type}.{verb}" with exactly one dot and a known prefix, which is
 // what makes recordAdmin's strings.Cut derivation of resource_type safe, and
-// the list carries all eleven constants.
+// the list carries all fourteen constants (eleven, plus the three OAuth
+// actions of PORM-139).
 func TestAdminActionsWellFormed(t *testing.T) {
-	if len(models.AdminActions) != 11 {
-		t.Fatalf("AdminActions has %d entries, want 11", len(models.AdminActions))
+	if len(models.AdminActions) != 14 {
+		t.Fatalf("AdminActions has %d entries, want 14", len(models.AdminActions))
 	}
 	seen := map[string]bool{}
 	for _, a := range models.AdminActions {
@@ -552,8 +564,18 @@ func TestAdminEventNoOpPatchStillRecords(t *testing.T) {
 // each with the reason. The reason must be non-empty: adding a line here is a
 // written decision, not a way to quiet the test.
 var skipRoutes = map[string]string{
-	"POST /upstreams/discover":      "changes no state: the unsaved probe persists nothing (discover.go)",
-	"POST /upstreams/{id}/discover": "stamps last_test_at and last_test_ok, an observation of an upstream rather than a change an operator made to the configuration; it can be pressed repeatedly from one dialog and skips its own write when the caller goes away, so a row would sometimes claim a test that was never stored (plan open question 1; PORM-132 records it)",
+	"POST /upstreams/discover":         "changes no state: the unsaved probe persists nothing (discover.go)",
+	"POST /upstreams/{id}/discover":    "stamps last_test_at and last_test_ok, an observation of an upstream rather than a change an operator made to the configuration; it can be pressed repeatedly from one dialog and skips its own write when the caller goes away, so a row would sometimes claim a test that was never stored (plan open question 1; PORM-132 records it)",
+	"POST /upstreams/{id}/oauth/start": "changes no state: it holds the pending sign-in in memory and the connect is recorded by the callback that redeems it (PORM-139)",
+}
+
+// offRouteActions names the actions no POST, PATCH, PUT or DELETE route
+// records, each with the recorder and the test that proves the event fires.
+// The reason must be non-empty, as for skipRoutes: a line here is a written
+// decision (PORM-139).
+var offRouteActions = map[string]string{
+	models.ActionUpstreamOAuthConnect: "recorded by GET /oauth/callback, which the walk does not visit; TestOAuthCallbackConnects proves the event",
+	models.ActionUpstreamOAuthRefresh: "recorded by credential.Presenter on a token refresh, on no route at all; credential.TestPresentRecordsOneRefreshEventWithCaller and TestDiscoverOAuthRowRefreshesWithAdminActor prove the event",
 }
 
 // TestAdminEventEveryMutatingRouteIsCovered is security requirement 12: a
@@ -612,8 +634,19 @@ func TestAdminEventEveryMutatingRouteIsCovered(t *testing.T) {
 			t.Errorf("skipRoutes names %s, which the router does not serve", key)
 		}
 	}
+	for action, reason := range offRouteActions {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("offRouteActions[%q] has no reason", action)
+		}
+		if actions[action] {
+			t.Errorf("%q is both in the per-mutation table and off-route", action)
+		}
+	}
 	for _, a := range models.AdminActions {
 		if !actions[a] {
+			if _, off := offRouteActions[a]; off {
+				continue
+			}
 			t.Errorf("action %s has no case in the per-mutation table", a)
 		}
 	}

@@ -2,21 +2,16 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"runtime/debug"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/audit"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
 )
 
 // adminDetails is the closed detail object of one admin event. A value is
@@ -37,91 +32,56 @@ import (
 // already compute (the request nulled or emptied a field, or removed the
 // stored credential) and can appear without a matching Fields entry when the
 // field was already empty.
+//
+// The four OAuth fields (PORM-139): Client is which client identity the
+// connect used (document, registered or supplied), RefreshToken whether the
+// vendor issued one (a pointer so false survives), Issuer the authorization
+// server's host and never a path, VendorRevocation whether the vendor
+// accepted a disconnect. None of them is a token, a code or a secret.
 type adminDetails struct {
-	Fields        []string `json:"fields,omitempty"`
-	Cleared       []string `json:"cleared,omitempty"`
-	Slug          string   `json:"slug,omitempty"`
-	AuthType      string   `json:"auth_type,omitempty"`
-	AuthChanged   bool     `json:"auth_changed,omitempty"`
-	UpstreamCount *int     `json:"upstream_count,omitempty"`
-	ToolFilterSet bool     `json:"tool_filter_set,omitempty"`
-	TargetType    string   `json:"target_type,omitempty"`
-	TargetID      string   `json:"target_id,omitempty"`
-	KeyPrefix     string   `json:"key_prefix,omitempty"`
+	Fields           []string `json:"fields,omitempty"`
+	Cleared          []string `json:"cleared,omitempty"`
+	Slug             string   `json:"slug,omitempty"`
+	AuthType         string   `json:"auth_type,omitempty"`
+	AuthChanged      bool     `json:"auth_changed,omitempty"`
+	UpstreamCount    *int     `json:"upstream_count,omitempty"`
+	ToolFilterSet    bool     `json:"tool_filter_set,omitempty"`
+	TargetType       string   `json:"target_type,omitempty"`
+	TargetID         string   `json:"target_id,omitempty"`
+	KeyPrefix        string   `json:"key_prefix,omitempty"`
+	Client           string   `json:"client,omitempty"`
+	RefreshToken     *bool    `json:"refresh_token,omitempty"`
+	Issuer           string   `json:"issuer,omitempty"`
+	VendorRevocation string   `json:"vendor_revocation,omitempty"`
 }
 
-// adminTextBytes caps a caller-controlled string before it is stored on an
-// admin_events row: a resource name or a request id. It is the twin of
-// internal/proxy's auditFieldBytes, which bounds the same kind of string on
-// its way to an audit_logs row; the two stay separate for the reason recorded
-// at internal/mcpclient/client.go beside MaxErrorBytes.
-const adminTextBytes = 256
-
-// adminAuditTimeout bounds the detached write. It matches SQLite's
-// busy_timeout (5000 ms, internal/store) and the proxy-side audit write
-// (internal/audit), so lock contention cannot expire the write before the
-// database would have retried. The write is synchronous and runs before the
-// response, so when the database lock is held it can add up to this much to
-// a mutating response; it is reached only in that case.
-const adminAuditTimeout = 5 * time.Second
-
-// auditText cleans and bounds a caller-controlled string for storage: control
-// characters become spaces or are dropped and the result is cut at
-// adminTextBytes with valid UTF-8, the same treatment discovery gives text a
-// server sends. The resource keeps its full name; only the audit row's copy
-// is cleaned.
-func auditText(s string) string {
-	out, _ := mcpclient.Clamp(mcpclient.Scrub(s), adminTextBytes)
-	return out
-}
+// auditText is audit.Text: the one cleaning a caller-controlled string gets
+// before it is stored on an admin_events row.
+func auditText(s string) string { return audit.Text(s) }
 
 // recordAdmin writes one event for a change that has already landed. It is
 // called after the store write returned nil and before the response, never on
-// a request the store rejected. It is total: a panic here would become a 500
-// through Recoverer on a request whose mutation (a rotated key's only
-// plaintext, for one) has already happened, so it recovers and logs instead.
-// A failed write is one Error line naming the action, resource id and request
-// id, and changes nothing about the response. The Error lines never carry the
-// name or a detail value.
+// a request the store rejected. The recorder itself (the panic guard, the
+// detached bounded write, the text bounds) is audit.RecordAdmin, shared with
+// the token refresh path in internal/credential; this wrapper is what a
+// request contributes: the actor, the request id and the client address.
 //
-// id is the id of the row the handler read, never a URL parameter; auditText
+// id is the id of the row the handler read, never a URL parameter; audit.Text
 // on it is a no-op for a server-minted uuid and closes the column by
 // construction.
 func (s *Server) recordAdmin(r *http.Request, action, id, name string, details adminDetails) {
-	defer func() {
-		if v := recover(); v != nil {
-			// Recovering here loses Recoverer's 500 on purpose: the mutation
-			// has landed and the response must go out. The stack is logged so
-			// the trade costs nothing at diagnosis time.
-			s.log.Error("admin event recorder panicked", "action", action, "resource_id", id,
-				"panic", auditText(fmt.Sprint(v)), "stack", string(debug.Stack()))
-		}
-	}()
-	resourceType, _, _ := strings.Cut(action, ".")
-	// A closed struct of strings, bools, an *int and []string cannot fail to
+	// A closed struct of strings, bools, pointers and []string cannot fail to
 	// marshal.
 	raw, _ := json.Marshal(details)
-	e := models.AdminEvent{
-		ID:           uuid.NewString(),
-		Timestamp:    time.Now().UTC(),
+	audit.RecordAdmin(r.Context(), s.store, s.log, models.AdminEvent{
 		Actor:        models.ActorAdmin,
 		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   auditText(id),
-		ResourceName: auditText(name),
+		ResourceID:   id,
+		ResourceName: name,
 		Details:      raw,
-		RequestID:    auditText(middleware.GetReqID(r.Context())),
+		RequestID:    middleware.GetReqID(r.Context()),
 		RemoteAddr:   webutil.ClientIP(r, s.cfg.TrustedProxies),
-	}
-	// Detached from the request: the mutation has committed, so a client that
-	// disconnected must not cost the event. No early return on
-	// r.Context().Err() for the same reason.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), adminAuditTimeout)
-	defer cancel()
-	if err := s.store.InsertAdminEvent(ctx, &e); err != nil {
-		s.log.Error("admin event not recorded", "action", action, "resource_id", e.ResourceID,
-			"request_id", e.RequestID, "err", err)
-	}
+	})
 }
 
 // changed appends name to fields when differs is true. The diff builders
@@ -158,8 +118,11 @@ func timePtrEqual(a, b *time.Time) bool {
 // column that held bytes and holds none afterwards records "credential" in
 // Cleared (PORM-120). The string "auth_config" must never enter a row, and
 // the field list below is the reason it cannot. slug is absent because the
-// handler refuses any slug change.
-func upstreamPatchDetails(before, after models.Upstream, authChanged bool) adminDetails {
+// handler refuses any slug change. droppedTokens is the one removal the
+// length test cannot see (PORM-139): an oauth token set replaced by a
+// client-only blob, which the handler knows because it opened the old blob
+// to apply the client rule; it records the same "credential" entry.
+func upstreamPatchDetails(before, after models.Upstream, authChanged, droppedTokens bool) adminDetails {
 	var d adminDetails
 	changed(&d.Fields, "name", before.Name != after.Name)
 	changed(&d.Fields, "description", before.Description != after.Description)
@@ -167,7 +130,7 @@ func upstreamPatchDetails(before, after models.Upstream, authChanged bool) admin
 	changed(&d.Fields, "transport", before.Transport != after.Transport)
 	changed(&d.Fields, "auth_type", before.AuthType != after.AuthType)
 	changed(&d.Fields, "enabled", before.Enabled != after.Enabled)
-	if len(before.AuthConfig) > 0 && len(after.AuthConfig) == 0 {
+	if (len(before.AuthConfig) > 0 && len(after.AuthConfig) == 0) || droppedTokens {
 		d.Cleared = append(d.Cleared, "credential")
 	}
 	d.AuthChanged = authChanged

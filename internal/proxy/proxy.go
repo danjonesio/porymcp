@@ -36,6 +36,11 @@ type Handler struct {
 	limit  *auth.Limiter
 	log    *slog.Logger
 	client *http.Client
+	// present is Read plus the OAuth refresh (PORM-139). It is built on a
+	// client of its own with the discovery backstop, because a token call is
+	// bounded by a timeout and not by a relayed stream's context; the lock
+	// it refreshes under is package state shared with the API's Presenter.
+	present *credential.Presenter
 	// eras remembers which MCP era each upstream speaks, so a group call asks
 	// server/discover once and not on every walk. In memory only: nothing an
 	// upstream said is persisted (PORM-58).
@@ -50,9 +55,11 @@ type Handler struct {
 
 func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger) *Handler {
 	streams, stop := context.WithCancel(context.Background())
+	keys := cfg.Keyring()
 	return &Handler{
 		cfg:         cfg,
-		keys:        cfg.Keyring(),
+		keys:        keys,
+		present:     credential.NewPresenter(keys, st, mcpclient.New(), log),
 		store:       st,
 		audit:       al,
 		limit:       auth.NewLimiter(),
@@ -231,6 +238,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	if requestID == "" {
 		requestID = uuid.NewString()
 	}
+	// The id the audit row will carry rides the context, so a token refresh
+	// made on this request's behalf (credential) records the same id and
+	// the Logs page can join the two.
+	r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
 
 	vk, err := h.authenticate(r)
 	if err != nil {
@@ -554,7 +565,16 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		}
 		sent := body
 		var memberModern bool
-		if onAggregate && clientModern {
+		// The credential first, before the era probe and before the budget is
+		// armed (upstreamContext): for an oauth row this may renew the token
+		// at the vendor, and that call must run neither on the budget's
+		// context (its trace hook would stop the upstream's connect timer)
+		// nor after the connect timer has started counting.
+		var plain json.RawMessage
+		if err == nil {
+			plain, err = h.credential(r.Context(), up)
+		}
+		if err == nil && onAggregate && clientModern {
 			// Only a modern client's request changes with the member's era,
 			// so only that client can cost a member a probe, through
 			// memberEra, which caches whatever it learns: one server/discover
@@ -570,21 +590,14 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// or with no method, crosses untouched.
 			verdict, known := h.eras.get(up.ID, up.UpdatedAt)
 			if !known {
-				// The credential is read only for a probe; forward reads it
-				// again through the same function, so the two agree.
-				if plain, cerr := h.credential(up); cerr != nil {
-					err = cerr
-				} else {
-					verdict, known = h.memberEra(r.Context(), up, plain), true
-				}
+				// The same plaintext forward presents, so the two agree.
+				verdict, known = h.memberEra(r.Context(), up, plain), true
 			}
-			if err == nil {
-				memberModern = verdict.era == mcpclient.EraModern
-				if legacyStrip(verdict, known, clientModern) {
-					relay = &memberHeaders{drop: []string{hdrProtocol}}
-					if params, changed := stripReservedMeta(req.Params); changed && method != "" {
-						sent = replaceParams(body, params)
-					}
+			memberModern = verdict.era == mcpclient.EraModern
+			if legacyStrip(verdict, known, clientModern) {
+				relay = &memberHeaders{drop: []string{hdrProtocol}}
+				if params, changed := stripReservedMeta(req.Params); changed && method != "" {
+					sent = replaceParams(body, params)
 				}
 			}
 		}
@@ -597,7 +610,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			// budget that fired is the sentence the row records (causeError).
 			ctx, disarm, cancel := upstreamContext(r.Context(), answerBudget)
 			var resp *http.Response
-			resp, err = h.forward(ctx, r, up, sent, relay)
+			resp, err = h.forward(ctx, r, up, plain, sent, relay)
 			switch {
 			case err != nil:
 				err = causeError(ctx, err)
@@ -823,15 +836,28 @@ func unknownEndpointReason(slug string, err error) string {
 	}
 }
 
+// requestIDKey carries the audit row's request id on the request context, so
+// credential can hand it to the refresh event.
+type requestIDKey struct{}
+
 // credential is the plaintext the proxy presents to an upstream, or the reason
 // it must not dial: credential.ErrUndecryptable (no configured key opens the
-// stored blob, ENCRYPTION_KEY changed) or errCredentialUnreadable (nothing
-// stored, or nothing the auth type can send). auth_type none is (nil, nil) and
-// never consults the blob. Both errors are bare sentinels, because they reach
-// the audit row's error_message, which is not redacted; the client sees the
-// generic 502 either way (see serve).
-func (h *Handler) credential(u *models.Upstream) (json.RawMessage, error) {
-	return credential.Read(h.keys, u.AuthType, u.AuthConfig)
+// stored blob, ENCRYPTION_KEY changed), errCredentialUnreadable (nothing
+// stored, or nothing the auth type can send), errCredentialExpired (an oauth
+// token lapsed and the vendor refused to renew it) or
+// errCredentialRefreshFailed (lapsed and the vendor could not be reached).
+// auth_type none is (nil, nil) and never consults the blob. Every error is a
+// bare sentinel, because it reaches the audit row's error_message, which is
+// not redacted; the client sees the generic 502 either way (see serve).
+//
+// For an oauth row this is where the token is renewed (PORM-139), so every
+// caller resolves it BEFORE upstreamContext arms a budget: the vendor call
+// runs on its own context, and a caller waiting on the per-upstream lock is
+// bounded by its request context, not by a connect timer that is not yet
+// counting.
+func (h *Handler) credential(ctx context.Context, u *models.Upstream) (json.RawMessage, error) {
+	requestID, _ := ctx.Value(requestIDKey{}).(string)
+	return h.present.Present(ctx, u, credential.Caller{Actor: models.ActorProxy, RequestID: requestID})
 }
 
 // listToolsRequest is the body the proxy sends to discover what a handshake-era
@@ -865,18 +891,15 @@ const (
 // (mcpclient.Open), and the caller decides whether to read it whole
 // (forwardRead) or relay it as it arrives (relayStream). ctx is one
 // upstreamContext derives: its budgets are what bound the request.
-func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, hdr *memberHeaders) (*http.Response, error) {
-	// Before the request exists: a transport this client cannot speak, or a
-	// credential that cannot be presented, means nothing is dialled, not a
-	// request with the virtual key stripped and nothing put back, which is
-	// what a wrong ENCRYPTION_KEY used to send. serve refuses the transport
-	// before dispatch; this is the same check for any future caller that
-	// reaches a dial without passing through serve, not a second policy.
+func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, plain json.RawMessage, body []byte, hdr *memberHeaders) (*http.Response, error) {
+	// Before the request exists: a transport this client cannot speak means
+	// nothing is dialled. serve refuses the transport before dispatch; this
+	// is the same check for any future caller that reaches a dial without
+	// passing through serve, not a second policy. plain is what credential
+	// handed the caller, resolved before ctx's budget was armed; ApplyAuth
+	// below is the check that it can be presented, so a request with the
+	// virtual key stripped and nothing put back is never sent.
 	if err := mcpclient.TransportError(up.Transport); err != nil {
-		return nil, err
-	}
-	plain, err := h.credential(up)
-	if err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, inbound.Method, up.URL, bytes.NewReader(body))
@@ -910,8 +933,8 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 // live body and forget to read or close it. The error a cancelled request
 // comes back with is the budget's own sentence (causeError), not the
 // transport's "context canceled".
-func (h *Handler) forwardRead(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, hdr *memberHeaders) ([]byte, int, http.Header, error) {
-	resp, err := h.forward(ctx, inbound, up, body, hdr)
+func (h *Handler) forwardRead(ctx context.Context, inbound *http.Request, up *models.Upstream, plain json.RawMessage, body []byte, hdr *memberHeaders) ([]byte, int, http.Header, error) {
+	resp, err := h.forward(ctx, inbound, up, plain, body, hdr)
 	if err != nil {
 		return nil, 0, nil, causeError(ctx, err)
 	}
@@ -971,17 +994,20 @@ type memberHeaders struct {
 func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, int, error) {
 	// The whole of one member's turn, the era probe included, has the minute
 	// the client's flat timeout used to give it: a silent member costs the
-	// walk that and no more. Wrapped at the top so the probe's connection is
-	// the one the connect timer watches.
-	ctx, _, cancel := upstreamContext(ctx, listBudget)
-	defer cancel(nil)
+	// walk that and no more. The two guards and the credential come first:
+	// a member the proxy must not dial is not probed, and an oauth refresh
+	// (credential) must not run under the budget's context. Wrapped before
+	// the probe so the probe's connection is the one the connect timer
+	// watches.
 	if err := mcpclient.TransportError(up.Transport); err != nil {
 		return nil, 0, err
 	}
-	plain, err := h.credential(up)
+	plain, err := h.credential(ctx, up)
 	if err != nil {
 		return nil, 0, err
 	}
+	ctx, _, cancel := upstreamContext(ctx, listBudget)
+	defer cancel(nil)
 	verdict := h.memberEra(ctx, up, plain)
 	if verdict.fail != "" {
 		// A modern server that cannot be spoken to: one of mcpclient's fixed
@@ -1269,8 +1295,12 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// The routed call has the same answer budget a call on a member
 		// endpoint has; the catalogue walk above ran under listBudget per
 		// member. The context is released as soon as the body is read.
+		plain, err := h.credential(ctx, route.Upstream)
+		if err != nil {
+			return nil, 0, nil, route.Upstream.ID, err
+		}
 		callCtx, _, cancel := upstreamContext(ctx, answerBudget)
-		out, status, hdr, err := h.forwardRead(callCtx, inbound, route.Upstream, rewritten, composed)
+		out, status, hdr, err := h.forwardRead(callCtx, inbound, route.Upstream, plain, rewritten, composed)
 		cancel(nil)
 		if err != nil {
 			return out, status, nil, route.Upstream.ID, err
@@ -1287,8 +1317,12 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// relayed is relayed by serve, which also decides its headers. Kept as
 		// a relay, not a panic, so a method added to one list and not the other
 		// fails towards the old behaviour.
+		plain, err := h.credential(ctx, ups[0])
+		if err != nil {
+			return nil, 0, nil, ups[0].ID, err
+		}
 		relayCtx, _, cancel := upstreamContext(ctx, answerBudget)
-		out, status, _, err := h.forwardRead(relayCtx, inbound, ups[0], body, nil)
+		out, status, _, err := h.forwardRead(relayCtx, inbound, ups[0], plain, body, nil)
 		cancel(nil)
 		return out, status, nil, ups[0].ID, err
 	}
@@ -1712,6 +1746,17 @@ var errUnknownTool = errors.New("unknown tool")
 // "upstream request failed" like any other 502: a key holder must not learn
 // that the operator's encryption key is wrong (docs/07-security.md).
 var errCredentialUnreadable = credential.ErrUnreadable
+
+// The two OAuth sentinels (PORM-139), bare like the two above and reaching
+// error_message as exactly their text: "credential expired" (the token lapsed
+// and the vendor refused to renew it, or issued no refresh token; the fix is
+// Connect again) and "credential refresh failed" (lapsed and the vendor could
+// not be reached; the next call retries after a hold-off). Distinct from
+// errExpired's "virtual key expired" on purpose.
+var (
+	errCredentialExpired       = credential.ErrExpired
+	errCredentialRefreshFailed = credential.ErrRefreshFailed
+)
 
 var (
 	errUnauthorized     = errors.New("invalid virtual key")

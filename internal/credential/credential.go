@@ -14,20 +14,24 @@ package credential
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 )
 
-// The four values auth_status can take. none is decided by auth_type alone
+// The five values auth_status can take. none is decided by auth_type alone
 // (whatever blob the dashboard happened to store beside it) so the API's
-// "none" means exactly "this upstream sends no credential".
+// "none" means exactly "this upstream sends no credential". expired is an
+// oauth row whose access token has lapsed with no refresh token to renew it
+// (PORM-139); it is derived from the plaintext by Expired and never stored.
 const (
 	StatusNone          = "none"
 	StatusOK            = "ok"
 	StatusUndecryptable = "undecryptable"
 	StatusUnreadable    = "unreadable"
+	StatusExpired       = "expired"
 )
 
 var (
@@ -38,6 +42,15 @@ var (
 	// auth type can send (mcpclient.CheckCredential refused them). The
 	// operator's fix is the credential, and it is never a key problem.
 	ErrUnreadable = errors.New("credential unreadable")
+	// ErrExpired: an oauth access token has lapsed and the vendor refused to
+	// renew it, or issued no refresh token. Returned by Presenter.Present
+	// only, never by Read. The operator's fix is Connect again. Distinct from
+	// the proxy's "virtual key expired" on purpose.
+	ErrExpired = errors.New("credential expired")
+	// ErrRefreshFailed: an oauth access token has lapsed and the vendor's
+	// token endpoint could not be reached or answered something unusable.
+	// The next call retries after a hold-off. Returned by Present only.
+	ErrRefreshFailed = errors.New("credential refresh failed")
 )
 
 // Read returns the plaintext auth_config the proxy should present, or the
@@ -71,20 +84,19 @@ func read(k crypto.Keyring, authType string, stored []byte) (json.RawMessage, st
 }
 
 // Status classifies one row for the API: none iff auth_type is none, then
-// Read's outcome through StatusFor.
+// Read's outcome through StatusOf.
 func Status(k crypto.Keyring, authType string, stored []byte) string {
 	if authType == models.AuthNone || authType == "" {
 		return StatusNone
 	}
-	_, err := Read(k, authType, stored)
-	return StatusFor(err)
+	plain, err := Read(k, authType, stored)
+	return StatusOf(authType, plain, err, time.Now())
 }
 
-// StatusFor maps Read's outcome to the auth_status value. It is the one
-// mapping: presentUpstream calls it beside its own Read (which it keeps for
-// auth_hint's plaintext), so the API's answer and Status's cannot drift. An
-// error Read never returns classifies as undecryptable rather than ok, a
-// future error value must fail visible, not green.
+// StatusFor maps Read's outcome to the auth_status value. An error Read never
+// returns classifies as undecryptable rather than ok, a future error value
+// must fail visible, not green. StatusOf is the one mapping callers use; this
+// is its expiry-blind half.
 func StatusFor(err error) string {
 	switch {
 	case err == nil:
@@ -94,6 +106,38 @@ func StatusFor(err error) string {
 	default:
 		return StatusUndecryptable
 	}
+}
+
+// StatusOf is the one expiry-aware mapping: StatusFor on Read's error, then
+// expired when the plaintext Read handed back has lapsed with no refresh
+// token. presentUpstream calls it beside its own Read (which it keeps for
+// auth_hint's plaintext), and Status calls it, so the API's answer and
+// Status's cannot drift.
+func StatusOf(authType string, plain json.RawMessage, readErr error, now time.Time) string {
+	if readErr != nil {
+		return StatusFor(readErr)
+	}
+	if Expired(authType, plain, now) {
+		return StatusExpired
+	}
+	return StatusOK
+}
+
+// Expired reports an oauth plaintext whose access token has lapsed with no
+// refresh token to renew it: expires_at set, not after now, refresh_token
+// empty. It is the one rule behind the expired status, and it covers both
+// "the vendor issued no refresh token" and "the vendor refused the refresh",
+// because a refused refresh drops the refresh token (Presenter). It needs no
+// network and never stores anything.
+func Expired(authType string, plain json.RawMessage, now time.Time) bool {
+	if authType != models.AuthOAuth || len(plain) == 0 {
+		return false
+	}
+	var set models.OAuthTokenSet
+	if json.Unmarshal(plain, &set) != nil {
+		return false
+	}
+	return !set.ExpiresAt.IsZero() && !set.ExpiresAt.After(now) && set.RefreshToken == ""
 }
 
 // maxListed bounds the id and name lists a Report carries, so one boot line
@@ -113,6 +157,12 @@ type Report struct {
 	// Unreadable is the number of rows that need a credential and either hold
 	// nothing or hold bytes their auth type cannot send. Never a key problem.
 	Unreadable int
+	// Unconnected is the subset of Unreadable that are oauth rows: nothing
+	// stored, or a client id with no token yet. Their fix is Connect on the
+	// Upstreams page, not a re-entered value, so the boot line says so. They
+	// stay inside Unreadable, so /stats and the row status agree. Sweep is
+	// expiry-blind: a connected row whose token lapsed counts as fine here.
+	Unconnected int
 	// UnderPrevious is the number of rows that opened only under a previous
 	// key, a rotation that has not been finished with `porymcp rekey`.
 	UnderPrevious int
@@ -152,6 +202,9 @@ func Sweep(k crypto.Keyring, ups []models.Upstream) Report {
 			}
 		case errors.Is(err, ErrUnreadable):
 			r.Unreadable++
+			if u.AuthType == models.AuthOAuth {
+				r.Unconnected++
+			}
 			if len(r.UnreadableIDs) < maxListed {
 				r.UnreadableIDs = append(r.UnreadableIDs, u.ID)
 				r.UnreadableNames = append(r.UnreadableNames, u.Name)

@@ -14,6 +14,10 @@ const (
 	AuthHeader = "header"
 	AuthAPIKey = "api_key"
 	AuthCustom = "custom"
+	// AuthOAuth is an upstream whose credential is an OAuth 2.1 token set
+	// obtained by the operator signing in at the vendor (PORM-139). The stored
+	// payload is OAuthTokenSet, not AuthConfig.
+	AuthOAuth = "oauth"
 
 	TargetUpstream = "upstream"
 	TargetGroup    = "group"
@@ -27,6 +31,11 @@ const (
 // authenticated by the single admin key, so there is one name to record.
 // PORM-127 (dashboard users) replaces it with a user id.
 const ActorAdmin = "admin"
+
+// ActorProxy records a change PoryMCP made on its own while presenting a
+// credential: an OAuth access token renewed before a proxied call. No admin
+// request stands behind such an event, so it must not be attributed to one.
+const ActorProxy = "proxy"
 
 // Resource types an admin event names.
 const (
@@ -51,6 +60,12 @@ const (
 	ActionVirtualKeyRotate = "virtual_key.rotate"
 	ActionVirtualKeyRevoke = "virtual_key.revoke"
 	ActionVirtualKeyDelete = "virtual_key.delete"
+	// The three OAuth actions (PORM-139). Connect is recorded by the public
+	// callback route, refresh by credential.Presenter with actor proxy or admin,
+	// revoke by POST /upstreams/{id}/oauth/revoke.
+	ActionUpstreamOAuthConnect = "upstream.oauth_connect"
+	ActionUpstreamOAuthRefresh = "upstream.oauth_refresh"
+	ActionUpstreamOAuthRevoke  = "upstream.oauth_revoke"
 )
 
 // AdminActions lists every action above for the route-coverage test, the
@@ -60,6 +75,7 @@ var AdminActions = []string{
 	ActionGroupCreate, ActionGroupUpdate, ActionGroupDelete,
 	ActionVirtualKeyCreate, ActionVirtualKeyUpdate, ActionVirtualKeyRotate,
 	ActionVirtualKeyRevoke, ActionVirtualKeyDelete,
+	ActionUpstreamOAuthConnect, ActionUpstreamOAuthRefresh, ActionUpstreamOAuthRevoke,
 }
 
 // Upstream is a real MCP server whose credentials stay inside PoryMCP.
@@ -96,13 +112,56 @@ type Upstream struct {
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
-// AuthConfig is the decrypted credential payload for an Upstream.
+// AuthConfig is the decrypted credential payload for an Upstream whose auth
+// type is one of the static kinds. An oauth row stores OAuthTokenSet instead.
 type AuthConfig struct {
 	Token   string            `json:"token,omitempty"`
 	Header  string            `json:"header,omitempty"`
 	Value   string            `json:"value,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 }
+
+// OAuthTokenSet is the decrypted credential payload for an AuthOAuth
+// upstream. It is sealed into the same auth_config column as AuthConfig, so
+// rekey, clearing and the boot sweep treat it like any other credential. The
+// access token is deliberately not named "token": a stale oauth blob must
+// never read as a bearer credential.
+//
+// Before Connect the set is empty, or holds only the client fields typed by
+// the operator (ClientSource "supplied"). The callback writes the rest.
+// Refresh rewrites AccessToken, RefreshToken and ExpiresAt and nothing else.
+type OAuthTokenSet struct {
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	// ExpiresAt is UTC, computed from PoryMCP's own clock when the token
+	// answer arrived, so vendor clock skew never matters.
+	ExpiresAt          time.Time `json:"expires_at,omitzero"`
+	TokenEndpoint      string    `json:"token_endpoint,omitempty"`
+	RevocationEndpoint string    `json:"revocation_endpoint,omitempty"`
+	// Issuer is the RFC 8414 issuer the set was minted by. Refresh and revoke
+	// use the endpoints stored here and never re-read metadata.
+	Issuer       string `json:"issuer,omitempty"`
+	ClientID     string `json:"client_id,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"` // a public client has none
+	// ClientSource is "document" (PoryMCP's client metadata document),
+	// "registered" (RFC 7591 dynamic registration) or "supplied" (typed by
+	// the operator).
+	ClientSource string `json:"client_source,omitempty"`
+	// ClientIssuer is the issuer a registered or supplied client is bound to;
+	// a different issuer at the next Connect re-registers or refuses.
+	ClientIssuer string `json:"client_issuer,omitempty"`
+	// ClientRedirectURI is the redirect URI a dynamic registration was made
+	// with; a PUBLIC_URL change re-registers.
+	ClientRedirectURI string `json:"client_redirect_uri,omitempty"`
+	Scope             string `json:"scope,omitempty"`
+	// Resource is the RFC 8707 resource indicator, the upstream URL at
+	// connect. A set whose Resource differs from the row's URL is never
+	// presented.
+	Resource string `json:"resource,omitempty"`
+}
+
+// Connected reports whether the set holds a usable access token.
+func (s OAuthTokenSet) Connected() bool { return s.AccessToken != "" }
 
 // Group is a named collection of Upstreams exposed as one MCP shape.
 type Group struct {

@@ -17,6 +17,16 @@ export type UpstreamForm = {
   token: string
   header: string
   value: string
+  /**
+   * The optional client identity of an oauth upstream (PORM-139): what the
+   * vendor issued in its own settings, when it did. Both start empty on Edit
+   * (blank means keep). register_client sends `client: registered` on
+   * Connect, for a deployment the vendor cannot fetch the client document
+   * from; it is never sent to the server as a field.
+   */
+  client_id: string
+  client_secret: string
+  register_client: boolean
   enabled: boolean
   /**
    * The "Remove the stored value" checkbox in the Edit dialog, offered only on
@@ -44,6 +54,7 @@ export const AUTH_TYPE_LABELS: Record<string, string> = {
   header: 'Header',
   api_key: 'API key',
   custom: 'Custom',
+  oauth: 'OAuth',
 }
 
 /**
@@ -77,6 +88,9 @@ export function blankUpstreamForm(): UpstreamForm {
     token: '',
     header: DEFAULT_HEADER,
     value: '',
+    client_id: '',
+    client_secret: '',
+    register_client: false,
     enabled: true,
     clear_stored: false,
   }
@@ -103,6 +117,9 @@ export function formFromUpstream(u: Upstream): UpstreamForm {
     token: '',
     header: u.auth_hint?.header ?? '',
     value: '',
+    client_id: '',
+    client_secret: '',
+    register_client: false,
     enabled: u.enabled,
     clear_stored: false,
   }
@@ -115,24 +132,45 @@ export function formFromUpstream(u: Upstream): UpstreamForm {
  * (see upstreamPatchBody), because on a row with a credential it would empty
  * the stored value.
  */
-export function authConfigFrom(form: Pick<UpstreamForm, 'auth_type' | 'token' | 'header' | 'value'>): Record<
-  string,
-  string
-> {
+export function authConfigFrom(
+  form: Pick<UpstreamForm, 'auth_type' | 'token' | 'header' | 'value' | 'client_id' | 'client_secret'>,
+): Record<string, string> {
   const auth_config: Record<string, string> = {}
   if (form.auth_type === 'bearer' && form.token) auth_config.token = form.token
   if (headerShaped(form.auth_type) && form.value) {
     auth_config.header = form.header
     auth_config.value = form.value
   }
+  // An oauth client goes only when an id was typed: the server refuses a
+  // secret alone (clientSecretAlone is what keeps Save disabled until then),
+  // and a public client has no secret.
+  if (form.auth_type === 'oauth' && form.client_id.trim()) {
+    auth_config.client_id = form.client_id.trim()
+    if (form.client_secret) auth_config.client_secret = form.client_secret
+  }
   return auth_config
 }
 
-/** True when the operator typed a credential this dialog can send. */
-export function credentialTyped(f: Pick<UpstreamForm, 'auth_type' | 'token' | 'value'>): boolean {
+/**
+ * True when the operator typed a credential this dialog can send. For oauth
+ * that is a client id; the tokens are never typed.
+ */
+export function credentialTyped(f: Pick<UpstreamForm, 'auth_type' | 'token' | 'value' | 'client_id'>): boolean {
   if (f.auth_type === 'bearer') return f.token.trim() !== ''
   if (headerShaped(f.auth_type)) return f.value.trim() !== ''
+  if (f.auth_type === 'oauth') return f.client_id.trim() !== ''
   return false
+}
+
+/**
+ * The one invalid shape the client boxes can take: a secret with no id. The
+ * dialog never drops a typed value silently, so Save is held with this
+ * sentence until the id is entered or the secret removed.
+ */
+export const CLIENT_SECRET_ALONE = 'Enter the client ID that goes with this secret.'
+
+export function clientSecretAlone(f: Pick<UpstreamForm, 'auth_type' | 'client_id' | 'client_secret'>): boolean {
+  return f.auth_type === 'oauth' && f.client_secret !== '' && f.client_id.trim() === ''
 }
 
 /** The `POST /upstreams` body, exactly as the Add dialog has always sent it. */
@@ -210,6 +248,9 @@ export function upstreamPatchBody(before: Upstream, f: UpstreamForm): Record<str
  * broken upstream without repairing it.
  */
 export function credentialRequired(before: Upstream, f: UpstreamForm): boolean {
+  // An oauth upstream has nothing to type: the credential arrives through
+  // Connect after the save (PORM-139).
+  if (f.auth_type === 'oauth') return false
   if (f.auth_type !== before.auth_type) return f.auth_type !== 'none'
   if (headerShaped(f.auth_type)) return f.header.trim() !== formFromUpstream(before).header
   return false
@@ -238,6 +279,7 @@ const HEADER_SUFFIX = ' The header name is stored with it, so enter that too.'
  * box renders, and with it changed editCredentialDescription answers first.
  */
 export function credentialHelp(before: Upstream, f: UpstreamForm): string {
+  if (f.auth_type === 'oauth') return oauthDescription(before)
   const suffix = headerShaped(f.auth_type) ? HEADER_SUFFIX : ''
   const state = authState(before)
   if (state.tone === 'broken') {
@@ -265,6 +307,11 @@ export function credentialHelp(before: Upstream, f: UpstreamForm): string {
  * marks the box required for.
  */
 export function editCredentialDescription(before: Upstream, f: UpstreamForm): string {
+  if (f.auth_type === 'oauth' && before.auth_type !== 'oauth') {
+    return before.auth_configured
+      ? 'Saving removes the stored credential. Connect the upstream after saving.'
+      : 'Connect the upstream after saving.'
+  }
   if (credentialRequired(before, f)) {
     if (f.auth_type !== before.auth_type) {
       const label = authTypeLabel(f.auth_type)
@@ -275,6 +322,57 @@ export function editCredentialDescription(before: Upstream, f: UpstreamForm): st
     return 'The header name is stored inside the credential. Enter the value again to change the name.'
   }
   return credentialHelp(before, f)
+}
+
+/**
+ * The sentence under the Auth type select of an oauth row (PORM-139): the
+ * state the row is in and what to press. It reads the same status the table
+ * badge reads, so the two cannot disagree. The lib formats no date: the
+ * expiry is on the row itself.
+ */
+export function oauthDescription(before: Upstream): string {
+  const state = authState(before)
+  switch (state.tone) {
+    case 'idle':
+      return 'Not connected. Press Connect on the upstream\'s row to sign in to the vendor.'
+    case 'held':
+      return 'The vendor refused to renew the access token, or it lapsed with no refresh token. Press Connect on the upstream\'s row to sign in again.'
+    case 'broken':
+      return 'The stored token cannot be read with the current encryption key. Restore the key it was saved under, or press Connect to sign in again.'
+    default:
+      if (state.expiresAt) {
+        return 'Connected. The vendor issued no refresh token, so the connection ends at the time shown in the table. Press Connect on the row again after that.'
+      }
+      return 'Connected. PoryMCP renews the access token before it expires.'
+  }
+}
+
+/**
+ * Whether the URL box's "changes take effect" sentence renders: the URL was
+ * edited on a row whose stored credential reads. Never on an oauth row, where
+ * a URL change disconnects instead (urlChangeDescription).
+ */
+export function urlChanged(before: Upstream | undefined, f: Pick<UpstreamForm, 'url'>): boolean {
+  return !!before && f.url.trim() !== before.url && before.auth_status === 'ok' && before.auth_type !== 'oauth'
+}
+
+/**
+ * The sentence under the URL box when the pending save changes where the
+ * credential goes. On an oauth row that holds a token set, a new URL removes
+ * it: the token was minted for the old address (the server clears it, and
+ * records the removal). A row holding only a client ID loses that instead,
+ * and says so. Null when nothing changes.
+ */
+export function urlChangeDescription(before: Upstream | undefined, f: Pick<UpstreamForm, 'url'>): string | null {
+  if (!before || f.url.trim() === before.url) return null
+  if (before.auth_type === 'oauth') {
+    if (!before.auth_configured) return null
+    return before.oauth?.expires_at
+      ? 'Saving a new URL disconnects this upstream. Connect it again afterwards.'
+      : 'Saving a new URL removes the stored client ID. Enter it again if the new address needs it.'
+  }
+  if (before.auth_status === 'ok') return 'PoryMCP sends the stored credential to the new address from the next request.'
+  return null
 }
 
 /**

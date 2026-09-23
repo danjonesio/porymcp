@@ -17,6 +17,9 @@ const VERBS: Record<string, string> = {
   'virtual_key.rotate': 'Rotated virtual key',
   'virtual_key.revoke': 'Revoked virtual key',
   'virtual_key.delete': 'Deleted virtual key',
+  'upstream.oauth_connect': 'Connected upstream',
+  'upstream.oauth_refresh': 'Refreshed the token for upstream',
+  'upstream.oauth_revoke': 'Disconnected upstream',
 }
 
 /** How a changed field reads in the Details cell. A field not listed reads as its own name. */
@@ -44,6 +47,10 @@ const KNOWN_KEYS = new Set([
   'target_type',
   'target_id',
   'key_prefix',
+  'client',
+  'refresh_token',
+  'issuer',
+  'vendor_revocation',
 ])
 
 function label(field: string): string {
@@ -56,6 +63,15 @@ function strings(v: unknown): string[] {
 
 function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * The From cell: the client address of the request that made the change, or
+ * the actor when there was no request behind it, as for a token refresh the
+ * proxy made on its own (actor `proxy`, PORM-139).
+ */
+export function fromText(e: Pick<AdminEvent, 'actor' | 'remote_addr'>): string {
+  return e.remote_addr || e.actor
 }
 
 /** "Added upstream GitHub", "Rotated virtual key demo-vk". */
@@ -103,6 +119,14 @@ export function changedText(e: AdminEvent): string {
   if (d.tool_filter_set === true) parts.push('tool filter set')
   if (typeof d.target_type === 'string' && d.target_type) parts.push(`target ${d.target_type}`)
   if (typeof d.key_prefix === 'string' && d.key_prefix) parts.push(`key prefix ${d.key_prefix}`)
+  // The OAuth details (PORM-139): the client identity a connect used, a
+  // vendor that issued no refresh token, the issuer's host, and a disconnect
+  // the vendor did not confirm.
+  if (typeof d.client === 'string' && d.client) parts.push(`client ${d.client}`)
+  if (d.refresh_token === false) parts.push('no refresh token')
+  if (typeof d.issuer === 'string' && d.issuer) parts.push(`issuer ${d.issuer}`)
+  if (d.vendor_revocation === 'failed') parts.push('vendor revocation failed')
+  if (d.vendor_revocation === 'not_offered') parts.push('vendor revocation not offered')
   for (const k of Object.keys(d)) {
     if (!KNOWN_KEYS.has(k)) parts.push(k)
   }

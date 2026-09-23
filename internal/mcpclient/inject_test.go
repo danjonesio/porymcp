@@ -42,6 +42,12 @@ func TestApplyAuthReportsEmptyCredential(t *testing.T) {
 		"custom, headers":                   {models.AuthCustom, `{"headers":{"X-Whatever":"KEPT"}}`, false, "X-Whatever", "KEPT"},
 		"custom, empty value still written": {models.AuthCustom, `{"headers":{"X-Foo":""}}`, false, "X-Foo", ""},
 		"unknown type":                      {"kerberos", `{"token":"x"}`, true, "", ""},
+		// PORM-139: an oauth set writes one bearer header from access_token
+		// and nothing from a static-shaped blob left under the wrong type.
+		"oauth, access token":       {models.AuthOAuth, `{"access_token":"at","refresh_token":"rt"}`, false, "Authorization", "Bearer at"},
+		"oauth, client only":        {models.AuthOAuth, `{"client_id":"c","client_source":"supplied"}`, true, "", ""},
+		"oauth, bearer-shaped blob": {models.AuthOAuth, `{"token":"sk"}`, true, "", ""},
+		"oauth, not json":           {models.AuthOAuth, `{"access_token":`, true, "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := json.RawMessage(tc.raw)

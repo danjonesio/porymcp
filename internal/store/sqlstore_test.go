@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/models"
 )
 
@@ -2743,5 +2744,147 @@ func TestMigrateTimestampsLeavesNullAndEmpty(t *testing.T) {
 	}
 	if k.ExpiresAt != nil || k.LastUsedAt != nil || k.RevokedAt != nil {
 		t.Errorf("key read back with expires_at=%v last_used_at=%v revoked_at=%v, want all nil", k.ExpiresAt, k.LastUsedAt, k.RevokedAt)
+	}
+}
+
+// The two OAuth writes (PORM-139 step 5). SwapUpstreamAuth is the refresh
+// write and must leave updated_at and the test columns alone;
+// ConnectUpstreamAuth is the connect and disconnect write and must land only
+// on the row the flow started against.
+
+func TestSwapUpstreamAuthLeavesUpdatedAtAndTestColumns(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	cur := newKey(t)
+	a, b := sealWith(t, cur, `{"access_token":"a"}`), sealWith(t, cur, `{"access_token":"b"}`)
+	createUpstream(t, s, "row", models.AuthOAuth, a)
+	before, _ := s.GetUpstream(ctx, "row")
+	at := before.UpdatedAt.Add(time.Minute)
+	if err := s.RecordUpstreamTest(ctx, "row", at, true, before.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SwapUpstreamAuth(ctx, "row", []byte(a), []byte(b)); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.GetUpstream(ctx, "row")
+	if storedAuth(t, s, "row") != b {
+		t.Fatal("swap did not write the new ciphertext")
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("updated_at moved: %v -> %v", before.UpdatedAt, after.UpdatedAt)
+	}
+	if after.LastTestAt == nil || !after.LastTestAt.Equal(at) || after.LastTestOK == nil || !*after.LastTestOK {
+		t.Errorf("test columns changed: at=%v ok=%v", after.LastTestAt, after.LastTestOK)
+	}
+	if err := s.RecordUpstreamTest(ctx, "row", at.Add(time.Minute), false, after.UpdatedAt); err != nil {
+		t.Errorf("RecordUpstreamTest's CAS no longer matches after a swap: %v", err)
+	}
+}
+
+func TestSwapUpstreamAuthMissIsNotFound(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	cur := newKey(t)
+	a, b, c := sealWith(t, cur, `{"access_token":"a"}`), sealWith(t, cur, `{"access_token":"b"}`), sealWith(t, cur, `{"access_token":"c"}`)
+	createUpstream(t, s, "row", models.AuthOAuth, a)
+	// Expecting bytes the row no longer holds misses and writes nothing.
+	if err := s.SwapUpstreamAuth(ctx, "row", []byte(b), []byte(c)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale expect: err=%v, want ErrNotFound", err)
+	}
+	if storedAuth(t, s, "row") != a {
+		t.Fatal("a missed swap wrote")
+	}
+	if err := s.SwapUpstreamAuth(ctx, "missing", []byte(a), []byte(b)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing row: err=%v, want ErrNotFound", err)
+	}
+}
+
+// A refresh that read the row before a rekey re-wrapped it misses on the
+// ciphertext although the plaintext is unchanged; the caller's re-read is
+// what recovers the rotated token (credential.Presenter step 6).
+func TestSwapUpstreamAuthAfterRekeyMisses(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	old, cur := newKey(t), newKey(t)
+	k := crypto.NewKeyring(cur, [][]byte{old})
+	a := sealWith(t, old, `{"access_token":"a","refresh_token":"r1"}`)
+	createUpstream(t, s, "row", models.AuthOAuth, a)
+	if _, err := s.RekeyUpstreams(ctx, k.Fingerprint(), rekeyWith(t, k)); err != nil {
+		t.Fatal(err)
+	}
+	next := sealWith(t, cur, `{"access_token":"b","refresh_token":"r2"}`)
+	if err := s.SwapUpstreamAuth(ctx, "row", []byte(a), []byte(next)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("swap against the pre-rekey bytes: err=%v, want ErrNotFound", err)
+	}
+	rewrapped := storedAuth(t, s, "row")
+	if rewrapped == a {
+		t.Fatal("rekey did not re-wrap")
+	}
+	if err := s.SwapUpstreamAuth(ctx, "row", []byte(rewrapped), []byte(next)); err != nil {
+		t.Fatalf("swap against the re-wrapped bytes: %v", err)
+	}
+}
+
+func TestConnectUpstreamAuthCASOnUpdatedAt(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	cur := newKey(t)
+	createUpstream(t, s, "row", models.AuthOAuth, "")
+	before, _ := s.GetUpstream(ctx, "row")
+	at0 := before.UpdatedAt.Add(time.Minute)
+	if err := s.RecordUpstreamTest(ctx, "row", at0, false, before.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	next := sealWith(t, cur, `{"access_token":"a"}`)
+	at := before.UpdatedAt.Add(2 * time.Minute)
+	if err := s.ConnectUpstreamAuth(ctx, "row", []byte(next), before.UpdatedAt, at); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.GetUpstream(ctx, "row")
+	if storedAuth(t, s, "row") != next || !after.UpdatedAt.Equal(at) || after.LastTestAt != nil || after.LastTestOK != nil {
+		t.Fatalf("after connect: auth=%q updated_at=%v test=%v/%v", storedAuth(t, s, "row"), after.UpdatedAt, after.LastTestAt, after.LastTestOK)
+	}
+	// A stale seen (the row was edited since the flow started) misses.
+	if err := s.ConnectUpstreamAuth(ctx, "row", []byte(next), before.UpdatedAt, at.Add(time.Minute)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale seen: err=%v, want ErrNotFound", err)
+	}
+	if err := s.ConnectUpstreamAuth(ctx, "missing", []byte(next), before.UpdatedAt, at); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing row: err=%v, want ErrNotFound", err)
+	}
+}
+
+func TestConnectUpstreamAuthNilWritesEmpty(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	cur := newKey(t)
+	createUpstream(t, s, "row", models.AuthOAuth, sealWith(t, cur, `{"access_token":"a"}`))
+	before, _ := s.GetUpstream(ctx, "row")
+	if err := s.ConnectUpstreamAuth(ctx, "row", nil, before.UpdatedAt, before.UpdatedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedAuth(t, s, "row"); got != "" {
+		t.Fatalf("stored %q, want the empty string", got)
+	}
+	var isNull bool
+	if err := s.db.QueryRow(s.q(`SELECT auth_config IS NULL FROM upstreams WHERE id = ?`), "row").Scan(&isNull); err != nil {
+		t.Fatal(err)
+	}
+	if isNull {
+		t.Fatal("nil wrote SQL NULL, want ''")
+	}
+}
+
+func TestConnectUpstreamAuthRefusesNonOAuthRow(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	cur := newKey(t)
+	createUpstream(t, s, "row", models.AuthBearer, sealWith(t, cur, `{"token":"x"}`))
+	before, _ := s.GetUpstream(ctx, "row")
+	err := s.ConnectUpstreamAuth(ctx, "row", []byte(sealWith(t, cur, `{"access_token":"a"}`)), before.UpdatedAt, before.UpdatedAt.Add(time.Minute))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("bearer row: err=%v, want ErrNotFound", err)
+	}
+	if storedAuth(t, s, "row") == "" || storedAuth(t, s, "row") != sealWith(t, cur, `{"token":"x"}`) && !strings.HasPrefix(storedAuth(t, s, "row"), "v1:") {
+		t.Fatal("the bearer row was touched")
 	}
 }

@@ -117,6 +117,7 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
   upstream transport is not implemented; `sse` is refused on write since
   PORM-28.
 - Encrypted storage of upstream secrets (AES-256-GCM)
+- OAuth upstreams: connect a hosted MCP server that follows the MCP authorization specification once, from the dashboard; the proxy presents the access token and renews it, and agents keep their virtual keys
 - Virtual keys stored as a SHA-256 digest, never in plaintext; plaintext shown only on create or rotate
 - Virtual key rotation and revocation
 - Optional per-key rate limiting
