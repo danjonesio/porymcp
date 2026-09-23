@@ -434,7 +434,7 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 		if !live {
 			return
 		}
-		if cause := h.recheck(r, row); cause != nil {
+		if cause := h.recheck(r, &row); cause != nil {
 			cut(cause)
 			return
 		}
@@ -535,7 +535,15 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 // leaves the stream open and says so in the log: the proxy fails open here,
 // because a store hiccup ending every stream in the deployment would be worse
 // than a minute's delay on a revocation.
-func (h *Handler) recheck(r *http.Request, row streamRow) error {
+//
+// row is updated in place: a recheck that finds the upstream unchanged
+// adopts the row it just read as the stream's baseline, so a token refresh
+// (new bytes, same grant) is absorbed at the next recheck and a later rename
+// compares equal bytes rather than a rotated refresh token against the one
+// the stream opened with (PORM-139). A refresh and a rename inside one
+// recheck interval still end the stream; that window is the limit recorded
+// in docs/03-api.md.
+func (h *Handler) recheck(r *http.Request, row *streamRow) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
 	warn := func(err error) {
@@ -570,6 +578,7 @@ func (h *Handler) recheck(r *http.Request, row streamRow) error {
 	if h.upstreamChanged(row.upstream, up) {
 		return errUpstreamChanged
 	}
+	row.upstream = up
 	if vk.TargetType == models.TargetGroup {
 		g, err := h.store.GetGroup(ctx, vk.TargetID)
 		if err != nil {

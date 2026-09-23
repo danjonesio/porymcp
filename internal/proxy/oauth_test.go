@@ -319,13 +319,14 @@ func openOAuthStream(t *testing.T) (*fixture, *oauthstub.Server, *lineStream, st
 	return f, s, ls, id, u, gone
 }
 
-// refreshRow simulates what Present writes: new bytes for the same grant,
-// updated_at untouched.
+// refreshRow simulates what Present writes after a vendor that rotates: a
+// new access token and a new refresh token, updated_at untouched.
 func refreshRow(t *testing.T, f *fixture, s *oauthstub.Server, u *models.Upstream) {
 	t.Helper()
 	set := storedSet(t, f, u.ID)
-	access, _ := s.Seed()
+	access, refresh := s.Seed()
 	set.AccessToken = access
+	set.RefreshToken = refresh
 	set.ExpiresAt = time.Now().Add(time.Hour)
 	raw, _ := json.Marshal(set)
 	enc, err := f.H.keys.Seal(raw)
@@ -351,6 +352,9 @@ func TestRenameAfterRefreshKeepsOpenStream(t *testing.T) {
 	setBudget(t, &streamRecheckBudget, 50*time.Millisecond)
 	f, s, _, _, u, _ := openOAuthStream(t)
 	refreshRow(t, f, s, u)
+	// The refresh is absorbed at the next recheck; the rename then compares
+	// equal bytes against the adopted baseline.
+	time.Sleep(150 * time.Millisecond)
 	ctx := context.Background()
 	row, _ := f.Store.GetUpstream(ctx, u.ID)
 	row.Name = "Renamed"
