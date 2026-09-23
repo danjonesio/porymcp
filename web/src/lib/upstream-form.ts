@@ -360,12 +360,16 @@ export function urlChanged(before: Upstream | undefined, f: Pick<UpstreamForm, '
  * The sentence under the URL box when the pending save changes where the
  * credential goes. On an oauth row that holds a token set, a new URL removes
  * it: the token was minted for the old address (the server clears it, and
- * records the removal). Null when nothing changes.
+ * records the removal). A row holding only a client ID loses that instead,
+ * and says so. Null when nothing changes.
  */
 export function urlChangeDescription(before: Upstream | undefined, f: Pick<UpstreamForm, 'url'>): string | null {
   if (!before || f.url.trim() === before.url) return null
   if (before.auth_type === 'oauth') {
-    return before.auth_configured ? 'Saving a new URL disconnects this upstream. Connect it again afterwards.' : null
+    if (!before.auth_configured) return null
+    return before.oauth?.expires_at
+      ? 'Saving a new URL disconnects this upstream. Connect it again afterwards.'
+      : 'Saving a new URL removes the stored client ID. Enter it again if the new address needs it.'
   }
   if (before.auth_status === 'ok') return 'PoryMCP sends the stored credential to the new address from the next request.'
   return null

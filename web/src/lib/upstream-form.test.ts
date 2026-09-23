@@ -463,6 +463,10 @@ test('urlChanged and urlChangeDescription: an oauth row disconnects on a URL cha
   assert.equal(urlChanged(oauthUp(), { url: 'https://other.example/mcp' }), false)
   assert.equal(urlChangeDescription(oauthUp(), { url: 'https://other.example/mcp' }), 'Saving a new URL disconnects this upstream. Connect it again afterwards.')
   assert.equal(urlChangeDescription(oauthUp({ auth_configured: false, auth_status: 'unreadable' }), { url: 'https://other.example/mcp' }), null)
+  assert.equal(
+    urlChangeDescription(oauthUp({ auth_status: 'unreadable', oauth: { expires_at: null, has_refresh_token: false, client_source: 'supplied' } }), { url: 'https://other.example/mcp' }),
+    'Saving a new URL removes the stored client ID. Enter it again if the new address needs it.',
+  )
   assert.equal(urlChangeDescription(oauthUp(), { url: ' https://api.example.com/mcp ' }), null)
   assert.equal(urlChangeDescription(undefined, { url: 'x' }), null)
   assert.equal(urlChangeDescription(up({ auth_status: 'unreadable' }), { url: 'https://other.example/mcp' }), null)

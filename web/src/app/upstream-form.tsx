@@ -222,20 +222,24 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
                     : 'Optional. A public client has no secret.'}
               </Description>
             </Field>
-            <CheckboxGroup>
-              <CheckboxField>
-                <Checkbox
-                  name="register_client"
-                  checked={form.register_client}
-                  onChange={(checked) => onChange({ register_client: checked })}
-                />
-                <Label>Register PoryMCP with the vendor instead of publishing its client document</Label>
-                <Description>
-                  Use this when the vendor cannot reach this PoryMCP address. It applies to the next Connect on the
-                  row.
-                </Description>
-              </CheckboxField>
-            </CheckboxGroup>
+            {row ? (
+              // The choice is read by the row's Connect and remembered per row
+              // id, which Add does not have yet: it shows once the row exists.
+              <CheckboxGroup>
+                <CheckboxField>
+                  <Checkbox
+                    name="register_client"
+                    checked={form.register_client}
+                    onChange={(checked) => onChange({ register_client: checked })}
+                  />
+                  <Label>Register PoryMCP with the vendor instead of publishing its client document</Label>
+                  <Description>
+                    Use this when the vendor cannot reach this PoryMCP address. It applies to the next Connect on the
+                    row.
+                  </Description>
+                </CheckboxField>
+              </CheckboxGroup>
+            ) : null}
           </HelpDisclosure>
         </div>
       ) : null}

@@ -23,13 +23,23 @@ import {
 } from '@/lib/api'
 import { discoverable, discoveryErrorMessage } from '@/lib/discovery'
 import { editErrorMessage } from '@/lib/edit-error'
-import { authorizationURLIsWeb, connectErrorMessage, revokeResultLine } from '@/lib/oauth-connect'
+import {
+  REVOKE_COPY,
+  authorizationURLIsWeb,
+  connectErrorMessage,
+  loadRegisterChoices,
+  revokeKind,
+  revokeResultLine,
+  saveRegisterChoices,
+} from '@/lib/oauth-connect'
 import { deriveSlug } from '@/lib/slug'
-import { authState, connectLabel, oauthConnected } from '@/lib/upstream-auth'
+import { authState, connectLabel } from '@/lib/upstream-auth'
 import {
   CONNECTION_FIELDS,
   authConfigFrom,
   blankUpstreamForm,
+  CLIENT_SECRET_ALONE,
+  clientSecretAlone,
   formFromUpstream,
   upstreamCreateBody,
   upstreamPatchBody,
@@ -138,7 +148,9 @@ export default function UpstreamsPage() {
    */
   const [connecting, setConnecting] = useState<string | null>(null)
   const [connectError, setConnectError] = useState('')
-  const [registerFor, setRegisterFor] = useState<Record<string, boolean>>({})
+  const [registerFor, setRegisterFor] = useState<Record<string, boolean>>(() =>
+    loadRegisterChoices(typeof window === 'undefined' ? undefined : window.sessionStorage),
+  )
   const [pendingRevoke, setPendingRevoke] = useState<Upstream | null>(null)
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState('')
@@ -164,6 +176,25 @@ export default function UpstreamsPage() {
     // failed submit's message would otherwise sit off-screen above the operator.
     formErrorRef.current?.scrollIntoView({ block: 'nearest' })
   }, [formErrorSeq])
+
+  useEffect(() => {
+    // Back from the vendor through the browser's page cache restores this page
+    // as it was when it left: with every Connect held. Release them.
+    function restored(e: PageTransitionEvent) {
+      if (e.persisted) setConnecting(null)
+    }
+    window.addEventListener('pageshow', restored)
+    return () => window.removeEventListener('pageshow', restored)
+  }, [])
+
+  /** Remember a row's register choice for its next Connect, here and for the next page load. */
+  function rememberRegister(id: string, choice: boolean) {
+    setRegisterFor((m) => {
+      const next = { ...m, [id]: choice }
+      saveRegisterChoices(window.sessionStorage, next)
+      return next
+    })
+  }
 
   /**
    * Run one discovery request into one surface's state. Every setState below
@@ -398,7 +429,7 @@ export default function UpstreamsPage() {
     // The register choice is the dialog's to set and the row's Connect to
     // read; it is never a field of the row, so it is kept here and not sent.
     if (row.auth_type === 'oauth' || form.auth_type === 'oauth') {
-      setRegisterFor((m) => ({ ...m, [row.id]: form.register_client }))
+      rememberRegister(row.id, form.register_client)
     }
     const body = upstreamPatchBody(row, form)
     if (Object.keys(body).length === 0) {
@@ -421,6 +452,13 @@ export default function UpstreamsPage() {
   function submit(e: React.FormEvent) {
     e.preventDefault()
     setFormError('')
+    // A secret with no client ID has nowhere to go: the field says so, and
+    // Enter must not send the rest of the form around it.
+    if (clientSecretAlone(form)) {
+      setFormError(CLIENT_SECRET_ALONE)
+      setFormErrorSeq((n) => n + 1)
+      return
+    }
     if (mode === 'edit') void save()
     else void create()
   }
@@ -469,14 +507,14 @@ export default function UpstreamsPage() {
   async function revoke() {
     const row = pendingRevoke
     if (!row) return
-    const wasConnected = oauthConnected(row)
+    const kind = revokeKind(row) ?? 'client'
     setRevoking(true)
     setRevokeError('')
     try {
       const result = await oauthRevoke(row.id)
       setItems((list) => list.map((x) => (x.id === result.upstream.id ? result.upstream : x)))
       setEditing((e) => (e && e.id === result.upstream.id ? result.upstream : e))
-      setRevokeLine(revokeResultLine(result, wasConnected))
+      setRevokeLine(revokeResultLine(result, kind))
       closeRevoke()
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) void load()
@@ -581,7 +619,7 @@ export default function UpstreamsPage() {
                         type="button"
                         plain
                         disabled={connecting !== null}
-                        aria-label={`${connectLabel(u)} ${u.name}`}
+                        aria-label={`${connecting === u.id ? 'Connecting…' : connectLabel(u)} ${u.name}`}
                         onClick={() => connect(u)}
                       >
                         {connecting === u.id ? 'Connecting…' : connectLabel(u)}
@@ -661,25 +699,22 @@ export default function UpstreamsPage() {
             ) : null}
             {mode === 'edit' && editing?.auth_type === 'oauth' ? (
               // Disconnect sits at the foot of the body for the same reason
-              // Discover does: it is not the dialog's primary action. On a row
-              // holding only a supplied client there is no token to revoke, so
-              // the button and the confirm say what actually goes.
+              // Discover does: it is not the dialog's primary action. The
+              // words follow what the row holds (revokeKind): a token set, a
+              // supplied client alone, or a value that cannot be read, where
+              // the vendor is never asked.
               <>
                 <Divider soft className="my-8" />
                 <div>
                   <Button
                     type="button"
                     outline
-                    disabled={!editing.auth_configured || revoking}
+                    disabled={!revokeKind(editing) || revoking}
                     onClick={() => setPendingRevoke(editing)}
                   >
-                    {oauthConnected(editing) ? 'Disconnect' : 'Remove client ID'}
+                    {REVOKE_COPY[revokeKind(editing) ?? 'client'].button}
                   </Button>
-                  <Text className="mt-2">
-                    {oauthConnected(editing)
-                      ? 'Asks the vendor to revoke the token, then removes it from PoryMCP. Calls through this upstream fail until it is connected again.'
-                      : 'Removes the client ID and secret stored for this upstream.'}
-                  </Text>
+                  <Text className="mt-2">{REVOKE_COPY[revokeKind(editing) ?? 'client'].caption}</Text>
                   {revokeLine ? (
                     <Text className="mt-2" role="status">
                       {revokeLine}
@@ -733,15 +768,13 @@ export default function UpstreamsPage() {
       </Dialog>
 
       <Alert open={!!pendingRevoke} onClose={closeRevoke}>
-        <AlertTitle>
-          {pendingRevoke && oauthConnected(pendingRevoke) ? 'Disconnect this upstream?' : 'Remove the stored client ID?'}
-        </AlertTitle>
+        <AlertTitle>{REVOKE_COPY[(pendingRevoke && revokeKind(pendingRevoke)) ?? 'client'].title}</AlertTitle>
         <AlertDescription>
           {pendingRevoke
-            ? oauthConnected(pendingRevoke)
-              ? `${pendingRevoke.name} stops sending a token. PoryMCP asks the vendor to revoke it, then removes it. Calls through this upstream fail until it is connected again.` +
-                (pendingRevoke.oauth?.client_source === 'supplied' ? ' The client ID and secret you entered are removed too.' : '')
-              : `${pendingRevoke.name} forgets the client ID and secret you entered. Connect then uses the vendor’s own registration.`
+            ? REVOKE_COPY[revokeKind(pendingRevoke) ?? 'client'].description(
+                pendingRevoke.name,
+                pendingRevoke.oauth?.client_source === 'supplied',
+              )
             : ''}
         </AlertDescription>
         {revokeError ? (
@@ -754,7 +787,11 @@ export default function UpstreamsPage() {
             Cancel
           </Button>
           <Button type="button" color="red" disabled={revoking} onClick={revoke}>
-            {revoking ? 'Disconnecting…' : pendingRevoke && oauthConnected(pendingRevoke) ? 'Disconnect' : 'Remove'}
+            {revoking
+              ? revokeKind(pendingRevoke ?? {}) === 'connected'
+                ? 'Disconnecting…'
+                : 'Removing…'
+              : REVOKE_COPY[(pendingRevoke && revokeKind(pendingRevoke)) ?? 'client'].confirm}
           </Button>
         </AlertActions>
       </Alert>
