@@ -12,7 +12,9 @@ import (
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 // Discovery is the one management call that leaves the process. Everything
@@ -57,11 +59,24 @@ func (s *Server) discoverUpstream(w http.ResponseWriter, r *http.Request) {
 	// answers. A key change is the one failure that hits every row at once,
 	// so a table that stayed green through it would be lying at exactly the
 	// moment it matters. The cause lives in auth_status on the row.
-	plain, err := credential.Read(s.keys, u.AuthType, u.AuthConfig)
+	//
+	// Through the Presenter rather than Read (PORM-139): an oauth row whose
+	// token is about to lapse is renewed here exactly as the proxy renews it,
+	// so Tools does not report as failed an upstream the proxy would have
+	// reached. A refresh this route triggers is recorded with the admin's
+	// own actor and address.
+	plain, err := s.present.Present(r.Context(), u, credential.Caller{
+		Actor: models.ActorAdmin, RemoteAddr: webutil.ClientIP(r, s.cfg.TrustedProxies), RequestID: middleware.GetReqID(r.Context()),
+	})
 	if err != nil {
 		msg := "stored credential cannot be decrypted"
-		if errors.Is(err, credential.ErrUnreadable) {
+		switch {
+		case errors.Is(err, credential.ErrUnreadable):
 			msg = "stored credential is not usable for this auth type"
+		case errors.Is(err, credential.ErrExpired):
+			msg = "stored credential has expired; connect again"
+		case errors.Is(err, credential.ErrRefreshFailed):
+			msg = "the token could not be refreshed; try again"
 		}
 		d := mcpclient.Failed(msg)
 		s.recordTest(r, u, d)
@@ -70,6 +85,10 @@ func (s *Server) discoverUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	s.runDiscovery(w, r, u, plain, savedUpstream)
 }
+
+// errDiscoverUnsavedOAuth is the 400 for an unsaved discovery of an oauth
+// upstream: there is no token before Connect, and Connect needs a saved row.
+const errDiscoverUnsavedOAuth = "oauth upstreams are discovered after they are connected: create the upstream, connect it, then call POST /upstreams/{id}/discover"
 
 // discoverUnsaved discovers what the upstream in the request body advertises,
 // so the Add-upstream dialog can show its tools before anything is created.
@@ -104,6 +123,10 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validAuthType(authType) {
 		writeError(w, http.StatusBadRequest, "invalid auth_type")
+		return
+	}
+	if authType == models.AuthOAuth {
+		writeError(w, http.StatusBadRequest, errDiscoverUnsavedOAuth)
 		return
 	}
 	// No slug is derived. createUpstream walks candidates and de-duplicates,

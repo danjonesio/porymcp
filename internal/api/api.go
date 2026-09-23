@@ -7,6 +7,7 @@ import (
 
 	"github.com/danjonesio/porymcp/internal/auth"
 	"github.com/danjonesio/porymcp/internal/config"
+	"github.com/danjonesio/porymcp/internal/credential"
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/store"
@@ -63,6 +64,11 @@ type Server struct {
 	// shared rather than constructed here so the redirect policy has a single
 	// home (PORM-94).
 	mcp *mcpclient.Client
+	// present is credential.Read plus the OAuth refresh (PORM-139), built on
+	// mcp; the discover route presents through it so a lapsed token is
+	// renewed the way the proxy renews it. The per-upstream lock it refreshes
+	// under is package state shared with the proxy's Presenter.
+	present *credential.Presenter
 	// discoverLimit and discovering are the two budgets on the discovery
 	// routes: tokens per minute, and how many may be in flight at once.
 	discoverLimit *auth.Limiter
@@ -73,14 +79,19 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, mcp *mcpclient.Cl
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	if mcp == nil {
+		mcp = mcpclient.New()
+	}
+	keys := cfg.Keyring()
 	return &Server{
 		cfg:           cfg,
-		keys:          cfg.Keyring(),
+		keys:          keys,
 		encryption:    encryption,
 		store:         st,
 		log:           log,
 		adminFails:    auth.NewLimiter(),
 		mcp:           mcp,
+		present:       credential.NewPresenter(keys, st, mcp, log),
 		discoverLimit: auth.NewLimiter(),
 		discovering:   make(chan struct{}, maxInFlightDiscoveries),
 	}

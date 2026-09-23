@@ -32,17 +32,27 @@ import (
 // already compute (the request nulled or emptied a field, or removed the
 // stored credential) and can appear without a matching Fields entry when the
 // field was already empty.
+//
+// The four OAuth fields (PORM-139): Client is which client identity the
+// connect used (document, registered or supplied), RefreshToken whether the
+// vendor issued one (a pointer so false survives), Issuer the authorization
+// server's host and never a path, VendorRevocation whether the vendor
+// accepted a disconnect. None of them is a token, a code or a secret.
 type adminDetails struct {
-	Fields        []string `json:"fields,omitempty"`
-	Cleared       []string `json:"cleared,omitempty"`
-	Slug          string   `json:"slug,omitempty"`
-	AuthType      string   `json:"auth_type,omitempty"`
-	AuthChanged   bool     `json:"auth_changed,omitempty"`
-	UpstreamCount *int     `json:"upstream_count,omitempty"`
-	ToolFilterSet bool     `json:"tool_filter_set,omitempty"`
-	TargetType    string   `json:"target_type,omitempty"`
-	TargetID      string   `json:"target_id,omitempty"`
-	KeyPrefix     string   `json:"key_prefix,omitempty"`
+	Fields           []string `json:"fields,omitempty"`
+	Cleared          []string `json:"cleared,omitempty"`
+	Slug             string   `json:"slug,omitempty"`
+	AuthType         string   `json:"auth_type,omitempty"`
+	AuthChanged      bool     `json:"auth_changed,omitempty"`
+	UpstreamCount    *int     `json:"upstream_count,omitempty"`
+	ToolFilterSet    bool     `json:"tool_filter_set,omitempty"`
+	TargetType       string   `json:"target_type,omitempty"`
+	TargetID         string   `json:"target_id,omitempty"`
+	KeyPrefix        string   `json:"key_prefix,omitempty"`
+	Client           string   `json:"client,omitempty"`
+	RefreshToken     *bool    `json:"refresh_token,omitempty"`
+	Issuer           string   `json:"issuer,omitempty"`
+	VendorRevocation string   `json:"vendor_revocation,omitempty"`
 }
 
 // auditText is audit.Text: the one cleaning a caller-controlled string gets
@@ -108,8 +118,11 @@ func timePtrEqual(a, b *time.Time) bool {
 // column that held bytes and holds none afterwards records "credential" in
 // Cleared (PORM-120). The string "auth_config" must never enter a row, and
 // the field list below is the reason it cannot. slug is absent because the
-// handler refuses any slug change.
-func upstreamPatchDetails(before, after models.Upstream, authChanged bool) adminDetails {
+// handler refuses any slug change. droppedTokens is the one removal the
+// length test cannot see (PORM-139): an oauth token set replaced by a
+// client-only blob, which the handler knows because it opened the old blob
+// to apply the client rule; it records the same "credential" entry.
+func upstreamPatchDetails(before, after models.Upstream, authChanged, droppedTokens bool) adminDetails {
 	var d adminDetails
 	changed(&d.Fields, "name", before.Name != after.Name)
 	changed(&d.Fields, "description", before.Description != after.Description)
@@ -117,7 +130,7 @@ func upstreamPatchDetails(before, after models.Upstream, authChanged bool) admin
 	changed(&d.Fields, "transport", before.Transport != after.Transport)
 	changed(&d.Fields, "auth_type", before.AuthType != after.AuthType)
 	changed(&d.Fields, "enabled", before.Enabled != after.Enabled)
-	if len(before.AuthConfig) > 0 && len(after.AuthConfig) == 0 {
+	if (len(before.AuthConfig) > 0 && len(after.AuthConfig) == 0) || droppedTokens {
 		d.Cleared = append(d.Cleared, "credential")
 	}
 	d.AuthChanged = authChanged

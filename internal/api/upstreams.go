@@ -46,6 +46,17 @@ const errEnabledRule = "enabled must be true or false"
 // the caller must change and never repeats what was sent.
 const errAuthNoneCredential = "auth_config cannot be set when auth_type is none"
 
+// errOAuthConfigShape is the single source of the 400 for an oauth
+// auth_config that carries anything but the client identity (PORM-139). The
+// token set is written by the callback and the refresh path only; an API
+// caller that could plant a token_endpoint or a refresh_token would have the
+// proxy post a refresh token to a host no metadata discovery vetted.
+const errOAuthConfigShape = "auth_config for oauth accepts client_id and client_secret only"
+
+// maxClientFieldBytes bounds an operator-supplied client_id or client_secret:
+// both go on the token request, one of them into the authorization URL.
+const maxClientFieldBytes = 1 << 10
+
 // errSlugsExhausted means every derived candidate was taken. Kept distinct from
 // store.ErrConflict so the caller gets an actionable message about a slug it
 // never supplied, rather than "slug is already taken".
@@ -64,6 +75,19 @@ type upstreamPublic struct {
 	// credential yet.
 	AuthStatus string            `json:"auth_status"`
 	AuthHint   map[string]string `json:"auth_hint,omitempty"`
+	// OAuth is present on an oauth row whose blob is absent or opens
+	// (PORM-139): when the connection ends, whether the vendor issued a
+	// refresh token, and which client identity the row uses. Never a token,
+	// a secret, an issuer URL, a scope or an endpoint. auth_status "expired"
+	// is an oauth row whose access token lapsed with no refresh token; "not
+	// connected" in the dashboard is an oauth row whose expires_at is null.
+	OAuth *upstreamOAuth `json:"oauth,omitempty"`
+}
+
+type upstreamOAuth struct {
+	ExpiresAt       *time.Time `json:"expires_at"`
+	HasRefreshToken bool       `json:"has_refresh_token"`
+	ClientSource    *string    `json:"client_source"`
 }
 
 func (s *Server) presentUpstream(u *models.Upstream) upstreamPublic {
@@ -73,16 +97,88 @@ func (s *Server) presentUpstream(u *models.Upstream) upstreamPublic {
 		return out
 	}
 	// One decrypt feeds both the status and the hint; the mapping itself is
-	// credential.StatusFor, shared with credential.Status.
+	// credential.StatusOf, shared with credential.Status.
 	plain, err := credential.Read(s.keys, u.AuthType, u.AuthConfig)
-	out.AuthStatus = credential.StatusFor(err)
-	if err == nil {
+	out.AuthStatus = credential.StatusOf(u.AuthType, plain, err, time.Now())
+	if err == nil && u.AuthType != models.AuthOAuth {
 		var cfg models.AuthConfig
 		if json.Unmarshal(plain, &cfg) == nil && cfg.Header != "" {
 			out.AuthHint = map[string]string{"header": cfg.Header}
 		}
 	}
+	if u.AuthType == models.AuthOAuth {
+		out.OAuth = s.oauthOf(u, plain, err)
+	}
 	return out
+}
+
+// oauthOf builds the oauth object: from Read's plaintext when the set is
+// usable, from the opened blob when it holds only a client (Read drops that
+// plaintext as unreadable), and empty when nothing is stored. An
+// undecryptable blob gives nothing.
+func (s *Server) oauthOf(u *models.Upstream, plain json.RawMessage, readErr error) *upstreamOAuth {
+	var set models.OAuthTokenSet
+	switch {
+	case readErr == nil:
+		_ = json.Unmarshal(plain, &set)
+	case len(u.AuthConfig) == 0:
+	case errors.Is(readErr, credential.ErrUnreadable):
+		opened, _, err := s.keys.Open(string(u.AuthConfig))
+		if err != nil || json.Unmarshal(opened, &set) != nil {
+			return nil
+		}
+	default:
+		return nil
+	}
+	o := &upstreamOAuth{HasRefreshToken: set.RefreshToken != ""}
+	if set.Connected() && !set.ExpiresAt.IsZero() {
+		t := set.ExpiresAt
+		o.ExpiresAt = &t
+	}
+	if set.ClientSource != "" {
+		src := set.ClientSource
+		o.ClientSource = &src
+	}
+	return o
+}
+
+// oauthClient applies the shape rule for an oauth auth_config a caller
+// writes: an object whose members are client_id (required when present) and
+// optionally client_secret, both visible ASCII within maxClientFieldBytes.
+// It returns the sealed-to-be set, with ClientSource "supplied".
+func oauthClient(raw json.RawMessage) (models.OAuthTokenSet, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return models.OAuthTokenSet{}, false
+	}
+	for k := range fields {
+		if k != "client_id" && k != "client_secret" {
+			return models.OAuthTokenSet{}, false
+		}
+	}
+	var in struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil || in.ClientID == "" {
+		return models.OAuthTokenSet{}, false
+	}
+	if !clientField(in.ClientID) || (in.ClientSecret != "" && !clientField(in.ClientSecret)) {
+		return models.OAuthTokenSet{}, false
+	}
+	return models.OAuthTokenSet{ClientID: in.ClientID, ClientSecret: in.ClientSecret, ClientSource: "supplied"}, true
+}
+
+func clientField(s string) bool {
+	if s == "" || len(s) > maxClientFieldBytes {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // upsertUpstream is the write shape for create, patch and unsaved discovery.
@@ -189,8 +285,18 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	// A null auth_config is no credential: Value is nil, encryptAuth stores
 	// nothing, and the row reports auth_configured false, not ciphertext of
-	// the four bytes "null".
-	enc, err := s.encryptAuth(in.AuthConfig.Value)
+	// the four bytes "null". For oauth the value is the client identity and
+	// nothing else (errOAuthConfigShape), sealed as an OAuthTokenSet.
+	rawAuth := in.AuthConfig.Value
+	if authType == models.AuthOAuth && !emptyAuthConfig(rawAuth) {
+		set, ok := oauthClient(rawAuth)
+		if !ok {
+			writeError(w, http.StatusBadRequest, errOAuthConfigShape)
+			return
+		}
+		rawAuth, _ = json.Marshal(set)
+	}
+	enc, err := s.encryptAuth(rawAuth)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid auth_config")
 		return
@@ -304,8 +410,27 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// still holds a blob sealed by an earlier build (PORM-120). It counts as a
 	// change only when it removes bytes, so a resent none on an empty row
 	// stays a no-op and keeps its recorded test.
-	clearAuth := in.AuthType.Has() && in.AuthType.Value == models.AuthNone
+	//
+	// Two more removals join it for oauth (PORM-139), through the same
+	// expression so the log line and the event stay single-sourced: a URL
+	// change on an oauth row (the token was minted for the old resource, RFC
+	// 8707, and must never be presented to the new one), and a type change
+	// into or out of oauth with no auth_config in the body (a bearer token
+	// under an oauth row is never sent; a live refresh token under a bearer
+	// row is never revoked). A body that carries an auth_config replaces the
+	// blob anyway.
+	urlChanged := in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL
+	typeChanged := in.AuthType.Has() && in.AuthType.Value != u.AuthType
+	acrossOAuth := typeChanged && (u.AuthType == models.AuthOAuth || in.AuthType.Value == models.AuthOAuth)
+	clearAuth := (in.AuthType.Has() && in.AuthType.Value == models.AuthNone) ||
+		(u.AuthType == models.AuthOAuth && urlChanged) ||
+		(acrossOAuth && !in.AuthConfig.Has())
 	cleared := clearAuth && len(u.AuthConfig) > 0
+	// droppedTokens is the one removal the length test cannot see: a stored
+	// oauth token set replaced by a client-only blob or by a credential of
+	// another type. Known here because the old blob is opened to decide it.
+	droppedTokens := u.AuthType == models.AuthOAuth && in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value) &&
+		credential.Status(s.keys, u.AuthType, u.AuthConfig) != credential.StatusUnreadable && len(u.AuthConfig) > 0
 	resetTest := (in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL) ||
 		(in.Transport.Has() && in.Transport.Value != u.Transport) ||
 		(in.AuthType.Has() && in.AuthType.Value != u.AuthType) ||
@@ -372,8 +497,19 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	if in.AuthConfig.Has() {
 		// null keeps the stored credential. The value is write-only, so an
 		// object read back and sent again cannot carry it, and null has to mean
-		// "unchanged" rather than "remove".
-		enc, err := s.encryptAuth(in.AuthConfig.Value)
+		// "unchanged" rather than "remove". For oauth the value is the client
+		// identity only (errOAuthConfigShape), and writing one drops any
+		// token set: the tokens belong to the old client.
+		rawAuth := in.AuthConfig.Value
+		if u.AuthType == models.AuthOAuth && !emptyAuthConfig(rawAuth) {
+			set, ok := oauthClient(rawAuth)
+			if !ok {
+				writeError(w, http.StatusBadRequest, errOAuthConfigShape)
+				return
+			}
+			rawAuth, _ = json.Marshal(set)
+		}
+		enc, err := s.encryptAuth(rawAuth)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid auth_config")
 			return
@@ -407,21 +543,34 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// authChanged means a credential was stored: a request that carried {}
 	// stored nothing and is not reported as one.
 	authChanged := in.AuthConfig.Has() && len(u.AuthConfig) > 0
+	// An oauth row's write runs under the per-upstream lock (PORM-139), so a
+	// refresh in flight cannot land a rotated token on top of a clear, and a
+	// clear cannot drop a grant a refresh has just rotated at the vendor.
+	if before.AuthType == models.AuthOAuth || u.AuthType == models.AuthOAuth {
+		unlock, err := credential.LockUpstream(r.Context(), u.ID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "upstream is busy; try again")
+			return
+		}
+		defer unlock()
+	}
 	if err := s.store.UpdateUpstream(r.Context(), u, resetTest, writeAuth); err != nil {
 		storeError(w, err)
 		return
 	}
 	// The log line fires on the same test the admin event uses (a column that
-	// held bytes and holds none now), so the two records of a removal never
-	// disagree, whichever request emptied it: auth_type none, or {}. After the
-	// write returned nil, like patchGroup's line: the id and what was cleared,
-	// never the name or a value.
-	if len(before.AuthConfig) > 0 && len(u.AuthConfig) == 0 {
+	// held bytes and holds none now, or a token set dropped for a new
+	// client), so the two records of a removal never disagree, whichever
+	// request emptied it: auth_type none, {}, a URL or type change on an
+	// oauth row, or a new client. After the write returned nil, like
+	// patchGroup's line: the id and what was cleared, never the name or a
+	// value.
+	if (len(before.AuthConfig) > 0 && len(u.AuthConfig) == 0) || droppedTokens {
 		s.log.Info("upstream credential cleared", "upstream_id", u.ID, "cleared", []string{"credential"})
 	}
 	// A PATCH that changed nothing still records: the row was written (and
 	// updated_at moved), and an event with empty details says so honestly.
-	s.recordAdmin(r, models.ActionUpstreamUpdate, u.ID, u.Name, upstreamPatchDetails(before, *u, authChanged))
+	s.recordAdmin(r, models.ActionUpstreamUpdate, u.ID, u.Name, upstreamPatchDetails(before, *u, authChanged, droppedTokens))
 	writeJSON(w, http.StatusOK, s.presentUpstream(u))
 }
 
@@ -470,7 +619,7 @@ func validTransport(v string) bool {
 
 func validAuthType(v string) bool {
 	switch v {
-	case models.AuthNone, models.AuthBearer, models.AuthHeader, models.AuthAPIKey, models.AuthCustom:
+	case models.AuthNone, models.AuthBearer, models.AuthHeader, models.AuthAPIKey, models.AuthCustom, models.AuthOAuth:
 		return true
 	}
 	return false
