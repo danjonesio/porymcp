@@ -222,6 +222,12 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request, d door) (admitte
 	tool := ""
 	if d.tool != nil {
 		tool = d.tool(r)
+		// A caller that put its key in the path would otherwise write it
+		// into tool_name on the rows admit itself records, before the door
+		// gets to refuse the request for exactly that.
+		if tok := auth.BearerToken(r); tok != "" && strings.Contains(tool, tok) {
+			tool = "/[redacted]"
+		}
 	}
 
 	vk, wait, err := h.authenticate(r)
