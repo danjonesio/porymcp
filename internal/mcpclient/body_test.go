@@ -88,12 +88,12 @@ func TestPickResponse(t *testing.T) {
 
 	t.Run("more documents than will be considered", func(t *testing.T) {
 		// The answer is there, past the bound: it is not looked for.
-		body := strings.Repeat(event(note), maxPickDocuments) + event(answer)
+		body := strings.Repeat(event(note), MaxPickDocuments) + event(answer)
 		if _, err := PickResponse(sse, []byte(body), "1"); !errors.Is(err, errNoResponse) {
-			t.Errorf("err = %v, want %v for %d documents", err, errNoResponse, maxPickDocuments+1)
+			t.Errorf("err = %v, want %v for %d documents", err, errNoResponse, MaxPickDocuments+1)
 		}
 		// At the bound it still is.
-		body = strings.Repeat(event(note), maxPickDocuments-1) + event(answer)
+		body = strings.Repeat(event(note), MaxPickDocuments-1) + event(answer)
 		got, err := PickResponse(sse, []byte(body), "1")
 		if err != nil || string(got) != answer {
 			t.Errorf("at the bound: document = %q, err = %v, want the answer", got, err)

@@ -3,16 +3,17 @@
 ## High-level components
 - Management API (REST + OpenAPI)
 - MCP Proxy core (JSON-RPC forwarding over Streamable HTTP `POST`, plus the
-  `DELETE` that ends a session; a client's `GET` for a server-initiated stream
-  is refused `405` until PORM-5)
+  `DELETE` that ends a session; an event-stream answer is relayed as it
+  arrives; a client's `GET` is refused `405`)
 - Auth middleware (virtual key validation)
 - Credential injector (holds real secrets, never exposes them, and presents each
   to the upstream's own URL, never to a host the upstream names in a redirect)
 - Upstream client (`internal/mcpclient`): the one place a real credential is
   written onto an outgoing request, and the one construction every client that
   carries one comes from: one refusal to follow a redirect, one wrapped default
-  transport, and a timeout and read cap each caller sizes for its own job (the
-  proxy relays a client's call in 60 s and 16 MiB; discovery has 10 s and 2 MiB
+  transport, and a budget and read cap each caller sizes for its own job (the
+  proxy reads a JSON answer within five minutes and 16 MiB and relays an event
+  stream as it arrives; a group member's listing has 60 s; discovery has 10 s and 2 MiB
   for a whole handshake; the era probe, `server/discover`, has 5 s and 2 MiB
   for its one round trip, on both planes). The proxy's relay, the proxy's own
   catalogue request and era probe, and the dashboard's discovery call all go
@@ -113,8 +114,10 @@ and no others: `Content-Type`, `Mcp-Session-Id` and `Retry-After`
 `Access-Control-Allow-Origin` included. An upstream cannot mint a session a
 browser stores against PoryMCP's origin, cannot name its authorization server
 to a key holder in a response header, and cannot duplicate the CORS and
-security headers PoryMCP sets. The response body is relayed as it always has
-been. Every response the proxy endpoints write carries
+security headers PoryMCP sets. A JSON body is relayed whole. On the 1:1 path a
+2xx event-stream body is relayed as it arrives, with `X-Accel-Buffering: no`
+added by PoryMCP, and its audit row is written when the stream ends. Every
+response the proxy endpoints write carries
 `Cache-Control: no-store`. That copying happens only on a response the proxy
 relays, and a `3xx` is never relayed (the call has already failed by then), so
 `Location` never reaches the client on any path, and neither does anything else
@@ -126,13 +129,12 @@ header within its bound, and compares `Mcp-Method`, `Mcp-Name` and
 (`copyHopHeaders`, PORM-150). The names and the bound are in
 `docs/07-security.md`.
 
-Server-initiated messages are not proxied. A `GET` on a proxy endpoint is
+Messages outside a request's own response stream are not proxied. A `GET` on a proxy endpoint is
 answered `405` with `Allow: POST, DELETE, OPTIONS` in the shared serve body,
 after the CORS block and the host check and before the key is read, so a
 refused probe costs no key lookup, no upstream request and no audit row; the
 request log records it. The proxy's own `Access-Control-Allow-Methods` names
-the same three verbs, from the same constant. Real streaming over `GET` is
-PORM-5.
+the same three verbs, from the same constant.
 
 ### Discovery (management plane, not a proxy path)
 

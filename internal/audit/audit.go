@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/models"
@@ -13,23 +15,50 @@ import (
 )
 
 // Logger writes audit entries asynchronously so proxy latency stays low.
+//
+// Close drains what has been queued before it returns (PORM-5): a relayed
+// stream writes its row when the proxy stops it at shutdown, which makes that
+// row the last thing queued and, without the drain, the first thing lost on
+// every redeploy. A row recorded after Close is dropped with a log line rather
+// than sent on a closed channel.
 type Logger struct {
 	store store.Store
 	ch    chan models.AuditLog
 	log   *slog.Logger
+	// mu orders every send against Close: a send holds it shared, Close holds
+	// it exclusively while it marks the logger closed and closes ch, so no
+	// send can slip between the check and the close. A send that is parked
+	// on a full queue holds it shared too, so Close first closes closing,
+	// which every parked send selects on, and none of them can hold Close
+	// past the drain bound.
+	mu        sync.RWMutex
+	closed    bool
+	closing   chan struct{} // closed first by Close: a parked send gives way
+	closeOnce sync.Once
+	done      chan struct{} // closed when loop has drained ch
+	// parked counts the sends that fell back to enqueue, so a test can tell
+	// it reached that path.
+	parked atomic.Int64
 }
+
+// drainTimeout bounds how long Close waits for the writer to drain the queue.
+// A package var, as the proxy's budgets are, so a test can shorten it.
+var drainTimeout = 5 * time.Second
 
 func New(s store.Store, log *slog.Logger) *Logger {
 	l := &Logger{
-		store: s,
-		ch:    make(chan models.AuditLog, 1024),
-		log:   log,
+		store:   s,
+		ch:      make(chan models.AuditLog, 1024),
+		log:     log,
+		closing: make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 	go l.loop()
 	return l
 }
 
 func (l *Logger) loop() {
+	defer close(l.done)
 	for e := range l.ch {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := l.store.InsertAuditLog(ctx, &e); err != nil && l.log != nil {
@@ -47,15 +76,69 @@ func (l *Logger) Record(e models.AuditLog) {
 		e.Timestamp = time.Now().UTC()
 	}
 	e.Params = Redact(e.Params)
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		l.dropped(e)
+		return
+	}
 	select {
 	case l.ch <- e:
 	default:
-		// Channel full: fall back to a blocking send with a short timeout via goroutine.
-		go func() { l.ch <- e }()
+		// Channel full: fall back to a blocking send on its own goroutine,
+		// under the same lock, so it too cannot send on a closed channel.
+		go l.enqueue(e)
 	}
 }
 
-func (l *Logger) Close() { close(l.ch) }
+// enqueue is the blocking send Record falls back to. It holds the read lock
+// while it waits, and gives way the moment Close starts, so the row it holds
+// is dropped with a line rather than delaying the drain.
+func (l *Logger) enqueue(e models.AuditLog) {
+	l.parked.Add(1)
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		l.dropped(e)
+		return
+	}
+	select {
+	case l.ch <- e:
+	case <-l.closing:
+		l.dropped(e)
+	}
+}
+
+// dropped says a row was lost, by id, method and request id only: the row's
+// error_message can quote an upstream URL, and its params are the caller's.
+func (l *Logger) dropped(e models.AuditLog) {
+	if l.log != nil {
+		l.log.Error("audit row dropped after close", "id", e.ID, "method", e.Method, "request_id", e.RequestID)
+	}
+}
+
+// Close stops accepting rows, closes the queue and waits for loop to drain it,
+// for at most drainTimeout measured from the call. Rows still queued when that
+// runs out are counted in the log and lost, and loop goes on inserting them
+// until the store closes under it. A second Close returns at once.
+func (l *Logger) Close() {
+	deadline := time.NewTimer(drainTimeout)
+	defer deadline.Stop()
+	l.closeOnce.Do(func() { close(l.closing) })
+	l.mu.Lock()
+	if !l.closed {
+		l.closed = true
+		close(l.ch)
+	}
+	l.mu.Unlock()
+	select {
+	case <-l.done:
+	case <-deadline.C:
+		if l.log != nil {
+			l.log.Error("audit rows not written before exit", "pending", len(l.ch))
+		}
+	}
+}
 
 var secretKeys = map[string]struct{}{
 	"authorization": {},

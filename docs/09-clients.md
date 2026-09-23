@@ -289,6 +289,22 @@ answers `400` with
 On the aggregate URL send `github__create_issue` in both `params.name` and
 `Mcp-Name`.
 
+A `subscriptions/listen` is a `POST` whose answer stays open; on a member or
+single-upstream endpoint the proxy relays it as it arrives:
+
+```bash
+curl -N -sS -X POST http://localhost:8080/{virtual_key_id}/mcp \
+  -H "Authorization: Bearer pory_YOUR_VIRTUAL_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: subscriptions/listen" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+`-N` stops curl buffering its output, so each event prints as it arrives. The
+stream stays open until you press Ctrl-C.
+
 ---
 
 ## Testing against a local server

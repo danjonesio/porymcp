@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -571,14 +570,14 @@ func toolFilter(mode string, tools ...string) models.ToolFilter {
 // captureLogs points the handler's logger at a buffer. h.log is nil everywhere
 // else in these tests, and a pass-through logged nowhere is indistinguishable
 // from one that never happened.
-func captureLogs(f *fixture) *bytes.Buffer {
-	var buf bytes.Buffer
-	f.H.log = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	return &buf
+func captureLogs(f *fixture) *syncBuffer {
+	buf := &syncBuffer{}
+	f.H.log = slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return buf
 }
 
 // logRecords decodes what captureLogs collected, one map per record.
-func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+func logRecords(t *testing.T, buf *syncBuffer) []map[string]any {
 	t.Helper()
 	out := []map[string]any{}
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {

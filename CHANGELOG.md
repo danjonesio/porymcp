@@ -4,6 +4,33 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Event-stream answers are relayed as they arrive (PORM-5)
+
+- **A 2xx `text/event-stream` answer on a member or single-upstream endpoint
+  reaches the client as the upstream writes it**, so `subscriptions/listen`
+  and streamed `tools/call` progress work through the proxy; `tools/list`,
+  non-2xx, unlabelled and group answers stay buffered.
+- **The flat 60 s upstream timeout is gone.** A buffered answer has five
+  minutes, a connection ten seconds, a stream five minutes between reads and
+  per client write, and a group member's listing 60 s as before. The row text
+  for a timeout changes from `Client.Timeout exceeded while awaiting headers`
+  to `upstream did not answer within 5m0s`.
+- **An upstream that accepts the connection and never answers now holds a
+  buffered call for up to five minutes, not 60 s.** An edge with a shorter
+  timeout, such as Cloudflare at 125 s, cuts it first.
+- **A streamed row is written when the stream ends**, with the bytes relayed
+  and the latency to the end. **A `subscriptions/listen` row is `success` when
+  the client closes the stream**, because closing it is how a listen ends.
+- **A key that is revoked, expired, rotated or retargeted, an upstream removed
+  from it, or an upstream whose URL, transport or credential changed since
+  the stream opened, ends its open streams within a minute.** A new name or
+  description leaves a stream alone.
+- **The proxy sets `X-Accel-Buffering: no` on streams.** nginx operators keep
+  `proxy_buffering off` for the rest.
+- **Shutdown ends open streams and the audit queue is drained before exit**; a
+  row recorded after the drain is logged and dropped instead of panicking.
+- **Rollback** is the previous `sha-<short sha>` image; no schema change.
+
 ### Virtual keys are verified with SHA-256 instead of argon2id (PORM-44)
 
 - **A proxied call no longer spends about 60 ms and 64 MiB checking its

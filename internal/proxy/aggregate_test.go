@@ -1151,7 +1151,7 @@ func sseCatalogue(id string, names ...string) string {
 }
 
 // skipWarnings is the "group member skipped" records in what captureLogs kept.
-func skipWarnings(t *testing.T, logs *bytes.Buffer) []map[string]any {
+func skipWarnings(t *testing.T, logs *syncBuffer) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, r := range logRecords(t, logs) {

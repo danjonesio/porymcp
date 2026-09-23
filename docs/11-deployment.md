@@ -87,8 +87,12 @@ The compose overlay in this repository pins Caddy at `172.28.0.4` and sets
 ## 4. nginx
 
 nginx does not set forwarded headers for you, and it buffers by default.
-Turn buffering off and raise the read timeout for SSE and long tool calls.
-Cap the inbound body at 8 MiB so it matches the proxy's own cap.
+PoryMCP sends `X-Accel-Buffering: no` on a streamed answer, which turns
+buffering off for that answer unless `proxy_ignore_headers` lists it. Keep
+`proxy_buffering off` for the rest. `proxy_read_timeout` runs between reads, so
+set it above the longest gap an upstream leaves between keep-alives; the block
+below uses an hour. Cap the inbound body at 8 MiB so it matches the proxy's own
+cap.
 
 ```nginx
 server {
@@ -142,6 +146,9 @@ header line and the header block together, and nginx answers with its own
 
 Traefik sets `X-Forwarded-*` by default. Point the load balancer at 8080 and
 put the container IP (or the Traefik-to-app CIDR) in `TRUSTED_PROXIES`.
+Traefik's defaults carry a stream: the entry point's read timeout covers the
+request, not the response (Go clears the read deadline once the body is read),
+and its write timeout is off.
 
 ```yaml
 services:
@@ -165,9 +172,10 @@ Cloudflare and forwards HTTP to the origin. If that hop is not in
 hop, forwarded `proto=https` would pass scheme enforcement while bearer
 tokens still travel in clear text on the origin hop. Do not use Flexible.
 
-Free-plan edge timeouts are about 100 seconds. Long `tools/call` responses
-and SSE streams that run past that are cut. Raise the plan or keep those
-calls shorter than the edge timeout.
+Cloudflare's proxy read timeout is 125 seconds until the origin's response
+starts (Enterprise plans can raise it). A JSON `tools/call` longer than that is
+cut at the edge whatever PoryMCP's budget. A streamed answer sends its headers
+at once, so it starts well inside that limit.
 
 Cloudflare is a trusted hop only if `TRUSTED_PROXIES` covers the address that
 actually connects to PoryMCP (usually your origin edge, not every Cloudflare

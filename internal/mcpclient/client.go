@@ -39,9 +39,13 @@ const MaxBodyBytes = 16 << 20
 // inverted dependency between these two.
 const MaxErrorBytes = 256
 
-// Options is what a caller gets to choose. The timeout is the only knob: the
-// proxy relays a client's own call and allows 60s, discovery allows 10s for a
-// whole handshake. Everything else NewHTTPClient sets is policy, see there.
+// Options is what a caller gets to choose. The timeout is the only knob, and
+// it is an http.Client.Timeout: it covers the whole exchange, body included.
+// Discovery allows 10s for a whole handshake. The proxy passes none, because a
+// relayed event stream stays open for as long as the upstream and the client
+// keep it, and bounds each request through the context instead (the budgets
+// in internal/proxy/budget.go). Everything else NewHTTPClient sets is policy,
+// see there.
 type Options struct {
 	Timeout time.Duration
 }
@@ -107,28 +111,37 @@ func (t UpstreamTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, err
 }
 
-// Send performs an already-built upstream request and reads its body, unless
-// the answer is a 3xx, which it refuses before reading anything. It is shared
-// so that a request PoryMCP composes and a request it relays go out over the
-// same client, with the same timeout, the same read cap and the same refusal
-// to be sent somewhere else.
-func Send(hc *http.Client, req *http.Request, limit int64) ([]byte, int, http.Header, error) {
+// Open performs an already-built upstream request and hands back the live
+// response, unless the answer is a 3xx, which it refuses before reading
+// anything. It is the one place in the tree that calls Do on a client carrying
+// a credential: a request PoryMCP composes, a request it relays and reads
+// whole, and a request whose answer it relays as it arrives all go out through
+// here, with the same refusal to be sent somewhere else. The caller owns the
+// body it is handed and closes it; ReadBody does that for the buffered callers.
+func Open(hc *http.Client, req *http.Request) (*http.Response, error) {
 	resp, err := hc.Do(req)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, err
 	}
-	defer resp.Body.Close()
 	// Before the body is read: a 3xx body is not an answer. CheckRedirect is
 	// not a complete gate, Go consults it only for 301/302/303/307/308 that
 	// carry a Location; 300, 304, 305 and a Location-less 3xx come back as
 	// ordinary responses and, before this, were relayed to the client with
 	// Location attached and audited as a success. So the test is the status
-	// class, not a case list. The body is left unread, so the connection is
+	// class, not a case list. The body is closed unread, so the connection is
 	// not reused; an upstream that just asked us to go elsewhere does not get
 	// a warm connection back.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return nil, 0, nil, RedirectRefused(resp.Header.Get("Location"))
+		resp.Body.Close()
+		return nil, RedirectRefused(resp.Header.Get("Location"))
 	}
+	return resp, nil
+}
+
+// ReadBody reads a response Open handed back, whole, up to limit bytes, and
+// closes it. It is the buffered half of what Send always did.
+func ReadBody(resp *http.Response, limit int64) ([]byte, int, http.Header, error) {
+	defer resp.Body.Close()
 	// limit+1 so that "exactly the cap" is told apart from "more than the cap".
 	// A LimitReader that stops AT the cap hands back a document cut in half,
 	// which json.Unmarshal then rejects, so a legitimately large catalogue was
@@ -144,6 +157,18 @@ func Send(hc *http.Client, req *http.Request, limit int64) ([]byte, int, http.He
 		return nil, 0, nil, BodyTooLarge{Limit: limit}
 	}
 	return out, resp.StatusCode, resp.Header.Clone(), nil
+}
+
+// Send is Open then ReadBody: the request goes out, a 3xx is refused, and the
+// body is read whole under the cap. Every caller that wants the whole answer
+// uses it; the proxy's streaming relay uses Open alone and reads the body as it
+// arrives.
+func Send(hc *http.Client, req *http.Request, limit int64) ([]byte, int, http.Header, error) {
+	resp, err := Open(hc, req)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	return ReadBody(resp, limit)
 }
 
 // ErrBodyTooLarge is what an upstream answer past the caller's read cap

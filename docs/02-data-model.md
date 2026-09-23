@@ -205,7 +205,8 @@ On creation/rotation the plaintext key is returned **once**.
   is time order and `ORDER BY timestamp`, the paging cursor and `since`/`until`
   are exact (PORM-26). Every timestamp column in every table uses the same
   layout. The JSON the API returns is RFC 3339 with trailing zeros dropped, as
-  before
+  before. It is the time the row was written, which for a streamed answer is
+  when the stream ended
 - `virtual_key_id`
 - `virtual_key_name` (denormalized)
 - `method` (tools/list, tools/call, resources/list, initialize, etc.): the
@@ -223,8 +224,10 @@ On creation/rotation the plaintext key is returned **once**.
   no upstream was contacted. `error` covers both an upstream that answered badly
   and one the proxy refused to keep talking to: a `3xx` answer, which is never
   followed)
-- `latency_ms`
-- `response_size_bytes` (optional)
+- `latency_ms`: from the request to the end of the answer; for a streamed
+  answer, the end of the stream
+- `response_size_bytes` (optional): for a streamed answer, the bytes relayed to
+  the client
 - `upstream_id` (which real server handled it): empty when none was
   contacted. A blocked call on the **aggregate** group endpoint records no
   upstream, since the block happens before a member is chosen; a blocked call

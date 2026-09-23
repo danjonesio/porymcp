@@ -38,7 +38,7 @@ func TestRouterTopology(t *testing.T) {
 		"index.html":              &fstest.MapFile{Data: []byte("SPA-MARKER root")},
 		"virtual-keys/index.html": &fstest.MapFile{Data: []byte("SPA-MARKER virtual-keys")},
 	})
-	r := newRouter(cfg, st, auditor, log, spa, webutil.EncryptionOK)
+	r, _ := newRouter(cfg, st, auditor, log, spa, webutil.EncryptionOK)
 
 	do := func(method, path, admin string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, "http://localhost:8080"+path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
@@ -152,7 +152,7 @@ func TestRouterTopology(t *testing.T) {
 	})
 
 	t.Run("no dashboard built", func(t *testing.T) {
-		bare := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
+		bare, _ := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
 		req := httptest.NewRequest(http.MethodGet, "http://localhost:8080/agents/", nil)
 		rr := httptest.NewRecorder()
 		bare.ServeHTTP(rr, req)
@@ -180,7 +180,7 @@ func TestSecurityHeaders(t *testing.T) {
 		"index.html":       &fstest.MapFile{Data: []byte("<html><script>self.__next_f.push([1,\"x\"])</script></html>")},
 		"login/index.html": &fstest.MapFile{Data: []byte("<html><script>self.__next_f.push([1,\"login\"])</script></html>")},
 	})
-	r := newRouter(cfg, st, auditor, log, spa, webutil.EncryptionOK)
+	r, _ := newRouter(cfg, st, auditor, log, spa, webutil.EncryptionOK)
 
 	wantHeaders := []string{
 		"Content-Security-Policy",

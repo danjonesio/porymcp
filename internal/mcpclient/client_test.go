@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -109,6 +110,53 @@ func TestSendRefusesEveryRedirectClass(t *testing.T) {
 	}
 	if n := targetHits.Load(); n != 0 {
 		t.Fatalf("the redirect target was called %d times, want 0: the credential must never reach a host an upstream named", n)
+	}
+}
+
+// PORM-5 security requirement 2: the refusal lives in Open, which the proxy's
+// streaming relay calls without ReadBody, so it is proved on Open itself and on
+// every 3xx code, the ones Go never consults CheckRedirect for included. A
+// refused response hands back no *http.Response at all, and its body has been
+// closed, so nothing downstream could copy a redirect's headers to a client.
+func TestOpenRefusesEveryRedirectClass(t *testing.T) {
+	var targetHits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	var status int
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL+"/elsewhere?code=REDIRECT_QUERY_MARKER")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, "event: message\ndata: {}\n\n")
+	}))
+	defer origin.Close()
+
+	client := NewHTTPClient(Options{Timeout: 5 * time.Second})
+	for code := 300; code <= 308; code++ {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			status = code
+			req, err := http.NewRequest(http.MethodPost, origin.URL, strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := Open(client, req)
+			if !errors.Is(err, ErrRedirected) {
+				t.Fatalf("Open err=%v, want ErrRedirected", err)
+			}
+			if resp != nil {
+				t.Fatalf("Open returned a response on a %d; a 3xx is refused before the caller can read a header off it", code)
+			}
+			if strings.Contains(err.Error(), "REDIRECT_QUERY_MARKER") || strings.Contains(err.Error(), "/elsewhere") {
+				t.Errorf("err=%q carries the Location's path or query", err)
+			}
+		})
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Fatalf("the redirect target was called %d times, want 0", n)
 	}
 }
 

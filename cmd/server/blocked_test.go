@@ -156,8 +156,9 @@ func newBlockFixture(t *testing.T, targetType, toolFilter string) *blockFixture 
 		t.Fatal(err)
 	}
 
+	router, _ := newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK)
 	return &blockFixture{
-		router: newRouter(cfg, st, auditor, log, nil, webutil.EncryptionOK),
+		router: router,
 		stub:   stub,
 		keyID:  "k1",
 		key:    plain,

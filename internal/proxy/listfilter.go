@@ -94,7 +94,8 @@ func (h *Handler) filterListResponse(body []byte, status int, hdr http.Header, p
 	// The body is no longer the one these headers were computed over. hdr is
 	// the private clone forward returned, so deleting from it affects nothing
 	// else. These deletions are this function's own contract over the clone it
-	// returns, which PORM-5's streaming path will carry too. The copy-back
+	// returns; a tools/list is never streamed, so this is the one place its
+	// headers are shaped. The copy-back
 	// allowlist (copyResponseHeaders) excludes these four names as well; the
 	// deletion stays so a later addition to that list cannot ship a digest
 	// describing bytes the client never received. Content-Length needs no

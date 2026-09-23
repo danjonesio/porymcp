@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/audit"
@@ -39,21 +40,32 @@ type Handler struct {
 	// server/discover once and not on every walk. In memory only: nothing an
 	// upstream said is persisted (PORM-58).
 	eras *eraCache
+	// streams is done once StopStreams has run; every relayed stream watches
+	// it (relayStream). openStreams counts the streams open right now, for the
+	// two log lines that are the only place they can be seen.
+	streams     context.Context
+	stopStreams context.CancelFunc
+	openStreams atomic.Int64
 }
 
 func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger) *Handler {
+	streams, stop := context.WithCancel(context.Background())
 	return &Handler{
-		cfg:   cfg,
-		keys:  cfg.Keyring(),
-		store: st,
-		audit: al,
-		limit: auth.NewLimiter(),
-		log:   log,
+		cfg:         cfg,
+		keys:        cfg.Keyring(),
+		store:       st,
+		audit:       al,
+		limit:       auth.NewLimiter(),
+		log:         log,
+		streams:     streams,
+		stopStreams: stop,
 		// The no-redirect policy and the wrapped default transport are
 		// mcpclient's, not this handler's: every client that carries an
 		// upstream credential has them, and NewHTTPClient is the only place
-		// they are set. See its comment for why.
-		client: mcpclient.NewHTTPClient(mcpclient.Options{Timeout: 60 * time.Second}),
+		// they are set. See its comment for why. No timeout: a relayed event
+		// stream stays open for as long as the upstream and the client keep
+		// it, and every request is bounded by its context instead (budget.go).
+		client: mcpclient.NewHTTPClient(mcpclient.Options{}),
 		eras:   newEraCache(),
 	}
 }
@@ -67,9 +79,10 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 // For a browser the entry that matters is DELETE: GET, HEAD and POST are
 // CORS-safelisted methods, which a preflight never refuses on this header,
 // so naming GET or not changes nothing on the wire and the two headers are
-// kept equal so they cannot disagree. PORM-5 adds GET here and replaces the
-// branch in serve with a real stream; the header and the handler change
-// together, which is why they share this.
+// kept equal so they cannot disagree. GET stays out: in the 2026-07-28
+// revision a server's messages arrive on the response to a POST, which the
+// relay streams (stream.go). A verb added later changes the header and the
+// handler together, which is why they share this.
 const allowedMethods = "POST, DELETE, OPTIONS"
 
 // allowedHeaders is the fixed half of the endpoint's Access-Control-Allow-
@@ -183,7 +196,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// the shared /mcp door. Written here rather than beside the relay so the
 	// refusal paths and the preflight carry it too (uniformity, not a leak
 	// today: a preflight cache reads Access-Control-Max-Age, not this) and so
-	// PORM-5's streaming path inherits it before its first write.
+	// the streaming relay inherits it before its first write.
 	w.Header().Set("Cache-Control", "no-store")
 	if h.applyCORS(w, r) {
 		return
@@ -204,8 +217,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// it. After applyCORS so a preflight keeps its 204, and after the host
 	// check so a rewritten Host is diagnosed the same way on every verb.
 	// Allow goes on before writeRPCError, which commits the header block.
-	// PORM-5 replaces this branch with the streaming GET handler and adds GET
-	// to allowedMethods in the same change.
+	// GET stays refused: in the 2026-07-28 revision a server's messages
+	// arrive on the response to a POST, which the relay streams (stream.go),
+	// and a server may answer GET with 405 in every revision.
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.Header().Set("Allow", allowedMethods)
 		writeRPCError(w, http.StatusMethodNotAllowed, nil, -32000, "method not allowed")
@@ -575,7 +589,36 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			}
 		}
 		if err == nil {
-			respBody, statusCode, headers, err = h.forward(r.Context(), r, up, sent, relay)
+			// One request, one budget: five minutes for a buffered answer or
+			// for a stream's headers, and the connect budget in front of it
+			// (upstreamContext). A buffered answer releases the budget as soon
+			// as the body is read; a stream disarms the answer timer once the
+			// headers are in and holds the context for as long as it lives. A
+			// budget that fired is the sentence the row records (causeError).
+			ctx, disarm, cancel := upstreamContext(r.Context(), answerBudget)
+			var resp *http.Response
+			resp, err = h.forward(ctx, r, up, sent, relay)
+			switch {
+			case err != nil:
+				err = causeError(ctx, err)
+				cancel(nil)
+			case streamable(onAggregate, method, resp):
+				disarm()
+				h.relayStream(w, r, ctx, cancel, resp, streamRow{
+					vk: vk, requestID: requestID, method: method, auditMethod: auditMethod,
+					tool: truncate(tool, auditFieldBytes), upstreamID: up.ID, upstream: up,
+					params: boundedParams(req.Params), start: start,
+					wantID:     strings.TrimSpace(string(req.ID)),
+					memberPath: memberPath, slug: chi.URLParam(r, SlugParam),
+				})
+				return
+			default:
+				respBody, statusCode, headers, err = mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
+				if err != nil {
+					err = causeError(ctx, err)
+				}
+				cancel(nil)
+			}
 		}
 		if onAggregate && err == nil {
 			// On this endpoint PoryMCP is the server: the member's answer is
@@ -817,7 +860,12 @@ const (
 // saved before that still holds it) would otherwise replace it, so a member
 // that routes on Mcp-Name would run the name the stored config chose and not
 // the one the policy gate judged.
-func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, hdr *memberHeaders) ([]byte, int, http.Header, error) {
+//
+// It hands back the live response, refused already when it was a 3xx
+// (mcpclient.Open), and the caller decides whether to read it whole
+// (forwardRead) or relay it as it arrives (relayStream). ctx is one
+// upstreamContext derives: its budgets are what bound the request.
+func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, hdr *memberHeaders) (*http.Response, error) {
 	// Before the request exists: a transport this client cannot speak, or a
 	// credential that cannot be presented, means nothing is dialled, not a
 	// request with the virtual key stripped and nothing put back, which is
@@ -825,15 +873,15 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 	// before dispatch; this is the same check for any future caller that
 	// reaches a dial without passing through serve, not a second policy.
 	if err := mcpclient.TransportError(up.Transport); err != nil {
-		return nil, 0, nil, err
+		return nil, err
 	}
 	plain, err := h.credential(up)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, inbound.Method, up.URL, bytes.NewReader(body))
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, err
 	}
 	var (
 		set  http.Header
@@ -851,10 +899,27 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 	}
 	if err := mcpclient.ApplyAuth(req, up.AuthType, plain); err != nil {
 		// Unreachable after credential(); kept so the seam cannot regress.
-		return nil, 0, nil, errCredentialUnreadable
+		return nil, errCredentialUnreadable
 	}
 	copyHopHeaders(req.Header, set)
-	return mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
+	return mcpclient.Open(h.client, req)
+}
+
+// forwardRead is forward then ReadBody at the relay cap: the shape every
+// caller that wants the whole answer uses, so none of them can be handed a
+// live body and forget to read or close it. The error a cancelled request
+// comes back with is the budget's own sentence (causeError), not the
+// transport's "context canceled".
+func (h *Handler) forwardRead(ctx context.Context, inbound *http.Request, up *models.Upstream, body []byte, hdr *memberHeaders) ([]byte, int, http.Header, error) {
+	resp, err := h.forward(ctx, inbound, up, body, hdr)
+	if err != nil {
+		return nil, 0, nil, causeError(ctx, err)
+	}
+	out, status, header, err := mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
+	if err != nil {
+		return nil, 0, nil, causeError(ctx, err)
+	}
+	return out, status, header, nil
 }
 
 // memberHeaders is what the aggregate decides about the headers of a request
@@ -904,6 +969,12 @@ type memberHeaders struct {
 // members answer. The two guards run before the era is looked up, so a member
 // the proxy must not dial is not probed either.
 func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, int, error) {
+	// The whole of one member's turn, the era probe included, has the minute
+	// the client's flat timeout used to give it: a silent member costs the
+	// walk that and no more. Wrapped at the top so the probe's connection is
+	// the one the connect timer watches.
+	ctx, _, cancel := upstreamContext(ctx, listBudget)
+	defer cancel(nil)
 	if err := mcpclient.TransportError(up.Transport); err != nil {
 		return nil, 0, err
 	}
@@ -939,8 +1010,9 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	if err != nil {
 		// Before the reduction, not after it: a refused redirect arrives with
 		// no body, and reducing that would replace the sentence that names the
-		// redirect with one about an empty body.
-		return nil, status, err
+		// redirect with one about an empty body. A budget that fired is named
+		// as the budget, not as a cancelled context.
+		return nil, status, causeError(ctx, err)
 	}
 	// A member answers in whichever framing its SDK defaults to, and the
 	// reference SDKs default to an event stream. The answer is reduced here
@@ -1072,12 +1144,15 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// Methods the group endpoint cannot serve, refused the way the
 		// revision's transport prescribes for a method a server does not
 		// implement: 404 and -32601. subscriptions/listen needs a stream held
-		// open, which a buffered relay cannot give (PORM-5), and relayed to the
-		// first member it held that member's stream until the client timed out
-		// and tried again. A task handle belongs to the one member that issued
-		// it and the group has no way to know which; tasks are an extension
-		// this endpoint does not advertise. No member is contacted, so the row
-		// names none. A member endpoint relays all three to its member.
+		// open to one member, which this endpoint, which reads every member's
+		// answer whole to merge or reduce it, cannot give; relayed to the first
+		// member it once held that member's stream until the client timed out
+		// and tried again. A member endpoint and a single-upstream key relay
+		// the stream as it arrives (stream.go). A task handle belongs to the
+		// one member that issued it and the group has no way to know which;
+		// tasks are an extension this endpoint does not advertise. No member
+		// is contacted, so the row names none. A member endpoint relays all
+		// three to its member.
 		return answerRPC(req.ID, nil, &rpcError{Code: codeMethodNotFound, Message: msgMethodNotFound}), http.StatusNotFound, nil, "", nil
 	case "notifications/initialized":
 		// Both eras of the transport say an accepted notification is a 202 with
@@ -1191,7 +1266,12 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		verdict, known := h.eras.get(route.Upstream.ID, route.Upstream.UpdatedAt)
 		composed, meta := memberCallHeaders(inbound.Header, route.Original, verdict, known, clientModern)
 		rewritten := rewriteMethod(body, "tools/call", rewriteToolCallParams(req.Params, route.Original, meta))
-		out, status, hdr, err := h.forward(ctx, inbound, route.Upstream, rewritten, composed)
+		// The routed call has the same answer budget a call on a member
+		// endpoint has; the catalogue walk above ran under listBudget per
+		// member. The context is released as soon as the body is read.
+		callCtx, _, cancel := upstreamContext(ctx, answerBudget)
+		out, status, hdr, err := h.forwardRead(callCtx, inbound, route.Upstream, rewritten, composed)
+		cancel(nil)
 		if err != nil {
 			return out, status, nil, route.Upstream.ID, err
 		}
@@ -1207,7 +1287,9 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// relayed is relayed by serve, which also decides its headers. Kept as
 		// a relay, not a panic, so a method added to one list and not the other
 		// fails towards the old behaviour.
-		out, status, _, err := h.forward(ctx, inbound, ups[0], body, nil)
+		relayCtx, _, cancel := upstreamContext(ctx, answerBudget)
+		out, status, _, err := h.forwardRead(relayCtx, inbound, ups[0], body, nil)
+		cancel(nil)
 		return out, status, nil, ups[0].ID, err
 	}
 }

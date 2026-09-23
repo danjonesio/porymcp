@@ -71,9 +71,10 @@ func copyHopHeaders(dst, src http.Header, drop ...string) {
 // replace PoryMCP's value with the upstream's in silence, and no test in this
 // package can see that, because the fixture runs without the middleware.
 // Nothing is logged: two of the names this drops are credential-equivalent.
-// PORM-5's streaming path calls this same function against the live response
-// header before its first write; Mcp-Protocol-Version and Last-Event-ID are
-// request headers and must not be added back there.
+// The streaming relay (stream.go) calls this same function against the live
+// response header before its first write, then adds its own X-Accel-Buffering;
+// Mcp-Protocol-Version and Last-Event-ID are request headers and must not be
+// added back there.
 func copyResponseHeaders(dst, src http.Header) {
 	for _, key := range []string{
 		"Content-Type",

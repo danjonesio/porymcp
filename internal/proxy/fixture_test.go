@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -100,6 +101,16 @@ type upstreamSpec struct {
 	// test builds the row an operator saved before that change, or one whose
 	// column was edited by hand.
 	Transport string
+	// Handler, when set, answers every request the stub receives after the
+	// request has been recorded, in place of every arm below. It is how a
+	// test builds an upstream that answers slowly, streams, holds a stream
+	// open or goes quiet (PORM-5): the body has been read for the record and
+	// is rewound, so the handler can parse it again.
+	Handler http.HandlerFunc
+	// URL, when set, is the stored upstream URL instead of the stub's own,
+	// for an upstream a test cannot express as an httptest server: a listener
+	// that accepts and never answers, say.
+	URL string
 }
 
 // recordedRequest is one request a stub received, kept whole. The counters
@@ -246,6 +257,12 @@ func newStub(spec upstreamSpec) *stub {
 		_ = json.Unmarshal(body, &req)
 		s.bump(r, body, req.Method, req.Params.Name)
 
+		if spec.Handler != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			spec.Handler(w, r)
+			return
+		}
+
 		// RespHeaders go on before any arm, so one field reaches every reply
 		// the stub can make. The arms below set Content-Type only when this
 		// left it unset.
@@ -341,7 +358,7 @@ func newStub(spec upstreamSpec) *stub {
 // fixture is a proxy handler wired to real stores and stub upstreams, plus the
 // one virtual key the test authenticates with.
 type fixture struct {
-	t     *testing.T
+	t     testing.TB
 	H     *Handler
 	Key   string // the plaintext virtual key
 	Store store.Store
@@ -359,7 +376,7 @@ type fixture struct {
 	Router http.Handler
 }
 
-func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter json.RawMessage, allow, deny []string) *fixture {
+func newFixture(t testing.TB, specs map[string]upstreamSpec, group bool, filter json.RawMessage, allow, deny []string) *fixture {
 	t.Helper()
 	key, err := crypto.RandomKey()
 	if err != nil {
@@ -404,6 +421,9 @@ func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter 
 		}
 		if tr := specs[slug].Transport; tr != "" {
 			up.Transport = tr
+		}
+		if u := specs[slug].URL; u != "" {
+			up.URL = u
 		}
 		// Bearer is the shorthand; AuthType with an AuthConfig is the long
 		// way round, and the only way to build the api_key, header and custom
@@ -469,7 +489,7 @@ func newFixture(t *testing.T, specs map[string]upstreamSpec, group bool, filter 
 
 // newGroupFixture builds a group key over members, a map of upstream slug to
 // the tool names that upstream advertises.
-func newGroupFixture(t *testing.T, members map[string][]string, filter json.RawMessage, allow, deny []string) *fixture {
+func newGroupFixture(t testing.TB, members map[string][]string, filter json.RawMessage, allow, deny []string) *fixture {
 	specs := map[string]upstreamSpec{}
 	for slug, tools := range members {
 		specs[slug] = upstreamSpec{Tools: tools}
@@ -479,7 +499,7 @@ func newGroupFixture(t *testing.T, members map[string][]string, filter json.RawM
 
 // newSingleFixture builds a key bound to one upstream, with no group. The
 // upstream's slug is "solo".
-func newSingleFixture(t *testing.T, spec upstreamSpec, allow, deny []string) *fixture {
+func newSingleFixture(t testing.TB, spec upstreamSpec, allow, deny []string) *fixture {
 	return newFixture(t, map[string]upstreamSpec{"solo": spec}, false, nil, allow, deny)
 }
 
@@ -700,4 +720,104 @@ func listedNames(t *testing.T, body []byte) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// serve puts the fixture's router on a real listener. A streamed answer can
+// only be observed over a connection: httptest.ResponseRecorder cannot be
+// read while the handler runs, and cannot disconnect. Requests carry the
+// fixture's public host so hostAllowed accepts them (streamRequest). Close
+// waits for every handler to return, so a test ends its streams first.
+func (f *fixture) serve() *httptest.Server {
+	f.t.Helper()
+	srv := httptest.NewServer(f.Router)
+	f.t.Cleanup(srv.Close)
+	return srv
+}
+
+// streamRequest builds a POST for srv at path (one of the router's three
+// patterns) with the fixture's bearer, a JSON body and a request id of its
+// own, so the row it produces can be found with rows. hdr adds or overrides
+// headers.
+func (f *fixture) streamRequest(srv *httptest.Server, path, rpc string, hdr map[string]string) (*http.Request, string) {
+	f.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(rpc))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	req.Host = "localhost:8080"
+	id := "req-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	req.Header.Set("Authorization", "Bearer "+f.Key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", mcpclient.AcceptMCP)
+	req.Header.Set("X-Request-Id", id)
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	return req, id
+}
+
+// rows waits for the audit rows of one request id and returns them, after a
+// short settle so a second row written late would be seen. models.LogFilter
+// has no request id, so the rows are read for the key and picked here. Every
+// streaming test asserts exactly one.
+func (f *fixture) rows(requestID string) []models.AuditLog {
+	f.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	pick := func() []models.AuditLog {
+		logs, _, err := f.Store.ListAuditLogs(context.Background(), models.LogFilter{Limit: 200})
+		if err != nil {
+			return nil
+		}
+		var out []models.AuditLog
+		for _, l := range logs {
+			if l.RequestID == requestID {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	for {
+		if got := pick(); len(got) > 0 {
+			time.Sleep(30 * time.Millisecond)
+			return pick()
+		}
+		if time.Now().After(deadline) {
+			f.t.Fatalf("no audit row for request %s within 2s", requestID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitNoStreams waits for every stream on the fixture's handler to have
+// returned, so a test's Cleanup cannot restore a budget var under a relay that
+// is still reading it, and so httptest.Server.Close is not left waiting.
+func (f *fixture) waitNoStreams() {
+	f.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.H.openStreams.Load() != 0 {
+		if time.Now().After(deadline) {
+			f.t.Fatalf("%d streams still open after 2s", f.H.openStreams.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// syncBuffer is a bytes.Buffer with a lock: the handler logs from its own
+// goroutine while a test over a real server reads the log, and the race
+// detector would otherwise report the read.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

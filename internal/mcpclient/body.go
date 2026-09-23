@@ -24,13 +24,13 @@ var (
 	errNoResponse   = errors.New("response carried no answer to this request")
 )
 
-// maxPickDocuments is how many documents PickResponse will consider. A real
+// MaxPickDocuments is how many documents PickResponse will consider. A real
 // answer arrives after a handful of notifications at most; the bound is there
 // because the proxy reads a member's answer on every group call, and a body of
 // millions of tiny events would otherwise cost an allocation apiece to split
 // and a JSON decode apiece to search. The splitter stops one event past the
 // bound, so neither cost is paid beyond it.
-const maxPickDocuments = 4096
+const MaxPickDocuments = 4096
 
 // PickResponse reduces one upstream response to the single JSON-RPC document
 // that answers the request carrying wantID (a raw JSON id token): the body when
@@ -47,11 +47,11 @@ const maxPickDocuments = 4096
 // Every error is a fixed sentence that reproduces no byte of the body or of the
 // Content-Type.
 func PickResponse(contentType string, body []byte, wantID string) ([]byte, error) {
-	payloads, err := rpcPayloadN(contentType, body, maxPickDocuments)
+	payloads, err := rpcPayloadN(contentType, body, MaxPickDocuments)
 	if err != nil {
 		return nil, err
 	}
-	if len(payloads) > maxPickDocuments {
+	if len(payloads) > MaxPickDocuments {
 		return nil, errNoResponse
 	}
 	payload, ok := pickPayload(payloads, wantID)

@@ -254,9 +254,9 @@ func TestUpstreamRedirectStatusCodes(t *testing.T) {
 // The refusal is a property of the one place a request is performed, not of
 // the POST path, so the verb the proxy replays for a session teardown is
 // refused the same way. GET left this list in PORM-30, which answers it 405
-// before any upstream is contacted; PORM-5 puts it back when a GET becomes a
-// real stream, and this is the assertion that streaming path rests on. The
-// loop stays so that is one string.
+// before any upstream is contacted, and stays out: a server's messages arrive
+// on the response to a POST, which the relay streams. The loop stays so a
+// verb that is added later is one string.
 func TestUpstreamRedirectRefusedOnEveryVerb(t *testing.T) {
 	for _, verb := range []string{http.MethodDelete} {
 		t.Run(verb, func(t *testing.T) {
@@ -561,9 +561,10 @@ func TestUpstreamRelayErrorMessageIsBounded(t *testing.T) {
 }
 
 // The policy lives on the shared client, not on the one function that reads a
-// body today, so a refactor that stops going through mcpclient.Send still
-// carries it. A tripwire for PORM-5's streaming path and PORM-64's discovery
-// client, both of which are meant to reuse this construction.
+// body, so a refactor that stops going through mcpclient.Send still carries
+// it. A tripwire for the streaming relay, which reads a live body through
+// mcpclient.Open, and for PORM-64's discovery client, both of which reuse this
+// construction.
 func TestProxyClientRefusesRedirectsByConstruction(t *testing.T) {
 	h := New(&config.Config{PublicURL: "http://localhost:8080"}, nil, nil, nil)
 	if h.client.CheckRedirect == nil {
@@ -574,5 +575,39 @@ func TestProxyClientRefusesRedirectsByConstruction(t *testing.T) {
 	}
 	if _, ok := h.client.Transport.(upstreamTransport); !ok {
 		t.Fatalf("the proxy's transport is %T, want upstreamTransport: without it a Location Go cannot parse reaches error_message verbatim", h.client.Transport)
+	}
+}
+
+// PORM-5 security requirement 2: the streaming relay decides from the response
+// header, after mcpclient.Open has already refused a 3xx, so a redirect
+// labelled as an event stream never reaches the client as a stream, on the
+// codes Go never consults CheckRedirect for included. The target sees nothing.
+func TestUpstreamRedirectLabelledEventStreamIsRefused(t *testing.T) {
+	for _, code := range []int{http.StatusMultipleChoices, http.StatusFound} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			b := newRecorder(t)
+			f := newSingleFixture(t, upstreamSpec{
+				Tools:          []string{"ping_tool"},
+				AuthType:       models.AuthAPIKey,
+				AuthConfig:     models.AuthConfig{Value: "REAL-APIKEY-SECRET"},
+				RedirectStatus: code,
+				RedirectTo:     b.location(),
+				RespHeaders:    map[string]string{"Content-Type": "text/event-stream"},
+			}, nil, nil)
+			rr := f.post(toolCall("1", "ping_tool"))
+			if got := b.requests(); len(got) != 0 {
+				t.Fatalf("the redirect target saw %d requests: %+v", len(got), got)
+			}
+			if rr.Code != http.StatusBadGateway {
+				t.Fatalf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
+			}
+			if rr.Header().Get("X-Accel-Buffering") != "" || rr.Header().Get("Location") != "" {
+				t.Fatalf("a refused redirect reached the client as a stream: %v", rr.Header())
+			}
+			row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+			if row.Status != models.StatusError || !strings.HasPrefix(row.ErrorMessage, "upstream redirected") {
+				t.Fatalf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
+			}
+		})
 	}
 }
