@@ -751,7 +751,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			default:
 				respBody, statusCode, headers, err = mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
 				if err != nil {
-					err = causeError(ctx, err)
+					err = readFailed(ctx, err)
 				}
 				cancel(nil)
 			}
@@ -794,11 +794,12 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		if errors.As(err, &denied) {
 			h.warnDenied(usedID, requestID, denied.Class)
 		}
-		// Bounded because the message is not always the proxy's own words: a
-		// transport error quotes what the upstream sent (a malformed header
-		// line, say) and http.Client.Do would quote an unparseable Location
-		// the same way, a megabyte of it if the upstream sent a megabyte, were
-		// upstreamTransport not dropping that header first.
+		// The message is one of the proxy's own sentences: a transport
+		// failure was read into the closed set where the client returned it
+		// (forward, forwardRead, the ReadBody above), and every other error
+		// on this path is a fixed sentence of this package's. Still bounded,
+		// because a member's own error.message can arrive on the aggregate
+		// path (PORM-72) and is the upstream's string.
 		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
 			usedID, models.StatusError, truncate(err.Error(), auditFieldBytes), start, 0,
 			boundedParams(req.Params))
@@ -1081,7 +1082,14 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 		return nil, errCredentialUnreadable
 	}
 	copyHopHeaders(req.Header, set)
-	return mcpclient.Open(h.client, req)
+	resp, err := mcpclient.Open(h.client, req)
+	if err != nil {
+		// Read into the closed set here, where the upstream and the budget
+		// context are both in hand: the *url.Error quotes the outbound URL,
+		// query string and all, and leaves the error chain at this line.
+		return nil, upstreamFailed(ctx, err, up)
+	}
+	return resp, nil
 }
 
 // forwardRead is forward then ReadBody at the relay cap: the shape every
@@ -1096,7 +1104,7 @@ func (h *Handler) forwardRead(ctx context.Context, inbound *http.Request, up *mo
 	}
 	out, status, header, err := mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
 	if err != nil {
-		return nil, 0, nil, causeError(ctx, err)
+		return nil, 0, nil, readFailed(ctx, err)
 	}
 	return out, status, header, nil
 }
@@ -1188,13 +1196,21 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 		// After ApplyAuth, so a stored auth_config cannot choose either header.
 		mcpclient.SetModernHeaders(req.Header, verdict.version, "tools/list")
 	}
-	body, status, hdr, err := mcpclient.Send(h.client, req, mcpclient.MaxBodyBytes)
+	// Open then ReadBody rather than Send, so the two failures are told
+	// apart: a request that got no answer is read into the closed set with
+	// the member's host, a body that failed while it was read with the read
+	// sentences, because a read error is never a refused connection. Both
+	// are chosen here, where the budget context and the upstream are in
+	// hand, and before the reduction: a refused redirect arrives with no
+	// body, and reducing that would replace the sentence that names the
+	// redirect with one about an empty body.
+	resp, err := mcpclient.Open(h.client, req)
 	if err != nil {
-		// Before the reduction, not after it: a refused redirect arrives with
-		// no body, and reducing that would replace the sentence that names the
-		// redirect with one about an empty body. A budget that fired is named
-		// as the budget, not as a cancelled context.
-		return nil, status, causeError(ctx, err)
+		return nil, 0, upstreamFailed(ctx, err, up)
+	}
+	body, status, hdr, err := mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
+	if err != nil {
+		return nil, status, readFailed(ctx, err)
 	}
 	// A member answers in whichever framing its SDK defaults to, and the
 	// reference SDKs default to an event stream. The answer is reduced here
@@ -1242,10 +1258,13 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 	// a member's tools are missing. Warn rather than Debug because a member
 	// that cannot be listed tends to stay unlistable (one that wants a session
 	// before it will list, say) and a group quietly serving fewer tools than
-	// it was built with is worth being loud about. The error is bounded
-	// because a redirect's, and a member's own error.message, are the
-	// upstream's strings; the handler is slog's JSON one, so a control byte
-	// in either is escaped and cannot start a line of its own.
+	// it was built with is worth being loud about. A transport failure
+	// arrives as one of the closed sentences (listTools reads it into the set
+	// where the client returned it), so the line carries the same sentence
+	// the member's own row would. Still bounded, because a member's own
+	// error.message (parseToolsList) is the upstream's string; the handler
+	// is slog's JSON one, so a control byte in it is escaped and cannot
+	// start a line of its own.
 	skip := func(up *models.Upstream, err error) {
 		if h.log == nil {
 			return
