@@ -28,8 +28,10 @@ const fingerprintLen = 16
 // ErrUnknownKey reports a v1 ciphertext whose fingerprint names a key this
 // process does not hold, the distinguishable "wrong key" outcome, as opposed
 // to ErrInvalidCipher for bytes that no key would open. The text carries no
-// fingerprint: it can reach an audit row, and audit error_message is not
-// redacted.
+// fingerprint: it can reach an audit row, and audit error_message is redacted
+// by pattern only; a bare 16-character fingerprint (fingerprintLen) is under
+// the 20-character minimum the generic rule needs, so a pattern could miss
+// it.
 var ErrUnknownKey = errors.New("ciphertext was sealed under a key this process does not hold")
 
 // Keyring is the process's decryption material: the key new ciphertexts are

@@ -1008,7 +1008,8 @@ type requestIDKey struct{}
 // errCredentialRefreshFailed (lapsed and the vendor could not be reached).
 // auth_type none is (nil, nil) and never consults the blob. Every error is a
 // bare sentinel, because it reaches the audit row's error_message, which is
-// not redacted; the client sees the generic 502 either way (see serve).
+// redacted by pattern only, so a sentinel carries no detail a pattern could
+// miss; the client sees the generic 502 either way (see serve).
 //
 // For an oauth row this is where the token is renewed (PORM-139), so every
 // caller resolves it BEFORE upstreamContext arms a budget: the vendor call

@@ -8,7 +8,8 @@
 // Nothing here logs, stores or returns a plaintext beyond the caller that
 // asked for it: Sweep classifies each row and drops the bytes, and the two
 // sentinels carry no wrapped detail, because they reach audit error_message,
-// which is not redacted.
+// which is redacted by pattern only, so a sentinel carries no detail a
+// pattern could miss.
 package credential
 
 import (
