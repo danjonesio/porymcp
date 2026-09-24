@@ -132,7 +132,7 @@ func TestWalkSSE(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			body := []byte(c.body)
-			out, changed, seen, err := walkSSE(body, upper)
+			out, changed, seen, err := walkSSE(body, upper, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -153,7 +153,7 @@ func TestWalkSSE(t *testing.T) {
 
 	t.Run("callback error stops the walk", func(t *testing.T) {
 		boom := errors.New("boom")
-		_, _, _, err := walkSSE([]byte("data: {x}\n\n"), func([]byte, int) ([]byte, bool, error) { return nil, false, boom })
+		_, _, _, err := walkSSE([]byte("data: {x}\n\n"), func([]byte, int) ([]byte, bool, error) { return nil, false, boom }, nil)
 		if !errors.Is(err, boom) {
 			t.Fatalf("err=%v, want the callback's", err)
 		}
@@ -163,7 +163,7 @@ func TestWalkSSE(t *testing.T) {
 		body := []byte(strings.Repeat(sseFrame(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool","description":"no error here"}]}}`), 50))
 		payload := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool","description":"no error here"}]}}`)
 		judge := testing.AllocsPerRun(50, func() { rpcFailed(payload) }) * 50
-		got := testing.AllocsPerRun(50, func() { walkSSE(body, redactPayload) })
+		got := testing.AllocsPerRun(50, func() { walkSSE(body, redactPayload, nil) })
 		if got > judge {
 			t.Fatalf("walkSSE allocates %.0f over 50 result events, rpcFailed %.0f", got, judge)
 		}
@@ -186,7 +186,10 @@ func TestRedactErrorAnswer(t *testing.T) {
 		{name: "sse multi-line error", ct: "text/event-stream", body: "data: {\"jsonrpc\":\"2.0\",\"id\":7,\ndata: \"error\":{\"code\":1,\"message\":\"" + msg + "\"}}\n\n", want: []string{`data: {"error"`, `invalid token [redacted]`}},
 		{name: "sse label over bare json", ct: "text/event-stream", body: errorAnswer(7, msg), want: []string{`invalid token [redacted]`}},
 		{name: "text plain over json", ct: "text/plain", body: errorAnswer(7, msg), want: []string{`invalid token [redacted]`}},
+		{name: "sse then bare json error", ct: "text/event-stream", body: sseFrame(progressDoc) + errorAnswer(7, msg) + "\n", want: []string{sseFrame(progressDoc), `invalid token [redacted]`}},
+		{name: "sse with an unknown field", ct: "text/event-stream", body: "foo: bar\n" + sseFrame(errorAnswer(7, msg)), want: []string{"foo: bar\n", `invalid token [redacted]`}},
 		{name: "sse with nothing to redact", ct: "text/event-stream", body: sseFrame(progressDoc) + sseFrame(errorDoc), same: true},
+		{name: "sse then bare json result", ct: "text/event-stream", body: sseFrame(progressDoc) + resultDoc + "\n", same: true},
 		{name: "json result", ct: "application/json", body: resultDoc, same: true},
 	}
 	for _, c := range cases {
@@ -245,7 +248,8 @@ func TestEventHolderSplitAtEveryOffset(t *testing.T) {
 			frame("data: {\"jsonrpc\":\"2.0\",\"id\":7,", "data: \"error\":{\"code\":1,\"message\":\""+msg+"\"}}") +
 			frame("retry: 5", "data:"+resultDoc) +
 			frame("data: "+errorAnswer(8, msg)) +
-			": tail" + nl)
+			": tail" + nl +
+			errorAnswer(9, msg) + nl) // bare JSON after the events, held to EOF on both doors
 		want, err := redactErrorAnswer("text/event-stream", body)
 		if err != nil {
 			t.Fatal(err)
@@ -284,6 +288,14 @@ func TestEventHolderSplitAtEveryOffset(t *testing.T) {
 		if got > judge {
 			t.Fatalf("feed allocates %.0f per progress event, rpcFailed %.0f", got, judge)
 		}
+		// A multi-line event joins its lines into the holder's own scratch,
+		// so it costs the judge's allocations and no more once warm.
+		multi := []byte("data: {\"jsonrpc\":\"2.0\",\ndata: \"method\":\"notifications/progress\",\"params\":{\"progress\":1}}\n\n")
+		h.feed(append([]byte(nil), multi...))
+		got = testing.AllocsPerRun(100, func() { h.feed(multi) })
+		if got > judge {
+			t.Fatalf("feed allocates %.0f per multi-line progress event, rpcFailed %.0f", got, judge)
+		}
 	})
 }
 
@@ -292,7 +304,7 @@ func TestEventHolderSplitAtEveryOffset(t *testing.T) {
 // brings them; a data: line, a bare JSON line and an unknown field start a
 // held unit.
 func TestEventHolderForwardsFieldLinesAtOnce(t *testing.T) {
-	forwarded := []string{": keep-alive\r\n", "event: message\n", "id: 9\n", "retry: 1000\n", "\n", "ID:7\n"}
+	forwarded := []string{": keep-alive\r\n", "event: message\n", "id: 9\n", "retry: 1000\n", "\n", "ID:7\n", "foo: bar\n", "Data: x\n"}
 	for _, line := range forwarded {
 		var h eventHolder
 		out, err := h.feed([]byte(line))
@@ -300,7 +312,7 @@ func TestEventHolderForwardsFieldLinesAtOnce(t *testing.T) {
 			t.Errorf("feed(%q) = %q, %v; want the line back", line, out, err)
 		}
 	}
-	held := []string{"data: {}\n", errorAnswer(1, "x") + "\n", "foo: bar\n", "data: partial"}
+	held := []string{"data: {}\n", errorAnswer(1, "x") + "\n", "  \"error\": {\n", "[1]\n", "data: partial"}
 	for _, line := range held {
 		var h eventHolder
 		out, err := h.feed([]byte(line))

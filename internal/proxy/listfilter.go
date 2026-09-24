@@ -260,7 +260,7 @@ func filterToolsListSSE(body []byte, pol toolPolicy) ([]byte, bool, error) {
 			understood++
 			return nil, false, nil
 		}
-	})
+	}, nil)
 	if err != nil {
 		return body, false, err
 	}
@@ -290,14 +290,20 @@ func filterToolsListSSE(body []byte, pol toolPolicy) ([]byte, bool, error) {
 // buffer across the walk, so a walk over an unchanged body of single-line
 // events allocates nothing and returns body itself. seen is how many events
 // had a data: line; err is fn's own error, and the walk stops on it.
-func walkSSE(body []byte, fn func(payload []byte, count int) ([]byte, bool, error)) (out []byte, changed bool, seen int, err error) {
+//
+// join is a caller's scratch for the multi-line payload, kept across walks by
+// a caller that walks once per event, or nil for one of the walk's own.
+func walkSSE(body []byte, fn func(payload []byte, count int) ([]byte, bool, error), join *[]byte) (out []byte, changed bool, seen int, err error) {
+	var local []byte
+	if join == nil {
+		join = &local
+	}
 	var (
 		buf                *bytes.Buffer
-		copied             int    // body[:copied] is already in buf
-		join               []byte // scratch for a multi-line payload
-		eventStart         int    // offset of the current event's first line
-		count              int    // data: lines seen in the current event
-		firstPay, firstEnd int    // payload range of the first data: line
+		copied             int // body[:copied] is already in buf
+		eventStart         int // offset of the current event's first line
+		count              int // data: lines seen in the current event
+		firstPay, firstEnd int // payload range of the first data: line
 	)
 	// flush finishes the event that ends at eventEnd, the offset of its
 	// ending line or of the end of the body.
@@ -308,18 +314,18 @@ func walkSSE(body []byte, fn func(payload []byte, count int) ([]byte, bool, erro
 		seen++
 		payload := body[firstPay:firstEnd]
 		if count > 1 {
-			join = join[:0]
+			*join = (*join)[:0]
 			for rest := body[eventStart:eventEnd]; len(rest) > 0; {
 				line, _, next := mcpclient.NextLine(rest)
 				rest = next
 				if p, ok := dataPayload(line); ok {
-					if len(join) > 0 {
-						join = append(join, '\n')
+					if len(*join) > 0 {
+						*join = append(*join, '\n')
 					}
-					join = append(join, p...)
+					*join = append(*join, p...)
 				}
 			}
-			payload = join
+			payload = *join
 		}
 		res, ok, err := fn(payload, count)
 		if err != nil {

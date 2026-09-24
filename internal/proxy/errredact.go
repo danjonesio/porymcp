@@ -141,20 +141,38 @@ func redactPayload(payload []byte, _ int) ([]byte, bool, error) {
 // redactErrorAnswer is the buffered path. When the body is SSE-framed it
 // walks the events with walkSSE and redactPayload; when the walk saw no data
 // event it tries the whole body as one document, the fallback answerStatus
-// makes for an unframed body under a stream label. Otherwise it calls
-// redactErrorDoc on the body. It returns body itself when nothing changed.
+// makes for an unframed body under a stream label; a body that mixes framed
+// events with bare JSON lines goes through the holder, as on the stream door.
+// Otherwise it calls redactErrorDoc on the body. It returns body itself when
+// nothing changed.
 // err is the walker's callback error only, and the caller fails closed on it.
 func redactErrorAnswer(contentType string, body []byte) ([]byte, error) {
 	if mcpclient.SSEFramed(contentType, body) {
-		out, changed, seen, err := walkSSE(body, redactPayload)
-		if err != nil {
-			return nil, err
+		if hasStrayLine(body) {
+			return redactThroughHolder(body)
 		}
-		if seen > 0 || changed {
-			return out, nil
-		}
+		return redactUnit(body, nil)
 	}
 	out, _, err := redactErrorDoc(body)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// redactUnit rewrites one SSE-framed unit: the events through walkSSE and
+// redactPayload, or, when the walk saw no data event, the whole unit as one
+// document. join is the caller's scratch for a multi-line payload, or nil.
+// The holder calls this on each unit it closes and on what it holds at EOF.
+func redactUnit(unit []byte, join *[]byte) ([]byte, error) {
+	out, changed, seen, err := walkSSE(unit, redactPayload, join)
+	if err != nil {
+		return nil, err
+	}
+	if seen > 0 || changed {
+		return out, nil
+	}
+	out, _, err = redactErrorDoc(unit)
 	if err != nil {
 		return nil, err
 	}
@@ -187,8 +205,7 @@ const (
 // blank, so a keep-alive is never delayed. Any other complete line, data: or
 // not, starts a held event; a partial line is held. A unit that has a data:
 // line ends at the next line that is empty after TrimSpace; it is rewritten
-// through redactErrorAnswer, the ending line is appended and the whole is
-// returned. A unit with no data: line yet does not end at a blank line,
+// through redactUnit, the ending line is appended and the whole is returned. A unit with no data: line yet does not end at a blank line,
 // because JSON allows blank lines between tokens and the judge reads such a
 // body whole (answerDoc); it is held until a data: line joins it or until
 // EOF, where end rewrites it. Lines are cut from scanned, so a partial line
@@ -296,7 +313,7 @@ func (h *eventHolder) scan() error {
 			h.inEvent = true
 			_, h.hasData = dataPayload(line)
 		case blank && h.hasData:
-			res, err := redactErrorAnswer("text/event-stream", h.held[h.start:lineStart])
+			res, err := redactUnit(h.held[h.start:lineStart], &h.join)
 			if err != nil {
 				return err
 			}
@@ -505,20 +522,24 @@ func (h *eventHolder) provedNotError() (ok, hasData bool) {
 }
 
 // end returns what is held at EOF: an open unit rewritten without its ending
-// line, through redactErrorAnswer, which covers bare JSON; nothing when the
-// unit was in passthrough. On any other end of the stream the caller drops
+// line, through redactUnit, which covers bare JSON; nothing when the unit was
+// in passthrough. On any other end of the stream the caller drops
 // the holder.
 func (h *eventHolder) end() ([]byte, error) {
 	if h.state == passthrough || len(h.held) == 0 {
 		return nil, nil
 	}
-	out, err := redactErrorAnswer("text/event-stream", h.held)
+	out, err := redactUnit(h.held, &h.join)
 	h.held = nil
 	return out, err
 }
 
-// fieldLine reports a line the holder forwards at once: a comment, or an
-// event, id or retry field, the SSE fields that are not data.
+// fieldLine reports a line the holder forwards at once: a comment, or a
+// field line that is not data:, which is any line starting with an ASCII
+// letter (event, id, retry, and any field a client ignores). No line of a
+// JSON document starts with a letter: compact JSON starts with a brace and a
+// pretty-printed line with whitespace, a quote or a bracket, so every line
+// that could be part of an error is held.
 func fieldLine(line []byte) bool {
 	if len(line) == 0 {
 		return false
@@ -526,14 +547,50 @@ func fieldLine(line []byte) bool {
 	if line[0] == ':' {
 		return true
 	}
-	name := line
-	if i := bytes.IndexByte(line, ':'); i >= 0 {
-		name = line[:i]
+	if bytes.HasPrefix(line, dataField) {
+		return false
 	}
-	for _, f := range [...]string{"event", "id", "retry"} {
-		if strings.EqualFold(string(name), f) {
+	c := line[0] | 0x20
+	return 'a' <= c && c <= 'z'
+}
+
+// strayLine reports a line neither door treats as SSE framing: not blank, not
+// a field line, not data:. Only a bare JSON document under the stream label
+// has such lines. On the buffered path a body with one is run through the
+// holder, so both doors give the same answer.
+func strayLine(line []byte) bool {
+	return len(bytes.TrimSpace(line)) != 0 && !fieldLine(line) && !bytes.HasPrefix(line, dataField)
+}
+
+// hasStrayLine walks body's lines for strayLine.
+func hasStrayLine(body []byte) bool {
+	for rest := body; len(rest) > 0; {
+		line, _, next := mcpclient.NextLine(rest)
+		rest = next
+		if strayLine(line) {
 			return true
 		}
 	}
 	return false
+}
+
+// redactThroughHolder rewrites a buffered body the way the stream door would,
+// for the bodies where the two rules differ. It returns body itself when
+// nothing changed.
+func redactThroughHolder(body []byte) ([]byte, error) {
+	var h eventHolder
+	out, err := h.feed(body)
+	if err != nil {
+		return nil, err
+	}
+	out = append([]byte(nil), out...)
+	tail, err := h.end()
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, tail...)
+	if bytes.Equal(out, body) {
+		return body, nil
+	}
+	return out, nil
 }
