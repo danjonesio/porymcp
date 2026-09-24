@@ -18,8 +18,10 @@ Behaviour changes that affect a running deployment. Newest first.
   written before the upgrade.** Search `error_message` for
   `cannot connect to` and `cannot resolve` instead.
 - **A client that hung up before the answer reads
-  `client went away before the answer`.** On both doors. It used to read Go's
-  cancellation text with the registered URL.
+  `client went away before the answer`.** On the MCP door it used to read Go's
+  cancellation text with the registered URL. On the HTTP relay door it used to
+  read `cannot connect to <host>` or `cannot reach <host>`, which blamed the
+  upstream.
 - **A body that failed while it was being read reads
   `upstream connection failed`.** A body that ended without its terminator
   reads `unexpected EOF`. On the MCP door it used to quote the read error,
