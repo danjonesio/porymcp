@@ -266,12 +266,13 @@ func TestStreamReachesClientEventByEvent(t *testing.T) {
 	ls := readLines(resp.Body)
 	for i := 0; i < 3; i++ {
 		ev := ls.event(t, 5*time.Second)
-		want := progressDoc
+		want := sseFrame(progressDoc)
 		if i == 2 {
-			want = resultDoc
+			want = sseFrame(resultDoc)
 		}
-		if !strings.Contains(ev, want) {
-			t.Fatalf("event %d = %q, want it to carry %s", i+1, ev, want)
+		// Byte for byte: PORM-195 criterion 3 on the stream door.
+		if ev != want {
+			t.Fatalf("event %d = %q, want exactly %q", i+1, ev, want)
 		}
 		if i < 2 {
 			next <- struct{}{}
@@ -1189,6 +1190,7 @@ func TestStreamVerdictTable(t *testing.T) {
 		{"call idle", "tools/call", "", false, endIdle, &budgetError{what: "sent nothing for", d: time.Minute}, models.StatusError, "upstream sent nothing for 1m0s"},
 		{"call upstream removed", "tools/call", "", false, endRevoked, errUpstreamRemoved, models.StatusError, errUpstreamRemoved.Error()},
 		{"call upstream changed", "tools/call", "", false, endRevoked, errUpstreamChanged, models.StatusError, errUpstreamChanged.Error()},
+		{"call event too large to check", "tools/call", "", false, endRedact, errEventTooLarge, models.StatusError, "stream event too large to check"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1291,5 +1293,42 @@ func TestAggregateNeverStreams(t *testing.T) {
 	}
 	if row := f.waitAudit(models.LogFilter{Tool: "solo__ping_tool"})[0]; row.Status != models.StatusSuccess {
 		t.Fatalf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
+	}
+}
+
+// TestStreamProxyEndOnUncheckableEvent is PORM-195 security requirement 7 on
+// the door: an event that may be an error and passes maxHeldBytes ends the
+// stream with an error the client can see, never a clean end with the event
+// missing, and the row says why. Not parallel: it lowers a package var.
+func TestStreamProxyEndOnUncheckableEvent(t *testing.T) {
+	old := maxHeldBytes
+	maxHeldBytes = 4 << 20
+	defer func() { maxHeldBytes = old }()
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Handler: func(w http.ResponseWriter, r *http.Request) {
+		sseHeader(w)
+		writeEvents(w, sseFrame(progressDoc))
+		body := bigEvent(`{"jsonrpc":"2.0","id":"`, `","error":{"code":1,"message":"x"}}`, 5<<20)
+		for i := 0; i < len(body); i += 64 << 10 {
+			if _, err := w.Write(body[i:min(i+64<<10, len(body))]); err != nil {
+				return
+			}
+		}
+	}}, nil, nil)
+	srv := f.serve()
+	resp, id := open(t, f, srv, "/a1/mcp", toolCall("1", "ping_tool"))
+	defer resp.Body.Close()
+	ls := readLines(resp.Body)
+	if ev := ls.event(t, 5*time.Second); ev != sseFrame(progressDoc) {
+		t.Fatalf("first event = %q", ev)
+	}
+	if err := ls.end(t, 10*time.Second); err == nil || err == io.EOF {
+		t.Fatalf("stream ended with %v, want an error and not a clean end", err)
+	}
+	row := oneRow(t, f, id)
+	if row.Status != models.StatusError || row.ErrorMessage != "stream event too large to check" {
+		t.Fatalf("row status=%q message=%q", row.Status, row.ErrorMessage)
+	}
+	if got := ls.read.Load(); int64(row.ResponseSizeBytes) != got || got != int64(len(sseFrame(progressDoc))) {
+		t.Fatalf("row size=%d, client read %d, want only the first event", row.ResponseSizeBytes, got)
 	}
 }
