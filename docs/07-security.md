@@ -140,10 +140,12 @@
   events costs about 3 MB/s of redaction on the request goroutine for as
   long as it lasts. The rewrite covers what the judge reads as an error, so
   a nonconforming body with duplicate `error` keys whose last is null can
-  still carry text. A `result` and a notification are relayed as the
-  upstream sent them (an upstream that echoes a credential there is
-  PORM-87), and so are an error's `data` member and an error body that is
-  not JSON-RPC, such as a plain-text 401.
+  still carry text, and so can an upstream that frames one document across
+  a whitespace-only line, which the judge and the rewrite both read as two
+  events and a browser client joins. A `result` and a notification are
+  relayed as the upstream sent them (an upstream that echoes a credential
+  there is PORM-87), and so are an error's `data` member and an error body
+  that is not JSON-RPC, such as a plain-text 401.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by pattern (PORM-72). `audit.Record` replaces
   credential-shaped text with `[redacted]` and bounds the field at 256 bytes

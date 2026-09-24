@@ -284,8 +284,11 @@ func filterToolsListSSE(body []byte, pol toolPolicy) ([]byte, bool, error) {
 // a whitespace-only line) and every terminator is copied as it is; a
 // whitespace-only line is written as line plus terminator. An event ends on a
 // line that bytes.TrimSpace empties, the rule eventData uses, so a rewrite
-// never sees a coarser split than the judge; a client that joins across such
-// a line joins already-rewritten documents. The output is allocated only when
+// never sees a coarser split than the judge. A client that joins across such
+// a line joins what the judge saw as two events: two documents already
+// rewritten, or, from an upstream that splits one document there, two halves
+// neither the judge nor this walk can read (docs/07-security.md names that
+// framing as not covered). The output is allocated only when
 // an event changes, and the join of a multi-line event reuses one scratch
 // buffer across the walk, so a walk over an unchanged body of single-line
 // events allocates nothing and returns body itself. seen is how many events
