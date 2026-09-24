@@ -34,7 +34,7 @@ func TestRedactErrorDoc(t *testing.T) {
 		{name: "token past the audit window", in: errorAnswer(7, filler+echoedToken), want: []string{filler + `[redacted]"`}},
 		{name: "token past the client bound", in: errorAnswer(7, long+echoedToken), absent: []string{"[redacted]"}},
 		{name: "folded keys", in: `{"jsonrpc":"2.0","id":7,"Error":{"code":1,"Message":"invalid token ` + echoedToken + `"}}`, want: []string{`"Message":"invalid token [redacted]"`}},
-		{name: "escaped key", in: `{"jsonrpc":"2.0","id":7,"error":{"code":1,"message":"invalid token ` + echoedToken + `"}}`, want: []string{`"message":"invalid token [redacted]"`}},
+		{name: "escaped key", in: `{"jsonrpc":"2.0","id":7,"\u0065rror":{"code":1,"message":"invalid token ` + echoedToken + `"}}`, want: []string{`"message":"invalid token [redacted]"`}},
 		{name: "two spellings", in: `{"id":7,"error":{"message":"a ` + echoedToken + `"},"Error":{"message":"b ` + echoedToken + `"}}`, want: []string{`"message":"a [redacted]"`, `"message":"b [redacted]"`}},
 		{name: "error a string", in: `{"jsonrpc":"2.0","id":7,"error":"invalid token ` + echoedToken + `"}`, want: []string{`"error":"invalid token [redacted]"`}},
 		{name: "duplicate message key", in: `{"id":7,"error":{"message":"x","message":"invalid token ` + echoedToken + `"}}`, want: []string{`"message":"invalid token [redacted]"`}},
@@ -416,9 +416,6 @@ func TestEventHolderOversizedResultPassesThrough(t *testing.T) {
 	if released < 0 || released > holdBytes+(32<<10) {
 		t.Fatalf("first bytes released at offset %d, want at holdBytes", released)
 	}
-	if cap(h.held) != 0 {
-		t.Fatalf("held buffer kept %d bytes after the event", cap(h.held))
-	}
 	// The raw relay stopped at the result's ending line: an error that
 	// follows is held and rewritten as usual.
 	after, err := h.feed([]byte(sseFrame(errorAnswer(2, "invalid token "+echoedToken))))
@@ -649,5 +646,24 @@ func TestEventHolderPartialLineIsBounded(t *testing.T) {
 	}
 	if !errors.Is(err, errEventTooLarge) {
 		t.Fatalf("err=%v, want errEventTooLarge", err)
+	}
+}
+
+// TestEventHolderReleasesBuffer: an array that grew past holdBytes for one
+// event is released once that event has left, on the held and the passthrough
+// paths, as streamCapture releases its own.
+func TestEventHolderReleasesBuffer(t *testing.T) {
+	msg := "invalid token " + echoedToken
+	for name, body := range map[string][]byte{
+		"held error":         bigEvent(`{"jsonrpc":"2.0","id":"`, `","error":{"code":1,"message":"`+msg+`"}}`, 2<<20),
+		"passthrough result": bigEvent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"`, `"}]}}`, 2<<20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var h eventHolder
+			feedChunks(t, &h, body, 32<<10)
+			if cap(h.held) > holdBytes || cap(h.out) > holdBytes {
+				t.Fatalf("after the event cap(held)=%d cap(out)=%d, want both released", cap(h.held), cap(h.out))
+			}
+		})
 	}
 }

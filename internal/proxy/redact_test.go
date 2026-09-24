@@ -203,6 +203,9 @@ func TestUpstreamErrorAnswerToClientIsRedacted(t *testing.T) {
 	for _, tc := range buffered {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := upstreamSpec{Tools: []string{"ping_tool"}, Bearer: echoedToken, CallCT: tc.ct, CallBody: tc.body, CallCode: tc.code}
+			if tc.name == "json" {
+				spec.RespHeaders = map[string]string{"Mcp-Session-Id": "sess-195"}
+			}
 			var f *fixture
 			var rr *httptest.ResponseRecorder
 			if tc.member {
@@ -219,6 +222,21 @@ func TestUpstreamErrorAnswerToClientIsRedacted(t *testing.T) {
 			assertRedactedAnswer(t, f, rr.Body.Bytes(), "7", row)
 			if int64(rr.Body.Len()) != int64(row.ResponseSizeBytes) {
 				t.Errorf("row size=%d, client got %d bytes", row.ResponseSizeBytes, rr.Body.Len())
+			}
+			if tc.name == "json" {
+				// Caller's usage 1: the exact document, sorted members and
+				// raw values, under the JSON label, with the upstream's
+				// session id still crossing.
+				const want = `{"error":{"code":-32000,"message":"invalid token [redacted]"},"id":7,"jsonrpc":"2.0"}`
+				if got := rr.Body.String(); got != want {
+					t.Errorf("body=%s\nwant %s", got, want)
+				}
+				if got := rr.Header().Get("Content-Type"); got != "application/json" {
+					t.Errorf("Content-Type=%q want application/json", got)
+				}
+				if got := rr.Header().Get("Mcp-Session-Id"); got != "sess-195" {
+					t.Errorf("Mcp-Session-Id=%q, want the upstream's to cross a rewritten answer", got)
+				}
 			}
 			if tc.name == "sse" && !strings.Contains(rr.Body.String(), sseFrame(progressDoc)) {
 				t.Errorf("the progress event did not cross byte for byte: %.200s", rr.Body.String())
@@ -352,4 +370,18 @@ func TestUpstreamErrorAnswerToClientIsRedacted(t *testing.T) {
 			t.Errorf("client body=%s", rr.Body.String())
 		}
 	})
+}
+
+// TestBufferedSSEResultIsRelayedUnchanged is PORM-195 criterion 3 on the
+// buffered path: an SSE-framed body the gate walks (a non-2xx status, which
+// keeps it off the stream door) carrying a result and a progress event
+// crosses byte for byte, whichever framing the walk had to read.
+func TestBufferedSSEResultIsRelayedUnchanged(t *testing.T) {
+	body := sseFrame(progressDoc) + "id: 3\r\ndata: " + resultDoc + "\r\n\r\n"
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: echoedToken, CallCT: "text/event-stream", CallCode: 503, CallBody: body, RespHeaders: map[string]string{"Mcp-Session-Id": "sess-3"}}, nil, nil)
+	rr := f.post(toolCall("1", "ping_tool"))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("HTTP code=%d want 503", rr.Code)
+	}
+	assertRelayUnchanged(t, rr.Header(), rr.Body.String(), body, "text/event-stream", "sess-3")
 }
