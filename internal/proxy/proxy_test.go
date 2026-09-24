@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/config"
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -61,7 +64,7 @@ func TestInjectBearerAndHideVirtualKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080"}
+	cfg := &config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: testGuard}
 	al := audit.New(st, nil)
 	h := New(cfg, st, al, nil)
 
@@ -117,7 +120,7 @@ func TestKeyPathMustMatchKey(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080"}, st, nil, nil)
+	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: testGuard}, st, nil, nil)
 	r := chi.NewRouter()
 	r.HandleFunc("/mcp", h.ServeHTTP)
 	r.HandleFunc(KeyRoute, h.ServeHTTP)
@@ -208,7 +211,7 @@ func TestProxyURLUnchangedAcrossRename(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080"}, st, nil, nil)
+	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: testGuard}, st, nil, nil)
 	r := chi.NewRouter()
 	r.HandleFunc("/mcp", h.ServeHTTP)
 	r.HandleFunc(KeyRoute, h.ServeHTTP)
@@ -260,7 +263,7 @@ func TestInvalidKeyRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080"}, st, nil, nil)
+	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: testGuard}, st, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "http://localhost:8080/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer pory_notarealkey000000000000000000000000000000000000000000000000")
 	rr := httptest.NewRecorder()
@@ -353,7 +356,7 @@ func TestGroupAlwaysPrefixesToolNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080"}, st, nil, nil)
+	h := New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: testGuard}, st, nil, nil)
 	r := chi.NewRouter()
 	r.HandleFunc("/mcp", h.ServeHTTP)
 	r.HandleFunc(KeyRoute, h.ServeHTTP)
@@ -391,5 +394,49 @@ func TestGroupAlwaysPrefixesToolNames(t *testing.T) {
 	}
 	if strings.Contains(body, "alpha__search") || strings.Contains(body, "beta__search") {
 		t.Fatalf("member path: a name was prefixed on a 1:1 endpoint, got %s", body)
+	}
+}
+
+// PORM-79 security requirements 4 and 11: a refused dial on the MCP door is
+// the generic 502 to the agent, the bare class sentence in the row, and one
+// Warn line with ids and the class, never the URL or an address.
+func TestProxyRefusedDialAudited(t *testing.T) {
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}}, nil, nil)
+	var logs bytes.Buffer
+	cfg := *f.H.cfg
+	cfg.UpstreamGuard = netguard.Options{}
+	f.H = New(&cfg, f.Store, f.H.audit, slog.New(slog.NewJSONHandler(&logs, nil)))
+
+	rr := f.post(toolCall("1", "ping"))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
+	}
+	code, msg, _ := rpcErrorOf(t, rr.Body.Bytes())
+	if code != -32000 || msg != "upstream request failed" {
+		t.Fatalf("rpc code=%d message=%q, want -32000 upstream request failed", code, msg)
+	}
+	if strings.Contains(rr.Body.String(), "loopback") {
+		t.Fatalf("the agent was told the class: %s", rr.Body.String())
+	}
+	row := f.waitAudit(models.LogFilter{Status: models.StatusError})[0]
+	if row.ErrorMessage != "upstream address denied: loopback" {
+		t.Fatalf("error_message=%q, want exactly the class sentence", row.ErrorMessage)
+	}
+	if strings.Contains(row.ErrorMessage, "127.0.0.1") || strings.Contains(row.ErrorMessage, "http") {
+		t.Fatalf("error_message=%q carries the address or the URL", row.ErrorMessage)
+	}
+	if n := f.totalReqs("solo"); n != 0 {
+		t.Fatalf("the loopback stub saw %d requests", n)
+	}
+	line := logs.String()
+	for _, want := range []string{`"msg":"upstream address denied"`, `"class":"loopback"`, `"upstream_id":"`, `"request_id":"`} {
+		if !strings.Contains(line, want) {
+			t.Errorf("server log lacks %s: %s", want, line)
+		}
+	}
+	for _, leak := range []string{"127.0.0.1", "http://"} {
+		if strings.Contains(line, leak) {
+			t.Errorf("server log carries %q: %s", leak, line)
+		}
 	}
 }

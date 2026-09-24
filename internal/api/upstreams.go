@@ -248,8 +248,9 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name and url are required")
 		return
 	}
-	if !usableUpstreamURL(in.URL.Value) {
-		writeError(w, http.StatusBadRequest, errURLRule)
+	urlNorm, msg := upstreamURL(in.URL.Value)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	// Defaults live in locals rather than being written back into in: a field
@@ -338,7 +339,7 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 		Name:        strings.TrimSpace(in.Name.Value),
 		Description: in.Description.Value,
 		Kind:        kind,
-		URL:         strings.TrimSpace(in.URL.Value),
+		URL:         urlNorm,
 		Transport:   transport,
 		TestPath:    in.TestPath.Value,
 		AuthType:    authType,
@@ -449,7 +450,22 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// under an oauth row is never sent; a live refresh token under a bearer
 	// row is never revoked). A body that carries an auth_config replaces the
 	// blob anyway.
-	urlChanged := in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL
+	//
+	// The URL rules run first so the comparison below is between two
+	// normalised forms (PORM-79): the stored value is normalised for the
+	// comparison only and never written back, so a row saved before
+	// normalisation keeps its tokens and its test when the same URL is sent
+	// again in either spelling.
+	var urlNorm string
+	if in.URL.Set {
+		norm, msg := upstreamURL(in.URL.Value)
+		if msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		urlNorm = norm
+	}
+	urlChanged := in.URL.Has() && urlNorm != normaliseStored(u.URL)
 	typeChanged := in.AuthType.Has() && in.AuthType.Value != u.AuthType
 	acrossOAuth := typeChanged && (u.AuthType == models.AuthOAuth || in.AuthType.Value == models.AuthOAuth)
 	clearAuth := (in.AuthType.Has() && in.AuthType.Value == models.AuthNone) ||
@@ -465,7 +481,7 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	// path, so a dot recorded against the old one vouches for nothing. "" and
 	// null both clear it, the column is TEXT NOT NULL DEFAULT ''.
 	testPathChanged := in.TestPath.Set && in.TestPath.Value != u.TestPath
-	resetTest := (in.URL.Has() && strings.TrimSpace(in.URL.Value) != u.URL) ||
+	resetTest := urlChanged ||
 		(in.Transport.Has() && in.Transport.Value != u.Transport) ||
 		(in.AuthType.Has() && in.AuthType.Value != u.AuthType) ||
 		in.AuthConfig.Has() ||
@@ -508,11 +524,7 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		u.Description = in.Description.Value
 	}
 	if in.URL.Set {
-		if !usableUpstreamURL(in.URL.Value) {
-			writeError(w, http.StatusBadRequest, errURLRule)
-			return
-		}
-		u.URL = strings.TrimSpace(in.URL.Value)
+		u.URL = urlNorm
 	}
 	if in.Transport.Set {
 		if !validTransport(in.Transport.Value) {
@@ -654,18 +666,51 @@ func (s *Server) deleteUpstream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// usableUpstreamURL reports whether PoryMCP could connect to what is being
-// stored. The check is mcpclient's own, so the write path and the outbound
-// path give one answer instead of accepting a "url" here that discovery and
-// the proxy can only refuse later, a scheme-less "localhost:8080/mcp" parses
-// as scheme "localhost" and was stored happily before this.
+// upstreamURL is the write gate on a "url": the form to store and, when it
+// is refused, the 400 to answer. The syntax check is mcpclient's own
+// (CheckTarget), so the write path and the outbound path give one answer
+// instead of accepting a "url" here that discovery and the proxy can only
+// refuse later, a scheme-less "localhost:8080/mcp" parses as scheme
+// "localhost" and was stored happily before this. A fragment and embedded
+// credentials each get their own sentence; every other refusal reads as the
+// one rule. The userinfo rule lives here and not in CheckTarget because
+// CheckTarget also runs on stored rows at dial time, and a row saved before
+// this rule is PORM-27's to redact, not this gate's to refuse.
 //
-// Syntax only, and deliberately so: whether a host is one PoryMCP should dial
-// at all is PORM-79's question, and mcpclient.CheckTarget is the one place it
-// will be answered for every caller at once.
-func usableUpstreamURL(raw string) bool {
+// Syntax only, and deliberately so: where the host resolves is checked when
+// PoryMCP connects, by internal/netguard on the transport, because a check
+// here would be defeated by the second resolution at dial time.
+//
+// The stored form is url.Parse then String: the scheme is lower-cased,
+// unescaped path characters are percent-encoded and an empty fragment is
+// dropped. The host keeps its case, the port stays, and a trailing slash is
+// kept because the relay joins paths to it.
+func upstreamURL(raw string) (normalised, msg string) {
 	u, err := url.Parse(strings.TrimSpace(raw))
-	return err == nil && mcpclient.CheckTarget(u) == nil
+	if err != nil {
+		return "", errURLRule
+	}
+	if err := mcpclient.CheckTarget(u); err != nil {
+		if errors.Is(err, mcpclient.ErrURLFragment) {
+			return "", err.Error()
+		}
+		return "", errURLRule
+	}
+	if u.User != nil {
+		return "", mcpclient.ErrURLUserinfo.Error()
+	}
+	return u.String(), ""
+}
+
+// normaliseStored is upstreamURL's normalisation applied to a stored value,
+// for comparison only: a row that predates normalisation, or one that does
+// not parse, compares as itself and is never rewritten.
+func normaliseStored(stored string) string {
+	u, err := url.Parse(stored)
+	if err != nil {
+		return stored
+	}
+	return u.String()
 }
 
 // checkUpstreamKindRules is the one place the rules that tie an upstream's

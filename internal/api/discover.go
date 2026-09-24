@@ -136,8 +136,9 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 	if kind == "" {
 		kind = models.KindMCP
 	}
-	if !usableUpstreamURL(target) {
-		writeError(w, http.StatusBadRequest, errURLRule)
+	target, msg := upstreamURL(target)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	if msg := checkUpstreamKindRules(kind, target, authType, in.TestPath.Value); msg != "" {

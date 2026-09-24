@@ -13,6 +13,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/audit"
 	"github.com/danjonesio/porymcp/internal/config"
 	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 )
@@ -30,7 +31,7 @@ func TestRouterTopology(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: key, PublicURL: "http://localhost:8080"}
+	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: netguard.Options{AllowLoopback: true}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auditor := audit.New(st, log)
 	defer auditor.Close()
@@ -191,7 +192,7 @@ func TestSecurityHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: key, PublicURL: "http://localhost:8080"}
+	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: netguard.Options{AllowLoopback: true}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auditor := audit.New(st, log)
 	defer auditor.Close()

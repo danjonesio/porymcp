@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // The whole handshake, against a server that behaves like the reference one:
@@ -819,7 +820,7 @@ func TestDiscoverTimesOut(t *testing.T) {
 		<-t.Context().Done()
 	}
 	start := time.Now()
-	got := New().Discover(t.Context(), f.upstream(), nil)
+	got := New(testGuard).Discover(t.Context(), f.upstream(), nil)
 	elapsed := time.Since(start)
 
 	if want := "upstream did not answer within 300ms"; got.Error != want {
@@ -852,7 +853,7 @@ func TestDiscoverCancelledByCaller(t *testing.T) {
 		}()
 
 		start := time.Now()
-		got := New().Discover(ctx, f.upstream(), nil)
+		got := New(testGuard).Discover(ctx, f.upstream(), nil)
 		if got.OK {
 			t.Error("ok=true after the caller went away")
 		}
@@ -1183,7 +1184,7 @@ func TestDiscoverModernFieldsBounded(t *testing.T) {
 // sleeps, because httptest.Server.Close waits for the handler.
 func TestDiscoverBudgetIncludesProbe(t *testing.T) {
 	// The same package var TestDiscoverTimesOut shortens, under the same rule:
-	// nothing in this package calls t.Parallel. Set before New(), which reads it.
+	// nothing in this package calls t.Parallel. Set before New(testGuard), which reads it.
 	restore := discoverBudget
 	discoverBudget = 300 * time.Millisecond
 	t.Cleanup(func() { discoverBudget = restore })
@@ -1192,7 +1193,7 @@ func TestDiscoverBudgetIncludesProbe(t *testing.T) {
 	f.on[stepDiscover] = func(http.ResponseWriter, request) { <-t.Context().Done() }
 
 	start := time.Now()
-	got := New().Discover(t.Context(), f.upstream(), nil)
+	got := New(testGuard).Discover(t.Context(), f.upstream(), nil)
 	elapsed := time.Since(start)
 
 	if want := "upstream did not answer within 300ms"; got.Error != want {
@@ -1230,7 +1231,7 @@ func TestDiscoverSendsNothingPastItsDeadline(t *testing.T) {
 	if ctx.Err() != nil {
 		t.Fatal("the context already reads as done; the test would prove nothing")
 	}
-	got := New().Discover(ctx, f.upstream(), nil)
+	got := New(testGuard).Discover(ctx, f.upstream(), nil)
 	if want := "upstream did not answer within " + discoverBudget.String(); got.Error != want {
 		t.Errorf("error=%q, want %q", got.Error, want)
 	}
@@ -1239,5 +1240,32 @@ func TestDiscoverSendsNothingPastItsDeadline(t *testing.T) {
 	}
 	if n := len(f.requests()); n != 0 {
 		t.Errorf("%d requests were sent after the deadline, want 0: %v", n, f.rpcCalls())
+	}
+}
+
+// The admin surfaces, discovery and the HTTP probe, add the remedy clause to
+// a loopback refusal and nothing to any other class; the sentence stays the
+// class and never the address.
+func TestDiscoveryLoopbackRemedy(t *testing.T) {
+	const want = "upstream address denied: loopback; on a bare binary set UPSTREAM_ALLOW_LOOPBACK=true, in a container use host.docker.internal"
+	f := newFixture(t)
+	got := New(netguard.Options{}).Discover(t.Context(), f.upstream(), nil)
+	if got.OK || got.Error != want {
+		t.Fatalf("discovery under the default guard: ok=%v error=%q, want %q", got.OK, got.Error, want)
+	}
+	if n := len(f.requests()); n != 0 {
+		t.Fatalf("%d requests reached the loopback fixture", n)
+	}
+
+	stub := newAPIStub(t)
+	d := New(netguard.Options{}).Probe(t.Context(), httpUpstream(stub.srv.URL+"/v1", "/user"), bearerAuth)
+	if d.OK || d.Error != want {
+		t.Fatalf("probe under the default guard: ok=%v error=%q, want %q", d.OK, d.Error, want)
+	}
+
+	up := &models.Upstream{URL: "https://example.test/mcp", Transport: models.TransportStreamableHTTP, AuthType: models.AuthNone}
+	meta := clientWith(&countingTransport{err: netguard.Denied{Class: netguard.ClassMetadata}}).Discover(t.Context(), up, nil)
+	if meta.Error != "upstream address denied: metadata" {
+		t.Fatalf("metadata refusal reads %q; only loopback carries the remedy", meta.Error)
 	}
 }

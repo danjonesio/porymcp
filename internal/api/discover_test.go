@@ -16,7 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/google/uuid"
 )
 
@@ -984,14 +988,23 @@ func TestDiscoverNeverReturnsCredential(t *testing.T) {
 }
 
 func TestDiscoverURLUserinfoRedacted(t *testing.T) {
-	_, h, _ := testAPI(t)
+	_, h, st := testAPI(t)
 	// A URL carrying a secret in three places, two of which Go's own redaction
 	// keeps. Port 1 refuses on this machine; a host that drops rather than
 	// refuses produces the timeout sentence instead, so BOTH are accepted,
 	// what this test is about is which bytes come back, not which failure.
-	id, _ := mustUpstream(t, h, "Leaky", map[string]any{
-		"url": "https://user:secret@127.0.0.1:1/mcp?tok=QUERYSECRET",
-	})
+	// Seeded through the store: create refuses userinfo since PORM-79, and
+	// the rows this covers are the ones saved before it (PORM-27).
+	now := time.Now().UTC()
+	leaky := models.Upstream{
+		ID: uuid.NewString(), Name: "Leaky", Slug: "leaky", Kind: models.KindMCP,
+		URL: "https://user:secret@127.0.0.1:1/mcp?tok=QUERYSECRET", Transport: models.TransportStreamableHTTP,
+		AuthType: models.AuthNone, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateUpstream(context.Background(), &leaky); err != nil {
+		t.Fatal(err)
+	}
+	id := leaky.ID
 
 	d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil))
 	if d["ok"] != false {
@@ -1180,5 +1193,36 @@ func TestDiscoverLogsNothing(t *testing.T) {
 	}
 	if logs.Len() != 0 {
 		t.Fatalf("the discovery handlers wrote %s", logs.String())
+	}
+}
+
+// PORM-79 security requirement 12: both discover routes answer a refused
+// dial with ok false and the loopback sentence carrying its remedy, and the
+// unsaved route keeps its rate limit (TestDiscoverRateLimited pins the 429).
+func TestDiscoverRefusedDial(t *testing.T) {
+	const want = "upstream address denied: loopback; on a bare binary set UPSTREAM_ALLOW_LOOPBACK=true, in a container use host.docker.internal"
+	stub := newMCPStub(t)
+	s, seed, st := testAPI(t)
+	id, _ := mustUpstream(t, seed, "Local", map[string]any{"url": stub.srv.URL})
+
+	// A second server over the same store with the shipped default guard.
+	cfg := *s.cfg
+	cfg.UpstreamGuard = netguard.Options{}
+	h := New(&cfg, st, nil, mcpclient.New(cfg.UpstreamGuard), webutil.EncryptionOK).Routes()
+
+	for name, rr := range map[string]*httptest.ResponseRecorder{
+		"saved":   doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil),
+		"unsaved": doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin", map[string]any{"url": stub.srv.URL}),
+	} {
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: code %d body %s", name, rr.Code, rr.Body.String())
+		}
+		d := discovery(t, rr)
+		if d["ok"] != false || d["error"] != want {
+			t.Fatalf("%s: ok=%v error=%q, want %q", name, d["ok"], d["error"], want)
+		}
+	}
+	if n := len(stub.requests()); n != 0 {
+		t.Fatalf("the loopback stub saw %d requests", n)
 	}
 }

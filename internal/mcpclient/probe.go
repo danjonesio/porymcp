@@ -3,7 +3,6 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,11 +69,7 @@ func (c *Client) Probe(ctx context.Context, up *models.Upstream, plainAuth json.
 	resp, err := Open(c.http, req)
 	out.LatencyMS = latencyMS(time.Since(start))
 	if err != nil {
-		// Both the sequence deadline and Client.Timeout arrive as this.
-		if errors.Is(err, context.DeadlineExceeded) {
-			return out.fail("upstream did not answer within " + discoverBudget.String())
-		}
-		return out.fail(TransportFailure(err, host))
+		return out.fail(adminTransportFailure(err, host))
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, probeDrainBytes))

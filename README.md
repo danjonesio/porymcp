@@ -78,6 +78,11 @@ export ENCRYPTION_KEY=$(cat ~/porymcp.key)     # the same key in every shell: ./
 go run ./cmd/server
 ```
 
+An upstream on `localhost` is refused by default, because a loopback upstream
+is never right inside the container the image ships. On a bare binary set
+`UPSTREAM_ALLOW_LOOPBACK=true` in the same shell to allow it; the startup line
+`upstream guard` shows the setting (`docs/08-docker.md`).
+
 Keep the same `ENCRYPTION_KEY` across restarts once an upstream has a stored
 credential: the server refuses to start with none set against a database that
 holds one.

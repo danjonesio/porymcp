@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/google/uuid"
@@ -72,12 +74,14 @@ func testAPIWrappedStore(t *testing.T, publicURL string, wrap func(store.Store) 
 		AdminAPIKey:   "test-admin",
 		EncryptionKey: key,
 		PublicURL:     publicURL,
+		// The stubs listen on loopback, which the shipped default refuses.
+		UpstreamGuard: netguard.Options{AllowLoopback: true},
 	}
 	var backing store.Store = st
 	if wrap != nil {
 		backing = wrap(st)
 	}
-	s := New(cfg, backing, nil, mcpclient.New(), webutil.EncryptionOK)
+	s := New(cfg, backing, nil, mcpclient.New(cfg.UpstreamGuard), webutil.EncryptionOK)
 	return s, s.Routes(), st, path
 }
 
@@ -134,6 +138,16 @@ func doJSONCtx(t *testing.T, h http.Handler, ctx context.Context, method, path, 
 // tests use it because an operator has to be able to fix the request from the
 // response alone: the reason has to survive to the body, and so does the field
 // and index of the entry that caused it.
+// jsonObject decodes a JSON object body, for exact-field assertions.
+func jsonObject(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &m); err != nil {
+		t.Fatalf("body %s is not a JSON object: %v", rr.Body.String(), err)
+	}
+	return m
+}
+
 func wantsBody(t *testing.T, rr *httptest.ResponseRecorder, wants ...string) {
 	t.Helper()
 	for _, w := range wants {
@@ -700,69 +714,149 @@ func TestCreateUpstreamSlugRace(t *testing.T) {
 	})
 }
 
-// nonHTTPURLs are the shapes an upstream URL must not take. Every one of them
-// was stored happily before this check landed, and not one is a URL PoryMCP
-// could ever connect to, an operator found that out when a call failed with a
-// message about the upstream rather than about what they typed.
-var nonHTTPURLs = []string{
-	"file:///etc/passwd",
-	"//evil/mcp",         // scheme-relative: no scheme at all
-	"localhost:8080/mcp", // parses as scheme "localhost", opaque "8080/mcp"
-	"ftp://h/",
-	"https://",           // a scheme and no host
-	"https://h/mcp#frag", // a fragment is not part of a request
-	"not a url at all",
+// refusedURLs are the shapes an upstream URL must not take, each with the
+// sentence create and PATCH answer (PORM-79 security requirement 9). Every one
+// of them was stored happily before the first check landed, and not one is a
+// URL PoryMCP could ever connect to; an operator found that out when a call
+// failed with a message about the upstream rather than about what they typed.
+var refusedURLs = map[string]string{
+	"file:///etc/passwd":        errURLRule,
+	"//evil/mcp":                errURLRule, // scheme-relative: no scheme at all
+	"localhost:8080/mcp":        errURLRule, // parses as scheme "localhost", opaque "8080/mcp"
+	"ftp://h/":                  errURLRule,
+	"ftp://x/mcp":               errURLRule,
+	"https://":                  errURLRule, // a scheme and no host
+	"http:///mcp":               errURLRule,
+	"mcp":                       errURLRule, // no scheme
+	"not a url at all":          errURLRule,
+	"https://h/mcp#frag":        "url must not carry a fragment",
+	"http://host/mcp#frag":      "url must not carry a fragment",
+	"http://user:pw@host/mcp":   "url must not embed credentials",
+	"https://u:p@example.com/x": "url must not embed credentials",
 }
 
-// httpURLs must keep working: this check is about the scheme and the host, and
-// nothing else about a URL is any of its business.
-var httpURLs = []string{
-	"HTTPS://h/mcp?ok=1", // url.Parse lower-cases the scheme
-	"http://h/mcp?ok=1",
-	"https://h:8443/path",
+// acceptedURLs must keep working, and are stored as url.Parse re-serialises
+// them: the scheme lower-cased, unescaped path characters percent-encoded,
+// an empty fragment dropped, host, port and trailing slash kept (security
+// requirement 10's normalisation).
+var acceptedURLs = map[string]string{
+	"HTTPS://h/mcp?ok=1":           "https://h/mcp?ok=1", // url.Parse lower-cases the scheme
+	"  HTTPS://h/mcp?ok=1 ":        "https://h/mcp?ok=1",
+	"http://h/mcp?ok=1":            "http://h/mcp?ok=1",
+	"https://h:8443/path":          "https://h:8443/path",
+	"https://example.com/mcp":      "https://example.com/mcp",
+	"http://172.28.0.5:3001/mcp":   "http://172.28.0.5:3001/mcp",
+	"https://Example.COM:443/mcp/": "https://Example.COM:443/mcp/", // host case, port and trailing slash kept
 }
 
-func TestCreateUpstreamRejectsNonHTTPURL(t *testing.T) {
+func TestUpstreamURLValidation(t *testing.T) {
 	_, h, _ := testAPI(t)
-	for _, raw := range nonHTTPURLs {
+	id, _ := mustUpstream(t, h, "GitHub", nil)
+	for raw, want := range refusedURLs {
 		rr, up := newUpstream(t, h, upstreamBody("Bad", map[string]any{"url": raw}))
 		if rr.Code != http.StatusBadRequest || up != nil {
 			t.Fatalf("create with url %q: %d %s", raw, rr.Code, rr.Body.String())
 		}
-		wantsBody(t, rr, "url must be an absolute http or https URL")
-	}
-	for i, raw := range httpURLs {
-		rr, up := newUpstream(t, h, upstreamBody("Good", map[string]any{
-			"url": raw, "slug": []string{"ok-a", "ok-b", "ok-c"}[i],
-		}))
-		if up == nil {
-			t.Fatalf("create with url %q: %d %s", raw, rr.Code, rr.Body.String())
+		if m := jsonObject(t, rr); m["error"] != want {
+			t.Fatalf("create with url %q: error %q, want %q", raw, m["error"], want)
 		}
-	}
-}
-
-func TestPatchUpstreamRejectsNonHTTPURL(t *testing.T) {
-	_, h, _ := testAPI(t)
-	id, _ := mustUpstream(t, h, "GitHub", nil)
-	for _, raw := range nonHTTPURLs {
-		rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"url": raw})
+		rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"url": raw})
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("patch with url %q: %d %s", raw, rr.Code, rr.Body.String())
 		}
-		wantsBody(t, rr, "url must be an absolute http or https URL")
+		if m := jsonObject(t, rr); m["error"] != want {
+			t.Fatalf("patch with url %q: error %q, want %q", raw, m["error"], want)
+		}
+	}
+	i := 0
+	for raw, stored := range acceptedURLs {
+		i++
+		rr, up := newUpstream(t, h, upstreamBody("Good", map[string]any{"url": raw, "slug": fmt.Sprintf("ok-%d", i)}))
+		if up == nil {
+			t.Fatalf("create with url %q: %d %s", raw, rr.Code, rr.Body.String())
+		}
+		if up["url"] != stored {
+			t.Fatalf("create with url %q stored %q, want %q", raw, up["url"], stored)
+		}
+		rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"url": raw})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("patch with url %q: %d %s", raw, rr.Code, rr.Body.String())
+		}
+		if m := jsonObject(t, rr); m["url"] != stored {
+			t.Fatalf("patch with url %q stored %q, want %q", raw, m["url"], stored)
+		}
 	}
 	// A body without a url leaves the stored url alone. A blank url is a 400
 	// (TestPatchRejectsBlankRequiredFields), so this request sends none.
-	rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"name": "Renamed"})
+	rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"url": "https://example.com/mcp"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch back to the original url: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"name": "Renamed"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("patch without a url: %d %s", rr.Code, rr.Body.String())
 	}
-	var out map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+	if m := jsonObject(t, rr); m["url"] != "https://example.com/mcp" {
+		t.Fatalf("the stored url changed: %v", m["url"])
+	}
+}
+
+// PORM-79 security requirement 10: a row saved before normalisation keeps its
+// OAuth tokens and its recorded test when the same URL is sent again, in its
+// stored spelling or the normalised one. A PATCH that carries url stores the
+// normalised form (that is what "the stored value is the parsed URL" means);
+// only a PATCH that carries no url leaves the legacy spelling alone.
+func TestPatchSameURLKeepsOAuthTokenAndTestState(t *testing.T) {
+	s, h, st := testAPI(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	tested := now.Add(-time.Hour)
+	ok := true
+	// The token set is sealed into the row at creation: connecting it
+	// afterwards through the store would clear the test columns, and the row
+	// under test is one that was tested after it was connected.
+	raw, _ := json.Marshal(models.OAuthTokenSet{AccessToken: "a", RefreshToken: "r", TokenEndpoint: "https://as.example/token"})
+	enc, err := s.keys.Seal(raw)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if out["url"] != "https://example.com/mcp" {
-		t.Fatalf("the stored url changed: %v", out["url"])
+	legacy := models.Upstream{
+		ID: uuid.NewString(), Name: "Legacy", Slug: "legacy", Kind: models.KindMCP,
+		URL: "HTTPS://h/mcp", Transport: models.TransportStreamableHTTP, AuthType: models.AuthOAuth,
+		AuthConfig: []byte(enc), Enabled: true, CreatedAt: now, UpdatedAt: now, LastTestAt: &tested, LastTestOK: &ok,
+	}
+	if err := st.CreateUpstream(context.Background(), &legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, same := range []string{"HTTPS://h/mcp", "https://h/mcp", " HTTPS://h/mcp "} {
+		rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+legacy.ID, "test-admin", map[string]any{"url": same})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("patch %q: %d %s", same, rr.Code, rr.Body.String())
+		}
+		if _, kept := storedOAuthSet(t, s, st, legacy.ID); !kept {
+			t.Fatalf("patch %q dropped the oauth token set", same)
+		}
+		row, err := st.GetUpstream(context.Background(), legacy.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.LastTestAt == nil || !row.LastTestAt.Equal(tested) || row.LastTestOK == nil || !*row.LastTestOK {
+			t.Fatalf("patch %q reset the recorded test: at=%v ok=%v", same, row.LastTestAt, row.LastTestOK)
+		}
+		if row.URL != "https://h/mcp" {
+			t.Fatalf("patch %q stored %q, want the normalised form", same, row.URL)
+		}
+	}
+
+	rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+legacy.ID, "test-admin", map[string]any{"url": "https://h/other"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch to another url: %d %s", rr.Code, rr.Body.String())
+	}
+	if _, kept := storedOAuthSet(t, s, st, legacy.ID); kept {
+		t.Fatal("a real url change kept the oauth token set; RFC 8707 says it was minted for the old resource")
+	}
+	if row, _ := st.GetUpstream(context.Background(), legacy.ID); row.LastTestAt != nil || row.URL != "https://h/other" {
+		t.Fatalf("a real url change: at=%v url=%q", row.LastTestAt, row.URL)
 	}
 }
 

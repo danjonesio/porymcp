@@ -107,7 +107,7 @@ func TestCheckHTTPBase(t *testing.T) {
 	bad := map[string]string{
 		"https://api.example/v1?key=x": "url must not carry a query string",
 		"https://u:p@api.example/v1":   "url must not embed credentials",
-		"https://api.example/v1#frag":  "url carries a fragment",
+		"https://api.example/v1#frag":  "url must not carry a fragment",
 		"ftp://api.example/v1":         "scheme is not http or https",
 	}
 	for _, s := range ok {

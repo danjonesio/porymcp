@@ -139,7 +139,7 @@ func TestProbeEraReadsItsOwnAnswer(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write(append(sseFrame([]byte(foreign)), sseFrame([]byte(own))...))
 		}
-		got := ProbeEra(t.Context(), New().http, f.upstream(), nil)
+		got := ProbeEra(t.Context(), New(testGuard).http, f.upstream(), nil)
 		if got.Era != EraModern || got.Version != RevisionModern || got.Fail != "" {
 			t.Errorf("probe = %+v, want a usable modern verdict", got)
 		}
@@ -151,7 +151,7 @@ func TestProbeEraReadsItsOwnAnswer(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write(sseFrame([]byte(strings.Replace(own, `"id":`+idDiscover, `"id":99`, 1))))
 		}
-		got := ProbeEra(t.Context(), New().http, f.upstream(), nil)
+		got := ProbeEra(t.Context(), New(testGuard).http, f.upstream(), nil)
 		if got.Era != EraLegacy || !got.Reached || got.Fail != "" {
 			t.Errorf("probe = %+v, want a reached legacy verdict", got)
 		}
@@ -159,7 +159,7 @@ func TestProbeEraReadsItsOwnAnswer(t *testing.T) {
 
 	t.Run("the probe declares itself and carries _meta", func(t *testing.T) {
 		f := newFixture(t)
-		_ = ProbeEra(t.Context(), New().http, f.upstream(), nil)
+		_ = ProbeEra(t.Context(), New(testGuard).http, f.upstream(), nil)
 		reqs := f.requests()
 		if len(reqs) != 1 || reqs[0].RPC != stepDiscover {
 			t.Fatalf("requests = %+v, want one server/discover", reqs)
@@ -293,7 +293,7 @@ func TestProbeBudget(t *testing.T) {
 
 	// The proxy's own kind of client: a timeout far longer than the budget, and
 	// a caller's context with no deadline at all.
-	hc := NewHTTPClient(Options{Timeout: time.Minute})
+	hc := NewHTTPClient(Options{Timeout: time.Minute, Guard: testGuard})
 	start := time.Now()
 	got := ProbeEra(t.Context(), hc, f.upstream(), nil)
 	elapsed := time.Since(start)

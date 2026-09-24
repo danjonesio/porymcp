@@ -20,6 +20,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/config"
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 )
@@ -88,7 +89,7 @@ func newStreamServer(t *testing.T, upstream http.HandlerFunc, auditDelay time.Du
 	stub := httptest.NewServer(upstream)
 	t.Cleanup(stub.Close)
 
-	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: encKey, PublicURL: "http://localhost:8080", ListenAddr: "127.0.0.1:0"}
+	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: encKey, PublicURL: "http://localhost:8080", ListenAddr: "127.0.0.1:0", UpstreamGuard: netguard.Options{AllowLoopback: true}}
 	logs := &lockedLog{}
 	log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	auditor := audit.New(slowInserts{Store: st, delay: auditDelay}, log)

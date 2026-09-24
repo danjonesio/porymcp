@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // The OAuth client (PORM-139). Everything here carries a code, a verifier, a
@@ -401,7 +402,24 @@ func (c *Client) transport(err error, host string) error {
 	if errors.As(err, &rd) {
 		return &OAuthError{Err: ErrOAuthRedirected, Host: h}
 	}
+	var denied netguard.Denied
+	if errors.As(err, &denied) {
+		return &OAuthError{Err: oauthDenied{Class: denied.Class}, Host: h}
+	}
 	return &OAuthError{Err: ErrOAuthUnreachable, Host: h}
+}
+
+// oauthDenied is an address the guard refused, said the way this file says
+// things: the party named is the authorization server, and the class is the
+// only variable. It is also ErrOAuthUnreachable to errors.Is, so
+// FindAuthServer's candidate loops keep it as they keep any unreachable
+// answer and Connect reports the class rather than "metadata not found".
+type oauthDenied struct{ Class string }
+
+func (e oauthDenied) Error() string { return "authorization server address denied: " + e.Class }
+
+func (e oauthDenied) Is(target error) bool {
+	return target == ErrOAuthUnreachable || target == netguard.ErrAddressDenied
 }
 
 // AuthorizationURL builds the URL the operator's browser is sent to. It

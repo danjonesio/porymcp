@@ -15,6 +15,7 @@ import (
 
 	"github.com/danjonesio/porymcp/internal/mcpclient/oauthstub"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // The OAuth client tests (PORM-139 step 4). Every metadata, registration,
@@ -24,7 +25,7 @@ import (
 
 func find(t *testing.T, s *oauthstub.Server) (ProtectedResource, AuthServer) {
 	t.Helper()
-	pr, as, err := New().FindAuthServer(context.Background(), s.MCPURL())
+	pr, as, err := New(testGuard).FindAuthServer(context.Background(), s.MCPURL())
 	if err != nil {
 		t.Fatalf("FindAuthServer: %v", err)
 	}
@@ -99,13 +100,13 @@ func metadataServer(t *testing.T, resource func(origin string) string, issuer fu
 
 func TestFindAuthServerRejectsIssuerMismatch(t *testing.T) {
 	srv := metadataServer(t, func(o string) string { return o + "/mcp" }, func(o string) string { return "https://other.invalid" })
-	_, _, err := New().FindAuthServer(context.Background(), srv.URL+"/mcp")
+	_, _, err := New(testGuard).FindAuthServer(context.Background(), srv.URL+"/mcp")
 	oauthErr(t, err, ErrOAuthIssuerMismatch)
 }
 
 func TestFindAuthServerRejectsResourceMismatch(t *testing.T) {
 	srv := metadataServer(t, func(o string) string { return o + "/other" }, func(o string) string { return o })
-	_, _, err := New().FindAuthServer(context.Background(), srv.URL+"/mcp")
+	_, _, err := New(testGuard).FindAuthServer(context.Background(), srv.URL+"/mcp")
 	oauthErr(t, err, ErrOAuthResourceMismatch)
 }
 
@@ -115,7 +116,7 @@ func TestFindAuthServerRefusesEndpointsOffIssuerWithoutIss(t *testing.T) {
 	s := oauthstub.New(t)
 	s.EndpointsOnOtherHost = other.URL
 	s.NoIss = true
-	_, _, err := New().FindAuthServer(context.Background(), s.MCPURL())
+	_, _, err := New(testGuard).FindAuthServer(context.Background(), s.MCPURL())
 	oauthErr(t, err, ErrOAuthEndpointsOffIssuer)
 
 	// With iss promised the same layout is allowed; the callback checks iss.
@@ -130,7 +131,7 @@ func TestFindAuthServerRefusesEndpointsOffIssuerWithoutIss(t *testing.T) {
 func TestFindAuthServerRefusesWithoutS256(t *testing.T) {
 	s := oauthstub.New(t)
 	s.NoS256 = true
-	_, _, err := New().FindAuthServer(context.Background(), s.MCPURL())
+	_, _, err := New(testGuard).FindAuthServer(context.Background(), s.MCPURL())
 	oauthErr(t, err, ErrOAuthNoPKCE)
 }
 
@@ -147,7 +148,7 @@ func TestFindAuthServerGatesResourceMetadataURL(t *testing.T) {
 			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+meta+`"`)
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
-		_, _, err := New().FindAuthServer(context.Background(), srv.URL+"/mcp")
+		_, _, err := New(testGuard).FindAuthServer(context.Background(), srv.URL+"/mcp")
 		oauthErr(t, err, ErrOAuthHostRule)
 		if hits.Load() != 0 {
 			t.Errorf("%s: the server was dialled %d times beyond the challenge", meta, hits.Load())
@@ -173,7 +174,7 @@ func TestFindAuthServerRefusesRedirect(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	_, _, err := New().FindAuthServer(context.Background(), srv.URL+"/mcp")
+	_, _, err := New(testGuard).FindAuthServer(context.Background(), srv.URL+"/mcp")
 	oe := oauthErr(t, err, ErrOAuthRedirected)
 	if strings.Contains(oe.Error(), "REDIRECT_QUERY_MARKER") || strings.Contains(oe.Host, "REDIRECT") {
 		t.Fatalf("redirect leaked: %v %q", oe, oe.Host)
@@ -223,7 +224,7 @@ func TestOAuthTargetHTTPSRule(t *testing.T) {
 	// srv is plain http, so an https token endpoint passes the scheme rule and
 	// the mixed layout is what FindAuthServer must still pin; the point here
 	// is only that nothing outside FindAuthServer re-derives an endpoint.
-	_, as, err := New().FindAuthServer(context.Background(), srv.URL+"/mcp")
+	_, as, err := New(testGuard).FindAuthServer(context.Background(), srv.URL+"/mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +272,7 @@ func TestRegisterSendsApplicationTypeWeb(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "reg-1", "client_secret": "s", "redirect_uris": got["redirect_uris"]})
 	}))
 	defer srv.Close()
-	id, secret, err := New().Register(context.Background(), AuthServer{RegistrationEndpoint: srv.URL + "/register", TokenEndpointAuthMethods: []string{"client_secret_basic"}}, "http://pory.test/cb")
+	id, secret, err := New(testGuard).Register(context.Background(), AuthServer{RegistrationEndpoint: srv.URL + "/register", TokenEndpointAuthMethods: []string{"client_secret_basic"}}, "http://pory.test/cb")
 	if err != nil || id != "reg-1" || secret != "s" {
 		t.Fatalf("id=%q secret=%q err=%v", id, secret, err)
 	}
@@ -284,7 +285,7 @@ func TestRegisterRefusesChangedRedirectURIs(t *testing.T) {
 	s := oauthstub.New(t)
 	s.RegisterChangesRedirect = true
 	_, as := find(t, s)
-	_, _, err := New().Register(context.Background(), as, "http://pory.test/cb")
+	_, _, err := New(testGuard).Register(context.Background(), as, "http://pory.test/cb")
 	oauthErr(t, err, ErrOAuthRegistrationRefused)
 }
 
@@ -307,7 +308,7 @@ func TestExchangeSendsVerifierAndResource(t *testing.T) {
 	set := models.OAuthTokenSet{ClientID: "cid", ClientSecret: "sec", Resource: s.MCPURL()}
 	code, verifier := approve(t, s, as, set)
 	now := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
-	got, err := New().Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", now)
+	got, err := New(testGuard).Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +321,7 @@ func TestExchangeSendsVerifierAndResource(t *testing.T) {
 	// The stub checked the verifier, the redirect_uri and the resource; a
 	// wrong verifier is refused as a rejected grant.
 	code2, _ := approve(t, s, as, set)
-	_, err = New().Exchange(context.Background(), as, set, code2, "wrong", "http://pory.test/cb", now)
+	_, err = New(testGuard).Exchange(context.Background(), as, set, code2, "wrong", "http://pory.test/cb", now)
 	oauthErr(t, err, ErrGrantRejected)
 }
 
@@ -332,7 +333,7 @@ func TestExchangeDefaultsExpiryToOneHour(t *testing.T) {
 	set := models.OAuthTokenSet{ClientID: "cid", Resource: s.MCPURL()}
 	code, verifier := approve(t, s, as, set)
 	now := time.Now()
-	got, err := New().Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", now)
+	got, err := New(testGuard).Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", now)
 	if err != nil || got.ExpiresAt != now.UTC().Add(time.Hour) {
 		t.Fatalf("expires_at %v err %v", got.ExpiresAt, err)
 	}
@@ -346,7 +347,7 @@ func TestExchangeClampsHugeExpiresIn(t *testing.T) {
 			fmt.Fprintf(w, `{"access_token":"a","token_type":"Bearer","expires_in":%d}`, secs)
 		}))
 		now := time.Now()
-		got, err := New().Exchange(context.Background(), AuthServer{TokenEndpoint: srv.URL + "/token"}, models.OAuthTokenSet{ClientID: "c", Resource: "r"}, "c", "v", "http://pory.test/cb", now)
+		got, err := New(testGuard).Exchange(context.Background(), AuthServer{TokenEndpoint: srv.URL + "/token"}, models.OAuthTokenSet{ClientID: "c", Resource: "r"}, "c", "v", "http://pory.test/cb", now)
 		srv.Close()
 		if err != nil || !got.ExpiresAt.Equal(now.UTC().Add(maxExpiresIn)) {
 			t.Fatalf("expires_in %d: %v %v", secs, got.ExpiresAt, err)
@@ -357,7 +358,7 @@ func TestExchangeClampsHugeExpiresIn(t *testing.T) {
 		fmt.Fprint(w, `{"access_token":"a","token_type":"DPoP"}`)
 	}))
 	defer srv.Close()
-	_, err := New().Refresh(context.Background(), models.OAuthTokenSet{TokenEndpoint: srv.URL + "/token", RefreshToken: "r"}, time.Now())
+	_, err := New(testGuard).Refresh(context.Background(), models.OAuthTokenSet{TokenEndpoint: srv.URL + "/token", RefreshToken: "r"}, time.Now())
 	if oe := oauthErr(t, err, ErrOAuthTokenAnswer); oe.Code != "http_200" {
 		t.Fatalf("code %q", oe.Code)
 	}
@@ -370,7 +371,7 @@ func TestExchangeRefusesNonBearer(t *testing.T) {
 	_, as := find(t, s)
 	set := models.OAuthTokenSet{ClientID: "cid", Resource: s.MCPURL()}
 	code, verifier := approve(t, s, as, set)
-	_, err := New().Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", time.Now())
+	_, err := New(testGuard).Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", time.Now())
 	oauthErr(t, err, ErrOAuthTokenAnswer)
 }
 
@@ -381,7 +382,7 @@ func TestExchangeBoundsTokenLength(t *testing.T) {
 	_, as := find(t, s)
 	set := models.OAuthTokenSet{ClientID: "cid", Resource: s.MCPURL()}
 	code, verifier := approve(t, s, as, set)
-	_, err := New().Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", time.Now())
+	_, err := New(testGuard).Exchange(context.Background(), as, set, code, verifier, "http://pory.test/cb", time.Now())
 	oauthErr(t, err, ErrOAuthTokenAnswer)
 }
 
@@ -396,7 +397,7 @@ func TestExchangePublicClientSendsNoAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 	as := AuthServer{TokenEndpoint: srv.URL + "/token"}
-	got, err := New().Exchange(context.Background(), as, models.OAuthTokenSet{ClientID: "pub", Resource: "http://r"}, "c", "v", "http://pory.test/cb", time.Now())
+	got, err := New(testGuard).Exchange(context.Background(), as, models.OAuthTokenSet{ClientID: "pub", Resource: "http://r"}, "c", "v", "http://pory.test/cb", time.Now())
 	if err != nil || sawBasic || form.Get("client_id") != "pub" || form.Get("code_verifier") != "v" || form.Get("resource") != "http://r" || got.AccessToken != "a" {
 		t.Fatalf("basic=%v form=%v got=%+v err=%v", sawBasic, form, got, err)
 	}
@@ -415,7 +416,7 @@ func seeded(t *testing.T, s *oauthstub.Server) models.OAuthTokenSet {
 func TestRefreshRejectedIsErrGrantRejected(t *testing.T) {
 	s := oauthstub.New(t)
 	s.RejectRefresh = true
-	_, err := New().Refresh(context.Background(), seeded(t, s), time.Now())
+	_, err := New(testGuard).Refresh(context.Background(), seeded(t, s), time.Now())
 	oe := oauthErr(t, err, ErrGrantRejected)
 	if oe.Code != "invalid_grant" || oe.Status != http.StatusBadRequest {
 		t.Fatalf("code=%q status=%d", oe.Code, oe.Status)
@@ -423,7 +424,7 @@ func TestRefreshRejectedIsErrGrantRejected(t *testing.T) {
 	// A transient answer is not a rejection.
 	s2 := oauthstub.New(t)
 	s2.RejectRefreshTransient = true
-	_, err = New().Refresh(context.Background(), seeded(t, s2), time.Now())
+	_, err = New(testGuard).Refresh(context.Background(), seeded(t, s2), time.Now())
 	oe = oauthErr(t, err, ErrOAuthTokenAnswer)
 	if oe.Code != "http_503" {
 		t.Fatalf("code=%q", oe.Code)
@@ -434,14 +435,14 @@ func TestRefreshKeepsOldRefreshTokenWhenAbsent(t *testing.T) {
 	s := oauthstub.New(t)
 	set := seeded(t, s)
 	s.NoRefreshToken = true
-	got, err := New().Refresh(context.Background(), set, time.Now())
+	got, err := New(testGuard).Refresh(context.Background(), set, time.Now())
 	if err != nil || got.RefreshToken != set.RefreshToken || got.AccessToken == set.AccessToken {
 		t.Fatalf("got=%+v err=%v", got, err)
 	}
 	// And a normal refresh rotates it.
 	s2 := oauthstub.New(t)
 	set2 := seeded(t, s2)
-	got2, err := New().Refresh(context.Background(), set2, time.Now())
+	got2, err := New(testGuard).Refresh(context.Background(), set2, time.Now())
 	if err != nil || got2.RefreshToken == set2.RefreshToken || !s2.RefreshValid(got2.RefreshToken) || s2.RefreshValid(set2.RefreshToken) {
 		t.Fatalf("got=%+v err=%v", got2, err)
 	}
@@ -452,7 +453,7 @@ func TestRefreshErrorsQuoteNoBody(t *testing.T) {
 	s.RejectRefresh = true
 	s.ErrorDescriptionMarker = "VENDOR_WORDS_MARKER"
 	set := seeded(t, s)
-	_, err := New().Refresh(context.Background(), set, time.Now())
+	_, err := New(testGuard).Refresh(context.Background(), set, time.Now())
 	oe := oauthErr(t, err, ErrGrantRejected)
 	for _, needle := range []string{"VENDOR_WORDS_MARKER", set.RefreshToken, set.AccessToken} {
 		if strings.Contains(oe.Error(), needle) || strings.Contains(oe.Host, needle) || strings.Contains(oe.Code, needle) {
@@ -464,11 +465,11 @@ func TestRefreshErrorsQuoteNoBody(t *testing.T) {
 func TestRevokeCallsEndpoint(t *testing.T) {
 	s := oauthstub.New(t)
 	set := seeded(t, s)
-	if err := New().Revoke(context.Background(), set); err != nil || s.Revocations() != 1 {
+	if err := New(testGuard).Revoke(context.Background(), set); err != nil || s.Revocations() != 1 {
 		t.Fatalf("err=%v revocations=%d", err, s.Revocations())
 	}
 	set.RevocationEndpoint = ""
-	if err := New().Revoke(context.Background(), set); err == nil {
+	if err := New(testGuard).Revoke(context.Background(), set); err == nil {
 		t.Fatal("revoke with no endpoint succeeded")
 	}
 }
@@ -483,7 +484,7 @@ func TestClientSecretNeverInURL(t *testing.T) {
 	}))
 	defer srv.Close()
 	set := models.OAuthTokenSet{ClientID: "id with space", ClientSecret: "s&cret", TokenEndpoint: srv.URL + "/token", RefreshToken: "r"}
-	if _, err := New().Refresh(context.Background(), set, time.Now()); err != nil {
+	if _, err := New(testGuard).Refresh(context.Background(), set, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if seen.URL.RawQuery != "" {
@@ -506,4 +507,62 @@ func TestFindAuthServerUnreachableNamesHost(t *testing.T) {
 	if ct.count() == 0 {
 		t.Fatal("nothing was dialled")
 	}
+}
+
+// Security requirement 15: an address the guard refused is reported as the
+// authorization server's, by class, on every stage that dials one, and it
+// still counts as unreachable so FindAuthServer's candidate loops keep it
+// rather than answering "metadata not found".
+func TestOAuthDeniedNamesClass(t *testing.T) {
+	const want = "authorization server address denied: metadata"
+	check := func(t *testing.T, err error, stage string) {
+		t.Helper()
+		oe := oauthErr(t, err, ErrOAuthUnreachable)
+		if !errors.Is(err, netguard.ErrAddressDenied) {
+			t.Fatalf("err=%v does not unwrap to ErrAddressDenied", err)
+		}
+		if oe.Error() != want {
+			t.Fatalf("sentence %q, want %q", oe.Error(), want)
+		}
+		if stage != "" && oe.Stage != stage {
+			t.Fatalf("stage %q, want %q", oe.Stage, stage)
+		}
+	}
+
+	t.Run("protected resource candidate", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/mcp" {
+				w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="http://169.254.169.254/.well-known/oauth-protected-resource"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer srv.Close()
+		_, _, err := New(testGuard).FindAuthServer(context.Background(), srv.URL+"/mcp")
+		check(t, err, "protected_resource")
+	})
+
+	t.Run("issuer", func(t *testing.T) {
+		var srv *httptest.Server
+		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/mcp":
+				w.WriteHeader(http.StatusUnauthorized)
+			case "/.well-known/oauth-protected-resource/mcp":
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"resource":%q,"authorization_servers":["http://169.254.169.254"]}`, srv.URL+"/mcp")
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer srv.Close()
+		_, _, err := New(testGuard).FindAuthServer(context.Background(), srv.URL+"/mcp")
+		check(t, err, "authorization_server")
+	})
+
+	t.Run("token endpoint", func(t *testing.T) {
+		_, err := New(testGuard).Refresh(context.Background(), models.OAuthTokenSet{TokenEndpoint: "https://169.254.169.254/token", RefreshToken: "r"}, time.Now())
+		check(t, err, "")
+	})
 }

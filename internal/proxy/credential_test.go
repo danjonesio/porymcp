@@ -210,6 +210,7 @@ func TestPreviousKeyStillForwards(t *testing.T) {
 	// exercises New -> cfg.Keyring() -> EncryptionKeyPrevious, not a hand-set
 	// field (the plan's recipe).
 	f.H = New(&config.Config{
+		UpstreamGuard:         testGuard,
 		EncryptionKey:         f.H.cfg.EncryptionKey,
 		EncryptionKeyPrevious: [][]byte{old},
 		PublicURL:             "http://localhost:8080",

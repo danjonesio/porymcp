@@ -119,6 +119,10 @@ jobs:
             sleep 1
           done
           [ "${ok:-}" = yes ]
+          # The startup line and the image's guard defaults (PORM-79). Logged
+          # before the listener opens, so it is there once /health answers.
+          docker logs porymcp-ci > "$RUNNER_TEMP/porymcp.log" 2>&1
+          grep -qF '"msg":"upstream guard","allow_loopback":false,"deny_private":false' "$RUNNER_TEMP/porymcp.log"
           curl -fsS -o "$RUNNER_TEMP/index.html" -w '%{http_code} %{content_type}\n' http://localhost:8080/ | grep -q '^200 text/html'
           grep -q '<title>PoryMCP</title>' "$RUNNER_TEMP/index.html"
           if docker logs porymcp-ci 2>&1 | grep -q admin_api_key; then

@@ -23,6 +23,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -376,6 +377,11 @@ type fixture struct {
 	Router http.Handler
 }
 
+// testGuard is the address policy every fixture-backed handler runs under:
+// the stubs listen on loopback, which the shipped default refuses. Tests that
+// exercise the refusal itself rebuild the handler with the zero value.
+var testGuard = netguard.Options{AllowLoopback: true}
+
 func newFixture(t testing.TB, specs map[string]upstreamSpec, group bool, filter json.RawMessage, allow, deny []string) *fixture {
 	t.Helper()
 	key, err := crypto.RandomKey()
@@ -477,7 +483,7 @@ func newFixture(t testing.TB, specs map[string]upstreamSpec, group bool, filter 
 		t.Fatal(err)
 	}
 	f.Key = plain
-	f.H = New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080"}, st, al, nil)
+	f.H = New(&config.Config{EncryptionKey: key, PublicURL: "http://localhost:8080", UpstreamGuard: testGuard}, st, al, nil)
 
 	rt := chi.NewRouter()
 	rt.HandleFunc("/mcp", f.H.ServeHTTP)

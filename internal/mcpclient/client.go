@@ -8,8 +8,9 @@
 // through it. Nothing else in the tree may build an http.Client that carries a
 // credential, TestNoSecondCredentialCarryingHTTPClient is what says so.
 //
-// It imports internal/models and the standard library and nothing else, which
-// is what lets both internal/proxy and internal/api use it without a cycle.
+// It imports internal/models, internal/netguard and the standard library and
+// nothing else, which is what lets both internal/proxy and internal/api use it
+// without a cycle.
 package mcpclient
 
 import (
@@ -20,6 +21,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // AcceptMCP is what an MCP client has to accept: the reference servers answer
@@ -39,15 +42,18 @@ const MaxBodyBytes = 16 << 20
 // inverted dependency between these two.
 const MaxErrorBytes = 256
 
-// Options is what a caller gets to choose. The timeout is the only knob, and
-// it is an http.Client.Timeout: it covers the whole exchange, body included.
-// Discovery allows 10s for a whole handshake. The proxy passes none, because a
-// relayed event stream stays open for as long as the upstream and the client
-// keep it, and bounds each request through the context instead (the budgets
-// in internal/proxy/budget.go). Everything else NewHTTPClient sets is policy,
-// see there.
+// Options is what a caller gets to choose. The timeout is an
+// http.Client.Timeout: it covers the whole exchange, body included. Discovery
+// allows 10s for a whole handshake. The proxy passes none, because a relayed
+// event stream stays open for as long as the upstream and the client keep it,
+// and bounds each request through the context instead (the budgets in
+// internal/proxy/budget.go). Guard is the operator's two address switches
+// from config (PORM-79); its zero value denies loopback, so a caller that
+// forgets it fails closed. Everything else NewHTTPClient sets is policy, see
+// there.
 type Options struct {
 	Timeout time.Duration
+	Guard   netguard.Options
 }
 
 // NewHTTPClient builds the client every credential-carrying request goes out
@@ -72,10 +78,19 @@ type Options struct {
 // rather than held, because a policy a caller can switch off is not a policy.
 // TestClientRefusesRedirectsByConstruction pins this construction and
 // TestProxyClientRefusesRedirectsByConstruction pins the proxy's use of it.
+//
+// The transport underneath is the default transport cloned, then wrapped:
+// cloned so the address guard (PORM-79) can take its DialContext without
+// touching the shared http.DefaultTransport, which the container healthcheck
+// and every test client dial loopback through; wrapped so UpstreamTransport's
+// Location rule sits in front. Clone keeps ProxyFromEnvironment, the TLS
+// defaults and HTTP/2, which is what TestClientDoesNotWeakenTLS pins.
 func NewHTTPClient(o Options) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = netguard.Dialer(o.Guard)
 	return &http.Client{
 		Timeout:   o.Timeout,
-		Transport: UpstreamTransport{Next: http.DefaultTransport},
+		Transport: UpstreamTransport{Next: tr},
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -92,11 +107,11 @@ func NewHTTPClient(o Options) *http.Client {
 // the bare refusal. Only 301/302/303/307/308 would reach that parse, but the
 // rule covers the whole class so it reads as one policy.
 //
-// The default transport is wrapped, not replaced, so HTTPS_PROXY and the rest
-// of its environment behave as before, and so certificate verification stays
-// on. TestClientDoesNotWeakenTLS pins that Next is http.DefaultTransport, so a
-// "let me point this at my self-signed dev server" patch has to argue with a
-// test.
+// Next is the default transport cloned (see NewHTTPClient), so HTTPS_PROXY
+// and the rest of its environment behave as before, and so certificate
+// verification stays on. TestClientDoesNotWeakenTLS pins the clone's TLS,
+// proxy and dial fields, so a "let me point this at my self-signed dev
+// server" patch has to argue with a test.
 type UpstreamTransport struct{ Next http.RoundTripper }
 
 func (t UpstreamTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -138,6 +153,15 @@ func OpenRelay(hc *http.Client, req *http.Request) (*http.Response, error) {
 func open(hc *http.Client, req *http.Request, allow304 bool) (*http.Response, error) {
 	resp, err := hc.Do(req)
 	if err != nil {
+		// A refusal by the address guard comes back as the bare value: Do
+		// wraps it in a *url.Error whose text quotes the request URL, and
+		// behind an egress proxy in a proxyconnect *net.OpError as well.
+		// Unwrapped here, once, the MCP door's audit row, the relay row,
+		// discovery and OAuth all read the class sentence and nothing else.
+		var denied netguard.Denied
+		if errors.As(err, &denied) {
+			return nil, denied
+		}
 		return nil, err
 	}
 	// Before the body is read: a 3xx body is not an answer. CheckRedirect is

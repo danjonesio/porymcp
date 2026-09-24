@@ -32,7 +32,7 @@ omitting `transport` or by sending `streamable-http`, and a body that echoes
 | `name` (all three) | trimmed and set | `400 name cannot be empty` | `400 name cannot be empty` (whitespace-only too) |
 | upstream `slug` | equal to the stored slug: no-op; anything else: `400 slug cannot be changed after create` | same `400` | same `400` |
 | upstream / group `description` | set | **cleared** | **cleared** |
-| upstream `url` | set; `400 url must be an absolute http or https URL` if not; resets the last test when it differs | that `400` | that `400` |
+| upstream `url` | set, stored normalised (see Upstream URLs); `400 url must be an absolute http or https URL`, `400 url must not carry a fragment` or `400 url must not embed credentials` if not; resets the last test when it differs after normalisation | that `400` | that `400` |
 | upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value (`sse` is not one: `streamable-http` is the only transport accepted on write); resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none` | that `400` | that `400` |
 | upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does) |
 | upstream `enabled` | set | `400 enabled must be true or false` | n/a |
@@ -143,7 +143,13 @@ a `PUBLIC_URL` that does not parse as an http or https address is
 a loopback `PUBLIC_URL` reached from another address is refused with both
 values. A metadata, host-rule, redirect or registration failure is `502`
 with one fixed sentence from the OAuth client's closed set, never a byte the
-vendor sent, and one Warn line with the stage, the status and the host. The
+vendor sent, and one Warn line with the stage, the status and the host. A
+metadata or registration address that resolves to a refused range, the
+upstream's own host included, is
+`502 {"error":"authorization server address denied: <class>"}`, the class
+only (see Upstream failures). The token endpoint is dialled later: a refusal
+at the callback shows the callback's generic failure page and logs
+`exchange`; on a refresh the audit row reads `credential refresh failed`. The
 metadata walk and a registration share one ten-second budget. The route
 spends the discovery budgets and records nothing; the connect is recorded
 by the callback. Sixty-four sign-ins may be pending at once, one per
@@ -242,21 +248,36 @@ not an erasure of the database file, its write-ahead log or backups (see
 `docs/07-security.md`).
 
 ### Upstream URLs
-`url` must be an absolute `http` or `https` URL with a host and no fragment.
-`POST /upstreams` and `PATCH /upstreams/{id}` answer
-`400 {"error":"url must be an absolute http or https URL"}` for anything else
-(a bare `localhost:3001/mcp`, a `file:` or `ftp:` scheme, a scheme-relative
-`//host/mcp`), so a URL PoryMCP could never connect to is refused where it is
-typed rather than where it is used. It is the same check discovery applies
-before it opens a socket (`mcpclient.CheckTarget`), and it is syntax only:
-whether the host should be dialled at all is PORM-79, see `docs/07-security.md`.
+`url` must be an absolute `http` or `https` URL with a host, no fragment and
+no embedded credentials. `POST /upstreams`, `PATCH /upstreams/{id}` and the
+unsaved discover route (`POST /upstreams/discover`) answer `400` with one of
+three sentences:
+`url must be an absolute http or https URL` (a bare `localhost:3001/mcp`, a
+`file:` or `ftp:` scheme, a scheme-relative `//host/mcp`, a scheme with no
+host), `url must not carry a fragment` (`https://host/mcp#frag`) and
+`url must not embed credentials` (`https://user:pw@host/mcp`, on every kind
+since PORM-79; rows saved before it are PORM-27's), so a URL PoryMCP could
+never connect to is refused where it is typed rather than where it is used.
+The syntax check is the one discovery applies before it opens a socket
+(`mcpclient.CheckTarget`). The stored value is the URL as `url.Parse`
+re-serialises it: the scheme lower-cased, unescaped path characters
+percent-encoded (`/a b` becomes `/a%20b`) and an empty fragment dropped;
+the host keeps its case, the port stays and a trailing slash is kept. A `PATCH` that sends
+the same URL in either spelling is not a URL change: it keeps the recorded
+test and, on an `oauth` upstream, the token set.
+
+Where the host resolves is checked when PoryMCP connects, not when the URL is
+saved: the transport refuses an address in a loopback, link-local, metadata,
+multicast or unspecified range (and a private one under
+`UPSTREAM_DENY_PRIVATE`), see `docs/07-security.md` and Upstream failures.
 
 On an `http` upstream (see Upstream kinds) the URL is the API's base URL and
-two more rules apply, on create, on `PATCH` and on the unsaved probe: it must
+one more rule applies, on create, on `PATCH` and on the unsaved probe: it must
 carry no query string (`400 {"error":"url must not carry a query string"}`),
-because a caller's query is appended and the two must not merge, and no
-userinfo (`400 {"error":"url must not embed credentials"}`), because Go's
-transport would send it as `Authorization: Basic` (`mcpclient.CheckHTTPBase`).
+because a caller's query is appended and the two must not merge
+(`mcpclient.CheckHTTPBase`). The userinfo rule above was this kind's alone
+before PORM-79, because Go's transport would send it as
+`Authorization: Basic`; it now applies to every kind.
 A path is fine, trailing slash or not: `https://api.example.com/v1` and
 `https://api.example.com/v1/` both put a caller's `users` at `/v1/users`.
 
@@ -355,8 +376,9 @@ of `upstream rejected the credential (401)` (or `403`),
 `upstream answered 404; check the test path`, `upstream answered N`,
 `upstream redirected to <host>`, the transport sentences discovery uses
 (`cannot resolve <host>`, `cannot connect to <host>`,
-`tls handshake with <host> failed`), `upstream did not answer within 10s`, and
-the credential sentences shared with discovery. The response body is drained
+`tls handshake with <host> failed`, `upstream address denied: <class>` with
+the loopback remedy clause discovery adds), `upstream did not answer within
+10s`, and the credential sentences shared with discovery. The response body is drained
 (at most 2 MiB) and never returned; `tools` is `[]` and no server, era or
 version field is present. The saved route records `last_test_at` and
 `last_test_ok` on the same terms as a handshake; `ok: false` from a `401` is
@@ -545,7 +567,11 @@ username, the path and the whole query string.
 
 A failure is `ok: false` with `error`, worded so an operator can tell which half
 is broken. `cannot resolve <host>`, `cannot connect to <host>` and
-`tls handshake with <host> failed` are the network. `upstream did not answer
+`tls handshake with <host> failed` are the network. `upstream address denied:
+<class>` is the egress guard: the host resolved to a `loopback`, `link-local`, `metadata`, `private`, `multicast` or `unspecified`
+address, and the sentence names the class, never the address. For the
+loopback class discovery and the probe append the remedy
+`; on a bare binary set UPSTREAM_ALLOW_LOOPBACK=true, in a container use host.docker.internal`; the audit rows keep the bare sentence. `upstream did not answer
 within 10s` is the budget above. `upstream redirected to <host>` is the same
 refusal the proxy makes: discovery goes out over the same client, so a `3xx`
 ends the call rather than moving the credential to a host the upstream named.
@@ -1556,6 +1582,7 @@ and the raw body, as every row was before PORM-172.
 | An OAuth access token lapsed and the vendor's token endpoint could not be reached or answered something unusable | `credential refresh failed`: no request was built; the next call retries after thirty seconds, and `auth_status` still reads `ok` |
 | The stored `transport` is `sse` or an unknown value | `the sse transport is not implemented yet; use streamable-http`, or `unsupported transport` for a value that is not `sse` (the value itself is never written): no request was built; the fix is a `PATCH` sending `transport: "streamable-http"`, and the row shows an Unsupported badge in the dashboard and one WARN line at startup |
 | The upstream answered `3xx` | `upstream redirected to <host>`: the host from `Location`, never the full URL |
+| The address the upstream's host resolved to is in a refused range (PORM-79) | `upstream address denied: <class>`: one of `loopback`, `link-local`, `metadata`, `private`, `multicast` or `unspecified`; the class only, never the address or the URL. `private` appears only under `UPSTREAM_DENY_PRIVATE`; `UPSTREAM_ALLOW_LOOPBACK` reopens `loopback` and nothing else. The same sentence is written on the HTTP relay door, and the server log carries one Warn line, `upstream address denied`, with the upstream id, the class and the request id |
 | The upstream did not answer within the relay budget | `upstream did not answer within 5m0s`: five minutes for a buffered answer, or for a stream's headers |
 | The connection or the TLS handshake did not complete within the connect budget | `upstream did not connect within 10s` |
 | The connection was refused, or DNS failed | `Post "<the upstream's url>": dial tcp ...`, ending `connect: connection refused` or `no such host` |
@@ -1602,7 +1629,12 @@ A `tools/call` the aggregate does route to a redirecting member is not blind:
 that one answers `502` and writes a row naming the member's `upstream_id`. A
 `tools/call` for one of the *skipped* member's tools answers
 `-32602 "unknown tool"` instead, because the name is no longer in the merged
-catalogue. The log line is what says why. A member whose stored credential
+catalogue. The log line is what says why. A member whose host resolves to a
+refused range (`upstream address denied: <class>`) is skipped the same way:
+the line carries the class sentence, a `tools/call` for one of its tools
+answers `-32602 "unknown tool"` because the name is not in the merged
+catalogue, and the member's own endpoint answers the `502` and writes the
+`upstream address denied: <class>` row. A member whose stored credential
 cannot be used (`credential undecryptable` / `credential unreadable`) is
 skipped the same way: zero requests reach it, its tools are absent, the group's
 own `tools/list` succeeds, and the `group member skipped` line carries the

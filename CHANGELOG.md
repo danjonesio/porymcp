@@ -4,6 +4,47 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Breaking: upstream addresses on loopback, link-local and metadata ranges are refused (PORM-79)
+
+- **A `localhost` upstream on a bare binary stops working** until
+  `UPSTREAM_ALLOW_LOOPBACK=true` is set; discover and test say so, and the
+  startup line `upstream guard` shows the setting. Inside a container loopback
+  is the container itself: reach the host as `host.docker.internal`.
+- **Every outbound dial on the upstream client is checked against the address
+  it resolved.** Loopback, link-local, multicast, unspecified and the cloud
+  metadata addresses are refused; the proxy answers the usual `502`, the audit
+  row reads `upstream address denied: <class>` (the class, never the address),
+  and one Warn line, `upstream address denied`, reaches the server log.
+  Private ranges stay open by default.
+- **Two new variables.** `UPSTREAM_ALLOW_LOOPBACK` reopens loopback and nothing
+  else; `UPSTREAM_DENY_PRIVATE` also refuses RFC 1918, ULA and CGNAT
+  addresses, which breaks compose-network, cluster-IP and tailnet upstreams.
+  The shipped `docker-compose.yml` passes both through; a copied compose file
+  needs `UPSTREAM_ALLOW_LOOPBACK: ${UPSTREAM_ALLOW_LOOPBACK:-}` and
+  `UPSTREAM_DENY_PRIVATE: ${UPSTREAM_DENY_PRIVATE:-}` added.
+- **`POST` and `PATCH /api/v1/upstreams` answer per-rule `400`s.** A fragment
+  is `url must not carry a fragment` and embedded credentials are
+  `url must not embed credentials`, on every kind; the stored URL is the
+  form `url.Parse` re-serialises (scheme lower-cased, unescaped path
+  characters percent-encoded, an empty fragment dropped; host, port and
+  trailing slash kept). A row is rewritten only by a `PATCH` that sends
+  `url`. A client that compared the one old sentence, or read back the exact
+  bytes it sent, sees a change.
+- **Dual-stack upstreams are dialled one address at a time.** The guard
+  resolves the host itself and tries the permitted addresses in resolver
+  order, each on its share of a 30 s dial budget, instead of Go's 300 ms
+  race between address families. An address the host cannot route to fails
+  at once and the next is tried; one that drops packets keeps its share, so
+  an upstream whose first address is black-holed fails until its DNS is
+  fixed.
+- **Behind an egress proxy the guard checks the proxy's address only**, so a
+  proxy on loopback needs `UPSTREAM_ALLOW_LOOPBACK`; what the proxy fetches
+  is the proxy's job. On OAuth Connect a refused metadata or registration
+  address reads `authorization server address denied: <class>`; a refused
+  token endpoint reads `credential refresh failed` on refresh, as before.
+- No schema change. Rollback is the previous image, or the variable and a
+  restart.
+
 ### Plain HTTP APIs behind a virtual key (PORM-146)
 
 - **An upstream can now be an HTTP API.** `POST /api/v1/upstreams` takes

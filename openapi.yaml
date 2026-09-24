@@ -241,7 +241,10 @@ paths:
         "502":
           description: >-
             A metadata, host-rule, redirect or registration failure, as one
-            fixed sentence; never a byte the authorization server sent.
+            fixed sentence; never a byte the authorization server sent. A
+            metadata or registration address that resolves to a refused
+            range, the upstream's own host included, is
+            `authorization server address denied: <class>`.
   /upstreams/{id}/oauth/revoke:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -1113,14 +1116,21 @@ components:
             and an audit row reading `upstream redirected to <host>`) rather
             than a hop. Prefer `https://` and the exact path the server serves,
             trailing slash included. See `docs/07-security.md`. It must be an
-            absolute http or https URL with a host and no fragment, the same
-            check discovery applies before it opens a socket, so a stored value
-            is one PoryMCP can actually dial; anything else is `400`. Whether
-            that host should be dialled at all (loopback, link-local, cloud
-            metadata) is not checked yet (see PORM-79). On an http upstream it
-            is the API's base URL, under which a caller's path is joined, and
-            it must carry no query string (`url must not carry a query
-            string`) and no userinfo (`url must not embed credentials`).
+            absolute http or https URL with a host (`url must be an absolute
+            http or https URL`), no fragment (`url must not carry a
+            fragment`) and no userinfo (`url must not embed credentials`),
+            on every kind; the syntax check is the one discovery applies
+            before it opens a socket, so a stored value is one PoryMCP can
+            actually dial. The stored value is the URL as url.Parse
+            re-serialises it: the scheme lower-cased, unescaped path
+            characters percent-encoded, an empty fragment dropped; host, port
+            and trailing slash kept. Where the
+            host resolves is checked when PoryMCP connects, not here: an
+            address in a loopback, link-local, metadata, multicast or
+            unspecified range is refused at dial time (PORM-79). On an http
+            upstream it is the API's base URL, under which a caller's path is
+            joined, and it must carry no query string (`url must not carry a
+            query string`).
         test_path:
           type: [string, "null"]
           maxLength: 256
@@ -1199,7 +1209,12 @@ components:
             sentences whose only variables are a status code, the step that
             failed (initialize, notifications/initialized, tools/list) and a
             host: `cannot resolve <host>`, `cannot connect to <host>`, `tls
-            handshake with <host> failed`, `upstream did not answer within 10s`,
+            handshake with <host> failed`, `upstream address denied: <class>`
+            (the class is loopback, link-local, metadata, private, multicast
+            or unspecified, never the address; for loopback the sentence
+            carries the remedy `; on a bare binary set
+            UPSTREAM_ALLOW_LOOPBACK=true, in a container use
+            host.docker.internal`), `upstream did not answer within 10s`,
             `upstream redirected to <host>`, `upstream rejected the credential
             (401) at initialize`, `upstream's answer to <step> is larger than
             discovery will read` (the 2 MiB read cap: an answer over it is

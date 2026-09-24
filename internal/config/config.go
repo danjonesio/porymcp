@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/webutil"
 )
 
@@ -39,6 +40,14 @@ type Config struct {
 	AllowLocalhost bool
 	// ExtraAllowedHosts are additional Host values accepted besides PUBLIC_URL.
 	ExtraAllowedHosts []string
+	// UpstreamGuard is the outbound side (PORM-79): where a request carrying
+	// an upstream credential may connect. UPSTREAM_ALLOW_LOOPBACK reopens
+	// loopback, UPSTREAM_DENY_PRIVATE closes private ranges. It is not
+	// ALLOW_LOCALHOST, which is about the Host header of requests to PoryMCP.
+	UpstreamGuard netguard.Options
+	// guardUnrecognised records the guard variables whose value was neither
+	// a truthy nor a falsy word and so read as false, for LogWarnings.
+	guardUnrecognised []string
 	// EncryptionKeyPrevious holds ENCRYPTION_KEY_PREVIOUS, oldest last: keys a
 	// stored credential may still be sealed under during a rotation. Decrypt
 	// only, nothing is ever sealed under one. At most maxPreviousKeys, 64-hex
@@ -65,6 +74,15 @@ func Load() (*Config, error) {
 		TLSKeyFile:        strings.TrimSpace(os.Getenv("TLS_KEY_FILE")),
 		AllowInsecureHTTP: envTruthy("ALLOW_INSECURE_HTTP"),
 		AllowLocalhost:    envTruthy("ALLOW_LOCALHOST"),
+	}
+	for _, key := range []string{"UPSTREAM_ALLOW_LOOPBACK", "UPSTREAM_DENY_PRIVATE"} {
+		if _, recognised := envBool(key); !recognised {
+			cfg.guardUnrecognised = append(cfg.guardUnrecognised, key)
+		}
+	}
+	cfg.UpstreamGuard = netguard.Options{
+		AllowLoopback: envTruthy("UPSTREAM_ALLOW_LOOPBACK"),
+		DenyPrivate:   envTruthy("UPSTREAM_DENY_PRIVATE"),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -140,6 +158,26 @@ func (c *Config) LogWarnings(log *slog.Logger) {
 	if c.publicURLIsHTTPS() && !c.TLSEnabled() && len(c.TrustedProxies) == 0 {
 		log.Warn("HTTPS is required by PUBLIC_URL but neither built-in TLS nor TRUSTED_PROXIES is set; scheme enforcement will reject non-loopback HTTP")
 	}
+	// The variable's name and never its value: a typo reads as false, which
+	// for UPSTREAM_DENY_PRIVATE leaves private ranges open in silence.
+	for _, key := range c.guardUnrecognised {
+		log.Warn(key + " is not a recognised boolean; treating it as false (use 1, true, yes, 0, false or no)")
+	}
+	if c.UpstreamGuard.AllowLoopback {
+		log.Warn("UPSTREAM_ALLOW_LOOPBACK is set; upstreams on loopback addresses are allowed")
+	}
+}
+
+// EgressProxySet reports whether an egress proxy is configured, by the four
+// names net/http honours. The fact only: a proxy URL can carry credentials,
+// so the startup line logs the boolean and never the value.
+func EgressProxySet() bool {
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if os.Getenv(key) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // maxPreviousKeys bounds ENCRYPTION_KEY_PREVIOUS: each entry is one more
@@ -271,6 +309,19 @@ func env(key, fallback string) string {
 }
 
 func envTruthy(key string) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	return v == "1" || v == "true" || v == "yes"
+	v, _ := envBool(key)
+	return v
+}
+
+// envBool reads a boolean variable and says whether the value was one it
+// knows: 1, true and yes are true; 0, false, no and unset are false; any
+// other value is false and not recognised, so the caller can warn.
+func envBool(key string) (value, recognised bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes":
+		return true, true
+	case "", "0", "false", "no":
+		return false, true
+	}
+	return false, false
 }
