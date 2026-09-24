@@ -1211,7 +1211,7 @@ func TestRelayPreflight(t *testing.T) {
 }
 
 // PORM-79 security requirements 4 and 11 on the relay door: the twin of
-// TestProxyRefusedDialAudited. The row goes through relayFailureText and
+// TestProxyRefusedDialAudited. The row goes through upstreamFailureText and
 // TransportFailure's first arm; the Warn line is the same helper's.
 func TestRelayRefusedDialAudited(t *testing.T) {
 	f := relayGET(t, nil)
@@ -1248,5 +1248,61 @@ func TestRelayRefusedDialAudited(t *testing.T) {
 		if strings.Contains(line, leak) {
 			t.Errorf("server log carries %q: %s", leak, line)
 		}
+	}
+}
+
+// PORM-191 amendment A4 on the relay door: a body that fails while it is
+// read records the read sentences, the same row the MCP door writes, and
+// never the read error's text.
+func TestHTTPRelayReadFailureIsClosedSentence(t *testing.T) {
+	f := relayGET(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100")
+		_, _ = io.WriteString(w, `{"cut":`)
+	})
+	logs := captureLogs(f.fixture)
+	rr := f.send(http.MethodGet, "/a1/api/x?secret=SECRET_MARKER", "", nil)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	row := f.lastRow(1)
+	if row.ErrorMessage != "unexpected EOF" {
+		t.Fatalf("error_message=%q, want unexpected EOF", row.ErrorMessage)
+	}
+	for _, leak := range []string{"SECRET", "read tcp", "127.0.0.1", "Get "} {
+		if strings.Contains(row.ErrorMessage, leak) {
+			t.Errorf("error_message=%q carries %q", row.ErrorMessage, leak)
+		}
+	}
+	// warnDenied is reachable on an Open error only; a read error is never a
+	// guard refusal.
+	if strings.Contains(logs.String(), "upstream address denied") {
+		t.Errorf("a read error wrote the guard's Warn line: %s", logs.String())
+	}
+}
+
+// PORM-191 amendment A5 on the relay door: a client that hangs up before the
+// answer is recorded as such, never as an upstream that refused.
+func TestHTTPRelayClientWentAwayIsClosedSentence(t *testing.T) {
+	f := relayGET(t, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	useFailingTransport(t, f.fixture, func(*http.Request) error {
+		cancel()
+		return context.Canceled
+	})
+	req := routedRequest(http.MethodGet, "/a1/api/x?secret=SECRET_MARKER", "").WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+f.Key)
+	rr := httptest.NewRecorder()
+	f.Router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	row := f.lastRow(1)
+	if row.ErrorMessage != "client went away before the answer" {
+		t.Fatalf("error_message=%q, want client went away before the answer", row.ErrorMessage)
+	}
+	if strings.Contains(row.ErrorMessage, "SECRET") || strings.Contains(row.ErrorMessage, "context canceled") {
+		t.Errorf("error_message=%q carries the URL or Go's text", row.ErrorMessage)
 	}
 }

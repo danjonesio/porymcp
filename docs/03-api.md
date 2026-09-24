@@ -1563,10 +1563,15 @@ whatever went wrong:
 
 An audit row with `status = "error"` records which of these it was, in
 `error_message`. The row is the only place the detail appears; the client is
-told nothing about the upstream's host, address or response. The two transport
-rows quote the upstream's own registered URL, query string and all: the URL an
-operator chose, not one an upstream named, but one more reason this field is
-read by operators and never returned to a key holder (PORM-72).
+told nothing about the upstream's host, address or response. Every sentence in
+the table below is PoryMCP's own. A transport failure names the upstream's host
+at most, with its port when the registered URL names one, and never the URL,
+its query string or the address the host resolved to. The HTTP relay door
+writes the same sentence for the same failure. The host is written only when
+it holds ASCII letters, digits, `.`, `_`, `-`, `:`, `[` and `]` alone; any
+other host reads as `the upstream`. The field is read by operators and never
+returned to a key holder: an upstream's own JSON-RPC error message is still
+recorded as it was sent (PORM-72).
 
 Whether a row is `success` or `error` is judged from the document that
 answers the request, in either framing: an upstream's JSON-RPC error inside
@@ -1581,11 +1586,17 @@ and the raw body, as every row was before PORM-172.
 | An OAuth access token lapsed and the vendor refused to renew it, or issued no refresh token | `credential expired`: no request was built; the fix is Connect again, and `auth_status` reads `expired` |
 | An OAuth access token lapsed and the vendor's token endpoint could not be reached or answered something unusable | `credential refresh failed`: no request was built; the next call retries after thirty seconds, and `auth_status` still reads `ok` |
 | The stored `transport` is `sse` or an unknown value | `the sse transport is not implemented yet; use streamable-http`, or `unsupported transport` for a value that is not `sse` (the value itself is never written): no request was built; the fix is a `PATCH` sending `transport: "streamable-http"`, and the row shows an Unsupported badge in the dashboard and one WARN line at startup |
+| The stored URL does not parse | `upstream url is not usable`: no request was built, and the fix is a `PATCH` sending a URL that parses |
 | The upstream answered `3xx` | `upstream redirected to <host>`: the host from `Location`, never the full URL |
 | The address the upstream's host resolved to is in a refused range (PORM-79) | `upstream address denied: <class>`: one of `loopback`, `link-local`, `metadata`, `private`, `multicast` or `unspecified`; the class only, never the address or the URL. `private` appears only under `UPSTREAM_DENY_PRIVATE`; `UPSTREAM_ALLOW_LOOPBACK` reopens `loopback` and nothing else. The same sentence is written on the HTTP relay door, and the server log carries one Warn line, `upstream address denied`, with the upstream id, the class and the request id |
 | The upstream did not answer within the relay budget | `upstream did not answer within 5m0s`: five minutes for a buffered answer, or for a stream's headers |
 | The connection or the TLS handshake did not complete within the connect budget | `upstream did not connect within 10s` |
-| The connection was refused, or DNS failed | `Post "<the upstream's url>": dial tcp ...`, ending `connect: connection refused` or `no such host` |
+| The upstream's host did not resolve | `cannot resolve <host>` |
+| The connection was refused or reset before the upstream answered | `cannot connect to <host>` |
+| The TLS handshake failed | `tls handshake with <host> failed` |
+| Any other failure to get an answer | `cannot reach <host>` |
+| The client hung up before the upstream answered | `client went away before the answer`: the upstream is not at fault |
+| The answer was larger than 16 MiB | `upstream body exceeds 16777216 bytes`: the body is not relayed |
 | The client closed a stream before the answer, or stopped reading it until a write to it had waited five minutes | `client closed the stream before the answer` |
 | The upstream closed a stream before the answer | `upstream closed the stream before the answer` |
 | The upstream sent nothing on a stream for five minutes | `upstream sent nothing for 5m0s` |
@@ -1593,7 +1604,7 @@ and the raw body, as every row was before PORM-172.
 | The key was revoked, expired, rotated or retargeted while a stream was open | `virtual key no longer valid during the stream` |
 | The upstream was removed from the key's route while a stream was open | `upstream no longer reachable through the key during the stream` |
 | The upstream's URL, transport or credential changed while a stream was open (a new name or description leaves the stream alone) | `upstream changed during the stream` |
-| The upstream connection failed mid-stream | the read error, truncated to 256 bytes (`unexpected EOF` for a body that ended without its terminator) |
+| The upstream connection failed while the answer was being read, buffered or streamed | `upstream connection failed`, or `unexpected EOF` for a body that ended without its terminator; the read error's own text is never recorded |
 
 A streamed row's `timestamp` is when the stream ended, its `latency_ms` the
 stream's whole life and its `response_size_bytes` the bytes relayed to the
@@ -1623,7 +1634,8 @@ On the **aggregate** endpoint the same redirect on a member's catalogue request
 writes no audit row: the member is skipped, its tools are absent from the
 merged catalogue, and the client's own call succeeds on the members that
 answered. The skip is written to the server log as `group member skipped`,
-naming the member's slug and its upstream id. Call the member's own
+naming the member's slug and its upstream id. The `err` field carries the same
+sentence the member's own row would. Call the member's own
 `/{virtual_key_id}/{upstream_slug}/mcp` endpoint to get the `502` and the row.
 A `tools/call` the aggregate does route to a redirecting member is not blind:
 that one answers `502` and writes a row naming the member's `upstream_id`. A

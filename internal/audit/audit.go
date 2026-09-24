@@ -111,7 +111,8 @@ func (l *Logger) enqueue(e models.AuditLog) {
 }
 
 // dropped says a row was lost, by id, method and request id only: the row's
-// error_message can quote an upstream URL, and its params are the caller's.
+// error_message can carry an upstream's own error text, and its params are
+// the caller's.
 func (l *Logger) dropped(e models.AuditLog) {
 	if l.log != nil {
 		l.log.Error("audit row dropped after close", "id", e.ID, "method", e.Method, "request_id", e.RequestID)

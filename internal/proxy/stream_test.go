@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1171,7 +1172,11 @@ func TestStreamVerdictTable(t *testing.T) {
 		{"matching error", "tools/call", sseFrame(errorDoc), false, endUpstream, nil, models.StatusError, "Subscription limit reached"},
 		{"off-id result", "tools/call", sseFrame(`{"jsonrpc":"2.0","id":9,"result":{}}`), false, endUpstream, nil, models.StatusError, "upstream closed the stream before the answer"},
 		{"unframed JSON error under the label", "tools/call", errorDoc, false, endUpstream, nil, models.StatusError, "Subscription limit reached"},
-		{"read error text is bounded", "tools/call", sseFrame(progressDoc), false, endReadError, long, models.StatusError, strings.Repeat("e", auditFieldBytes)},
+		{"read error text is not recorded", "tools/call", sseFrame(progressDoc), false, endReadError, long, models.StatusError, "upstream connection failed"},
+		{"read error unexpected EOF", "tools/call", sseFrame(progressDoc), false, endReadError, io.ErrUnexpectedEOF, models.StatusError, "unexpected EOF"},
+		{"read error names no address", "tools/call", sseFrame(progressDoc), false, endReadError,
+			&net.OpError{Op: "read", Net: "tcp", Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 5), Port: 3001}, Err: syscall.ECONNRESET},
+			models.StatusError, "upstream connection failed"},
 		{"overflow then upstream EOF", "tools/call", "", true, endUpstream, nil, models.StatusSuccess, ""},
 		{"overflow then client close", "tools/call", "", true, endClient, nil, models.StatusError, "client closed the stream before the answer"},
 		{"listen client close", "subscriptions/listen", sseFrame(ackDoc), false, endClient, nil, models.StatusSuccess, ""},
@@ -1187,8 +1192,9 @@ func TestStreamVerdictTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// The raw message: the bound on a read error's text is
-			// streamVerdict's own, and this is where it is proved.
+			// The raw message: a read error's text is never written
+			// (PORM-191, security requirement 7), and this is where it is
+			// proved.
 			status, msg := streamVerdict(tc.method, 200, ct, capOf(tc.body, tc.overflowed), "1", tc.end, tc.err)
 			if status != tc.status || msg != tc.msg {
 				t.Fatalf("status=%q msg=%q, want %q / %q", status, msg, tc.status, tc.msg)

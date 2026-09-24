@@ -308,9 +308,8 @@
   saved before it are not rewritten, and PORM-27 owns deciding whether they
   should be stripped or promoted into a real `auth_config`. Until it does, the
   places one can be read back are worth knowing: `GET /api/v1/upstreams` and the dashboard
-  show the URL as stored, and the audit row for a timeout or a refused
-  connection quotes it, query string and all, a field operators read and key
-  holders never see (PORM-72). A discovery `error` names a host and never a URL.
+  show the URL as stored. No audit row and no discovery `error` quotes it:
+  each names the host at most (PORM-191).
 - What the *client* is told about an upstream failure is deliberately flat. A
   redirect, a timeout, a refused connection and an unreadable body all answer
   `502` with the same `-32000 "upstream request failed"`, and no upstream
@@ -694,11 +693,10 @@
   therefore still a network-reachability capability for the private ranges**
   wherever the container sits, and that is what to weigh when deciding who
   holds one and whether to set `UPSTREAM_DENY_PRIVATE` or restrict egress at
-  the Docker or network layer as well (`docs/11-deployment.md`). One older
-  gap remains on the MCP door alone: a transport error other than a guard
-  refusal (a refused connection, say) is still recorded with Go's own text,
-  which quotes the registered URL and the address that was dialled; routing
-  those rows through the closed sentence set is a follow-up.
+  the Docker or network layer as well (`docs/11-deployment.md`). On both
+  proxy doors a transport failure is recorded as one sentence from the same
+  closed set, which names the host at most and never the URL or a resolved
+  address (PORM-191).
 - A `tool_filter` that does not validate blocks **every** call on that group
   until it is fixed. `{"mode":"Deny"}`, `{"tool":[…]}` and `{"mode":"allow"}`
   with no entries all decode into a *permissive* filter, so failing open on

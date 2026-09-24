@@ -319,11 +319,8 @@ func streamVerdict(method string, status int, ct string, c *streamCapture, wantI
 	listen := method == "subscriptions/listen"
 	switch end {
 	case endReadError:
-		msg := "upstream connection failed"
-		if err != nil {
-			msg = err.Error()
-		}
-		return models.StatusError, truncate(msg, auditFieldBytes)
+		// Never err's own text: a read error names the resolved address.
+		return models.StatusError, readErrorText(err)
 	case endRevoked:
 		return models.StatusError, err.Error()
 	case endIdle:
