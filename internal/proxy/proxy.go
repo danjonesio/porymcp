@@ -1061,7 +1061,8 @@ func (h *Handler) forward(ctx context.Context, inbound *http.Request, up *models
 	}
 	req, err := http.NewRequestWithContext(ctx, inbound.Method, up.URL, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		// The parse error quotes the stored URL, query string and all.
+		return nil, errUpstreamURL
 	}
 	var (
 		set  http.Header
@@ -1185,7 +1186,8 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, up.URL, strings.NewReader(request))
 	if err != nil {
-		return nil, 0, err
+		// The parse error quotes the stored URL, query string and all.
+		return nil, 0, errUpstreamURL
 	}
 	req.Header.Set("Accept", mcpclient.AcceptMCP)
 	req.Header.Set("Content-Type", "application/json")
