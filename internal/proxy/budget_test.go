@@ -1,15 +1,23 @@
 package proxy
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // BenchmarkRelayJSON measures the buffered JSON relay end to end: one
@@ -245,5 +253,124 @@ func TestClientTimeoutIsZero(t *testing.T) {
 	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}}, nil, nil)
 	if f.H.client.Timeout != 0 {
 		t.Fatalf("client.Timeout=%v, want 0", f.H.client.Timeout)
+	}
+}
+
+// The three contexts an upstream request can be in when its client returns
+// an error: live, cancelled by a budget with its own cause, and cancelled by
+// the client's request context with no cause of its own.
+func failureContexts(t *testing.T) (live, budget, client context.Context) {
+	t.Helper()
+	live = t.Context()
+	b, cancelB := context.WithCancelCause(t.Context())
+	cancelB(&budgetError{what: "did not connect within", d: 50 * time.Millisecond})
+	c, cancelC := context.WithCancel(t.Context())
+	cancelC()
+	return live, b, c
+}
+
+// A refused dial as http.Client.Do hands it back: the *net.OpError inside a
+// *url.Error that quotes the whole URL.
+func refusedURLError(rawURL string) error {
+	return &url.Error{Op: "Post", URL: rawURL, Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}
+}
+
+// PORM-191 security requirements 2, 3, 4 and 8. Exact matches: the sentences
+// reach an operator unchanged and the Logs page never pattern-matches them.
+func TestUpstreamFailureText(t *testing.T) {
+	live, budget, client := failureContexts(t)
+	const leaky = "http://h:1/secret-path?tok=QUERY-MARKER"
+	cases := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		host string
+		want string
+	}{
+		{"refused with a port", live, refusedURLError(leaky), "h:1", "cannot connect to h:1"},
+		{"refused without a port", live, refusedURLError(leaky), "h", "cannot connect to h"},
+		{"dns", live, &url.Error{Op: "Post", URL: leaky, Err: &net.DNSError{Err: "no such host", Name: "h", IsNotFound: true}}, "h:1", "cannot resolve h:1"},
+		{"tls", live, &url.Error{Op: "Post", URL: leaky, Err: &tls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}}, "h:1", "tls handshake with h:1 failed"},
+		{"redirect with a host", live, mcpclient.Redirect{Host: "x.test"}, "h:1", "upstream redirected to x.test"},
+		{"redirect without a host", live, mcpclient.Redirect{}, "h:1", "upstream redirected"},
+		{"body too large", live, mcpclient.BodyTooLarge{Limit: 16777216}, "h:1", "upstream body exceeds 16777216 bytes"},
+		{"guard refusal", live, netguard.Denied{Class: "loopback"}, "h:1", "upstream address denied: loopback"},
+		{"host not HostSafe", live, refusedURLError(leaky), "up+stream.test", "cannot connect to the upstream"},
+		{"budget over a refusal", budget, refusedURLError(leaky), "h:1", "upstream did not connect within 50ms"},
+		{"client went away", client, &url.Error{Op: "Post", URL: leaky, Err: &net.OpError{Op: "dial", Net: "tcp", Err: context.Canceled}}, "h:1", "client went away before the answer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := upstreamFailureText(tc.ctx, tc.err, tc.host)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, "QUERY-MARKER") || strings.Contains(got, "secret-path") {
+				t.Fatalf("%q carries the URL", got)
+			}
+		})
+	}
+	// The budget wins over the client's own cancellation too: both are set
+	// on a context whose parent went away after a budget fired.
+	t.Run("budget over a client that went away", func(t *testing.T) {
+		parent, cancelParent := context.WithCancel(t.Context())
+		ctx, cancel := context.WithCancelCause(parent)
+		cancel(&budgetError{what: "did not answer within", d: 50 * time.Millisecond})
+		cancelParent()
+		if got, want := upstreamFailureText(ctx, refusedURLError(leaky), "h:1"), "upstream did not answer within 50ms"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	up := &models.Upstream{URL: leaky}
+	t.Run("upstreamFailed keeps the guard refusal", func(t *testing.T) {
+		var denied netguard.Denied
+		if err := upstreamFailed(live, netguard.Denied{Class: "loopback"}, up); !errors.As(err, &denied) || denied.Class != "loopback" {
+			t.Fatalf("errors.As lost the refusal: %v", err)
+		}
+	})
+	t.Run("upstreamFailed drops the raw error from the chain", func(t *testing.T) {
+		err := upstreamFailed(live, refusedURLError(leaky), up)
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			t.Fatalf("the *url.Error is still in the chain: %v", err)
+		}
+		if got, want := err.Error(), "cannot connect to h:1"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+}
+
+// PORM-191 security requirements 4, 7 and 8: a body that failed while it was
+// read is one of two fixed sentences, after the budget and the client's own
+// cancellation, and never the read error's text, which names an address.
+func TestReadFailureText(t *testing.T) {
+	live, budget, client := failureContexts(t)
+	reset := &net.OpError{Op: "read", Net: "tcp", Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 5), Port: 3001}, Err: syscall.ECONNRESET}
+	cases := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want string
+	}{
+		{"cut short", live, io.ErrUnexpectedEOF, "unexpected EOF"},
+		{"reset", live, reset, "upstream connection failed"},
+		{"body too large", live, mcpclient.BodyTooLarge{Limit: 16777216}, "upstream body exceeds 16777216 bytes"},
+		{"budget over a cut body", budget, io.ErrUnexpectedEOF, "upstream did not connect within 50ms"},
+		{"client went away", client, reset, "client went away before the answer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := readFailureText(tc.ctx, tc.err)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, "10.0.0.5") {
+				t.Fatalf("%q names the address", got)
+			}
+		})
+	}
+	if got := readFailed(live, reset).Error(); got != "upstream connection failed" {
+		t.Fatalf("readFailed=%q", got)
 	}
 }

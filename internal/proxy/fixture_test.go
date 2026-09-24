@@ -527,6 +527,28 @@ func (f *fixture) post(rpc string) *httptest.ResponseRecorder {
 	return f.do(http.MethodPost, rpc)
 }
 
+// upstreamID is the stored id of the member with this slug.
+func (f *fixture) upstreamID(slug string) string {
+	f.t.Helper()
+	up, err := f.Store.GetUpstreamBySlug(context.Background(), slug)
+	if err != nil {
+		f.t.Fatalf("upstream %q: %v", slug, err)
+	}
+	return up.ID
+}
+
+// postCtx is post under a request context the test controls, for the one
+// case where the client is the party that ends the request.
+func (f *fixture) postCtx(ctx context.Context, rpc string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "http://localhost:8080/mcp", strings.NewReader(rpc)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+f.Key)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	f.H.ServeHTTP(rr, req)
+	return rr
+}
+
 // postWith is post with extra client headers. Proving that a client header did
 // not reach an upstream means sending one, so the tests that care about which
 // request shape the proxy uses upstream go through here.

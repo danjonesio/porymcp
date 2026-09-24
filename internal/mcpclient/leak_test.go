@@ -542,3 +542,25 @@ func TestSendableHeaderNameRefusesRoutingHeaders(t *testing.T) {
 		}
 	}
 }
+
+// PORM-191 security requirement 2: the one host a row may name, from the
+// registered URL alone. Never userinfo, the query, or a byte HostSafe
+// refuses; a port only when the URL names one; bounded.
+func TestRowHost(t *testing.T) {
+	long := strings.Repeat("a", MaxErrorBytes+10) + ".test"
+	for _, tc := range []struct{ raw, want string }{
+		{"https://api.example.com/mcp?k=v", "api.example.com"},
+		{"https://api.example.com:8443/mcp", "api.example.com:8443"},
+		{"http://[::1]:8080/x", "[::1]:8080"},
+		{"http://user:pw@h.test/x", "h.test"},
+		{"http://up+stream.test/x", ""},
+		{"http://exämple.test/x", ""},
+		{"http://127.0.0.1:1/secret\x7fpath", ""},
+		{"", ""},
+		{"http://" + long + "/x", long[:MaxErrorBytes]},
+	} {
+		if got := RowHost(tc.raw); got != tc.want {
+			t.Errorf("RowHost(%q)=%q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}

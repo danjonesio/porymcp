@@ -3,14 +3,19 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +23,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/auth"
 	"github.com/danjonesio/porymcp/internal/config"
 	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
@@ -439,4 +445,264 @@ func TestProxyRefusedDialAudited(t *testing.T) {
 			t.Errorf("server log carries %q: %s", leak, line)
 		}
 	}
+}
+
+// PORM-191. The leak markers every row and log assertion below checks for:
+// what Go's own *url.Error and read errors carry, and what the stored URL
+// carries that must never be copied out of it.
+var closedSentenceLeaks = []string{"Post ", "dial tcp", "read tcp", "lookup", "no such host", "context canceled", "/secret-path", "QUERY-MARKER", "parse \""}
+
+func assertNoLeak(t *testing.T, what, text string) {
+	t.Helper()
+	for _, leak := range closedSentenceLeaks {
+		if strings.Contains(text, leak) {
+			t.Errorf("%s carries %q: %s", what, leak, text)
+		}
+	}
+}
+
+// freeAddr is a loopback address nothing listens on: bound, recorded and
+// released. The same port-reuse exposure as upstreamSpec.Dead.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := ln.Addr().String()
+	_ = ln.Close()
+	return a
+}
+
+// failingTransport fails every request with what fail returns. http.Client.Do
+// wraps that in a genuine *url.Error{Op: "Post", URL: <the full URL>}, so the
+// leak shape is real and no resolver or dial runs.
+type failingTransport struct {
+	fail func(*http.Request) error
+	hits *int32
+}
+
+func (ft failingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	atomic.AddInt32(ft.hits, 1)
+	return nil, ft.fail(r)
+}
+
+// useFailingTransport swaps the handler's upstream transport for a stub and
+// restores it, the shape cancelAfterAnswer uses. The UpstreamTransport wrapper
+// stays, as TestProxyClientRefusesRedirectsByConstruction asserts.
+func useFailingTransport(t *testing.T, f *fixture, fail func(*http.Request) error) *int32 {
+	t.Helper()
+	hits := new(int32)
+	real := f.H.client.Transport
+	f.H.client.Transport = mcpclient.UpstreamTransport{Next: failingTransport{fail: fail, hits: hits}}
+	t.Cleanup(func() { f.H.client.Transport = real })
+	return hits
+}
+
+// listAnswer is the tools/list document a per-request Handler writes for a
+// member whose other arms the test controls.
+func listAnswer(w http.ResponseWriter, names ...string) {
+	tools := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		tools = append(tools, map[string]any{"name": n})
+	}
+	out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": tools}})
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out)
+}
+
+// PORM-191 criteria 1 and 2, security requirements 1, 2, 6, 7 and 8: a
+// transport failure on the MCP door is one closed sentence in the row, the
+// host at most and never the URL, the path, the query string or an address
+// the host resolved to, and the client's 502 does not change.
+func TestMCPDoorTransportFailureIsClosedSentence(t *testing.T) {
+	const tail = "/secret-path?tok=QUERY-MARKER"
+	check := func(t *testing.T, f *fixture, rr *httptest.ResponseRecorder, want string) models.AuditLog {
+		t.Helper()
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
+		}
+		if code, msg, _ := rpcErrorOf(t, rr.Body.Bytes()); code != -32000 || msg != "upstream request failed" {
+			t.Fatalf("rpc code=%d message=%q, want -32000 upstream request failed", code, msg)
+		}
+		row := f.waitAudit(models.LogFilter{Status: models.StatusError})[0]
+		if row.ErrorMessage != want {
+			t.Fatalf("error_message=%q, want %q", row.ErrorMessage, want)
+		}
+		assertNoLeak(t, "error_message", row.ErrorMessage)
+		return row
+	}
+
+	t.Run("refused", func(t *testing.T) {
+		a := freeAddr(t)
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, URL: "http://" + a + tail}, nil, nil)
+		check(t, f, f.post(toolCall("1", "ping")), "cannot connect to "+a)
+	})
+	// The one case where the registered name and the resolved address differ,
+	// so the one that proves the address is absent (security requirement 1).
+	t.Run("refused by name", func(t *testing.T) {
+		_, port, err := net.SplitHostPort(freeAddr(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, URL: "http://localhost:" + port + tail}, nil, nil)
+		row := check(t, f, f.post(toolCall("1", "ping")), "cannot connect to localhost:"+port)
+		for _, addr := range []string{"127.0.0.1", "::1"} {
+			if strings.Contains(row.ErrorMessage, addr) {
+				t.Errorf("error_message=%q names the resolved address %s", row.ErrorMessage, addr)
+			}
+		}
+	})
+	t.Run("dns", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, URL: "http://nx.porm191.test" + tail}, nil, nil)
+		useFailingTransport(t, f, func(*http.Request) error {
+			return &net.DNSError{Err: "no such host", Name: "nx.porm191.test", IsNotFound: true}
+		})
+		check(t, f, f.post(toolCall("1", "ping")), "cannot resolve nx.porm191.test")
+	})
+	t.Run("tls", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, URL: "https://nx.porm191.test" + tail}, nil, nil)
+		useFailingTransport(t, f, func(*http.Request) error {
+			return &tls.CertificateVerificationError{Err: errors.New("x509: certificate signed by unknown authority")}
+		})
+		check(t, f, f.post(toolCall("1", "ping")), "tls handshake with nx.porm191.test failed")
+	})
+	// Criterion 2, amendment A3: a crafted refusal, because a real dial to a
+	// host HostSafe refuses fails DNS, not connect.
+	t.Run("unsafe host", func(t *testing.T) {
+		if mcpclient.HostSafe("up+stream.test") {
+			t.Fatal("up+stream.test is HostSafe; the subtest needs a host it refuses")
+		}
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, URL: "http://up+stream.test" + tail}, nil, nil)
+		hits := useFailingTransport(t, f, func(*http.Request) error {
+			return &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+		})
+		check(t, f, f.post(toolCall("1", "ping")), "cannot connect to the upstream")
+		if n := atomic.LoadInt32(hits); n != 1 {
+			t.Fatalf("the stub transport saw %d requests, want 1", n)
+		}
+	})
+	// Security requirement 8, amendment A5.
+	t.Run("client went away", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, URL: "http://nx.porm191.test" + tail}, nil, nil)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		useFailingTransport(t, f, func(*http.Request) error {
+			cancel()
+			return context.Canceled
+		})
+		check(t, f, f.postCtx(ctx, toolCall("1", "ping")), "client went away before the answer")
+	})
+	// Security requirement 7: a body that failed while it was read.
+	t.Run("cut body", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, Handler: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "100")
+			_, _ = io.WriteString(w, `{"jsonrpc":`)
+		}}, nil, nil)
+		check(t, f, f.post(toolCall("1", "ping")), "unexpected EOF")
+	})
+	t.Run("member endpoint", func(t *testing.T) {
+		a := freeAddr(t)
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"search"}},
+			"beta":  {Tools: []string{"x"}, URL: "http://" + a + tail},
+		}, true, nil, nil, nil)
+		row := check(t, f, f.postMember("beta", toolCall("1", "x")), "cannot connect to "+a)
+		if row.UpstreamID != f.upstreamID("beta") {
+			t.Fatalf("row upstream_id=%q, want beta's %q", row.UpstreamID, f.upstreamID("beta"))
+		}
+	})
+	// The routed call on a group key goes through forwardRead: the member
+	// lists, then closes the connection on the call, so Open sees an EOF.
+	t.Run("routed call on a group key", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"search"}},
+			"beta": {Tools: []string{"x"}, Handler: func(w http.ResponseWriter, r *http.Request) {
+				switch rpcMethodOf(r) {
+				case "tools/list":
+					listAnswer(w, "x")
+				case "tools/call":
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					_ = conn.Close()
+				default:
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+				}
+			}},
+		}, true, nil, nil, nil)
+		host := mcpclient.RowHost(f.Stubs["beta"].srv.URL)
+		row := check(t, f, f.post(toolCall("1", "beta__x")), "cannot reach "+host)
+		if row.UpstreamID != f.upstreamID("beta") {
+			t.Fatalf("row upstream_id=%q, want beta's %q", row.UpstreamID, f.upstreamID("beta"))
+		}
+	})
+}
+
+// PORM-191 criterion 3, security requirements 1 and 5: the group member
+// skipped line carries the sentence the member's own row would. The member's
+// own JSON-RPC message on this line (PORM-72's boundary) is pinned by
+// TestGroupListsMemberAnsweringInSSE, "a JSON-RPC error inside a frame".
+func TestGroupMemberSkippedLogIsClosedSentence(t *testing.T) {
+	a := freeAddr(t)
+	f := newFixture(t, map[string]upstreamSpec{
+		"alpha": {Tools: []string{"search"}},
+		"beta":  {Tools: []string{"x"}, URL: "http://" + a + "/secret-path?tok=QUERY-MARKER"},
+	}, true, nil, nil, nil)
+	logs := captureLogs(f)
+	rr := f.post(listRequest)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d want 200: %s", rr.Code, rr.Body.String())
+	}
+	w := skipWarnings(t, logs)
+	if len(w) != 1 {
+		t.Fatalf("%d skip warnings, want exactly 1: %s", len(w), logs.String())
+	}
+	if slug, _ := w[0]["slug"].(string); slug != "beta" {
+		t.Errorf("skip slug=%q want beta", slug)
+	}
+	if got, _ := w[0]["err"].(string); got != "cannot connect to "+a {
+		t.Errorf("skip err=%q, want %q", got, "cannot connect to "+a)
+	}
+	assertNoLeak(t, "server log", logs.String())
+}
+
+// PORM-191 amendment A2, security requirement 1: a stored URL that
+// http.NewRequestWithContext refuses (only a hand-edited row can hold one;
+// the fixture writes straight to the store) records the relay door's
+// sentence and never the parse error, which quotes the URL.
+func TestUpstreamURLNotUsableIsClosedSentence(t *testing.T) {
+	const bad = "http://127.0.0.1:1/secret\x7fpath?tok=QUERY-MARKER"
+	t.Run("single key", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, URL: bad}, nil, nil)
+		rr := f.post(toolCall("1", "ping"))
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
+		}
+		row := f.waitAudit(models.LogFilter{Status: models.StatusError})[0]
+		if row.ErrorMessage != "upstream url is not usable" {
+			t.Fatalf("error_message=%q, want upstream url is not usable", row.ErrorMessage)
+		}
+		assertNoLeak(t, "error_message", row.ErrorMessage)
+	})
+	t.Run("group member", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"search"}},
+			"beta":  {Tools: []string{"x"}, URL: bad},
+		}, true, nil, nil, nil)
+		logs := captureLogs(f)
+		f.post(listRequest)
+		w := skipWarnings(t, logs)
+		if len(w) != 1 {
+			t.Fatalf("%d skip warnings, want exactly 1: %s", len(w), logs.String())
+		}
+		if got, _ := w[0]["err"].(string); got != "upstream url is not usable" {
+			t.Errorf("skip err=%q, want upstream url is not usable", got)
+		}
+		assertNoLeak(t, "server log", logs.String())
+	})
 }
