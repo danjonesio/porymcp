@@ -32,7 +32,7 @@ omitting `transport` or by sending `streamable-http`, and a body that echoes
 | `name` (all three) | trimmed and set | `400 name cannot be empty` | `400 name cannot be empty` (whitespace-only too) |
 | upstream `slug` | equal to the stored slug: no-op; anything else: `400 slug cannot be changed after create` | same `400` | same `400` |
 | upstream / group `description` | set | **cleared** | **cleared** |
-| upstream `url` | set; `400 url must be an absolute http or https URL` if not; resets the last test when it differs | that `400` | that `400` |
+| upstream `url` | set, stored normalised (see Upstream URLs); `400 url must be an absolute http or https URL`, `400 url must not carry a fragment` or `400 url must not embed credentials` if not; resets the last test when it differs after normalisation | that `400` | that `400` |
 | upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value (`sse` is not one: `streamable-http` is the only transport accepted on write); resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none` | that `400` | that `400` |
 | upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does) |
 | upstream `enabled` | set | `400 enabled must be true or false` | n/a |
@@ -144,9 +144,12 @@ a loopback `PUBLIC_URL` reached from another address is refused with both
 values. A metadata, host-rule, redirect or registration failure is `502`
 with one fixed sentence from the OAuth client's closed set, never a byte the
 vendor sent, and one Warn line with the stage, the status and the host. A
-metadata, token or registration address the vendor named that resolves to a
-refused range is `502 {"error":"authorization server address denied: <class>"}`,
-the class only (see Upstream failures). The
+metadata or registration address that resolves to a refused range, the
+upstream's own host included, is
+`502 {"error":"authorization server address denied: <class>"}`, the class
+only (see Upstream failures). The token endpoint is dialled later: a refusal
+at the callback shows the callback's generic failure page and logs
+`exchange`; on a refresh the audit row reads `credential refresh failed`. The
 metadata walk and a registration share one ten-second budget. The route
 spends the discovery budgets and records nothing; the connect is recorded
 by the callback. Sixty-four sign-ins may be pending at once, one per
@@ -253,7 +256,9 @@ unsaved probe answer `400` with one of three sentences:
 host), `url must not carry a fragment` (`https://host/mcp#frag`) and
 `url must not embed credentials` (`https://user:pw@host/mcp`, on every kind
 since PORM-79; rows saved before it are PORM-27's), so a URL PoryMCP could
-never connect to is refused where it is typed rather than where it is used.
+never connect to is refused where it is typed rather than where it is used;
+the unsaved discover route (`POST /upstreams/discover`) answers the same
+three.
 The syntax check is the one discovery applies before it opens a socket
 (`mcpclient.CheckTarget`). The stored value is the URL as `url.Parse` writes
 it back: the scheme lower-cased and nothing else changed, so the host keeps
@@ -267,11 +272,12 @@ multicast or unspecified range (and a private one under
 `UPSTREAM_DENY_PRIVATE`), see `docs/07-security.md` and Upstream failures.
 
 On an `http` upstream (see Upstream kinds) the URL is the API's base URL and
-two more rules apply, on create, on `PATCH` and on the unsaved probe: it must
+one more rule applies, on create, on `PATCH` and on the unsaved probe: it must
 carry no query string (`400 {"error":"url must not carry a query string"}`),
-because a caller's query is appended and the two must not merge, and no
-userinfo (`400 {"error":"url must not embed credentials"}`), because Go's
-transport would send it as `Authorization: Basic` (`mcpclient.CheckHTTPBase`).
+because a caller's query is appended and the two must not merge
+(`mcpclient.CheckHTTPBase`). The userinfo rule above was this kind's alone
+before PORM-79, because Go's transport would send it as
+`Authorization: Basic`; it now applies to every kind.
 A path is fine, trailing slash or not: `https://api.example.com/v1` and
 `https://api.example.com/v1/` both put a caller's `users` at `/v1/users`.
 

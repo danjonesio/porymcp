@@ -268,10 +268,11 @@
   token endpoint or a refresh token. The gate on those URLs is syntax; where
   each resolves is checked as it is dialled, by the egress guard below, so an
   upstream's metadata cannot point PoryMCP at a loopback, link-local or
-  cloud-metadata address. On Connect a refused address answers
-  `502 {"error":"authorization server address denied: <class>"}`; on a
-  refresh the audit row reads `credential refresh failed`, as for any
-  unreachable token endpoint. The one secret a response carries
+  cloud-metadata address. On Connect a refused metadata or registration
+  address answers `502 {"error":"authorization server address denied:
+  <class>"}`; a refused token endpoint shows the callback's generic failure
+  page, and on a refresh the audit row reads `credential refresh failed`, as
+  for any unreachable token endpoint. The one secret a response carries
   is the `state` inside the authorization URL the start route answers, with
   `Cache-Control: no-store`: anyone holding that URL can connect the upstream
   to their own vendor account within ten minutes, and the connect event

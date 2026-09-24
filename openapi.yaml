@@ -241,8 +241,9 @@ paths:
         "502":
           description: >-
             A metadata, host-rule, redirect or registration failure, as one
-            fixed sentence; never a byte the authorization server sent. An
-            address the vendor named that resolves to a refused range is
+            fixed sentence; never a byte the authorization server sent. A
+            metadata or registration address that resolves to a refused
+            range, the upstream's own host included, is
             `authorization server address denied: <class>`.
   /upstreams/{id}/oauth/revoke:
     parameters:

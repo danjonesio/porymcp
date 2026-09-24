@@ -30,8 +30,9 @@ Behaviour changes that affect a running deployment. Newest first.
   the exact bytes it sent, sees a change.
 - **Behind an egress proxy the guard checks the proxy's address only**, so a
   proxy on loopback needs `UPSTREAM_ALLOW_LOOPBACK`; what the proxy fetches
-  is the proxy's job. On OAuth Connect a refused metadata or token address
-  reads `authorization server address denied: <class>`.
+  is the proxy's job. On OAuth Connect a refused metadata or registration
+  address reads `authorization server address denied: <class>`; a refused
+  token endpoint reads `credential refresh failed` on refresh, as before.
 - No schema change. Rollback is the previous image, or the variable and a
   restart.
 
