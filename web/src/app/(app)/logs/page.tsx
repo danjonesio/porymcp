@@ -49,8 +49,8 @@ export default function LogsPage() {
 
       <Subheading className="mt-10">Proxy calls</Subheading>
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
-        Every proxied MCP method and HTTP API request is recorded. Secrets in params are redacted. HTTP API request
-        bodies are not recorded.
+        Every proxied MCP method and HTTP API request is recorded. Secrets in params and credential-shaped text in
+        error messages are redacted. HTTP API request bodies are not recorded.
       </p>
       {error ? <p className="mt-4 text-base/7 text-pink-600 sm:text-sm/6 dark:text-pink-400">{error}</p> : null}
 
