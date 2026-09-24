@@ -29,11 +29,14 @@ const redactWindowBytes = 4 << 10
 const redacted = "[redacted]"
 
 // runChars is the alphabet of a base64, base64url or hex credential: what
-// longRun matches. trimChars is the union of every rule's value class, what
-// errorText drops at a window cut so no rule can see a fragment.
+// longRun matches. schemeChars is the alphabet of a token68 value after an
+// Authorization scheme, what schemeValue matches. namedValue's value class
+// is wider than both (anything but whitespace and a few delimiters), so
+// the cut-back errorText makes at a window cut stops only at those
+// delimiters (valueBoundary), never inside any rule's value.
 const (
-	runChars  = `A-Za-z0-9_+/=-`
-	trimChars = `A-Za-z0-9._~+/=-`
+	runChars    = `A-Za-z0-9_+/=-`
+	schemeChars = `A-Za-z0-9._~+/=-`
 )
 
 var (
@@ -41,7 +44,7 @@ var (
 	// The value goes only when secretLike says so, so "missing bearer
 	// token" and an echoed WWW-Authenticate challenge (the scheme, then
 	// name="value" pairs) read as sent.
-	schemeValue = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)([` + trimChars + `]+)`)
+	schemeValue = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)([` + schemeChars + `]+)`)
 	// namedValue is a name that says it holds a secret, then its value:
 	// "X-API-Key: v", "api_key=v", "\"token\":\"v\"". The keyword must start
 	// a word or follow "_" or "-", so "Monkey: 1", "Hotkey: F5" and
@@ -181,16 +184,12 @@ func mixed(s string, needCase bool) bool {
 	return !needCase || (upper > 0 && lower > 0)
 }
 
-// notTrimChar is the byte errorText cuts back to after a window cut: the
-// first byte from the end that no rule counts as part of a credential.
-func notTrimChar(r rune) bool {
-	switch {
-	case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-		return false
-	case r == '.', r == '_', r == '~', r == '+', r == '/', r == '=', r == '-':
-		return false
-	}
-	return true
+// valueBoundary is the rune errorText cuts back to after a window cut:
+// whitespace or one of the delimiters that end namedValue's value, the
+// widest value class of the rules. Every other byte can be inside some
+// rule's value, so cutting after it could leave a fragment.
+func valueBoundary(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune(`"',;&`, r)
 }
 
 // errorText is what Record stores: the message cut to the scan window (with
@@ -201,10 +200,10 @@ func notTrimChar(r rune) bool {
 func errorText(s string) string {
 	s, cut := mcpclient.Clamp(s, redactWindowBytes)
 	if cut {
-		// A whole window of credential characters has no byte to cut back
-		// to; it is kept whole and longRun decides. The cut lands after the
-		// whole of the last kept rune, never inside a multi-byte one.
-		if i := strings.LastIndexFunc(s, notTrimChar); i >= 0 {
+		// A window with no boundary in it has nothing to cut back to; it is
+		// kept whole and the rules decide. The cut lands after the whole of
+		// the last kept rune, never inside a multi-byte one.
+		if i := strings.LastIndexFunc(s, valueBoundary); i >= 0 {
 			_, w := utf8.DecodeRuneInString(s[i:])
 			s = s[:i+w]
 		}

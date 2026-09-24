@@ -165,9 +165,16 @@ func TestErrorTextRedactsBeforeItCuts(t *testing.T) {
 		// inside it, so the stored value stays valid UTF-8.
 		{"multi-byte rune before the cut", tenRuns + filler(redactWindowBytes-30-len("é")-len(tenRuns)) + "é" + hexToken, hexToken, "[redacted] [redacted]"},
 		{"multi-byte rune before a shrunk cut", "sk-" + strings.Repeat("a1", 2000) + "é" + strings.Repeat("B", 300), "", "[redacted]é"},
-		{"two-byte rune then a run", strings.Repeat("x ", 10) + "é" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x é"},
-		{"three-byte rune then a run", strings.Repeat("x ", 10) + "€" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x €"},
-		{"four-byte rune then a run", strings.Repeat("x ", 10) + "𝔸" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x 𝔸"},
+		// A multi-byte space is the boundary the cut-back lands on: the
+		// cut keeps every byte of it. A four-byte rune has no space form,
+		// so that case keeps it whole before an ASCII space.
+		{"two-byte space then a run", strings.Repeat("x ", 10) + "\u00a0" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x \u00a0"},
+		{"three-byte space then a run", strings.Repeat("x ", 10) + "\u3000" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x \u3000"},
+		{"four-byte rune then a run", strings.Repeat("x ", 10) + "𝔸 " + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x 𝔸 "},
+		// A symbol inside a labelled value at the cut: the cut-back stops
+		// at the space before the label, not at the symbol, so no part of
+		// the value reaches the rules.
+		{"symbol inside a labelled value at the cut", prefixTo(tenRuns, len("api_key=hunterhunter!hu")) + "api_key=hunterhunter!hunter2026", "hunterhunter!hunter2026", "[redacted] [redacted]"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

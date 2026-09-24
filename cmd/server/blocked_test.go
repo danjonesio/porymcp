@@ -74,7 +74,11 @@ func newBlockStub(t *testing.T) *blockStub {
 			// The credential alone: a bearer rides behind its scheme word.
 			cred := strings.TrimPrefix(r.Header.Get(s.echoHeader), "Bearer ")
 			msg, _ := json.Marshal("invalid token " + cred)
-			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(req.ID)+`,"error":{"code":-32000,"message":`+string(msg)+`}}`)
+			id := string(req.ID)
+			if id == "" {
+				id = "null"
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+id+`,"error":{"code":-32000,"message":`+string(msg)+`}}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)

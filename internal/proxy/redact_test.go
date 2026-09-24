@@ -99,7 +99,9 @@ func TestUpstreamErrorMessageIsRedacted(t *testing.T) {
 // bound produces a row at or under audit.ErrorMessageBytes, valid UTF-8,
 // with no fragment of the credential, on the JSON and the SSE answer.
 func TestErrorMessageIsBounded(t *testing.T) {
-	filler := strings.Repeat("word ", 50)[:audit.ErrorMessageBytes-10]
+	// 245 bytes of words ending in a space, so the token starts at byte
+	// 245 as its own word and crosses the 256-byte bound.
+	filler := strings.Repeat("word ", 49)
 	msg := filler + echoedToken + strings.Repeat(" word", 20<<10)
 	for _, tc := range []struct{ name, ct, body string }{
 		{"json", "", errorAnswer(7, msg)},
