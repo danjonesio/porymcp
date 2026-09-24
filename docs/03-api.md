@@ -1067,13 +1067,16 @@ never the admin key. The three MCP endpoints come first; the HTTP API relay
   session. A member's answer to a routed `tools/call` is reduced to the one
   JSON-RPC document that answers the call and sent on as `application/json`,
   whichever framing the member used, with the member's own HTTP status. A
-  member's JSON-RPC error therefore reaches the caller unchanged, a protocol
-  error such as `-32022` included, and describes the member and not the group.
+  member's JSON-RPC error therefore reaches the caller with its code, id and
+  data unchanged and credential-shaped text in its message replaced by
+  `[redacted]`, a protocol error such as `-32022` included, and describes the
+  member and not the group.
   An answer with no such document in it is passed on as it came when it is
   `application/json` or `text/event-stream`, under that media type; a body in
   any other media type gets the caller a `502` and an `error` row. On a single-upstream
   key this *is* the 1:1 endpoint, and the upstream's answer is relayed as it
-  came.
+  came. The one exception on every door is the message of a JSON-RPC error,
+  which is redacted as described under the audit row's `error_message`.
 - Shared: `POST /mcp`: the same door without the id in the path; the key
   identifies the virtual key. `POST //{upstream_slug}/mcp` (the same door with
   the id left empty) is its per-member analogue, resolved against the caller's
@@ -1133,8 +1136,12 @@ messages arrive on the response to a `POST`.
 
 An upstream that answers a `POST` with `text/event-stream` and a 2xx status is
 relayed as it arrives on a member or single-upstream endpoint: the headers and
-`X-Accel-Buffering: no` go out first, then every read reaches the client at
-once, keep-alive lines included. The stream stays open until the upstream or the
+`X-Accel-Buffering: no` go out first, then each line outside a data-carrying
+event reaches the client as it arrives, keep-alive lines included. An event
+that carries data is sent once its ending line arrives, so an error inside it
+can be redacted first. A result over 1 MiB whose first megabyte does not show
+it is a result reaches the client when it ends, and a stream ends when an
+event that may be an error passes 16 MiB. The stream stays open until the upstream or the
 client closes it, the upstream sends nothing for five minutes, the key stops
 being valid or the upstream stops being reachable through it or is edited
 (checked once a minute; a store error during that check leaves the stream
@@ -1570,9 +1577,10 @@ its query string or the address the host resolved to. The HTTP relay door
 writes the same sentence for the same failure. The host is written only when
 it holds ASCII letters, digits, `.`, `_`, `-`, `:`, `[` and `]` alone; any
 other host reads as `the upstream`. The field is read by operators and never
-returned to a key holder: an upstream's own JSON-RPC error message is
-recorded with credential-shaped text replaced by `[redacted]` and cut to 256
-bytes (PORM-72).
+returned to a key holder. An upstream's own JSON-RPC error message is
+returned to the key holder cut at 64 KiB and recorded cut to 256 bytes, in
+both places with credential-shaped text replaced by `[redacted]` (PORM-72,
+PORM-195).
 
 Whether a row is `success` or `error` is judged from the document that
 answers the request, in either framing: an upstream's JSON-RPC error inside

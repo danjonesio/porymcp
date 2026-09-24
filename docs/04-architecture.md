@@ -29,7 +29,7 @@
   carries one comes from: one refusal to follow a redirect, one wrapped default
   transport, and a budget and read cap each caller sizes for its own job (the
   proxy reads a JSON answer within five minutes and 16 MiB and relays an event
-  stream as it arrives; a group member's listing has 60 s; discovery has 10 s and 2 MiB
+  stream event by event as it arrives; a group member's listing has 60 s; discovery has 10 s and 2 MiB
   for a whole handshake; the era probe, `server/discover`, has 5 s and 2 MiB
   for its one round trip, on both planes). The proxy's relay, the proxy's own
   catalogue request and era probe, and the dashboard's discovery call all go
@@ -115,8 +115,9 @@ is judged from the bytes the client is sent. An answer with no such document
 in it is passed on as it came when it is JSON or an event stream; any other
 media type keeps its failure status with no body, or is a `502` on a success
 status. On a single-upstream key and a member endpoint the answer is relayed
-as the upstream sent it, and only the row is judged from the answering
-document.
+as the upstream sent it apart from the message of a JSON-RPC error, which is
+redacted before it leaves (PORM-195), and the row is judged from the answering
+document as it arrived.
 
 ### HTTP API relay (single-upstream keys and group members of kind http)
 
@@ -160,8 +161,9 @@ and no others: `Content-Type`, `Mcp-Session-Id` and `Retry-After`
 browser stores against PoryMCP's origin, cannot name its authorization server
 to a key holder in a response header, and cannot duplicate the CORS and
 security headers PoryMCP sets. A JSON body is relayed whole. On the 1:1 path a
-2xx event-stream body is relayed as it arrives, with `X-Accel-Buffering: no`
-added by PoryMCP, and its audit row is written when the stream ends. Every
+2xx event-stream body is relayed event by event as it arrives, with
+`X-Accel-Buffering: no` added by PoryMCP, and its audit row is written when
+the stream ends. Every
 response the proxy endpoints write carries
 `Cache-Control: no-store`. That copying happens only on a response the proxy
 relays, and a `3xx` is never relayed (the call has already failed by then), so
