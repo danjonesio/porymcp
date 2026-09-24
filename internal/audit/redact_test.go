@@ -1,10 +1,13 @@
 package audit
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"unicode/utf8"
 	"unsafe"
+
+	"github.com/danjonesio/porymcp/internal/models"
 )
 
 const (
@@ -192,4 +195,47 @@ func TestErrorTextRedactsBeforeItCuts(t *testing.T) {
 			t.Errorf("the stored value points into the upstream's message")
 		}
 	})
+}
+
+// TestRecordRedactsErrorMessage is PORM-72 security requirements 1, 5 and
+// 10: every row goes through errorText inside Record, so the proxy's own
+// sentences come back exact, an echoed credential comes back redacted and
+// an oversized message comes back bounded, all read through the store.
+func TestRecordRedactsErrorMessage(t *testing.T) {
+	st := openStore(t)
+	l := New(st, nil)
+	rows := map[string]string{
+		"policy":     "blocked by virtual key denylist",
+		"credential": "credential undecryptable",
+		"echo":       "invalid token " + ghpToken,
+		"huge":       strings.Repeat("word ", 20<<10),
+	}
+	for id, msg := range rows {
+		l.Record(models.AuditLog{VirtualKeyID: "k", Method: "tools/call", Status: models.StatusError, RequestID: id, ErrorMessage: msg})
+	}
+	l.Close()
+	got, _, err := st.ListAuditLogs(context.Background(), models.LogFilter{Status: models.StatusError, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := map[string]string{}
+	for _, row := range got {
+		stored[row.RequestID] = row.ErrorMessage
+	}
+	if len(stored) != len(rows) {
+		t.Fatalf("%d rows stored, want %d", len(stored), len(rows))
+	}
+	if stored["policy"] != rows["policy"] {
+		t.Errorf("policy reason stored as %q", stored["policy"])
+	}
+	if stored["credential"] != rows["credential"] {
+		t.Errorf("credential sentinel stored as %q", stored["credential"])
+	}
+	if stored["echo"] != "invalid token [redacted]" {
+		t.Errorf("echoed credential stored as %q", stored["echo"])
+	}
+	assertNoFragment(t, "echo row", stored["echo"], ghpToken)
+	if n := len(stored["huge"]); n > ErrorMessageBytes {
+		t.Errorf("huge message stored as %d bytes, want at most %d", n, ErrorMessageBytes)
+	}
 }

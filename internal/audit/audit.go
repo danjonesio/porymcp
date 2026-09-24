@@ -77,6 +77,7 @@ func (l *Logger) Record(e models.AuditLog) {
 		e.Timestamp = time.Now().UTC()
 	}
 	e.Params = Redact(e.Params)
+	e.ErrorMessage = errorText(e.ErrorMessage)
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	if l.closed {
