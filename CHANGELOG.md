@@ -13,16 +13,18 @@ Behaviour changes that affect a running deployment. Newest first.
   `github_pat_`, `glpat-`, `xoxb-`, `AKIA`, JWTs) and any run of base64
   characters holding letters and two digits that is 20 or more characters
   with no separator, or that mixes upper and lower case. Redaction is best
-  effort: a short opaque value, a lowercase hyphenated value or an
-  unlabelled UUID-shaped key is not recognised, and a token the upstream
+  effort: a short opaque value, a lowercase hyphenated value, an unlabelled
+  UUID-shaped key or a mixed-case key with fewer than two digits (about one
+  in seven at 20 characters) is not recognised, and a token the upstream
   has encoded or split with invisible characters can keep a fragment.
 - **`error_message` is at most 256 bytes on every row.** The bound is
   applied after redaction, so a token cut at the boundary is never stored
   in part.
 - **An id that looks like a token is redacted too.** A trace id, a
-  container id, another vendor's request id or a host label of 20 or more
-  letters and digits reads `[redacted]` inside the upstream's sentence. The
-  row's `upstream_id` and `request_id` are unchanged.
+  container id, another vendor's request id, a host label or a camelCase
+  tool name of 20 or more letters with two digits reads `[redacted]` inside
+  the sentence. The row's `upstream_id`, `tool_name` and `request_id` are
+  unchanged.
 - **Rows written before the upgrade keep the upstream's text as sent.**
   Nothing purges them until retention ships (PORM-13). An operator whose
   upstream echoed a credential into an older row should rotate that

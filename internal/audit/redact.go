@@ -146,9 +146,12 @@ func secretLike(v string) bool {
 // separator-free piece of 20 or more characters holds a letter and two
 // digits, or the whole run does and also mixes upper and lower case and is
 // not a path. Two digits, not one, so a camelCase tool name with a version
-// ("getRepoContentsV2Beta") reads as sent; a random 20-character key has two
-// digits about 99 times in 100. A UUID, a slug, a snake_case tool identity,
-// a hyphenated host label and a timestamp all fail both tests.
+// ("getRepoContentsV2Beta") reads as sent; a 20-character key of hex, or of
+// lowercase letters and digits, has two digits about 99 times in 100, and a
+// mixed-case key of that length is missed about one time in seven (one in
+// 40 at 32 characters), which docs/07-security.md states. A UUID, a slug, a
+// snake_case tool identity, a hyphenated host label and a timestamp all
+// fail both tests.
 func tokenLike(run string) bool {
 	for _, piece := range strings.FieldsFunc(run, isRunSeparator) {
 		if len(piece) >= 20 && mixed(piece, false) {

@@ -45,6 +45,8 @@ func TestRedactTextPatterns(t *testing.T) {
 		// Redacted.
 		{"bearer ghp", "Bearer " + ghpToken, "Bearer [redacted]"},
 		{"sk-proj", "invalid token sk-proj-abcdefghij1234567890ABCD", "invalid token [redacted]"},
+		// Built by concatenation: a full Stripe, GitLab or Slack shape in
+		// the source would trip the public repository's push protection.
 		{"sk_live", "sk_" + "live_abcdefghij1234567890ABCD is not valid", "[redacted] is not valid"},
 		{"sk-ant", "sk-ant-abcdefghij1234567890ABCD", "[redacted]"},
 		{"gho", "gho_abcdefghij1234567890", "[redacted]"},
@@ -52,9 +54,9 @@ func TestRedactTextPatterns(t *testing.T) {
 		{"ghu", "ghu_abcdefghij1234567890", "[redacted]"},
 		{"ghr", "ghr_abcdefghij1234567890", "[redacted]"},
 		{"github_pat", "github_pat_abcdefghij1234567890AB", "[redacted]"},
-		{"glpat", "glpat-abcdefghij1234567890", "[redacted]"},
-		{"xoxb", "xoxb-123456789012-1234567890123-AbCdEfGh", "[redacted]"},
-		{"xoxp", "token xoxp-123456789012-1234567890123-AbCdEfGh revoked", "token [redacted] revoked"},
+		{"glpat", "gl" + "pat-abcdefghij1234567890", "[redacted]"},
+		{"xoxb", "xox" + "b-123456789012-1234567890123-AbCdEfGh", "[redacted]"},
+		{"xoxp", "token xox" + "p-123456789012-1234567890123-AbCdEfGh revoked", "token [redacted] revoked"},
 		{"akia", "AKIAIOSFODNN7EXAMPLE", "[redacted]"},
 		{"asia", "ASIAIOSFODNN7EXAMPLE", "[redacted]"},
 		{"hex 40", "signature " + hexToken + " mismatch", "signature [redacted] mismatch"},
@@ -67,6 +69,10 @@ func TestRedactTextPatterns(t *testing.T) {
 		{"base64url with separator", "AbCdEfGhIjKlMnO-pQrStUvWxYz12345", "[redacted]"},
 		{"lambda host label", "cannot connect to abcdef1234567890abcdef1234567890.lambda-url.eu-west-1.on.aws:443", "cannot connect to [redacted].lambda-url.eu-west-1.on.aws:443"},
 		{"trace id", "trace 4bf92f3577b34da6a3ce929d0e0e4736 not found", "trace [redacted] not found"},
+		// Caught though benign: a camelCase tool name holding two digits
+		// is a separator-free piece with letters and two digits. The row's
+		// tool column still carries the name.
+		{"camel case tool with two digits", "unknown tool: getS3BucketsForRegionV2", "unknown tool: [redacted]"},
 		{"labelled uuid", "X-API-Key: 550e8400-e29b-41d4-a716-446655440000", "X-API-Key: [redacted]"},
 		// Partly caught: a token the upstream split or encoded keeps a
 		// short fragment, the rest goes. docs/07-security.md says so.

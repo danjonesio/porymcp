@@ -31,6 +31,20 @@ func errorAnswer(id int, msg string) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32000,"message":%q}}`, id, msg)
 }
 
+// escapeEvery writes every nth byte of s as a JSON \u escape, so a reader
+// that never decodes the message sees no run long enough for any rule.
+func escapeEvery(s string, n int) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if i%n == 0 {
+			fmt.Fprintf(&b, `\u%04x`, s[i])
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 // assertSentToken proves the proxy presented the credential the upstream
 // then echoed: the last request the stub saw carried it.
 func assertSentToken(t *testing.T, f *fixture) {
@@ -68,9 +82,12 @@ func TestUpstreamErrorMessageIsRedacted(t *testing.T) {
 	buffered := []struct{ name, ct, body string }{
 		{"json", "", errorAnswer(7, msg)},
 		{"sse", "text/event-stream", sseFrame(errorAnswer(7, msg))},
-		// The upstream JSON-escapes the first letters of the token; the
-		// decoder sees them whole before any rule runs.
-		{"escaped", "", `{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"invalid token \u0067\u0068p\u005f` + strings.TrimPrefix(echoedToken, "ghp_") + `"}}`},
+		// The upstream JSON-escapes every sixth byte of the token. Decoded,
+		// the token is whole and a rule takes it; undecoded, no piece
+		// reaches 20 characters, nothing matches and the row would carry
+		// no [redacted], so this subtest fails against a reader that does
+		// not unescape.
+		{"escaped", "", `{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"invalid token ` + escapeEvery(echoedToken, 6) + `"}}`},
 	}
 	for _, tc := range buffered {
 		t.Run(tc.name, func(t *testing.T) {
