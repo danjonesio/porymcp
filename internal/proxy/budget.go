@@ -3,8 +3,13 @@ package proxy
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http/httptrace"
 	"time"
+
+	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // The budgets an upstream request runs under. Until PORM-5 the proxy's client
@@ -125,4 +130,100 @@ func causeError(ctx context.Context, err error) error {
 // causeText is causeError's sentence, for a row.
 func causeText(ctx context.Context, err error) string {
 	return causeError(ctx, err).Error()
+}
+
+// errClientWentAway is the row for a request the client abandoned before the
+// upstream answered: the upstream context is done with no cause of its own
+// (context.Canceled), which is how net/http cancels r.Context(). Named
+// because the transport's own error for that case is a *net.OpError that
+// TransportFailure would print as a refused connection.
+var errClientWentAway = errors.New("client went away before the answer")
+
+// errUpstreamURL is the row for a stored URL http.NewRequestWithContext will
+// not take: the parse error would quote the URL, query string and all. The
+// relay door writes the same sentence for a URL that does not parse.
+var errUpstreamURL = errors.New("upstream url is not usable")
+
+// clientWentAway says the upstream context is done because its parent was
+// cancelled with no cause: a client that hung up. A budget cancels with a
+// *budgetError cause and is read by causeError first.
+func clientWentAway(ctx context.Context) bool {
+	return ctx.Err() != nil && context.Cause(ctx) == context.Canceled
+}
+
+// upstreamFailureText is the sentence for a request to an upstream that got
+// no answer, on either door. err is the error the upstream client returned
+// from Open and ctx is that request's upstream context. The order: the
+// proxy's own budget cause (causeError), the client's own cancellation, a
+// refused redirect and an oversized body by their own typed text, then
+// mcpclient.TransportFailure, which names host only when it is HostSafe.
+// err's own text never reaches a row or a log line: a *url.Error quotes the
+// outbound URL, query string and all.
+func upstreamFailureText(ctx context.Context, err error, host string) string {
+	if cause := causeError(ctx, err); cause != err {
+		return cause.Error()
+	}
+	if clientWentAway(ctx) {
+		return errClientWentAway.Error()
+	}
+	var redirect mcpclient.Redirect
+	if errors.As(err, &redirect) {
+		return redirect.Error()
+	}
+	var big mcpclient.BodyTooLarge
+	if errors.As(err, &big) {
+		return big.Error()
+	}
+	if !mcpclient.HostSafe(host) {
+		host = ""
+	}
+	return mcpclient.TransportFailure(err, host)
+}
+
+// readFailureText is the sentence for a body that failed while it was being
+// read, buffered, on either door: the budget cause, the client's own
+// cancellation, an oversized body, then readErrorText. A read error is never
+// a *url.Error and never a refused connection, so TransportFailure is the
+// wrong rule for it.
+func readFailureText(ctx context.Context, err error) string {
+	if cause := causeError(ctx, err); cause != err {
+		return cause.Error()
+	}
+	if clientWentAway(ctx) {
+		return errClientWentAway.Error()
+	}
+	var big mcpclient.BodyTooLarge
+	if errors.As(err, &big) {
+		return big.Error()
+	}
+	return readErrorText(err)
+}
+
+// readErrorText is the sentence for a read error itself, buffered or
+// streamed: a read error's text carries the resolved address ("read tcp
+// a->b"), so only two fixed sentences are written, and the one exception is
+// the constant whose text names nothing.
+func readErrorText(err error) string {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return io.ErrUnexpectedEOF.Error()
+	}
+	return "upstream connection failed"
+}
+
+// upstreamFailed is upstreamFailureText as an error, for the MCP door, which
+// holds the upstream and not a parsed base. A guard refusal is returned as
+// it came, because serve finds it by type for the Warn line and its text is
+// already the sentence; everything else becomes the sentence alone, so the
+// *url.Error and the URL it quotes leave the error chain here.
+func upstreamFailed(ctx context.Context, err error, up *models.Upstream) error {
+	var denied netguard.Denied
+	if errors.As(err, &denied) {
+		return denied
+	}
+	return errors.New(upstreamFailureText(ctx, err, mcpclient.RowHost(up.URL)))
+}
+
+// readFailed is readFailureText as an error, for the MCP door.
+func readFailed(ctx context.Context, err error) error {
+	return errors.New(readFailureText(ctx, err))
 }

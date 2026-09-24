@@ -268,6 +268,20 @@ func Failed(kind, msg string) Discovery {
 // when the real one is not HostSafe) and, when something is refused, the
 // sentence to fail with. A refusal here costs the upstream nothing and never
 // repeats the operator's own value.
+// RowHost is the one host a row or a log line may name for a registered URL:
+// its host, with the port when the URL names one, when HostSafe accepts it
+// and bounded at MaxErrorBytes; "" (which TransportFailure prints as "the
+// upstream") when the URL does not parse or the host holds any other byte.
+// It is never an address the host resolved to, and url.Parse keeps userinfo
+// and the query out of Host.
+func RowHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || !HostSafe(u.Host) {
+		return ""
+	}
+	return bound(u.Host, MaxErrorBytes)
+}
+
 func preflight(up *models.Upstream, plainAuth json.RawMessage, httpBase bool) (host, fail string) {
 	if err := TransportError(up.Transport); err != nil {
 		return "", err.Error()
@@ -282,10 +296,10 @@ func preflight(up *models.Upstream, plainAuth json.RawMessage, httpBase bool) (h
 		}
 	}
 	// The one variable ever interpolated into an error. A host that is not
-	// plain ASCII is not written down at all, see HostSafe.
+	// plain ASCII is not written down at all, see RowHost.
 	host = "the upstream"
-	if HostSafe(u.Host) {
-		host = bound(u.Host, MaxErrorBytes)
+	if h := RowHost(up.URL); h != "" {
+		host = h
 	}
 	if !authHeadersSendable(up.AuthType, plainAuth) {
 		// Otherwise net/http fails the request late and quotes the name back.

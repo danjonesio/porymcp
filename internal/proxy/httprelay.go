@@ -13,7 +13,6 @@ package proxy
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -336,31 +335,6 @@ func relayCarriesToken(r *http.Request, token string) bool {
 	return err == nil && strings.Contains(decoded, token)
 }
 
-// relayFailureText is the row's sentence for a request that got no usable
-// answer, in this order: the proxy's own budget cause (causeError, which
-// names the relay's budget and not discovery's), a refused redirect or an
-// oversized body by their own typed text (the MCP door's sentences for the
-// same failures), and otherwise mcpclient.TransportFailure, which names the
-// base host only when it is HostSafe. err's own text never reaches a row: a
-// *url.Error quotes the outbound URL, query and all.
-func relayFailureText(ctx context.Context, err error, host string) string {
-	if cause := causeError(ctx, err); cause != err {
-		return cause.Error()
-	}
-	var redirect mcpclient.Redirect
-	if errors.As(err, &redirect) {
-		return redirect.Error()
-	}
-	var big mcpclient.BodyTooLarge
-	if errors.As(err, &big) {
-		return big.Error()
-	}
-	if !mcpclient.HostSafe(host) {
-		host = ""
-	}
-	return mcpclient.TransportFailure(err, host)
-}
-
 // relay is the door. The order after admit mirrors serve where the steps
 // exist there: resolve the target before any credential work; the method
 // gate; the path join and the key-in-request check; the body under the cap;
@@ -448,7 +422,7 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	base, err := url.Parse(up.URL)
 	if err != nil || mcpclient.CheckTarget(base) != nil {
 		size := writePlainError(w, http.StatusBadGateway, requestID, "upstream request failed")
-		h.finish(vk, requestID, verb, tool, up.ID, models.StatusError, "upstream url is not usable", start, size, nil)
+		h.finish(vk, requestID, verb, tool, up.ID, models.StatusError, errUpstreamURL.Error(), start, size, nil)
 		return
 	}
 	target, err := mcpclient.JoinBase(base, rest)
@@ -519,22 +493,25 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	}
 
 	// 8. The send, through the one client, and the whole answer under the cap.
+	// The sentence is chosen at the call that failed: a request that got no
+	// answer reads through upstreamFailureText, a body that failed while it
+	// was read through readFailureText, because a read error is never a
+	// refused connection. Both are the MCP door's rules (budget.go).
 	resp, err := mcpclient.OpenRelay(h.client, req)
 	var (
 		respBody []byte
 		status   int
 		headers  http.Header
 	)
-	if err == nil {
-		respBody, status, headers, err = mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
-	}
 	reason := ""
 	if err != nil {
-		reason = relayFailureText(ctx, err, base.Host)
+		reason = upstreamFailureText(ctx, err, base.Host)
 		var denied netguard.Denied
 		if errors.As(err, &denied) {
 			h.warnDenied(up.ID, requestID, denied.Class)
 		}
+	} else if respBody, status, headers, err = mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes); err != nil {
+		reason = readFailureText(ctx, err)
 	}
 	cancel(nil)
 	if err != nil {

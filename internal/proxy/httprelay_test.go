@@ -1211,7 +1211,7 @@ func TestRelayPreflight(t *testing.T) {
 }
 
 // PORM-79 security requirements 4 and 11 on the relay door: the twin of
-// TestProxyRefusedDialAudited. The row goes through relayFailureText and
+// TestProxyRefusedDialAudited. The row goes through upstreamFailureText and
 // TransportFailure's first arm; the Warn line is the same helper's.
 func TestRelayRefusedDialAudited(t *testing.T) {
 	f := relayGET(t, nil)
