@@ -25,9 +25,16 @@ Behaviour changes that affect a running deployment. Newest first.
 - **`POST` and `PATCH /api/v1/upstreams` answer per-rule `400`s.** A fragment
   is `url must not carry a fragment` and embedded credentials are
   `url must not embed credentials`, on every kind; the stored URL is the
-  parsed form (scheme lower-cased, nothing else changed). Stored rows are
-  not rewritten. A client that compared the one old sentence, or read back
-  the exact bytes it sent, sees a change.
+  form `url.Parse` re-serialises (scheme lower-cased, unescaped path
+  characters percent-encoded, an empty fragment dropped; host, port and
+  trailing slash kept). A row is rewritten only by a `PATCH` that sends
+  `url`. A client that compared the one old sentence, or read back the exact
+  bytes it sent, sees a change.
+- **Dual-stack upstreams are dialled one address at a time.** The guard
+  resolves the host itself and tries the permitted addresses in resolver
+  order, each on its share of the remaining deadline, instead of Go's
+  300 ms race between address families. An upstream whose first address is
+  unreachable now waits longer before the second is tried.
 - **Behind an egress proxy the guard checks the proxy's address only**, so a
   proxy on loopback needs `UPSTREAM_ALLOW_LOOPBACK`; what the proxy fetches
   is the proxy's job. On OAuth Connect a refused metadata or registration

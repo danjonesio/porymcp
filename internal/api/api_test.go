@@ -802,8 +802,9 @@ func TestUpstreamURLValidation(t *testing.T) {
 
 // PORM-79 security requirement 10: a row saved before normalisation keeps its
 // OAuth tokens and its recorded test when the same URL is sent again, in its
-// stored spelling or the normalised one; the stored value is not rewritten
-// until the URL itself changes.
+// stored spelling or the normalised one. A PATCH that carries url stores the
+// normalised form (that is what "the stored value is the parsed URL" means);
+// only a PATCH that carries no url leaves the legacy spelling alone.
 func TestPatchSameURLKeepsOAuthTokenAndTestState(t *testing.T) {
 	s, h, st := testAPI(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -841,8 +842,8 @@ func TestPatchSameURLKeepsOAuthTokenAndTestState(t *testing.T) {
 		if row.LastTestAt == nil || !row.LastTestAt.Equal(tested) || row.LastTestOK == nil || !*row.LastTestOK {
 			t.Fatalf("patch %q reset the recorded test: at=%v ok=%v", same, row.LastTestAt, row.LastTestOK)
 		}
-		if row.URL != "https://h/mcp" && row.URL != "HTTPS://h/mcp" {
-			t.Fatalf("patch %q stored %q", same, row.URL)
+		if row.URL != "https://h/mcp" {
+			t.Fatalf("patch %q stored %q, want the normalised form", same, row.URL)
 		}
 	}
 

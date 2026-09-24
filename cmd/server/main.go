@@ -492,9 +492,9 @@ func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *s
 	// One construction for every outbound call PoryMCP makes with a real
 	// credential. The management API's discoveries go out on it; the proxy
 	// builds its own from the same construction, and mcpclient is where that
-	// policy (refuse every redirect, wrap rather than replace the default
-	// transport) lives so there is one place to forget it rather than two
-	// (PORM-94).
+	// policy (refuse every redirect, clone and then wrap the default
+	// transport, the address guard on the clone's dialer) lives so there is
+	// one place to forget it rather than two (PORM-94, PORM-79).
 	r.Mount("/api/v1", api.New(cfg, st, log, mcpclient.New(cfg.UpstreamGuard), encryption).Routes())
 	px := proxy.New(cfg, st, auditor, log)
 	r.HandleFunc("/mcp", px.ServeHTTP)

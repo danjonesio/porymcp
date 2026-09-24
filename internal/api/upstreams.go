@@ -681,9 +681,10 @@ func (s *Server) deleteUpstream(w http.ResponseWriter, r *http.Request) {
 // PoryMCP connects, by internal/netguard on the transport, because a check
 // here would be defeated by the second resolution at dial time.
 //
-// The stored form is url.Parse then String: the scheme is lower-cased and
-// nothing else changes. The host keeps its case, the port stays, and a
-// trailing slash is kept because the relay joins paths to it.
+// The stored form is url.Parse then String: the scheme is lower-cased,
+// unescaped path characters are percent-encoded and an empty fragment is
+// dropped. The host keeps its case, the port stays, and a trailing slash is
+// kept because the relay joins paths to it.
 func upstreamURL(raw string) (normalised, msg string) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {

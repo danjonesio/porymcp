@@ -260,9 +260,10 @@ never connect to is refused where it is typed rather than where it is used;
 the unsaved discover route (`POST /upstreams/discover`) answers the same
 three.
 The syntax check is the one discovery applies before it opens a socket
-(`mcpclient.CheckTarget`). The stored value is the URL as `url.Parse` writes
-it back: the scheme lower-cased and nothing else changed, so the host keeps
-its case, the port stays and a trailing slash is kept. A `PATCH` that sends
+(`mcpclient.CheckTarget`). The stored value is the URL as `url.Parse`
+re-serialises it: the scheme lower-cased, unescaped path characters
+percent-encoded (`/a b` becomes `/a%20b`) and an empty fragment dropped;
+the host keeps its case, the port stays and a trailing slash is kept. A `PATCH` that sends
 the same URL in either spelling is not a URL change: it keeps the recorded
 test and, on an `oauth` upstream, the token set.
 

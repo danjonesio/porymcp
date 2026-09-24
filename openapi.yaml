@@ -1121,8 +1121,10 @@ components:
             fragment`) and no userinfo (`url must not embed credentials`),
             on every kind; the syntax check is the one discovery applies
             before it opens a socket, so a stored value is one PoryMCP can
-            actually dial. The stored value is the URL as url.Parse writes it
-            back: the scheme lower-cased and nothing else changed. Where the
+            actually dial. The stored value is the URL as url.Parse
+            re-serialises it: the scheme lower-cased, unescaped path
+            characters percent-encoded, an empty fragment dropped; host, port
+            and trailing slash kept. Where the
             host resolves is checked when PoryMCP connects, not here: an
             address in a loopback, link-local, metadata, multicast or
             unspecified range is refused at dial time (PORM-79). On an http

@@ -22,8 +22,9 @@ Represents a real MCP server, or a plain HTTP API (PORM-146).
   serves, trailing slash included. It must be an absolute `http` or `https` URL
   with a host, no fragment and no embedded credentials (`mcpclient.CheckTarget`
   plus the write gate's userinfo rule), so a stored value is one PoryMCP
-  can dial; anything else is `400`, and the stored form is the parsed URL
-  with its scheme lower-cased. Whether that host *should* be dialled
+  can dial; anything else is `400`, and the stored form is the parsed URL as
+  `url.Parse` re-serialises it (scheme lower-cased, unescaped path characters
+  percent-encoded, an empty fragment dropped). Whether that host *should* be dialled
   (loopback, link-local, cloud metadata) is decided as the connection is
   made, by `internal/netguard` on the client's transport (PORM-79).
   On an `http` upstream it is the API's **base URL** (`https://api.example.com/v1`):

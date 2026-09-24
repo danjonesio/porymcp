@@ -654,7 +654,11 @@
   an address it checked, never the host text, so a name that resolved to a
   public address once and to `127.0.0.1` the next time (DNS rebinding) is
   refused at the moment it would matter. A pre-flight check on the URL would
-  not do that. What is refused, whatever the settings: the cloud metadata
+  not do that. The guard dials the permitted addresses one at a time in
+  resolver order, each on its share of the remaining deadline, in place of
+  Go's 300 ms race between address families: a dual-stack upstream whose
+  first address is unreachable waits longer before the second is tried,
+  which is the price of never dialling an address that was not checked. What is refused, whatever the settings: the cloud metadata
   addresses `169.254.169.254`, `fd00:ec2::/64`, `100.100.100.200`,
   `168.63.129.16` and `fd20:ce::254` (`metadata`); `0.0.0.0/8`, `::` and
   their zoned forms (`unspecified`); multicast (`multicast`); `169.254/16`
