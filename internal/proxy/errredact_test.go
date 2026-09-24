@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -94,5 +96,118 @@ func TestRedactErrorDocAllocs(t *testing.T) {
 	got := testing.AllocsPerRun(200, func() { redactErrorDoc(doc) })
 	if got > judge {
 		t.Fatalf("redactErrorDoc allocates %.0f per result, rpcFailed %.0f", got, judge)
+	}
+}
+
+// upper is a walkSSE callback that upper-cases a payload holding "x".
+func upper(payload []byte, _ int) ([]byte, bool, error) {
+	if !bytes.Contains(payload, []byte("x")) {
+		return nil, false, nil
+	}
+	return bytes.ToUpper(payload), true, nil
+}
+
+// TestWalkSSE is PORM-195 security requirements 1, 4 and 5 at the framing
+// level: every event with data is offered to the callback with its lines
+// joined, a changed event goes back as one data: line in the first line's
+// place, everything else is byte for byte, and an unchanged body is the same
+// bytes.
+func TestWalkSSE(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+		seen             int
+	}{
+		{"one data line with a space", "data: {x}\n\n", "data: {X}\n\n", 1},
+		{"one data line without a space", "data:{x}\n\n", "data:{X}\n\n", 1},
+		{"two data lines changed become one", "data: {x\ndata: y}\n\n", "data: {X\nY}\n\n", 1},
+		{"two data lines unchanged stay two", "data: {a\ndata: b}\n\n", "data: {a\ndata: b}\n\n", 1},
+		{"whitespace-only line ends the event", "data: {x}\n \ndata: {y}\n\n", "data: {X}\n \ndata: {y}\n\n", 2},
+		{"field lines and a comment are kept", ": keep\nevent: message\nid: 9\nretry: 5\nfoo: bar\ndata: {x}\n\n: tail\n", ": keep\nevent: message\nid: 9\nretry: 5\nfoo: bar\ndata: {X}\n\n: tail\n", 1},
+		{"crlf", "event: message\r\ndata: {x}\r\n\r\n", "event: message\r\ndata: {X}\r\n\r\n", 1},
+		{"bare cr", "event: message\rdata: {x}\r\r", "event: message\rdata: {X}\r\r", 1},
+		{"no trailing blank line", "data: {x}", "data: {X}", 1},
+		{"no data at all", ": keep\n\nevent: message\n\n", ": keep\n\nevent: message\n\n", 0},
+		{"second of three changes", "data: {a}\n\ndata: {x}\n\ndata: {b}\n\n", "data: {a}\n\ndata: {X}\n\ndata: {b}\n\n", 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := []byte(c.body)
+			out, changed, seen, err := walkSSE(body, upper)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(out) != c.want {
+				t.Errorf("got  %q\nwant %q", out, c.want)
+			}
+			if seen != c.seen {
+				t.Errorf("seen=%d want %d", seen, c.seen)
+			}
+			if wantChanged := c.want != c.body; changed != wantChanged {
+				t.Errorf("changed=%v want %v", changed, wantChanged)
+			}
+			if !changed && len(body) > 0 && &out[0] != &body[0] {
+				t.Error("an unchanged body was copied")
+			}
+		})
+	}
+
+	t.Run("callback error stops the walk", func(t *testing.T) {
+		boom := errors.New("boom")
+		_, _, _, err := walkSSE([]byte("data: {x}\n\n"), func([]byte, int) ([]byte, bool, error) { return nil, false, boom })
+		if !errors.Is(err, boom) {
+			t.Fatalf("err=%v, want the callback's", err)
+		}
+	})
+
+	t.Run("an unchanged catalogue allocates like the judge", func(t *testing.T) {
+		body := []byte(strings.Repeat(sseFrame(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool","description":"no error here"}]}}`), 50))
+		payload := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe_tool","description":"no error here"}]}}`)
+		judge := testing.AllocsPerRun(50, func() { rpcFailed(payload) }) * 50
+		got := testing.AllocsPerRun(50, func() { walkSSE(body, redactPayload) })
+		if got > judge {
+			t.Fatalf("walkSSE allocates %.0f over 50 result events, rpcFailed %.0f", got, judge)
+		}
+	})
+}
+
+// TestRedactErrorAnswer is PORM-195 security requirements 1 and 3 on the
+// buffered path: a JSON body, an SSE body and a mislabelled body are each
+// found the way answerStatus finds them, every error event is rewritten, and
+// a body with nothing to redact is the same bytes.
+func TestRedactErrorAnswer(t *testing.T) {
+	msg := "invalid token " + echoedToken
+	cases := []struct {
+		name, ct, body string
+		same           bool
+		want, absent   []string
+	}{
+		{name: "json", ct: "application/json", body: errorAnswer(7, msg), want: []string{`invalid token [redacted]`}},
+		{name: "sse progress then error", ct: "text/event-stream", body: sseFrame(progressDoc) + sseFrame(errorAnswer(7, msg)), want: []string{sseFrame(progressDoc), `invalid token [redacted]`}},
+		{name: "sse multi-line error", ct: "text/event-stream", body: "data: {\"jsonrpc\":\"2.0\",\"id\":7,\ndata: \"error\":{\"code\":1,\"message\":\"" + msg + "\"}}\n\n", want: []string{`data: {"error"`, `invalid token [redacted]`}},
+		{name: "sse label over bare json", ct: "text/event-stream", body: errorAnswer(7, msg), want: []string{`invalid token [redacted]`}},
+		{name: "text plain over json", ct: "text/plain", body: errorAnswer(7, msg), want: []string{`invalid token [redacted]`}},
+		{name: "sse with nothing to redact", ct: "text/event-stream", body: sseFrame(progressDoc) + sseFrame(errorDoc), same: true},
+		{name: "json result", ct: "application/json", body: resultDoc, same: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := []byte(c.body)
+			out, err := redactErrorAnswer(c.ct, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.same {
+				if &out[0] != &body[0] {
+					t.Fatalf("body was copied: %q", out)
+				}
+				return
+			}
+			for _, w := range c.want {
+				if !strings.Contains(string(out), w) {
+					t.Errorf("output lacks %q: %q", w, truncateForLog(out))
+				}
+			}
+			assertNoLeak(t, "client body", string(out), fragments(echoedToken)...)
+		})
 	}
 }

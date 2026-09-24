@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/danjonesio/porymcp/internal/audit"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 )
 
 // clientMessageBytes bounds the error message a key holder receives
@@ -131,4 +132,27 @@ func redactString(raw json.RawMessage) (json.RawMessage, bool, error) {
 // paths: the joined payload of one event in, the rewritten document out.
 func redactPayload(payload []byte, _ int) ([]byte, bool, error) {
 	return redactErrorDoc(payload)
+}
+
+// redactErrorAnswer is the buffered path. When the body is SSE-framed it
+// walks the events with walkSSE and redactPayload; when the walk saw no data
+// event it tries the whole body as one document, the fallback answerStatus
+// makes for an unframed body under a stream label. Otherwise it calls
+// redactErrorDoc on the body. It returns body itself when nothing changed.
+// err is the walker's callback error only, and the caller fails closed on it.
+func redactErrorAnswer(contentType string, body []byte) ([]byte, error) {
+	if mcpclient.SSEFramed(contentType, body) {
+		out, changed, seen, err := walkSSE(body, redactPayload)
+		if err != nil {
+			return nil, err
+		}
+		if seen > 0 || changed {
+			return out, nil
+		}
+	}
+	out, _, err := redactErrorDoc(body)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

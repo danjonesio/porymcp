@@ -437,6 +437,14 @@ func TestFilterToolsListSSE(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// A whitespace-only line ends an event, as the judge reads it
+			// (eventData), and comes back as its own bytes (PORM-195).
+			name:    "a whitespace-only line ends an event and is kept",
+			body:    "data: " + sseFull + "\n \t\ndata: " + sseAllSafe + "\n\n",
+			want:    "data: " + sseTrimmed + "\n \t\ndata: " + sseAllSafe + "\n\n",
+			changed: true,
+		},
+		{
 			name:    "an unreadable payload is reported",
 			body:    "data: <html>502</html>\n\n",
 			want:    "data: <html>502</html>\n\n",

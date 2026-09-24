@@ -240,72 +240,30 @@ var dataField = []byte("data:")
 // Only an event carrying exactly one data: line is rewritten. The payload of a
 // multi-line event is its lines joined, and putting a filtered result back
 // would mean choosing where to break it up again; those are left to the call
-// gate and reported. Comments, id:, event: and retry: lines, blank lines, the
-// original line endings and a missing trailing newline are all reproduced
-// exactly, because the framing is the upstream's and only the catalogue inside
-// it is ours to edit.
+// gate and reported. The framing is walkSSE's, shared with the error
+// redaction on the same path (PORM-195).
 func filterToolsListSSE(body []byte, pol toolPolicy) ([]byte, bool, error) {
-	var (
-		out        bytes.Buffer
-		lines      [][]byte // the current event's lines, terminators stripped
-		terms      [][]byte // and the terminator each one had
-		changed    bool
-		understood int
-		unreadable int
-	)
-	out.Grow(len(body))
-
-	// flush emits one event, rewritten if it turned out to carry a catalogue.
-	flush := func() {
-		idx, count := -1, 0
-		for i, line := range lines {
-			if bytes.HasPrefix(line, dataField) {
-				count++
-				idx = i
-			}
-		}
-		switch {
-		case count > 1:
+	var understood, unreadable int
+	out, changed, _, err := walkSSE(body, func(payload []byte, count int) ([]byte, bool, error) {
+		if count > 1 {
 			unreadable++
-		case count == 1:
-			// The one optional space after the colon belongs to the framing,
-			// so it is measured here and put back as it was rather than
-			// normalised.
-			prefix, payload := lines[idx][:len(dataField)], lines[idx][len(dataField):]
-			if len(payload) > 0 && payload[0] == ' ' {
-				prefix, payload = lines[idx][:len(dataField)+1], payload[1:]
-			}
-			switch filtered, ok, err := filterToolsListJSON(payload, pol); {
-			case err != nil:
-				unreadable++
-			case ok:
-				lines[idx] = append(append([]byte{}, prefix...), filtered...)
-				changed = true
-				understood++
-			default:
-				understood++
-			}
+			return nil, false, nil
 		}
-		for i, line := range lines {
-			out.Write(line)
-			out.Write(terms[i])
+		switch filtered, ok, err := filterToolsListJSON(payload, pol); {
+		case err != nil:
+			unreadable++
+			return nil, false, nil
+		case ok:
+			understood++
+			return filtered, true, nil
+		default:
+			understood++
+			return nil, false, nil
 		}
-		lines, terms = lines[:0], terms[:0]
+	})
+	if err != nil {
+		return body, false, err
 	}
-
-	for rest := body; len(rest) > 0; {
-		line, term, next := mcpclient.NextLine(rest)
-		rest = next
-		if len(line) == 0 { // a blank line ends an event
-			flush()
-			out.Write(term)
-			continue
-		}
-		lines = append(lines, line)
-		terms = append(terms, term)
-	}
-	flush()
-
 	if !changed {
 		// Nothing was removed. That is only good news if the stream was read:
 		// a body whose events could not be understood, or that held no data
@@ -315,7 +273,133 @@ func filterToolsListSSE(body []byte, pol toolPolicy) ([]byte, bool, error) {
 		}
 		return body, false, nil
 	}
-	return out.Bytes(), true, nil
+	return out, true, nil
+}
+
+// walkSSE calls fn on every event that has at least one data: line, with the
+// payloads joined by "\n" as eventData joins them and count the number of
+// data: lines, and returns the body with each changed event re-encoded as one
+// data: line at the first data: line's position, keeping that line's optional
+// space. Every other line (a comment, id:, event:, retry:, an unknown field,
+// a whitespace-only line) and every terminator is copied as it is; a
+// whitespace-only line is written as line plus terminator. An event ends on a
+// line that bytes.TrimSpace empties, the rule eventData uses, so a rewrite
+// never sees a coarser split than the judge; a client that joins across such
+// a line joins already-rewritten documents. The output is allocated only when
+// an event changes, and the join of a multi-line event reuses one scratch
+// buffer across the walk, so a walk over an unchanged body of single-line
+// events allocates nothing and returns body itself. seen is how many events
+// had a data: line; err is fn's own error, and the walk stops on it.
+func walkSSE(body []byte, fn func(payload []byte, count int) ([]byte, bool, error)) (out []byte, changed bool, seen int, err error) {
+	var (
+		buf                *bytes.Buffer
+		copied             int    // body[:copied] is already in buf
+		join               []byte // scratch for a multi-line payload
+		eventStart         int    // offset of the current event's first line
+		count              int    // data: lines seen in the current event
+		firstPay, firstEnd int    // payload range of the first data: line
+	)
+	// flush finishes the event that ends at eventEnd, the offset of its
+	// ending line or of the end of the body.
+	flush := func(eventEnd int) error {
+		if count == 0 {
+			return nil
+		}
+		seen++
+		payload := body[firstPay:firstEnd]
+		if count > 1 {
+			join = join[:0]
+			for rest := body[eventStart:eventEnd]; len(rest) > 0; {
+				line, _, next := mcpclient.NextLine(rest)
+				rest = next
+				if p, ok := dataPayload(line); ok {
+					if len(join) > 0 {
+						join = append(join, '\n')
+					}
+					join = append(join, p...)
+				}
+			}
+			payload = join
+		}
+		res, ok, err := fn(payload, count)
+		if err != nil {
+			return err
+		}
+		count = 0
+		if !ok {
+			return nil
+		}
+		if buf == nil {
+			buf = new(bytes.Buffer)
+			buf.Grow(len(body))
+		}
+		buf.Write(body[copied:eventStart])
+		first := true
+		for rest := body[eventStart:eventEnd]; len(rest) > 0; {
+			line, term, next := mcpclient.NextLine(rest)
+			rest = next
+			if _, isData := dataPayload(line); isData {
+				if !first {
+					continue
+				}
+				first = false
+				// The one optional space after the colon belongs to the
+				// framing, so it is measured and put back as it was.
+				prefix := line[:len(dataField)]
+				if len(line) > len(dataField) && line[len(dataField)] == ' ' {
+					prefix = line[:len(dataField)+1]
+				}
+				buf.Write(prefix)
+				buf.Write(res)
+				buf.Write(term)
+				continue
+			}
+			buf.Write(line)
+			buf.Write(term)
+		}
+		copied = eventEnd
+		return nil
+	}
+
+	for pos := 0; pos < len(body); {
+		line, term, _ := mcpclient.NextLine(body[pos:])
+		lineStart, lineEnd := pos, pos+len(line)
+		pos = lineEnd + len(term)
+		if len(bytes.TrimSpace(line)) == 0 { // a blank line ends an event
+			if err := flush(lineStart); err != nil {
+				return nil, false, seen, err
+			}
+			eventStart = pos
+			continue
+		}
+		if p, ok := dataPayload(line); ok {
+			count++
+			if count == 1 {
+				firstPay, firstEnd = lineEnd-len(p), lineEnd
+			}
+		}
+	}
+	if err := flush(len(body)); err != nil {
+		return nil, false, seen, err
+	}
+	if buf == nil {
+		return body, false, seen, nil
+	}
+	buf.Write(body[copied:])
+	return buf.Bytes(), true, seen, nil
+}
+
+// dataPayload is a data: line's payload, without the one optional space
+// after the colon, and whether the line is one.
+func dataPayload(line []byte) ([]byte, bool) {
+	if !bytes.HasPrefix(line, dataField) {
+		return nil, false
+	}
+	p := line[len(dataField):]
+	if len(p) > 0 && p[0] == ' ' {
+		p = p[1:]
+	}
+	return p, true
 }
 
 // marshalRaw encodes v with HTML escaping turned off. json.Marshal escapes
