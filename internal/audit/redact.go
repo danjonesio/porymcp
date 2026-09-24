@@ -38,8 +38,8 @@ const (
 var (
 	// schemeValue is an Authorization scheme and the credential after it.
 	// The value goes only when secretLike says so, so "missing bearer
-	// token", "Bearer realm" and an echoed WWW-Authenticate challenge
-	// ("Bearer realm=\"mcp\"") read as sent.
+	// token" and an echoed WWW-Authenticate challenge (the scheme, then
+	// name="value" pairs) read as sent.
 	schemeValue = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)([` + trimChars + `]+)`)
 	// namedValue is a name that says it holds a secret, then its value:
 	// "X-API-Key: v", "api_key=v", "\"token\":\"v\"". The keyword must start
@@ -109,8 +109,8 @@ func redactTrailingValue(re *regexp.Regexp) func(string) string {
 
 // secretLike says whether a labelled value is a credential rather than a
 // word. Sentence punctuation and base64 padding at the end are not
-// evidence, so "must be a Bearer token." and "Bearer realm=" keep their
-// value. A value is a credential when it is long, holds a digit, mixes
+// evidence, so "must be a Bearer token." and a challenge's name= pair keep
+// their value. A value is a credential when it is long, holds a digit, mixes
 // upper and lower case over 12 or more characters, or holds a base64 sign.
 func secretLike(v string) bool {
 	v = strings.TrimRight(v, `.,;:!?)"'`)
