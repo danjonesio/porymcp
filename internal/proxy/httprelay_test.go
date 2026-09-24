@@ -1250,3 +1250,27 @@ func TestRelayRefusedDialAudited(t *testing.T) {
 		}
 	}
 }
+
+// PORM-191 amendment A4 on the relay door: a body that fails while it is
+// read records the read sentences, the same row the MCP door writes, and
+// never the read error's text.
+func TestHTTPRelayReadFailureIsClosedSentence(t *testing.T) {
+	f := relayGET(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100")
+		_, _ = io.WriteString(w, `{"cut":`)
+	})
+	rr := f.send(http.MethodGet, "/a1/api/x?secret=SECRET_MARKER", "", nil)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	row := f.lastRow(1)
+	if row.ErrorMessage != "unexpected EOF" {
+		t.Fatalf("error_message=%q, want unexpected EOF", row.ErrorMessage)
+	}
+	for _, leak := range []string{"SECRET", "read tcp", "127.0.0.1", "Get "} {
+		if strings.Contains(row.ErrorMessage, leak) {
+			t.Errorf("error_message=%q carries %q", row.ErrorMessage, leak)
+		}
+	}
+}
