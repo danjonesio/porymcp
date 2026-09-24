@@ -17,6 +17,13 @@
   rate limit, and the key-versus-path rule, in one order
 - Credential injector (holds real secrets, never exposes them, and presents each
   to the upstream's own URL, never to a host the upstream names in a redirect)
+- Address guard (`internal/netguard`): the dial-time check on where a request
+  carrying a credential may connect, on the upstream client's transport. It
+  resolves the host itself, refuses loopback, link-local, multicast,
+  unspecified and cloud-metadata addresses (private ranges only when
+  `UPSTREAM_DENY_PRIVATE` is set), and dials the address it checked, so a
+  name that resolves differently at dial time cannot get past a save-time
+  check. Standard library only, so config and the client both import it.
 - Upstream client (`internal/mcpclient`): the one place a real credential is
   written onto an outgoing request, and the one construction every client that
   carries one comes from: one refusal to follow a redirect, one wrapped default
@@ -280,6 +287,7 @@ Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
 │   ├── crypto/       # AES-256-GCM for auth_config at rest; Keyring, fingerprints, the v1 form
 │   ├── credential/   # one answer to "can PoryMCP use this stored credential?" (proxy, API, boot)
 │   ├── mcpclient/    # the one client that carries an upstream credential
+│   ├── netguard/     # dial-time address guard on that client's transport (PORM-79)
 │   ├── models/
 │   ├── store/        # SQLite / Postgres
 │   ├── audit/

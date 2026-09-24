@@ -234,6 +234,25 @@ A request through Caddy (`https://localhost/health`) should return `200`. A
 direct hit on `:8080` (`http://localhost:8080/…`) is expected to return `426`
 once `PUBLIC_URL` is `https://`, except loopback from inside the container.
 
+**Network egress.** PoryMCP checks where an upstream's host resolves as it
+connects (PORM-79, `docs/07-security.md`): loopback, link-local, multicast,
+unspecified and cloud-metadata addresses are refused, and no setting reopens
+any of them but loopback. The compose network above (`172.28.0.0/16`, or
+Docker's default bridge) is a private range, which stays open by default, so
+an upstream reached by service name keeps working. A server on the Docker
+host is `host.docker.internal`, a private address too; on Linux add
+`extra_hosts: ["host.docker.internal:host-gateway"]` and have it listen on the
+bridge address. A `localhost` upstream from inside the container reaches only
+the container itself and is refused; `UPSTREAM_ALLOW_LOOPBACK` is for a bare
+binary on a laptop. `UPSTREAM_DENY_PRIVATE` closes the private ranges as
+well, at the cost of every compose-network, cluster-IP and tailnet upstream.
+Behind an egress proxy (`HTTPS_PROXY`, `HTTP_PROXY`, either case) the guard
+checks the proxy's own address, so a sidecar proxy on loopback needs
+`UPSTREAM_ALLOW_LOOPBACK`, and what the proxy fetches is the proxy's job to
+restrict. The guard is a check inside one process; restrict egress at the
+Docker or network layer as well (an internal network, an egress firewall, a
+metadata-service block on the host) where the deployment allows it.
+
 ## 9. HSTS
 
 `Strict-Transport-Security` belongs at the TLS edge (Caddy, nginx, Traefik,
@@ -244,8 +263,10 @@ a PaaS router), not in PoryMCP. The process does not emit it.
 | Variable | Default | When to set it |
 | --- | --- | --- |
 | `ALLOW_INSECURE_HTTP` | unset / false | TLS terminates somewhere PoryMCP cannot observe (some kube HTTP probes, an outer mesh that strips TLS before the pod). Non-loopback HTTP is then allowed even when `PUBLIC_URL` is https, and an http `PUBLIC_URL` off loopback is accepted as an OAuth redirect URI (§16). |
-| `ALLOW_LOCALHOST` | unset / false | Accept `localhost` / `127.0.0.1` / `::1` Host values when `PUBLIC_URL` is not itself localhost. |
+| `ALLOW_LOCALHOST` | unset / false | Accept `localhost` / `127.0.0.1` / `::1` Host values when `PUBLIC_URL` is not itself localhost. Inbound only; it does not touch upstream dials. |
 | `EXTRA_ALLOWED_HOSTS` | empty | Extra Host values (comma-separated, no scheme) accepted on the proxy endpoints besides `PUBLIC_URL`. |
+| `UPSTREAM_ALLOW_LOOPBACK` | unset / false | A bare binary whose upstreams listen on `localhost`. Inside a container loopback is the container itself, so use `host.docker.internal` instead. Reopens loopback only. |
+| `UPSTREAM_DENY_PRIVATE` | unset / false | Every upstream is a public host and RFC 1918, ULA and CGNAT addresses should be refused too. Breaks compose-network, cluster-IP and tailnet upstreams. |
 
 Kubernetes-style HTTP probes from a **non-loopback** in-cluster IP will 426
 when `PUBLIC_URL` is https, unless the probe uses HTTPS or
@@ -259,6 +280,13 @@ public interface.
 
 ```bash
 curl -sS http://127.0.0.1:8080/health
+```
+
+The egress guard's effective settings are on the startup line, not on
+`/health` (which needs no key):
+
+```bash
+docker compose logs porymcp | grep '"msg":"upstream guard"'
 ```
 
 Behind the overlay, prefer the edge:

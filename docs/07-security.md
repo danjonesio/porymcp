@@ -208,8 +208,14 @@
   client that already knew a name could still call it; a filter written then
   is enforced now.
 - **A real credential is presented to exactly one host: the host in
-  `upstreams.url` (or the egress proxy named by `HTTPS_PROXY`/`HTTP_PROXY`, if
-  the deployment sets one); the proxy never follows a redirect.** Any `3xx`
+  `upstreams.url` (or the egress proxy named by `HTTPS_PROXY`/`HTTP_PROXY`, in
+  either case, if the deployment sets one); the proxy never follows a
+  redirect.** Where that host resolves is checked as the connection is made,
+  by the egress guard described below; behind an egress proxy the guard sees
+  the proxy's own address, so a proxy on loopback needs
+  `UPSTREAM_ALLOW_LOOPBACK` (which also reopens direct loopback upstreams),
+  and what the proxy then fetches on PoryMCP's behalf is the proxy's job to
+  police. Any `3xx`
   answer ends the call: on a per-member endpoint, on the aggregate endpoint,
   on the `tools/list` the proxy composes itself, and on the discovery call an
   operator makes from the dashboard: no second request is made, the
@@ -259,9 +265,13 @@
   client identity is bound to the issuer that accepted it, `client_secret`
   travels by HTTP Basic and never in a URL, and the API accepts only
   `client_id` and `client_secret` for this type, so no caller can plant a
-  token endpoint or a refresh token. Until PORM-79 lands the gate is syntax
-  only: an upstream's metadata can point PoryMCP at an internal address, the
-  same exposure an upstream URL has today. The one secret a response carries
+  token endpoint or a refresh token. The gate on those URLs is syntax; where
+  each resolves is checked as it is dialled, by the egress guard below, so an
+  upstream's metadata cannot point PoryMCP at a loopback, link-local or
+  cloud-metadata address. On Connect a refused address answers
+  `502 {"error":"authorization server address denied: <class>"}`; on a
+  refresh the audit row reads `credential refresh failed`, as for any
+  unreachable token endpoint. The one secret a response carries
   is the `state` inside the authorization URL the start route answers, with
   `Cache-Control: no-store`: anyone holding that URL can connect the upstream
   to their own vendor account within ten minutes, and the connect event
@@ -292,9 +302,11 @@
   except `bearer` a URL-embedded credential reaches the upstream. It is not a
   secret PoryMCP is keeping, either: what sits in `upstreams.url` is stored and
   shown like any other part of that URL, and is not encrypted at rest the way
-  `auth_config` is. PORM-27 owns deciding whether userinfo should be refused,
-  stripped, or promoted into a real `auth_config`. Until it does, the places it
-  can be read back are worth knowing: `GET /api/v1/upstreams` and the dashboard
+  `auth_config` is. Since PORM-79 a new URL carrying userinfo is refused on
+  create and `PATCH` (`url must not embed credentials`, on every kind); rows
+  saved before it are not rewritten, and PORM-27 owns deciding whether they
+  should be stripped or promoted into a real `auth_config`. Until it does, the
+  places one can be read back are worth knowing: `GET /api/v1/upstreams` and the dashboard
   show the URL as stored, and the audit row for a timeout or a refused
   connection quotes it, query string and all, a field operators read and key
   holders never see (PORM-72). A discovery `error` names a host and never a URL.
@@ -479,8 +491,8 @@
     origin. A `304` is the one `3xx` relayed (a conditional `GET` is a REST
     client's ordinary request; it carries no `Location`); every other `3xx`
     is refused by the same `OpenRelay` that `Open` is, through the same
-    client, so PORM-94's rule and the egress guard PORM-79 will attach to
-    that client's dialer cover this door without a second seam.
+    client, so PORM-94's rule and the egress guard on that client's dialer
+    cover this door without a second seam.
   - The relay's CORS answer is its own: the six verbs, a fixed request-header
     list with nothing reflected, five exposed names, no
     `Access-Control-Allow-Credentials`, no `Mcp-Param-*` reflection.
@@ -503,15 +515,16 @@
     to HTTP API, so `FindAuthServer`'s MCP `initialize` challenge is never
     POSTed to a REST API. A scope reduction, not a safety requirement; a
     follow-up can let the flow skip the challenge for this kind.
-  - Until PORM-79 lands, a loopback base URL with the admin key stored as its
-    credential would let a virtual key reach the management API through this
-    door. That is the same capability an admin-key holder has always had
-    (above), reached by a longer path; the dialer guard closes it for both
-    doors at once.
+  - A loopback base URL with the admin key stored as its credential would
+    have let a virtual key reach the management API through this door (the
+    same capability an admin-key holder has always had, reached by a longer
+    path). The egress guard refuses that dial on both doors at once, and
+    `UPSTREAM_ALLOW_LOOPBACK` reopens it for both; a container's own address
+    on a private range stays reachable by default, see below.
   - Of the PORM-77 controls, the ones that already apply here are the
     per-key rate limit, expiry, revocation, the host rule, the verb
-    allowlist and the audit row; path rules (PORM-147), body inspection and
-    the egress guard do not yet.
+    allowlist, the audit row and the egress guard; path rules (PORM-147) and
+    body inspection do not yet.
 - **The proxy makes one kind of request nobody asked it for: the era probe.** A
   group's aggregate endpoint sends `server/discover`, with the member's real
   credential, to learn whether that member speaks the 2026-07-28 revision
@@ -626,29 +639,53 @@
   names and descriptions are upstream-controlled text that now renders in an
   *operator's* browser rather than an agent's context, which is why the
   dashboard renders them as text and never as markup (see `docs/06-ui.md`).
-- **Where a discovery URL points is not checked yet, and this is the route that
-  makes that matter.** PoryMCP will connect to any absolute `http` or `https`
-  URL an admin-key holder names: `127.0.0.1`, a private-range address, a Docker
-  service name and the cloud-metadata address `169.254.169.254` included. That
-  has always been true of `POST /upstreams` followed by a proxy call; what
-  changes is that it is now a single request, and on the unsaved-payload route a
-  single request that writes nothing down. The answer is structured but it is
-  not opaque: `cannot connect to <host>` at 0 ms, `upstream did not answer
-  within 10s` at 10 000, and `upstream answered 401 at initialize` are three
-  different facts about a port. **The admin key is therefore a
-  network-reachability capability** wherever the container sits. That, and not
-  only what it can read out of the database, is what to weigh when deciding who
-  holds one and what the container is allowed to route to. Refusing loopback,
-  link-local and metadata destinations is PORM-79, and it belongs on the
-  transport's dialer rather than in a pre-flight check on the URL, because a
-  hostname that resolved safely once is resolved again when the connection is
-  made. The check discovery does make (an absolute `http` or `https` URL, a
-  non-empty host, no fragment, refused before anything leaves the process) is
-  `mcpclient.CheckTarget`, and it is the single seam PORM-79 will build on:
-  `POST /upstreams` and `PATCH /upstreams/{id}` call it before storing a URL,
-  discovery calls it before opening a socket, and the proxy's client is the
-  one the dialer guard will sit inside. It is syntax only. Deciding whether a
-  host may be dialled is not done anywhere yet.
+- **Where a discovery URL points is checked as the connection is made, and
+  this is the route that makes that matter (PORM-79).** `POST /upstreams`
+  followed by a proxy call has always been a way to make PoryMCP connect to
+  an address an admin-key holder names; the discovery routes make it a single
+  request, and on the unsaved-payload route one that writes nothing down. The
+  check is `internal/netguard`, on the `DialContext` of the one client every
+  credential-carrying request goes out on (the proxy's two doors, discovery,
+  the probe, the OAuth metadata, token and registration fetches, and the
+  credential presenter's refresh). It resolves the host itself, classifies
+  every address the resolver returned (the zone stripped, an IPv4-mapped,
+  NAT64 or IPv4-compatible address read as the IPv4 it embeds) and dials only
+  an address it checked, never the host text, so a name that resolved to a
+  public address once and to `127.0.0.1` the next time (DNS rebinding) is
+  refused at the moment it would matter. A pre-flight check on the URL would
+  not do that. What is refused, whatever the settings: the cloud metadata
+  addresses `169.254.169.254`, `fd00:ec2::/64`, `100.100.100.200`,
+  `168.63.129.16` and `fd20:ce::254` (`metadata`); `0.0.0.0/8`, `::` and
+  their zoned forms (`unspecified`); multicast (`multicast`); `169.254/16`
+  and `fe80::/10` (`link-local`). Loopback (`127/8`, `::1`, `loopback`) is
+  refused unless `UPSTREAM_ALLOW_LOOPBACK` is set, which reopens loopback and
+  nothing else. What stays open by default: RFC 1918, ULA `fc00::/7` and CGNAT
+  `100.64/10`, because a Docker, Kubernetes or tailnet upstream lives there;
+  that includes PoryMCP's own container address, so an upstream can still be
+  pointed back at PoryMCP's own listener on the compose network.
+  `UPSTREAM_DENY_PRIVATE` closes all three ranges (`private`). The refusal
+  names the class and never the address: `upstream address denied: <class>`
+  in the audit row, in `Discovery.error` (with a remedy clause for the
+  loopback class on the two admin-only surfaces, discovery and the probe), in
+  the OAuth `502` as `authorization server address denied: <class>`, and in
+  one Warn line on the server log with the upstream id, the class and the
+  request id, so the proxy cannot be used to learn which internal names
+  resolve to which ranges. A resolver failure is not a refusal and still
+  reads `cannot resolve <host>`. The startup line `upstream guard` prints the
+  two settings and whether an egress proxy is configured; a value neither
+  truthy nor falsy warns by name at startup and reads as false. The discovery
+  answer is still not opaque: `cannot connect to <host>` at 0 ms, `upstream
+  did not answer within 10s` at 10 000, `upstream answered 401 at initialize`
+  and now `upstream address denied: <class>` at 0 ms are four different facts
+  about a host, all of them behind the admin key. **The admin key is
+  therefore still a network-reachability capability for the private ranges**
+  wherever the container sits, and that is what to weigh when deciding who
+  holds one and whether to set `UPSTREAM_DENY_PRIVATE` or restrict egress at
+  the Docker or network layer as well (`docs/11-deployment.md`). One older
+  gap remains on the MCP door alone: a transport error other than a guard
+  refusal (a refused connection, say) is still recorded with Go's own text,
+  which quotes the registered URL and the address that was dialled; routing
+  those rows through the closed sentence set is a follow-up.
 - A `tool_filter` that does not validate blocks **every** call on that group
   until it is fixed. `{"mode":"Deny"}`, `{"tool":[…]}` and `{"mode":"allow"}`
   with no entries all decode into a *permissive* filter, so failing open on
