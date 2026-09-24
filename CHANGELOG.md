@@ -4,6 +4,34 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Transport failures on the MCP door are recorded as fixed sentences (PORM-191)
+
+- **A refused connection, a DNS failure, a TLS failure or a reset now reads a
+  fixed sentence.** On `/{virtual_key_id}/mcp` and
+  `/{virtual_key_id}/{upstream_slug}/mcp` the row reads
+  `cannot connect to <host>`, `cannot resolve <host>`,
+  `tls handshake with <host> failed` or `cannot reach <host>`, where it used
+  to quote Go's text with the registered URL and the dialled address. The host
+  is the registered URL's host, with its port when the URL names one, or
+  `the upstream` when it holds a byte outside letters, digits and `._-:[]`.
+- **A saved search for `dial tcp` or `connection refused` matches only rows
+  written before the upgrade.** Search `error_message` for
+  `cannot connect to` and `cannot resolve` instead.
+- **A client that hung up before the answer reads
+  `client went away before the answer`.** On both doors. It used to read Go's
+  cancellation text with the registered URL.
+- **A body that failed while it was being read reads
+  `upstream connection failed`.** A body that ended without its terminator
+  reads `unexpected EOF`. The read error, which named the resolved address, is
+  not recorded, buffered or streamed.
+- **A stored URL that does not parse reads `upstream url is not usable`.**
+  That is the relay door's sentence, in place of the parse error, which quoted
+  the URL.
+- **The `group member skipped` log line carries the same sentence as the
+  member's own row.**
+- No schema change. Stored rows are not rewritten. The client's
+  `502 upstream request failed` is unchanged. Rollback is the previous image.
+
 ### Breaking: upstream addresses on loopback, link-local and metadata ranges are refused (PORM-79)
 
 - **A `localhost` upstream on a bare binary stops working** until
