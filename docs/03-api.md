@@ -250,15 +250,14 @@ not an erasure of the database file, its write-ahead log or backups (see
 ### Upstream URLs
 `url` must be an absolute `http` or `https` URL with a host, no fragment and
 no embedded credentials. `POST /upstreams`, `PATCH /upstreams/{id}` and the
-unsaved probe answer `400` with one of three sentences:
+unsaved discover route (`POST /upstreams/discover`) answer `400` with one of
+three sentences:
 `url must be an absolute http or https URL` (a bare `localhost:3001/mcp`, a
 `file:` or `ftp:` scheme, a scheme-relative `//host/mcp`, a scheme with no
 host), `url must not carry a fragment` (`https://host/mcp#frag`) and
 `url must not embed credentials` (`https://user:pw@host/mcp`, on every kind
 since PORM-79; rows saved before it are PORM-27's), so a URL PoryMCP could
-never connect to is refused where it is typed rather than where it is used;
-the unsaved discover route (`POST /upstreams/discover`) answers the same
-three.
+never connect to is refused where it is typed rather than where it is used.
 The syntax check is the one discovery applies before it opens a socket
 (`mcpclient.CheckTarget`). The stored value is the URL as `url.Parse`
 re-serialises it: the scheme lower-cased, unescaped path characters
