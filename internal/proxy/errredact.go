@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/danjonesio/porymcp/internal/audit"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
@@ -203,17 +205,24 @@ const (
 // decoded by the walk. The leftover is a nonconforming document that carries
 // result or method first and error after a member larger than holdBytes.
 type eventHolder struct {
-	held    []byte // bytes not yet returned, from start
-	start   int    // held[:start] has left already; compact drops it once per read
-	scanned int    // held[:scanned] has been walked; the next scan starts here
-	inEvent bool   // a held unit is open
-	hasData bool   // the open unit has a data: line
-	lfOwed  bool   // the last byte processed was a CR that ended a line
-	decided bool   // the open unit has passed holdBytes and been judged
-	state   holdState
-	// passthrough tracks the ending line byte by byte, since nothing is held.
-	lineBlank bool // the current line holds only whitespace so far
-	skipLF    bool // the last byte was a CR inside p; a LF next is its pair
+	held     []byte // bytes not yet returned, from start
+	start    int    // held[:start] has left already; compact drops it once per read
+	scanned  int    // held[:scanned] has been walked; the current line starts here
+	searched int    // held[:searched] holds no terminator; the next search starts here
+	inEvent  bool   // a held unit is open
+	hasData  bool   // the open unit has a data: line
+	lfOwed   bool   // the last byte processed was a CR that ended a line
+	decided  bool   // the open unit has passed holdBytes and been judged
+	state    holdState
+	// passthrough tracks the ending line byte by byte, since nothing is held:
+	// blank means the line so far is only whitespace by unicode.IsSpace, the
+	// rule bytes.TrimSpace applies, with a multi-byte rune carried across
+	// reads in runeBuf.
+	lineBlank bool    // the current line holds only whitespace so far
+	runeBuf   [4]byte // the bytes of a rune not yet complete
+	runeLen   int
+	skipLF    bool   // the last byte was a CR inside p; a LF next is its pair
+	join      []byte // scratch for a multi-line payload, kept across events
 	out       []byte
 }
 
@@ -230,6 +239,7 @@ func (h *eventHolder) feed(p []byte) ([]byte, error) {
 			default:
 				h.held = append(h.held, '\n')
 				h.scanned++
+				h.searched = h.scanned
 			}
 			p = p[1:]
 		}
@@ -259,11 +269,12 @@ func (h *eventHolder) finishOut() []byte {
 // one copy and not one per line.
 func (h *eventHolder) scan() error {
 	for {
-		i := bytes.IndexAny(h.held[h.scanned:], "\r\n")
+		i := bytes.IndexAny(h.held[h.searched:], "\r\n")
 		if i < 0 {
+			h.searched = len(h.held) // a partial line is never searched twice
 			break
 		}
-		lineStart, lineEnd := h.scanned, h.scanned+i
+		lineStart, lineEnd := h.scanned, h.searched+i
 		termEnd := lineEnd + 1
 		if h.held[lineEnd] == '\r' {
 			if termEnd < len(h.held) {
@@ -280,6 +291,7 @@ func (h *eventHolder) scan() error {
 		case !h.inEvent && (blank || fieldLine(line)):
 			h.out = append(h.out, h.held[lineStart:termEnd]...)
 			h.start = termEnd
+			h.decided = false // a long field line was judged once; the next unit is judged afresh
 		case !h.inEvent:
 			h.inEvent = true
 			_, h.hasData = dataPayload(line)
@@ -297,7 +309,7 @@ func (h *eventHolder) scan() error {
 				_, h.hasData = dataPayload(line)
 			}
 		}
-		h.scanned = termEnd
+		h.scanned, h.searched = termEnd, termEnd
 	}
 	h.compact()
 	if len(h.held) > maxHeldBytes {
@@ -305,12 +317,15 @@ func (h *eventHolder) scan() error {
 	}
 	if !h.decided && len(h.held) >= holdBytes {
 		h.decided = true
-		if ok, hasData := h.provedNotError(); ok {
+		// Only a unit with a data: line can pass through: it is the only
+		// unit whose end the raw relay can find, at its blank line. Bare
+		// JSON under the label has no end before EOF, so it is held.
+		if ok, hasData := h.provedNotError(); ok && hasData {
 			// The unit is open from here even when its first line has not
 			// ended, so the raw relay still stops at its ending line.
-			h.inEvent, h.hasData = true, hasData
+			h.inEvent, h.hasData = true, true
 			h.out = append(h.out, h.held...)
-			h.lineBlank = len(bytes.TrimSpace(h.held[h.scanned:])) == 0
+			h.startRawLine(h.held[h.scanned:])
 			h.state = passthrough
 			h.start = len(h.held)
 			h.compact()
@@ -332,11 +347,46 @@ func (h *eventHolder) compact() {
 		h.held = h.held[:copy(h.held, rest)]
 	}
 	h.scanned = max(h.scanned-h.start, 0)
+	h.searched = max(h.searched-h.start, 0)
 	h.start = 0
 }
 
+// startRawLine seeds the raw relay's blank-line state from the partial line
+// that was held when passthrough was decided: whether it is whitespace so
+// far, and the bytes of a rune it ends in the middle of.
+func (h *eventHolder) startRawLine(partial []byte) {
+	h.lineBlank, h.runeLen = true, 0
+	for _, c := range partial {
+		h.rawByte(c)
+	}
+}
+
+// rawByte feeds one byte of the current line to the raw relay's blank-line
+// state.
+func (h *eventHolder) rawByte(c byte) {
+	if !h.lineBlank {
+		return
+	}
+	if h.runeLen == 0 && c < utf8.RuneSelf {
+		if !unicode.IsSpace(rune(c)) {
+			h.lineBlank = false
+		}
+		return
+	}
+	h.runeBuf[h.runeLen] = c
+	h.runeLen++
+	if utf8.FullRune(h.runeBuf[:h.runeLen]) || h.runeLen == len(h.runeBuf) {
+		r, _ := utf8.DecodeRune(h.runeBuf[:h.runeLen])
+		h.runeLen = 0
+		if !unicode.IsSpace(r) {
+			h.lineBlank = false
+		}
+	}
+}
+
 // relayRaw is the passthrough path: p goes out as it is, and the ending line
-// is watched byte by byte so the unit's end returns the holder to holding.
+// is watched byte by byte, on the judge's rule (a line that bytes.TrimSpace
+// empties), so the unit's end returns the holder to holding.
 func (h *eventHolder) relayRaw(p []byte) ([]byte, error) {
 	for i, c := range p {
 		if h.skipLF {
@@ -354,7 +404,7 @@ func (h *eventHolder) relayRaw(p []byte) ([]byte, error) {
 					h.skipLF = true
 				}
 			}
-			if h.lineBlank && h.hasData {
+			if h.lineBlank && h.runeLen == 0 {
 				h.out = append(h.out, p[:i+1]...)
 				h.state, h.inEvent, h.hasData, h.decided = holding, false, false, false
 				rest := p[i+1:]
@@ -374,10 +424,9 @@ func (h *eventHolder) relayRaw(p []byte) ([]byte, error) {
 				}
 				return h.finishOut(), nil
 			}
-			h.lineBlank = true
-		case ' ', '\t', '\f', '\v':
+			h.lineBlank, h.runeLen = true, 0
 		default:
-			h.lineBlank = false
+			h.rawByte(c)
 		}
 	}
 	h.out = append(h.out, p...)

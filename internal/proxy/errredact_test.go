@@ -463,7 +463,6 @@ func TestEventHolderOverMaxEnds(t *testing.T) {
 	defer func() { maxHeldBytes = old }()
 	for name, body := range map[string][]byte{
 		"error-shaped event": bigEvent(`{"jsonrpc":"2.0","id":"`, `","error":{"message":"x"}}`, 5<<20),
-		"endless comment":    []byte(": " + strings.Repeat("x", 5<<20)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			var h eventHolder
@@ -485,10 +484,11 @@ func BenchmarkEventHolderFeed(b *testing.B) {
 	chunk := 32 << 10
 	progress := []byte(sseFrame(progressDoc))
 	cases := map[string][]byte{
-		"blank-lines":     bytes.Repeat([]byte("\n\n"), chunk/2),
-		"progress-events": bytes.Repeat(progress, chunk/len(progress)),
-		"one-event":       []byte("data: " + strings.Repeat("x", chunk-8) + "\n\n"),
-		"2mib-result":     bigEvent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"`, `"}]}}`, 2<<20),
+		"blank-lines":         bytes.Repeat([]byte("\n\n"), chunk/2),
+		"progress-events":     bytes.Repeat(progress, chunk/len(progress)),
+		"one-event":           []byte("data: " + strings.Repeat("x", chunk-8) + "\n\n"),
+		"2mib-result":         bigEvent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"`, `"}]}}`, 2<<20),
+		"4mib-one-line-error": bigEvent(`{"jsonrpc":"2.0","id":"`, `","error":{"code":1,"message":"x"}}`, 4<<20),
 	}
 	for name, body := range cases {
 		b.Run(name, func(b *testing.B) {
@@ -504,5 +504,138 @@ func BenchmarkEventHolderFeed(b *testing.B) {
 				h.end()
 			}
 		})
+	}
+}
+
+// TestEventHolderPassthroughEndsOnJudgeRule: a unit relayed raw ends at the
+// same line the judge ends it on, a line bytes.TrimSpace empties, so an error
+// event after a large result is held and rewritten, whether the blank line is
+// ASCII or a Unicode space and however the reads fall.
+func TestEventHolderPassthroughEndsOnJudgeRule(t *testing.T) {
+	msg := "invalid token " + echoedToken
+	result := bigEvent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"`, `"}]}}`, 2<<20)
+	result = result[:len(result)-1] // the ending line is appended per case
+	for name, ending := range map[string]string{"lf": "\n", "nbsp": " \n", "nel": "\u0085\n", "spaces and nbsp": "   \n"} {
+		t.Run(name, func(t *testing.T) {
+			body := append(append([]byte(nil), result...), []byte(ending+sseFrame(errorAnswer(2, msg)))...)
+			for _, n := range []int{32 << 10, 1} {
+				if n == 1 {
+					// Byte-sized reads around the ending line only, so a
+					// multi-byte space split across reads is exercised.
+					var h eventHolder
+					var got []byte
+					head := len(result)
+					out, err := h.feed(append([]byte(nil), body[:head]...))
+					if err != nil {
+						t.Fatal(err)
+					}
+					got = append(got, out...)
+					for i := head; i < len(body); i++ {
+						out, err := h.feed([]byte{body[i]})
+						if err != nil {
+							t.Fatal(err)
+						}
+						got = append(got, out...)
+					}
+					tail, _ := h.end()
+					got = append(got, tail...)
+					assertNoLeak(t, "byte reads", string(got), fragments(echoedToken)...)
+					continue
+				}
+				var h eventHolder
+				got := feedChunks(t, &h, body, n)
+				if !strings.Contains(string(got), "invalid token [redacted]") {
+					t.Fatalf("the error after the passthrough was not rewritten (tail %q)", got[max(0, len(got)-100):])
+				}
+				assertNoLeak(t, "chunk reads", string(got), fragments(echoedToken)...)
+				if !bytes.HasPrefix(got, result) {
+					t.Fatal("the result did not cross byte for byte")
+				}
+			}
+		})
+	}
+}
+
+// TestEventHolderBareJSONNeverPassesThrough: a unit with no data: line has no
+// end the raw relay could find, so it is held whatever its shape, and an
+// error event that follows it is rewritten with it.
+func TestEventHolderBareJSONNeverPassesThrough(t *testing.T) {
+	msg := "invalid token " + echoedToken
+	bare := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + strings.Repeat("x", 2<<20) + `"}]}}` + "\n"
+	body := []byte(bare + sseFrame(errorAnswer(2, msg)))
+	var h eventHolder
+	var early []byte
+	for i := 0; i < len(bare); i += 32 << 10 {
+		out, err := h.feed(append([]byte(nil), body[i:min(i+32<<10, len(bare))]...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		early = append(early, out...)
+	}
+	if len(early) != 0 || h.state == passthrough {
+		t.Fatalf("bare JSON was relayed raw: %d bytes, state=%v", len(early), h.state)
+	}
+	out, err := h.feed(append([]byte(nil), body[len(bare):]...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail, _ := h.end()
+	got := append(out, tail...)
+	if !strings.Contains(string(got), "invalid token [redacted]") {
+		t.Fatalf("the error after bare JSON was not rewritten (tail %q)", got[max(0, len(got)-120):])
+	}
+	assertNoLeak(t, "client bytes", string(got), fragments(echoedToken)...)
+}
+
+// TestEventHolderPartialLineIsBounded: a partial line outside an event is
+// judged at holdBytes like anything else held, its judgement does not stick
+// to the next unit once it has been forwarded, and one that never ends is
+// bounded by maxHeldBytes. Not parallel: it lowers a package var.
+func TestEventHolderPartialLineIsBounded(t *testing.T) {
+	comment := []byte(": " + strings.Repeat("x", holdBytes+100) + "\n")
+	result := bigEvent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"`, `"}]}}`, 2<<20)
+	var h eventHolder
+	var got []byte
+	for i := 0; i < len(comment); i += 32 << 10 {
+		out, err := h.feed(append([]byte(nil), comment[i:min(i+32<<10, len(comment))]...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.searched != len(h.held) {
+			t.Fatalf("searched=%d held=%d: a partial line would be searched again", h.searched, len(h.held))
+		}
+		got = append(got, out...)
+	}
+	if !bytes.Equal(got, comment) {
+		t.Fatalf("the long comment did not come out whole: %d of %d bytes", len(got), len(comment))
+	}
+	if h.decided {
+		t.Fatal("the forwarded line left decided set")
+	}
+	released := -1
+	for i := 0; i < len(result); i += 32 << 10 {
+		out, err := h.feed(append([]byte(nil), result[i:min(i+32<<10, len(result))]...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) > 0 && released < 0 {
+			released = i
+		}
+	}
+	if released < 0 || released > holdBytes+(32<<10) {
+		t.Fatalf("the next result was released at offset %d, want at holdBytes", released)
+	}
+
+	old := maxHeldBytes
+	maxHeldBytes = 4 << 20
+	defer func() { maxHeldBytes = old }()
+	endless := []byte(": " + strings.Repeat("x", 5<<20))
+	var g eventHolder
+	var err error
+	for i := 0; i < len(endless) && err == nil; i += 32 << 10 {
+		_, err = g.feed(append([]byte(nil), endless[i:min(i+32<<10, len(endless))]...))
+	}
+	if !errors.Is(err, errEventTooLarge) {
+		t.Fatalf("err=%v, want errEventTooLarge", err)
 	}
 }
