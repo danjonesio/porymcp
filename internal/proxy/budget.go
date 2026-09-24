@@ -127,11 +127,6 @@ func causeError(ctx context.Context, err error) error {
 	return cause
 }
 
-// causeText is causeError's sentence, for a row.
-func causeText(ctx context.Context, err error) string {
-	return causeError(ctx, err).Error()
-}
-
 // errClientWentAway is the row for a request the client abandoned before the
 // upstream answered: the upstream context is done with no cause of its own
 // (context.Canceled), which is how net/http cancels r.Context(). Named
