@@ -797,9 +797,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		// The message is one of the proxy's own sentences: a transport
 		// failure was read into the closed set where the client returned it
 		// (forward, forwardRead, the ReadBody above), and every other error
-		// on this path is a fixed sentence of this package's. Still bounded,
-		// because a member's own error.message can arrive on the aggregate
-		// path (PORM-72) and is the upstream's string.
+		// on this path is a fixed sentence of this package's. The aggregate
+		// path returns only sentinels and closed sentences too; a member's
+		// own error.message reaches the skip log line and never this row.
+		// The cut is defence in depth.
 		h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
 			usedID, models.StatusError, truncate(err.Error(), auditFieldBytes), start, 0,
 			boundedParams(req.Params))
@@ -808,14 +809,16 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	}
 
 	st, errMsg := answerStatus(statusCode, headers.Get("Content-Type"), respBody, strings.TrimSpace(string(req.ID)))
-	// The relay path writes the widest row in the file and was the only one
-	// left unbounded. errMsg is the upstream's own error.message, returned
-	// verbatim out of a body allowed to be 16 MiB, so a hostile
-	// 200 {"error":{"message":"<8 MiB>"}} wrote a multi-megabyte row on every
-	// request; method and tool are the client's strings and params can be the
-	// whole 8 MiB the reader admits.
+	// errMsg is the upstream's own error.message out of a body allowed to be
+	// 16 MiB, and it may echo the credential the proxy sent (PORM-72). It
+	// goes to audit.Record whole: Record cuts it to a scan window, replaces
+	// credential-shaped text and bounds it at audit.ErrorMessageBytes, in
+	// that order, so a token cut at a boundary is never stored in part. A
+	// cut here would defeat that. Method and tool are the client's strings
+	// and params can be the whole 8 MiB the reader admits, so those are
+	// still bounded here.
 	h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
-		usedID, st, truncate(errMsg, auditFieldBytes), start, len(respBody),
+		usedID, st, errMsg, start, len(respBody),
 		boundedParams(req.Params))
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 
@@ -1005,7 +1008,8 @@ type requestIDKey struct{}
 // errCredentialRefreshFailed (lapsed and the vendor could not be reached).
 // auth_type none is (nil, nil) and never consults the blob. Every error is a
 // bare sentinel, because it reaches the audit row's error_message, which is
-// not redacted; the client sees the generic 502 either way (see serve).
+// redacted by pattern only, so a sentinel carries no detail a pattern could
+// miss; the client sees the generic 502 either way (see serve).
 //
 // For an oauth row this is where the token is renewed (PORM-139), so every
 // caller resolves it BEFORE upstreamContext arms a budget: the vendor call

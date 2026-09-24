@@ -42,10 +42,14 @@ import (
 // from being distinguishable by how long the answer took.
 
 // blockStub is a stub MCP upstream that counts every request it is asked to
-// serve, whether or not the proxy should have sent it.
+// serve, whether or not the proxy should have sent it. When echoHeader is
+// set it answers tools/call with a JSON-RPC error that quotes the value of
+// that request header: the upstream that echoes the credential it was sent
+// (PORM-72).
 type blockStub struct {
-	srv  *httptest.Server
-	hits atomic.Int32
+	srv        *httptest.Server
+	hits       atomic.Int32
+	echoHeader string
 }
 
 func newBlockStub(t *testing.T) *blockStub {
@@ -55,7 +59,8 @@ func newBlockStub(t *testing.T) *blockStub {
 		s.hits.Add(1)
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
-			Method string `json:"method"`
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
 		}
 		// Lenient on purpose: a body this stub cannot parse is still a
 		// request that reached it, and the count above has already recorded it.
@@ -63,6 +68,17 @@ func newBlockStub(t *testing.T) *blockStub {
 		w.Header().Set("Content-Type", "application/json")
 		if req.Method == "tools/list" {
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"delete_repo"},{"name":"list_issues"}]}}`)
+			return
+		}
+		if s.echoHeader != "" && req.Method == "tools/call" {
+			// The credential alone: a bearer rides behind its scheme word.
+			cred := strings.TrimPrefix(r.Header.Get(s.echoHeader), "Bearer ")
+			msg, _ := json.Marshal("invalid token " + cred)
+			id := string(req.ID)
+			if id == "" {
+				id = "null"
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+id+`,"error":{"code":-32000,"message":`+string(msg)+`}}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
@@ -100,9 +116,31 @@ const denyDeleteRepo = `{"mode":"deny","tools":["delete_repo"]}`
 // upstream serves that upstream's own tool names, so an unscoped entry names
 // the tool exactly, the identity grammar asks nothing more of it, and the
 // scoped spelling gh__delete_repo would work just as well.
-func newBlockFixture(t *testing.T, targetType, toolFilter string) *blockFixture {
+//
+// authType and authCfg give the upstream a credential of one of the static kinds
+// (PORM-72); with models.AuthNone the upstream has none and the stub never
+// echoes. With a credential, the stub echoes the header that kind of
+// credential rides on, the same header mcpclient.ApplyAuth writes.
+func newBlockFixture(t *testing.T, targetType, toolFilter, authType string, authCfg models.AuthConfig) *blockFixture {
 	t.Helper()
 	stub := newBlockStub(t)
+	switch authType {
+	case models.AuthBearer:
+		stub.echoHeader = "Authorization"
+	case models.AuthAPIKey:
+		stub.echoHeader = authCfg.Header
+		if stub.echoHeader == "" {
+			stub.echoHeader = "X-API-Key"
+		}
+	case models.AuthHeader:
+		stub.echoHeader = authCfg.Header
+	case models.AuthCustom:
+		// A custom credential rides in Headers; the test gives it one.
+		stub.echoHeader = authCfg.Header
+		for name := range authCfg.Headers {
+			stub.echoHeader = name
+		}
+	}
 
 	encKey, err := crypto.RandomKey()
 	if err != nil {
@@ -123,11 +161,24 @@ func newBlockFixture(t *testing.T, targetType, toolFilter string) *blockFixture 
 
 	now := time.Now().UTC()
 	ctx := context.Background()
-	if err := st.CreateUpstream(ctx, &models.Upstream{
+	up := &models.Upstream{
 		ID: "u1", Name: "GitHub", Slug: "gh", URL: stub.srv.URL,
 		Transport: models.TransportStreamableHTTP, AuthType: models.AuthNone,
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
+	}
+	if authType != models.AuthNone {
+		raw, err := json.Marshal(authCfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		enc, err := crypto.NewKeyring(encKey, nil).Seal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		up.AuthType = authType
+		up.AuthConfig = []byte(enc)
+	}
+	if err := st.CreateUpstream(ctx, up); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,16 +273,16 @@ func decodeLogs(t *testing.T, rr *httptest.ResponseRecorder) []models.AuditLog {
 	return env.Logs
 }
 
-// waitBlocked polls GET /api/v1/logs?status=blocked until it returns want rows
+// waitRows polls GET /api/v1/logs?status=<status> until it returns want rows
 // or two seconds pass. The audit logger writes on its own goroutine
 // (audit.Logger.Record is non-blocking and Close gives the caller no way to
 // wait for the drain (PORM-36)) so the row a request just produced is not
 // readable the instant its response comes back.
-func (f *blockFixture) waitBlocked(t *testing.T, want int) []models.AuditLog {
+func (f *blockFixture) waitRows(t *testing.T, status string, want int) []models.AuditLog {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		rows := decodeLogs(t, f.queryLogs(t, "status=blocked", "test-admin"))
+		rows := decodeLogs(t, f.queryLogs(t, "status="+status, "test-admin"))
 		if len(rows) >= want || time.Now().After(deadline) {
 			return rows
 		}
@@ -287,7 +338,7 @@ func assertBlockedRow(t *testing.T, row models.AuditLog, wantTool, wantReason, w
 
 // AC4, as written: a group tool_filter block is queryable through the logs API.
 func TestBlockedCallIsQueryableViaLogsAPI(t *testing.T) {
-	f := newBlockFixture(t, models.TargetGroup, denyDeleteRepo)
+	f := newBlockFixture(t, models.TargetGroup, denyDeleteRepo, models.AuthNone, models.AuthConfig{})
 
 	// gh__delete_repo, not delete_repo: the aggregate endpoint advertises the
 	// identity and answers a bare name with -32602 before any rule is consulted,
@@ -296,7 +347,7 @@ func TestBlockedCallIsQueryableViaLogsAPI(t *testing.T) {
 	rr := f.call(t, `{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"gh__delete_repo","arguments":{}}}`)
 	assertBlocked(t, f, rr, `"id":41`)
 
-	rows := f.waitBlocked(t, 1)
+	rows := f.waitRows(t, models.StatusBlocked, 1)
 	if len(rows) != 1 {
 		t.Fatalf("GET /api/v1/logs?status=blocked returned %d rows, want 1: %+v", len(rows), rows)
 	}
@@ -330,12 +381,12 @@ func TestBlockedCallIsQueryableViaLogsAPI(t *testing.T) {
 func TestBlockedSingleUpstreamCallRecordsUpstreamID(t *testing.T) {
 	// No group is created for an upstream target, so there is no tool_filter
 	// to seed: the key's own denylist is the whole policy.
-	f := newBlockFixture(t, models.TargetUpstream, "")
+	f := newBlockFixture(t, models.TargetUpstream, "", models.AuthNone, models.AuthConfig{})
 
 	rr := f.call(t, `{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"delete_repo","arguments":{}}}`)
 	assertBlocked(t, f, rr, `"id":42`)
 
-	rows := f.waitBlocked(t, 1)
+	rows := f.waitRows(t, models.StatusBlocked, 1)
 	if len(rows) != 1 {
 		t.Fatalf("GET /api/v1/logs?status=blocked returned %d rows, want 1: %+v", len(rows), rows)
 	}
@@ -366,12 +417,12 @@ func TestBlockedSingleUpstreamCallRecordsUpstreamID(t *testing.T) {
 // any policy ran. That is what lets an operator filter blocks per upstream on
 // the endpoint shape groups are meant to be used through.
 func TestBlockedMemberCallRecordsUpstreamID(t *testing.T) {
-	f := newBlockFixture(t, models.TargetGroup, `{"mode":"deny","tools":["gh__delete_repo"]}`)
+	f := newBlockFixture(t, models.TargetGroup, `{"mode":"deny","tools":["gh__delete_repo"]}`, models.AuthNone, models.AuthConfig{})
 
 	rr := f.callMember(t, "gh", `{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"delete_repo","arguments":{}}}`)
 	assertBlocked(t, f, rr, `"id":44`)
 
-	rows := f.waitBlocked(t, 1)
+	rows := f.waitRows(t, models.StatusBlocked, 1)
 	if len(rows) != 1 {
 		t.Fatalf("GET /api/v1/logs?status=blocked returned %d rows, want 1: %+v", len(rows), rows)
 	}
@@ -402,7 +453,7 @@ func TestBlockedMemberCallRecordsUpstreamID(t *testing.T) {
 // while the row names the slug, so a valid key cannot use the route to find
 // out which slugs the deployment has.
 func TestUnknownMemberEndpointIsAuditedAsBlocked(t *testing.T) {
-	f := newBlockFixture(t, models.TargetGroup, denyDeleteRepo)
+	f := newBlockFixture(t, models.TargetGroup, denyDeleteRepo, models.AuthNone, models.AuthConfig{})
 
 	rr := f.callMember(t, "nope", `{"jsonrpc":"2.0","id":46,"method":"tools/call","params":{"name":"delete_repo","arguments":{}}}`)
 	if rr.Code != http.StatusNotFound {
@@ -423,7 +474,7 @@ func TestUnknownMemberEndpointIsAuditedAsBlocked(t *testing.T) {
 		t.Fatalf("the upstream served %d requests; an endpoint that does not exist must cost none", n)
 	}
 
-	rows := f.waitBlocked(t, 1)
+	rows := f.waitRows(t, models.StatusBlocked, 1)
 	if len(rows) != 1 {
 		t.Fatalf("GET /api/v1/logs?status=blocked returned %d rows, want 1: %+v", len(rows), rows)
 	}

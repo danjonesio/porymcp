@@ -462,8 +462,11 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 		cancel(nil)
 		st, msg := streamVerdict(row.method, resp.StatusCode, ct, &capture, row.wantID, end, endErr)
 		size := int(min(written, math.MaxInt32))
+		// msg may be the upstream's own error.message; it goes to
+		// audit.Record whole, which redacts credential-shaped text and then
+		// bounds it (PORM-72). A cut here would leave a token fragment.
 		h.finish(row.vk, row.requestID, row.auditMethod, row.tool, row.upstreamID, st,
-			truncate(msg, auditFieldBytes), row.start, size, row.params)
+			msg, row.start, size, row.params)
 		left := h.openStreams.Add(-1)
 		if h.log != nil {
 			h.log.Info("stream closed", "request_id", row.requestID, "virtual_key_id", row.vk.ID,

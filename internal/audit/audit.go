@@ -77,6 +77,7 @@ func (l *Logger) Record(e models.AuditLog) {
 		e.Timestamp = time.Now().UTC()
 	}
 	e.Params = Redact(e.Params)
+	e.ErrorMessage = errorText(e.ErrorMessage)
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	if l.closed {
@@ -200,7 +201,7 @@ func RedactQuery(q url.Values) map[string]string {
 		_, a := secretKeys[norm]
 		_, b := queryOnlySecretKeys[norm]
 		if a || b {
-			out[name] = "[redacted]"
+			out[name] = redacted
 			continue
 		}
 		out[name] = strings.Join(vals, ",")
@@ -231,7 +232,7 @@ func redactValue(v any) any {
 		for k, val := range t {
 			if _, secret := secretKeys[strings.ToLower(k)]; secret {
 				if s, ok := val.(string); ok && s != "" {
-					out[k] = "[redacted]"
+					out[k] = redacted
 					continue
 				}
 			}

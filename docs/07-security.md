@@ -131,6 +131,28 @@
   `last_used_at`, so set a limit where that matters.
 - Proxy never logs or returns real upstream secrets.
 - Optional redaction of sensitive fields in AuditLog params.
+- `error_message` is redacted by pattern (PORM-72). `audit.Record` replaces
+  credential-shaped text with `[redacted]` and bounds the field at 256 bytes
+  on every row, whoever wrote it. The rules cover a `Bearer` or `Basic`
+  value, a labelled value (`X-API-Key: …`, `token=…`), a vendor prefix
+  (`sk-`, `sk_`, `ghp_` and the other GitHub prefixes, `github_pat_`,
+  `glpat-`, `xoxb-`, `AKIA`, `ASIA`, a JWT) and any run of base64 characters
+  holding letters and two digits that is 20 or more characters with no
+  separator, or that mixes upper and lower case. It is best effort against
+  an upstream that echoes a credential in free text: a short opaque value, a
+  labelled value under 20 characters with no digit and one letter case, an
+  unlabelled mixed-case key with fewer than two digits (about one in seven
+  at 20 characters, one in 40 at 32), an unlabelled UUID-shaped key, a
+  lowercase hyphenated value and a value with spaces are not recognised,
+  and a token the upstream has encoded or split with invisible characters
+  can keep a short fragment. A host label, a hand-typed separator-free
+  slug, a camelCase tool name holding two digits, a trace id, a container
+  id or another vendor's request id of that shape is redacted too; the
+  row's `upstream_id`, `tool_name` and `request_id` are the operator's
+  fallback. Rows written before this change
+  hold the upstream's text as sent. Nothing purges them until retention
+  ships (PORM-13); an operator whose upstream echoed a credential should
+  rotate it at the vendor.
 - Management changes are recorded in `admin_events` (PORM-54): one row per
   successful create, update, delete, rotate or revoke, with actor, action,
   resource, request id and client address, written after the store write
@@ -865,8 +887,8 @@
   endpoint the bytes are relayed as the upstream sent them and only the audit
   row is judged from that document, so an event stream carrying a JSON-RPC
   error is an `error` row there too; the row carries the upstream's own
-  `error.message`, bounded at 256 bytes and unredacted, whichever framing it
-  came in. Reading a
+  `error.message`, with credential-shaped text replaced by `[redacted]` and
+  then bounded at 256 bytes, whichever framing it came in. Reading a
   member's answer this way runs for every member on every group call, so it is
   bounded twice: the bytes by the 16 MiB body limit every upstream response
   already had, and the events split out of a stream by a fixed 4096, past which

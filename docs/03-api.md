@@ -1570,8 +1570,9 @@ its query string or the address the host resolved to. The HTTP relay door
 writes the same sentence for the same failure. The host is written only when
 it holds ASCII letters, digits, `.`, `_`, `-`, `:`, `[` and `]` alone; any
 other host reads as `the upstream`. The field is read by operators and never
-returned to a key holder: an upstream's own JSON-RPC error message is still
-recorded as it was sent (PORM-72).
+returned to a key holder: an upstream's own JSON-RPC error message is
+recorded with credential-shaped text replaced by `[redacted]` and cut to 256
+bytes (PORM-72).
 
 Whether a row is `success` or `error` is judged from the document that
 answers the request, in either framing: an upstream's JSON-RPC error inside

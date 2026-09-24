@@ -452,9 +452,12 @@ func TestProxyRefusedDialAudited(t *testing.T) {
 // carries that must never be copied out of it.
 var closedSentenceLeaks = []string{"Post ", "dial tcp", "read tcp", "lookup", "no such host", "context canceled", "/secret-path", "QUERY-MARKER", "parse \""}
 
-func assertNoLeak(t *testing.T, what, text string) {
+// assertNoLeak fails when text carries a closedSentenceLeaks marker or any
+// of extra, the needles a single test adds (PORM-72: the fragments of a
+// credential an upstream echoed).
+func assertNoLeak(t *testing.T, what, text string, extra ...string) {
 	t.Helper()
-	for _, leak := range closedSentenceLeaks {
+	for _, leak := range append(append([]string(nil), closedSentenceLeaks...), extra...) {
 		if strings.Contains(text, leak) {
 			t.Errorf("%s carries %q: %s", what, leak, text)
 		}

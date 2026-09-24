@@ -138,7 +138,8 @@ func TestReadUnreadablePlaintext(t *testing.T) {
 }
 
 // TestSentinelsCarryNoDetail pins security requirement 1: the error text is
-// the sentinel and nothing else, because audit error_message is not redacted.
+// the sentinel and nothing else, because audit error_message is redacted by
+// pattern only and a sentinel must carry no detail a pattern could miss.
 func TestSentinelsCarryNoDetail(t *testing.T) {
 	sealer, _ := keyring(t, 0)
 	k, _ := keyring(t, 0)
