@@ -735,8 +735,9 @@ var refusedURLs = map[string]string{
 	"https://u:p@example.com/x": "url must not embed credentials",
 }
 
-// acceptedURLs must keep working, and are stored as url.Parse writes them
-// back: the scheme lower-cased and nothing else touched (security
+// acceptedURLs must keep working, and are stored as url.Parse re-serialises
+// them: the scheme lower-cased, unescaped path characters percent-encoded,
+// an empty fragment dropped, host, port and trailing slash kept (security
 // requirement 10's normalisation).
 var acceptedURLs = map[string]string{
 	"HTTPS://h/mcp?ok=1":           "https://h/mcp?ok=1", // url.Parse lower-cases the scheme
