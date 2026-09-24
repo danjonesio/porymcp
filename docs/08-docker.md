@@ -81,14 +81,14 @@ Both halves are required: the `--profile postgres` flag starts the database, and
 - `ALLOW_INSECURE_HTTP`: when truthy, skip scheme enforcement even if `PUBLIC_URL` is https. Default unset/false.
 - `ALLOW_LOCALHOST`: when truthy, accept localhost Host values even when `PUBLIC_URL` is not localhost. Default unset/false. This is about requests arriving at PoryMCP; for upstream URLs see `UPSTREAM_ALLOW_LOOPBACK`.
 - `EXTRA_ALLOWED_HOSTS`: extra Host values (comma-separated, no scheme) accepted on the proxy endpoints besides `PUBLIC_URL`. Default empty.
+- `TLS_CERT_FILE`, `TLS_KEY_FILE`: built-in TLS. Both must be set, or both left empty.
 
 Outbound, the addresses an upstream URL may resolve to (PORM-79, `docs/07-security.md`):
 
 - `UPSTREAM_ALLOW_LOOPBACK`: when truthy, PoryMCP may connect to an upstream whose host resolves to a loopback address (`localhost`, `127.0.0.1`, `::1`). Default unset/false. Inside a container, loopback is the container itself. Reach a server on the host as `host.docker.internal`: Docker Desktop resolves it to a private address, which is allowed without this setting; on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]` to the service and have the host service listen on the bridge address, not on `127.0.0.1`. Not the same as `ALLOW_LOCALHOST`, which is about the Host header of requests to PoryMCP. Link-local, multicast, unspecified and cloud-metadata addresses stay refused whatever this is set to.
 - `UPSTREAM_DENY_PRIVATE`: when truthy, refuses upstreams that resolve to a private address (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`), reading `upstream address denied: private`. Default unset/false. The compose network is private, so a compose-internal upstream, a Kubernetes cluster IP or a tailnet address stops working with this set.
 
-Under compose both are passed through from `.env` by the shipped `docker-compose.yml`; a copied compose file needs the two `${VAR:-}` lines added. The startup line `upstream guard` prints the effective values.
-- `TLS_CERT_FILE`, `TLS_KEY_FILE`: built-in TLS. Both must be set, or both left empty.
+Under compose both are passed through from `.env` by the shipped `docker-compose.yml`; a copied compose file needs the two `${VAR:-}` lines added. The startup line `upstream guard` prints the effective values; it is logged at `info`, so it is absent when `LOG_LEVEL` is `warn` or `error`.
 
 Reverse-proxy and TLS deployment (Caddy, nginx, Traefik, Cloudflare, built-in certs) is in `docs/11-deployment.md`.
 

@@ -283,7 +283,9 @@ curl -sS http://127.0.0.1:8080/health
 ```
 
 The egress guard's effective settings are on the startup line, not on
-`/health` (which needs no key):
+`/health` (which needs no key). The line is logged at `info`: with
+`LOG_LEVEL` at `warn` or `error` it is absent, and its absence says nothing
+about the image.
 
 ```bash
 docker compose logs porymcp | grep '"msg":"upstream guard"'
