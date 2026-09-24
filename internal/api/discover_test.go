@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
@@ -987,14 +988,23 @@ func TestDiscoverNeverReturnsCredential(t *testing.T) {
 }
 
 func TestDiscoverURLUserinfoRedacted(t *testing.T) {
-	_, h, _ := testAPI(t)
+	_, h, st := testAPI(t)
 	// A URL carrying a secret in three places, two of which Go's own redaction
 	// keeps. Port 1 refuses on this machine; a host that drops rather than
 	// refuses produces the timeout sentence instead, so BOTH are accepted,
 	// what this test is about is which bytes come back, not which failure.
-	id, _ := mustUpstream(t, h, "Leaky", map[string]any{
-		"url": "https://user:secret@127.0.0.1:1/mcp?tok=QUERYSECRET",
-	})
+	// Seeded through the store: create refuses userinfo since PORM-79, and
+	// the rows this covers are the ones saved before it (PORM-27).
+	now := time.Now().UTC()
+	leaky := models.Upstream{
+		ID: uuid.NewString(), Name: "Leaky", Slug: "leaky", Kind: models.KindMCP,
+		URL: "https://user:secret@127.0.0.1:1/mcp?tok=QUERYSECRET", Transport: models.TransportStreamableHTTP,
+		AuthType: models.AuthNone, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateUpstream(context.Background(), &leaky); err != nil {
+		t.Fatal(err)
+	}
+	id := leaky.ID
 
 	d := discovery(t, doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil))
 	if d["ok"] != false {
