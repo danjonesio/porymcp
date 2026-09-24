@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 )
@@ -201,9 +202,11 @@ func errorText(s string) string {
 	s, cut := mcpclient.Clamp(s, redactWindowBytes)
 	if cut {
 		// A whole window of credential characters has no byte to cut back
-		// to; it is kept whole and longRun decides.
+		// to; it is kept whole and longRun decides. The cut lands after the
+		// whole of the last kept rune, never inside a multi-byte one.
 		if i := strings.LastIndexFunc(s, notTrimChar); i >= 0 {
-			s = s[:i+1]
+			_, w := utf8.DecodeRuneInString(s[i:])
+			s = s[:i+w]
 		}
 	}
 	s, _ = mcpclient.Clamp(RedactText(s), ErrorMessageBytes)

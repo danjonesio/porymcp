@@ -151,6 +151,12 @@ func TestErrorTextRedactsBeforeItCuts(t *testing.T) {
 		{"shrink case", prefixTo(tenRuns, 15+len("invalid token ")) + "invalid token " + ghpToken, ghpToken, "[redacted] [redacted]"},
 		{"three jwts then a token at the window", prefixTo(threeJWTs, 15) + hexToken, hexToken, "[redacted] [redacted] [redacted] word"},
 		{"benign 100 KiB", filler(100 << 10), "", "word word"},
+		// A multi-byte rune is the last kept character before the run the
+		// window cuts, and redaction shrinks what precedes it to under the
+		// stored bound: the cut lands after the rune's last byte, never
+		// inside it, so the stored value stays valid UTF-8.
+		{"multi-byte rune before the cut", tenRuns + filler(redactWindowBytes-30-len("é")-len(tenRuns)) + "é" + hexToken, hexToken, "[redacted] [redacted]"},
+		{"multi-byte rune before a shrunk cut", "sk-" + strings.Repeat("a1", 2000) + "é" + strings.Repeat("B", 300), "", "[redacted]é"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -187,7 +193,9 @@ func TestErrorTextRedactsBeforeItCuts(t *testing.T) {
 	})
 
 	t.Run("shares no memory with the input", func(t *testing.T) {
-		in := prefixTo(tenRuns, 15+len("invalid token ")) + "invalid token " + ghpToken
+		// No rule matches this input, so a shortcut that returned the
+		// input's own bytes when nothing was replaced would fail here.
+		in := filler(100 << 10)
 		got := errorText(in)
 		inStart := uintptr(unsafe.Pointer(unsafe.StringData(in)))
 		outStart := uintptr(unsafe.Pointer(unsafe.StringData(got)))
