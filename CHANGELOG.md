@@ -11,17 +11,20 @@ Behaviour changes that affect a running deployment. Newest first.
   id and data are the upstream's. The same rules as the audit row's
   `error_message` apply, on a single-upstream key, a member endpoint and a
   group endpoint, in JSON, in an event stream and on a held-open stream.
-- **An error whose message holds nothing credential-shaped is relayed byte
-  for byte, as is every result and notification.** A trace id, a container
-  id or a camelCase name of 20 or more letters with two digits inside an
-  error message now reads `[redacted]` for the agent as well as in the row.
+- **An error whose message holds nothing credential-shaped and is under
+  64 KiB is relayed byte for byte, as is every result and notification.** A
+  trace id, a container id or a camelCase name of 20 or more letters with
+  two digits inside an error message now reads `[redacted]` for the agent as
+  well as in the row.
 - **The message an agent receives is at most 64 KiB.** It is cut at a value
-  boundary before the rules run, so a credential is never sent in part.
+  boundary before the rules run; as in the row, a window with no boundary in
+  it is kept whole, so a credential pressed against padding with no
+  separator can keep a fragment.
 - **A streamed event that carries data reaches the client at its ending
   line.** Keep-alive lines and other lines outside such an event still reach
-  it as they arrive. An event over 1 MiB that is not shown to be a result is
-  held to its end, and a stream ends when such an event passes 16 MiB, the
-  bound a buffered answer already has.
+  it as they arrive. An event over 1 MiB that is not shown to be a result or
+  a notification is held to its end, and a stream ends when such an event
+  passes 16 MiB, the bound a buffered answer already has.
 
 ### Credential-shaped text in error_message is redacted (PORM-72)
 

@@ -141,8 +141,9 @@
   long as it lasts. The rewrite covers what the judge reads as an error, so
   a nonconforming body with duplicate `error` keys whose last is null can
   still carry text. A `result` and a notification are relayed as the
-  upstream sent them; an upstream that echoes a credential there is
-  PORM-87.
+  upstream sent them (an upstream that echoes a credential there is
+  PORM-87), and so are an error's `data` member and an error body that is
+  not JSON-RPC, such as a plain-text 401.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by pattern (PORM-72). `audit.Record` replaces
   credential-shaped text with `[redacted]` and bounds the field at 256 bytes
@@ -163,8 +164,9 @@
   id or another vendor's request id of that shape is redacted too; the
   row's `upstream_id`, `tool_name` and `request_id` are the operator's
   fallback, and an agent reading the error loses them the same way. On a
-  stream, an event over 1 MiB is relayed as it arrives only when its first
-  megabyte shows a `result` or `method` member and no `error`; any other
+  stream, an event over 1 MiB is relayed as it arrives only when it has a
+  `data:` line and its first megabyte shows a `result` or `method` member
+  and no `error`; any other
   event over 1 MiB is held to its end and rewritten there, and the stream
   ends when such an event passes 16 MiB, the bound a buffered answer already
   has. A nonconforming document that carries `result` or `method` first and
@@ -907,7 +909,9 @@
   endpoint the bytes are relayed as the upstream sent them, except the
   message of a JSON-RPC error: that message has credential-shaped text
   replaced by `[redacted]` in each event or document that carries an error
-  (PORM-195), and the rest of the body and its framing are unchanged. The
+  (PORM-195). A rewritten document comes back compact, with its members in
+  sorted order and, in an event stream, as one `data:` line; every other
+  event and line, and the framing around them, is unchanged. The
   audit row is judged from the original document, so an event stream
   carrying a JSON-RPC error is an `error` row there too; the row carries the
   upstream's own `error.message`, with credential-shaped text replaced by

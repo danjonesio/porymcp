@@ -833,9 +833,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	if st == models.StatusError || mcpclient.SSEFramed(ct, respBody) {
 		redacted, rerr := redactErrorAnswer(ct, respBody)
 		if rerr != nil {
-			// Judged an error and not rewritable: the status crosses with
-			// the fixed sentence, headers and row as on the transport-error
-			// path above. The upstream's bytes never go out.
+			// Judged an error and not rewritable: the response headers are
+			// copied as on the normal path below, then the fixed sentence of
+			// the transport-error path above crosses with its status, and
+			// the row and the key's touch follow. The upstream's bytes never
+			// go out.
 			copyResponseHeaders(w.Header(), headers)
 			n := writeRPCError(w, http.StatusBadGateway, req.ID, -32000, "upstream request failed")
 			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),

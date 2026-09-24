@@ -1075,8 +1075,8 @@ never the admin key. The three MCP endpoints come first; the HTTP API relay
   `application/json` or `text/event-stream`, under that media type; a body in
   any other media type gets the caller a `502` and an `error` row. On a single-upstream
   key this *is* the 1:1 endpoint, and the upstream's answer is relayed as it
-  came. The one exception on every door is the message of a JSON-RPC error,
-  which is redacted as described under the audit row's `error_message`.
+  came. The one exception on every MCP endpoint is the message of a JSON-RPC
+  error, which is redacted as described under the audit row's `error_message`.
 - Shared: `POST /mcp`: the same door without the id in the path; the key
   identifies the virtual key. `POST //{upstream_slug}/mcp` (the same door with
   the id left empty) is its per-member analogue, resolved against the caller's
@@ -1136,12 +1136,15 @@ messages arrive on the response to a `POST`.
 
 An upstream that answers a `POST` with `text/event-stream` and a 2xx status is
 relayed as it arrives on a member or single-upstream endpoint: the headers and
-`X-Accel-Buffering: no` go out first, then each line outside a data-carrying
-event reaches the client as it arrives, keep-alive lines included. An event
+`X-Accel-Buffering: no` go out first, then a comment line, a field line
+(`event:`, `id:`, `retry:` or any field name) and a blank line outside an
+event reach the client as they arrive, keep-alive lines included. An event
 that carries data is sent once its ending line arrives, so an error inside it
 can be redacted first. A result over 1 MiB whose first megabyte does not show
-it is a result reaches the client when it ends, and a stream ends when an
-event that may be an error passes 16 MiB. The stream stays open until the upstream or the
+it is a result or a notification reaches the client when it ends, and a stream
+ends when an event that may be an error passes 16 MiB. A bare JSON document
+under the `text/event-stream` label, which has no ending line, is sent when
+the upstream closes the stream. The stream stays open until the upstream or the
 client closes it, the upstream sends nothing for five minutes, the key stops
 being valid or the upstream stops being reachable through it or is edited
 (checked once a minute; a store error during that check leaves the stream
@@ -1151,13 +1154,15 @@ has waited five minutes, cancels the upstream request. A `tools/list` answer, an
 an answer not labelled `text/event-stream`, and every answer on the group
 endpoint are read whole, then sent as one body, as a JSON answer is. A stream
 that breaks after it started cannot change its status: if the upstream fails,
-goes silent, or is removed or edited, or the key stops being valid, the proxy
-drops the connection so the client sees the stream cut short, and the audit
-row says why. A
+goes silent, or is removed or edited, or the key stops being valid, or an
+event that may be an error passes 16 MiB, the proxy drops the connection so
+the client sees the stream cut short, and the audit row says why (the last
+reads `stream event too large to check`). A
 `subscriptions/listen` ends when the client, the upstream or the proxy closes
 it, or when the upstream goes quiet, and that is its normal end: its row is
 `success` unless the stream carried a JSON-RPC error for it, the key stopped
-being valid, the upstream was removed or edited, or the read failed.
+being valid, the upstream was removed or edited, the read failed, or an event
+was too large to check.
 
 For a `POST` or a `DELETE`, the proxy:
 1. Validates the virtual key
