@@ -128,8 +128,14 @@ func newBlockFixture(t *testing.T, targetType, toolFilter, authType string, auth
 		if stub.echoHeader == "" {
 			stub.echoHeader = "X-API-Key"
 		}
-	case models.AuthHeader, models.AuthCustom:
+	case models.AuthHeader:
 		stub.echoHeader = authCfg.Header
+	case models.AuthCustom:
+		// A custom credential rides in Headers; the test gives it one.
+		stub.echoHeader = authCfg.Header
+		for name := range authCfg.Headers {
+			stub.echoHeader = name
+		}
 	}
 
 	encKey, err := crypto.RandomKey()

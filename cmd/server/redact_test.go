@@ -29,9 +29,11 @@ func (f *blockFixture) getLog(t *testing.T, id string) *httptest.ResponseRecorde
 	return rr
 }
 
-// TestLogsAPINeverReturnsTheUpstreamCredential is PORM-72 criterion 4, as
-// amended in the plan to token-shaped credentials, and security requirement
-// 6: for each static credential kind, an upstream that echoes the credential
+// TestLogsAPINeverReturnsTheUpstreamCredential is PORM-72 criterion 4,
+// narrowed to token-shaped credentials (a pattern cannot see a value such as
+// REAL-APIKEY-SECRET, which TestRedactTextPatterns in internal/audit pins as
+// unchanged), and security requirement 6: for each static credential kind,
+// an upstream that echoes the credential
 // it was sent produces a row that GET /api/v1/logs?status=error and
 // GET /api/v1/logs/{id} return with the credential replaced, and neither
 // response body carries any 8-byte fragment of it. It goes in through the
@@ -45,7 +47,7 @@ func TestLogsAPINeverReturnsTheUpstreamCredential(t *testing.T) {
 		{"bearer", models.AuthBearer, "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", models.AuthConfig{Token: "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"}},
 		{"api_key", models.AuthAPIKey, "sk-proj-abcdefghij1234567890ABCD", models.AuthConfig{Value: "sk-proj-abcdefghij1234567890ABCD"}},
 		{"header", models.AuthHeader, "k3y-2026-Ab12Cd34Ef56Gh78Ij90", models.AuthConfig{Header: "X-Vendor-Key", Value: "k3y-2026-Ab12Cd34Ef56Gh78Ij90"}},
-		{"custom", models.AuthCustom, "deadbeef0123456789abcdef0123456789abcdef", models.AuthConfig{Headers: map[string]string{"X-Custom-Auth": "deadbeef0123456789abcdef0123456789abcdef"}, Header: "X-Custom-Auth", Value: "deadbeef0123456789abcdef0123456789abcdef"}},
+		{"custom", models.AuthCustom, "deadbeef0123456789abcdef0123456789abcdef", models.AuthConfig{Headers: map[string]string{"X-Custom-Auth": "deadbeef0123456789abcdef0123456789abcdef"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
