@@ -1275,7 +1275,7 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 			"err", truncate(err.Error(), auditFieldBytes))
 	}
 	for _, up := range ups {
-		// A 3xx is refused in mcpclient.Send, before there is a body to read,
+		// A 3xx is refused in mcpclient.Open, before there is a body to read,
 		// so a member that answers its catalogue request with a redirect
 		// arrives here as an error. Any other status is not consulted: a
 		// catalogue is still judged by whether it parses, as it was before.
