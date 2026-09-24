@@ -22,8 +22,10 @@ Behaviour changes that affect a running deployment. Newest first.
   cancellation text with the registered URL.
 - **A body that failed while it was being read reads
   `upstream connection failed`.** A body that ended without its terminator
-  reads `unexpected EOF`. The read error, which named the resolved address, is
-  not recorded, buffered or streamed.
+  reads `unexpected EOF`. On the MCP door it used to quote the read error,
+  which named the resolved address. On the HTTP relay door it used to read
+  `cannot connect to <host>` or `cannot reach <host>`. Whether the answer was
+  buffered or streamed, the read error is not recorded.
 - **A stored URL that does not parse reads `upstream url is not usable`.**
   That is the relay door's sentence, in place of the parse error, which quoted
   the URL.
