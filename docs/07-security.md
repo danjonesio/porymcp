@@ -655,10 +655,18 @@
   public address once and to `127.0.0.1` the next time (DNS rebinding) is
   refused at the moment it would matter. A pre-flight check on the URL would
   not do that. The guard dials the permitted addresses one at a time in
-  resolver order, each on its share of the remaining deadline, in place of
-  Go's 300 ms race between address families: a dual-stack upstream whose
-  first address is unreachable waits longer before the second is tried,
-  which is the price of never dialling an address that was not checked. What is refused, whatever the settings: the cloud metadata
+  resolver order, each on its share of the guard's own 30 s dial budget
+  (`http.Transport` hands its dialer no deadline of the request's), in place
+  of Go's 300 ms race between address families. An address the host cannot
+  route to at all (an IPv6 answer in a container with no IPv6, say) fails at
+  once and the next is tried; an address that is black-holed keeps its
+  share, 15 s of two, which is past the 10 s connect budget, so a dual-stack
+  upstream whose first address drops packets fails until its DNS is fixed.
+  That is the price of never dialling an address that was not checked; a
+  race between checked addresses is a follow-up. One more known limit: only
+  the well-known NAT64 prefix `64:ff9b::/96` is read for its embedded IPv4
+  address; an address under the local-use prefix `64:ff9b:1::/48` or an
+  operator-chosen NAT64 prefix is classified as the IPv6 address it is. What is refused, whatever the settings: the cloud metadata
   addresses `169.254.169.254`, `fd00:ec2::/64`, `100.100.100.200`,
   `168.63.129.16` and `fd20:ce::254` (`metadata`); `0.0.0.0/8`, `::` and
   their zoned forms (`unspecified`); multicast (`multicast`); `169.254/16`

@@ -337,3 +337,74 @@ func TestGuardAllowLoopback(t *testing.T) {
 		t.Fatal("a self-signed certificate was accepted; the guarded dialer must leave verification on")
 	}
 }
+
+// The production case: http.Transport detaches the dial context from the
+// request, deadline included, so the guard's own budget has to bound the
+// whole dial and each candidate gets a share of it. Two stalling candidates
+// are both attempted, and the dial as a whole ends inside the budget.
+func TestGuardBoundsDialWithoutDeadline(t *testing.T) {
+	restore := dialBudget
+	dialBudget = 600 * time.Millisecond
+	t.Cleanup(func() { dialBudget = restore })
+
+	rec := &recorder{}
+	stalling := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		rec.mu.Lock()
+		rec.targets = append(rec.targets, addr)
+		rec.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	open := dialer(Options{}, fixed("93.184.216.34", "93.184.216.35"), stalling)
+	start := time.Now()
+	_, err := open(context.Background(), "tcp", "upstream.example:80")
+	took := time.Since(start)
+	if err == nil {
+		t.Fatal("two stalling candidates connected")
+	}
+	if got := rec.dialled(); len(got) != 2 {
+		t.Fatalf("dialled %v, want both candidates on their share of the budget", got)
+	}
+	if took > 1200*time.Millisecond {
+		t.Fatalf("the dial took %v; the budget of %v did not bound it", took, dialBudget)
+	}
+}
+
+// Through a real *http.Transport, which hands DialContext a context with no
+// deadline: a first candidate that never answers yields to the second inside
+// the guard's budget, and the request succeeds.
+func TestGuardThroughTransportFallsBack(t *testing.T) {
+	restore := dialBudget
+	dialBudget = 2 * time.Second
+	t.Cleanup(func() { dialBudget = restore })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+
+	var direct net.Dialer
+	mixed := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if strings.HasPrefix(addr, "93.184.216.34:") {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return direct.DialContext(ctx, network, addr)
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = dialer(Options{AllowLoopback: true}, fixed("93.184.216.34", "127.0.0.1"), mixed)
+	client := srv.Client()
+	client.Transport = tr
+	client.Timeout = 5 * time.Second
+
+	start := time.Now()
+	resp, err := client.Get("http://upstream.example:" + port + "/")
+	if err != nil {
+		t.Fatalf("the second candidate should have answered: %v", err)
+	}
+	resp.Body.Close()
+	if took := time.Since(start); took > 1800*time.Millisecond {
+		t.Fatalf("took %v; the first candidate kept more than its share of the %v budget", took, dialBudget)
+	}
+}

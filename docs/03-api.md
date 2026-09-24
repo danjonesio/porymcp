@@ -1632,8 +1632,10 @@ that one answers `502` and writes a row naming the member's `upstream_id`. A
 `-32602 "unknown tool"` instead, because the name is no longer in the merged
 catalogue. The log line is what says why. A member whose host resolves to a
 refused range (`upstream address denied: <class>`) is skipped the same way:
-the line carries the class sentence, and a `tools/call` routed to that member
-answers the `502` and writes the row. A member whose stored credential
+the line carries the class sentence, a `tools/call` for one of its tools
+answers `-32602 "unknown tool"` because the name is not in the merged
+catalogue, and the member's own endpoint answers the `502` and writes the
+`upstream address denied: <class>` row. A member whose stored credential
 cannot be used (`credential undecryptable` / `credential unreadable`) is
 skipped the same way: zero requests reach it, its tools are absent, the group's
 own `tools/list` succeeds, and the `group member skipped` line carries the

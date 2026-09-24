@@ -32,9 +32,11 @@ Behaviour changes that affect a running deployment. Newest first.
   bytes it sent, sees a change.
 - **Dual-stack upstreams are dialled one address at a time.** The guard
   resolves the host itself and tries the permitted addresses in resolver
-  order, each on its share of the remaining deadline, instead of Go's
-  300 ms race between address families. An upstream whose first address is
-  unreachable now waits longer before the second is tried.
+  order, each on its share of a 30 s dial budget, instead of Go's 300 ms
+  race between address families. An address the host cannot route to fails
+  at once and the next is tried; one that drops packets keeps its share, so
+  an upstream whose first address is black-holed fails until its DNS is
+  fixed.
 - **Behind an egress proxy the guard checks the proxy's address only**, so a
   proxy on loopback needs `UPSTREAM_ALLOW_LOOPBACK`; what the proxy fetches
   is the proxy's job. On OAuth Connect a refused metadata or registration

@@ -92,9 +92,13 @@ var (
 // split across candidates, the same floor net.Dialer applies.
 const attemptFloor = 2 * time.Second
 
-// attemptDefault bounds one attempt when the context carries no deadline,
-// the default transport's connect timeout.
-const attemptDefault = 30 * time.Second
+// dialBudget bounds a whole dial, every candidate included, when the caller's
+// context carries no deadline. That is the production case: http.Transport
+// detaches the context it hands DialContext from the request's, deadline
+// included, so the request's own budget never reaches here. It is the
+// default dialer's 30 s connect timeout, split across the permitted
+// candidates. A variable so a test can shorten it.
+var dialBudget = 30 * time.Second
 
 type lookupFunc func(ctx context.Context, network, host string) ([]netip.Addr, error)
 
@@ -155,14 +159,24 @@ func dialer(o Options, lookup lookupFunc, dial dialFunc) func(ctx context.Contex
 			return nil, Denied{Class: firstClass}
 		}
 
+		// One bound for the whole dial: the caller's deadline when it has
+		// one, dialBudget when it has none. Cancelling it after a connection
+		// was made does not affect that connection.
+		overall := ctx
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			overall, cancel = context.WithTimeout(ctx, dialBudget)
+			defer cancel()
+		}
+
 		// Serial, in resolver order, each attempt on its share of what is
-		// left of the deadline. A denied candidate is never a fallback.
+		// left of the bound. A denied candidate is never a fallback.
 		var last error
 		for i, a := range permitted {
-			if err := ctx.Err(); err != nil {
+			if err := overall.Err(); err != nil {
 				return nil, err
 			}
-			attempt, cancel := attemptContext(ctx, len(permitted)-i)
+			attempt, cancel := attemptContext(overall, len(permitted)-i)
 			conn, err := dial(attempt, network, netip.AddrPortFrom(a, uint16(port)).String())
 			cancel()
 			if err == nil {
@@ -174,14 +188,14 @@ func dialer(o Options, lookup lookupFunc, dial dialFunc) func(ctx context.Contex
 	}
 }
 
-// attemptContext bounds one dial attempt: an equal share of the remaining
-// deadline across the candidates still to try, with net.Dialer's floor, or
-// attemptDefault when the context has no deadline. Cancelling it after the
-// attempt does not affect a connection that was made.
+// attemptContext bounds one dial attempt: an equal share of what is left of
+// the overall bound across the candidates still to try, with net.Dialer's
+// floor. The caller always passes a context with a deadline; a context
+// without one gets dialBudget as a whole.
 func attemptContext(ctx context.Context, remainingCandidates int) (context.Context, context.CancelFunc) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		return context.WithTimeout(ctx, attemptDefault)
+		return context.WithTimeout(ctx, dialBudget)
 	}
 	remaining := time.Until(deadline)
 	share := remaining / time.Duration(remainingCandidates)
