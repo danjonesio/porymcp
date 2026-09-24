@@ -70,7 +70,7 @@ func TestUpstreamErrorMessageIsRedacted(t *testing.T) {
 		{"sse", "text/event-stream", sseFrame(errorAnswer(7, msg))},
 		// The upstream JSON-escapes the first letters of the token; the
 		// decoder sees them whole before any rule runs.
-		{"escaped", "", `{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"invalid token ghp_` + strings.TrimPrefix(echoedToken, "ghp_") + `"}}`},
+		{"escaped", "", `{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"invalid token \u0067\u0068p\u005f` + strings.TrimPrefix(echoedToken, "ghp_") + `"}}`},
 	}
 	for _, tc := range buffered {
 		t.Run(tc.name, func(t *testing.T) {
