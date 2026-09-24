@@ -685,7 +685,10 @@ func TestMCPDoorTransportFailureIsClosedSentence(t *testing.T) {
 				}
 			}},
 		}, true, nil, nil, nil)
-		check(t, f, f.post(toolCall("1", "beta__x")), "upstream connection failed")
+		row := check(t, f, f.post(toolCall("1", "beta__x")), "upstream connection failed")
+		if row.UpstreamID != f.upstreamID("beta") {
+			t.Fatalf("row upstream_id=%q, want beta's %q", row.UpstreamID, f.upstreamID("beta"))
+		}
 	})
 }
 
