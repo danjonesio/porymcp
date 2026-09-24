@@ -211,3 +211,298 @@ func TestRedactErrorAnswer(t *testing.T) {
 		})
 	}
 }
+
+// feedChunks runs body through a holder in chunks of at most n bytes and
+// returns everything it released, the end flush included.
+func feedChunks(t *testing.T, h *eventHolder, body []byte, n int) []byte {
+	t.Helper()
+	var out []byte
+	for i := 0; i < len(body); i += n {
+		piece := append([]byte(nil), body[i:min(i+n, len(body))]...)
+		got, err := h.feed(piece)
+		if err != nil {
+			t.Fatalf("feed at %d: %v", i, err)
+		}
+		out = append(out, got...)
+	}
+	got, err := h.end()
+	if err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	return append(out, got...)
+}
+
+// TestEventHolderSplitAtEveryOffset is PORM-195 security requirement 2 at
+// the holder level: however the upstream's bytes fall across reads, what the
+// client receives is what the buffered rewrite of the whole body would be,
+// in every line-ending spelling.
+func TestEventHolderSplitAtEveryOffset(t *testing.T) {
+	msg := "invalid token " + echoedToken
+	for _, nl := range []string{"\n", "\r\n", "\r"} {
+		frame := func(lines ...string) string { return strings.Join(lines, nl) + nl + nl }
+		body := []byte(": keep" + nl +
+			frame("id: 4", "event: message", "data: "+progressDoc) +
+			frame("data: {\"jsonrpc\":\"2.0\",\"id\":7,", "data: \"error\":{\"code\":1,\"message\":\""+msg+"\"}}") +
+			frame("retry: 5", "data:"+resultDoc) +
+			frame("data: "+errorAnswer(8, msg)) +
+			": tail" + nl)
+		want, err := redactErrorAnswer("text/event-stream", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(want), echoedToken) || !strings.Contains(string(want), "[redacted]") {
+			t.Fatalf("whole-body rewrite is wrong: %q", want)
+		}
+		for i := 1; i < len(body); i++ {
+			var h eventHolder
+			var got []byte
+			for _, piece := range [][]byte{body[:i], body[i:]} {
+				out, err := h.feed(append([]byte(nil), piece...))
+				if err != nil {
+					t.Fatalf("nl=%q split %d: %v", nl, i, err)
+				}
+				got = append(got, out...)
+			}
+			tail, err := h.end()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, tail...)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("nl=%q split at %d:\ngot  %q\nwant %q", nl, i, got, want)
+			}
+		}
+	}
+
+	t.Run("non-error events allocate like the judge", func(t *testing.T) {
+		var h eventHolder
+		event := []byte(sseFrame(progressDoc))
+		payload := []byte(progressDoc)
+		h.feed(append([]byte(nil), event...)) // warm the buffers
+		judge := testing.AllocsPerRun(100, func() { rpcFailed(payload) })
+		got := testing.AllocsPerRun(100, func() { h.feed(event) })
+		if got > judge {
+			t.Fatalf("feed allocates %.0f per progress event, rpcFailed %.0f", got, judge)
+		}
+	})
+}
+
+// TestEventHolderForwardsFieldLinesAtOnce is the keep-alive rule: a comment,
+// an event:, id: or retry: field and a blank line leave on the read that
+// brings them; a data: line, a bare JSON line and an unknown field start a
+// held unit.
+func TestEventHolderForwardsFieldLinesAtOnce(t *testing.T) {
+	forwarded := []string{": keep-alive\r\n", "event: message\n", "id: 9\n", "retry: 1000\n", "\n", "ID:7\n"}
+	for _, line := range forwarded {
+		var h eventHolder
+		out, err := h.feed([]byte(line))
+		if err != nil || string(out) != line {
+			t.Errorf("feed(%q) = %q, %v; want the line back", line, out, err)
+		}
+	}
+	held := []string{"data: {}\n", errorAnswer(1, "x") + "\n", "foo: bar\n", "data: partial"}
+	for _, line := range held {
+		var h eventHolder
+		out, err := h.feed([]byte(line))
+		if err != nil || len(out) != 0 {
+			t.Errorf("feed(%q) = %q, %v; want nothing yet", line, out, err)
+		}
+	}
+	// A comment line inside an open unit is part of the unit.
+	var h eventHolder
+	h.feed([]byte("data: {}\n"))
+	if out, _ := h.feed([]byte(": inside\n")); len(out) != 0 {
+		t.Errorf("a comment inside a unit was released: %q", out)
+	}
+}
+
+// TestEventHolderBareCRReleasesPerRead: a CR ends a line at once, so a
+// bare-CR stream releases each event on the read that brings its second CR,
+// and a LF that follows on the next read is forwarded alone.
+func TestEventHolderBareCRReleasesPerRead(t *testing.T) {
+	var h eventHolder
+	if out, _ := h.feed([]byte("data: " + progressDoc + "\r")); len(out) != 0 {
+		t.Fatalf("released before the ending line: %q", out)
+	}
+	out, _ := h.feed([]byte("\r"))
+	if string(out) != "data: "+progressDoc+"\r\r" {
+		t.Fatalf("second CR released %q", out)
+	}
+	if out, _ := h.feed([]byte("\n")); string(out) != "\n" {
+		t.Fatalf("the LF after the CR was not forwarded: %q", out)
+	}
+	if out, _ := h.feed([]byte(": ping\r")); string(out) != ": ping\r" {
+		t.Fatalf("a CR-ended comment was held: %q", out)
+	}
+}
+
+// TestEventHolderUnframedJSON is the stream door's unframed case: bare JSON
+// under the stream label, in every shape a server writes it, is held and
+// leaves redacted from end, never from feed.
+func TestEventHolderUnframedJSON(t *testing.T) {
+	msg := "invalid token " + echoedToken
+	doc := errorAnswer(7, msg)
+	pretty := "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7,\n  \"error\": {\n    \"code\": -32000,\n    \"message\": \"" + msg + "\"\n  }\n}\n"
+	blankInside := "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":1,\"message\":\"" + msg + "\"},\n\n\"id\":7}\n"
+	for name, body := range map[string]string{"bare": doc, "trailing lf": doc + "\n", "crlf": doc + "\r\n", "pretty": pretty, "blank line inside": blankInside} {
+		t.Run(name, func(t *testing.T) {
+			var h eventHolder
+			for _, n := range []int{len(body), 7} {
+				h = eventHolder{}
+				var early []byte
+				for i := 0; i < len(body); i += n {
+					out, err := h.feed([]byte(body[i:min(i+n, len(body))]))
+					if err != nil {
+						t.Fatal(err)
+					}
+					early = append(early, out...)
+				}
+				if len(early) != 0 {
+					t.Fatalf("chunk %d: feed released %q before EOF", n, early)
+				}
+				out, err := h.end()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(out), "invalid token [redacted]") {
+					t.Fatalf("chunk %d: end returned %q", n, out)
+				}
+				assertNoLeak(t, "end", string(out), fragments(echoedToken)...)
+			}
+		})
+	}
+}
+
+// bigEvent frames one document whose padding member holds n bytes.
+func bigEvent(prefix, suffix string, n int) []byte {
+	return []byte("data: " + prefix + strings.Repeat("x", n) + suffix + "\n\n")
+}
+
+// TestEventHolderOversizedResultPassesThrough is the passthrough proof: a
+// result over holdBytes is relayed raw, byte for byte, and its first part
+// leaves before its ending line arrives.
+func TestEventHolderOversizedResultPassesThrough(t *testing.T) {
+	body := bigEvent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"`, `"}]}}`, 2<<20)
+	var h eventHolder
+	var got []byte
+	released := -1
+	for i := 0; i < len(body); i += 32 << 10 {
+		out, err := h.feed(append([]byte(nil), body[i:min(i+32<<10, len(body))]...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) > 0 && released < 0 {
+			released = i
+		}
+		got = append(got, out...)
+	}
+	tail, _ := h.end()
+	got = append(got, tail...)
+	if !bytes.Equal(got, body) {
+		t.Fatalf("a large result was changed: %d bytes out, %d in", len(got), len(body))
+	}
+	if released < 0 || released > holdBytes+(32<<10) {
+		t.Fatalf("first bytes released at offset %d, want at holdBytes", released)
+	}
+	if cap(h.held) != 0 {
+		t.Fatalf("held buffer kept %d bytes after the event", cap(h.held))
+	}
+	// The raw relay stopped at the result's ending line: an error that
+	// follows is held and rewritten as usual.
+	after, err := h.feed([]byte(sseFrame(errorAnswer(2, "invalid token "+echoedToken))))
+	if err != nil || !strings.Contains(string(after), "invalid token [redacted]") {
+		t.Fatalf("the event after a passthrough came out as %q, %v", after, err)
+	}
+	assertNoLeak(t, "event after passthrough", string(after), fragments(echoedToken)...)
+}
+
+// TestEventHolderPaddedIDErrorIsHeld is security requirement 7: a key
+// holder's padded id, an escaped key and a large member before the error
+// cannot turn an error into a passthrough; the event is held to its end and
+// leaves redacted.
+func TestEventHolderPaddedIDErrorIsHeld(t *testing.T) {
+	msg := "invalid token " + echoedToken
+	cases := map[string][]byte{
+		"padded id":      bigEvent(`{"jsonrpc":"2.0","id":"`, `","error":{"code":1,"message":"`+msg+`"}}`, 2<<20),
+		"escaped key":    bigEvent(`{"jsonrpc":"2.0","id":"`, `","\u0065rror":{"code":1,"message":"`+msg+`"}}`, 2<<20),
+		"params first":   bigEvent(`{"jsonrpc":"2.0","params":{"pad":"`, `"},"error":{"code":1,"message":"`+msg+`"}}`, 2<<20),
+		"error a string": bigEvent(`{"jsonrpc":"2.0","id":"`, `","error":"`+msg+`"}`, 2<<20),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			var h eventHolder
+			var early, got []byte
+			for i := 0; i < len(body); i += 32 << 10 {
+				last := i+32<<10 >= len(body)
+				out, err := h.feed(append([]byte(nil), body[i:min(i+32<<10, len(body))]...))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !last {
+					early = append(early, out...)
+				}
+				got = append(got, out...)
+			}
+			if len(early) != 0 {
+				t.Fatalf("released %d bytes before the ending line", len(early))
+			}
+			if !strings.Contains(string(got), "[redacted]") {
+				t.Fatalf("the error was not rewritten: %d bytes, tail %q", len(got), got[max(0, len(got)-120):])
+			}
+			assertNoLeak(t, "client bytes", string(got), fragments(echoedToken)...)
+		})
+	}
+}
+
+// TestEventHolderOverMaxEnds: an event that may be an error and passes
+// maxHeldBytes ends the stream rather than leaving unchecked; so does a
+// partial line with no terminator, which is bounded the same way.
+func TestEventHolderOverMaxEnds(t *testing.T) {
+	old := maxHeldBytes
+	maxHeldBytes = 4 << 20
+	defer func() { maxHeldBytes = old }()
+	for name, body := range map[string][]byte{
+		"error-shaped event": bigEvent(`{"jsonrpc":"2.0","id":"`, `","error":{"message":"x"}}`, 5<<20),
+		"endless comment":    []byte(": " + strings.Repeat("x", 5<<20)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var h eventHolder
+			var err error
+			for i := 0; i < len(body) && err == nil; i += 32 << 10 {
+				_, err = h.feed(append([]byte(nil), body[i:min(i+32<<10, len(body))]...))
+			}
+			if !errors.Is(err, errEventTooLarge) {
+				t.Fatalf("err=%v, want errEventTooLarge", err)
+			}
+		})
+	}
+}
+
+// BenchmarkEventHolderFeed is the holder's cost per 32 KiB read, for the
+// inputs BenchmarkStreamCaptureWrite uses and one large result. Figures for
+// the pull request, not a gate.
+func BenchmarkEventHolderFeed(b *testing.B) {
+	chunk := 32 << 10
+	progress := []byte(sseFrame(progressDoc))
+	cases := map[string][]byte{
+		"blank-lines":     bytes.Repeat([]byte("\n\n"), chunk/2),
+		"progress-events": bytes.Repeat(progress, chunk/len(progress)),
+		"one-event":       []byte("data: " + strings.Repeat("x", chunk-8) + "\n\n"),
+		"2mib-result":     bigEvent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"`, `"}]}}`, 2<<20),
+	}
+	for name, body := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.SetBytes(int64(len(body)))
+			b.ReportAllocs()
+			for range b.N {
+				var h eventHolder
+				for i := 0; i < len(body); i += chunk {
+					if _, err := h.feed(body[i:min(i+chunk, len(body))]); err != nil {
+						b.Fatal(err)
+					}
+				}
+				h.end()
+			}
+		})
+	}
+}
