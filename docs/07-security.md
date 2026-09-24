@@ -136,12 +136,14 @@
   on every row, whoever wrote it. The rules cover a `Bearer` or `Basic`
   value, a labelled value (`X-API-Key: …`, `token=…`), a vendor prefix
   (`sk-`, `sk_`, `ghp_` and the other GitHub prefixes, `github_pat_`,
-  `glpat-`, `xoxb-`, `AKIA`, `ASIA`, a JWT) and any run of 20 or more base64
-  characters holding letters and two digits. It is best effort against an
-  upstream that echoes a credential in free text: a short opaque value, a
-  labelled value under 12 characters with no digit, a UUID-shaped key, a
-  value with spaces, and a token the upstream has encoded or split with
-  invisible characters are not recognised. A host label, a hand-typed
+  `glpat-`, `xoxb-`, `AKIA`, `ASIA`, a JWT) and any run of base64 characters
+  holding letters and two digits that is 20 or more characters with no
+  separator, or that mixes upper and lower case. It is best effort against
+  an upstream that echoes a credential in free text: a short opaque value, a
+  labelled value under 12 characters with no digit, an unlabelled
+  UUID-shaped key, a lowercase hyphenated value and a value with spaces are
+  not recognised, and a token the upstream has encoded or split with
+  invisible characters can keep a short fragment. A host label, a hand-typed
   separator-free slug, a trace id, a container id or another vendor's
   request id of that shape is redacted too; the row's `upstream_id` and
   `request_id` are the operator's fallback. Rows written before this change

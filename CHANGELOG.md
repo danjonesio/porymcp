@@ -10,9 +10,12 @@ Behaviour changes that affect a running deployment. Newest first.
   to the audit log.** A row that used to read `invalid token ghp_…` reads
   `invalid token [redacted]`. The rules cover `Bearer` and `Basic` values,
   labelled values such as `X-API-Key: …`, vendor prefixes (`sk-`, `ghp_`,
-  `github_pat_`, `glpat-`, `xoxb-`, `AKIA`, JWTs) and any run of 20 or more
-  base64 characters holding letters and two digits. Redaction is best
-  effort: a short opaque value or a UUID-shaped key is not recognised.
+  `github_pat_`, `glpat-`, `xoxb-`, `AKIA`, JWTs) and any run of base64
+  characters holding letters and two digits that is 20 or more characters
+  with no separator, or that mixes upper and lower case. Redaction is best
+  effort: a short opaque value, a lowercase hyphenated value or an
+  unlabelled UUID-shaped key is not recognised, and a token the upstream
+  has encoded or split with invisible characters can keep a fragment.
 - **`error_message` is at most 256 bytes on every row.** The bound is
   applied after redaction, so a token cut at the boundary is never stored
   in part.

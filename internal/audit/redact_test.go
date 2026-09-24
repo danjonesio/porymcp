@@ -67,6 +67,11 @@ func TestRedactTextPatterns(t *testing.T) {
 		{"base64url with separator", "AbCdEfGhIjKlMnO-pQrStUvWxYz12345", "[redacted]"},
 		{"lambda host label", "cannot connect to abcdef1234567890abcdef1234567890.lambda-url.eu-west-1.on.aws:443", "cannot connect to [redacted].lambda-url.eu-west-1.on.aws:443"},
 		{"trace id", "trace 4bf92f3577b34da6a3ce929d0e0e4736 not found", "trace [redacted] not found"},
+		{"labelled uuid", "X-API-Key: 550e8400-e29b-41d4-a716-446655440000", "X-API-Key: [redacted]"},
+		// Partly caught: a token the upstream split or encoded keeps a
+		// short fragment, the rest goes. docs/07-security.md says so.
+		{"zero-width split token", "ghp_AbCd\u200bEfGhIjKlMnOpQrStUvWxYz0123456789", "ghp_AbCd\u200b[redacted]"},
+		{"url-encoded token", "invalid token ghp%5FAbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "invalid token ghp%[redacted]"},
 		{"whole token", ghpToken, "[redacted]"},
 		// Unchanged.
 		{"sentence", "the upstream is not available right now", "the upstream is not available right now"},
@@ -95,6 +100,9 @@ func TestRedactTextPatterns(t *testing.T) {
 		{"status", "status: 401", "status: 401"},
 		{"max_tokens", "max_tokens: 4096 exceeded", "max_tokens: 4096 exceeded"},
 		{"fixture api key", "invalid token REAL-APIKEY-SECRET", "invalid token REAL-APIKEY-SECRET"},
+		{"hyphenated lowercase run", "invalid token abcd1234-efgh5678-ijkl9012-mnop", "invalid token abcd1234-efgh5678-ijkl9012-mnop"},
+		{"hyphenated name with digits", "invalid token my-app-2026-eu-west-1-prod", "invalid token my-app-2026-eu-west-1-prod"},
+		{"value with spaces", "invalid token ab12 cd34 ef56 gh78 ij90", "invalid token ab12 cd34 ef56 gh78 ij90"},
 		{"fixture token", "invalid token stored-token-42", "invalid token stored-token-42"},
 		{"rate limited", "rate limited", "rate limited"},
 		{"subscription", "Subscription limit reached", "Subscription limit reached"},
@@ -157,6 +165,9 @@ func TestErrorTextRedactsBeforeItCuts(t *testing.T) {
 		// inside it, so the stored value stays valid UTF-8.
 		{"multi-byte rune before the cut", tenRuns + filler(redactWindowBytes-30-len("é")-len(tenRuns)) + "é" + hexToken, hexToken, "[redacted] [redacted]"},
 		{"multi-byte rune before a shrunk cut", "sk-" + strings.Repeat("a1", 2000) + "é" + strings.Repeat("B", 300), "", "[redacted]é"},
+		{"two-byte rune then a run", strings.Repeat("x ", 10) + "é" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x é"},
+		{"three-byte rune then a run", strings.Repeat("x ", 10) + "€" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x €"},
+		{"four-byte rune then a run", strings.Repeat("x ", 10) + "𝔸" + strings.Repeat("Ab1", 1500), "", "x x x x x x x x x x 𝔸"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -192,9 +203,12 @@ func TestErrorTextRedactsBeforeItCuts(t *testing.T) {
 		}
 	})
 
-	t.Run("shares no memory with the input", func(t *testing.T) {
-		// No rule matches this input, so a shortcut that returned the
-		// input's own bytes when nothing was replaced would fail here.
+	t.Run("stored value is never a view of the input", func(t *testing.T) {
+		// Today every non-empty path allocates (ReplaceAllStringFunc builds
+		// a new string even when nothing matched), so this cannot fail
+		// against the current code; it is here for a future shortcut that
+		// returns the input's own bytes when no rule matched, which would
+		// keep the upstream's whole body alive in a queued row.
 		in := filler(100 << 10)
 		got := errorText(in)
 		inStart := uintptr(unsafe.Pointer(unsafe.StringData(in)))
