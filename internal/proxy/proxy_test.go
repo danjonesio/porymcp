@@ -511,6 +511,32 @@ func listAnswer(w http.ResponseWriter, names ...string) {
 	_, _ = w.Write(out)
 }
 
+// cutBody answers with more Content-Length than bytes: net/http closes the
+// connection after the handler, so the reader sees io.ErrUnexpectedEOF.
+func cutBody(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", "100")
+	_, _ = io.WriteString(w, `{"jsonrpc":`)
+}
+
+// resetBody writes the headers and part of the body, then resets the
+// connection (linger 0 turns the close into a RST), so the reader gets the
+// *net.OpError whose text is "read tcp a->b: connection reset by peer".
+func resetBody(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	conn, buf, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"jsonrpc\":")
+	_ = buf.Flush()
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetLinger(0)
+	}
+	_ = conn.Close()
+}
+
 // PORM-191 criteria 1 and 2, security requirements 1, 2, 6, 7 and 8: a
 // transport failure on the MCP door is one closed sentence in the row, the
 // host at most and never the URL, the path, the query string or an address
@@ -593,14 +619,16 @@ func TestMCPDoorTransportFailureIsClosedSentence(t *testing.T) {
 		})
 		check(t, f, f.postCtx(ctx, toolCall("1", "ping")), "client went away before the answer")
 	})
-	// Security requirement 7: a body that failed while it was read.
+	// Security requirement 7: a body that failed while it was read, at
+	// serve's own ReadBody. The reset is the case that leaked: its text is
+	// "read tcp <local>-><resolved>: connection reset by peer".
 	t.Run("cut body", func(t *testing.T) {
-		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, Handler: func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Content-Length", "100")
-			_, _ = io.WriteString(w, `{"jsonrpc":`)
-		}}, nil, nil)
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, Handler: func(w http.ResponseWriter, r *http.Request) { cutBody(w) }}, nil, nil)
 		check(t, f, f.post(toolCall("1", "ping")), "unexpected EOF")
+	})
+	t.Run("reset body", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping"}, Handler: func(w http.ResponseWriter, r *http.Request) { resetBody(t, w) }}, nil, nil)
+		check(t, f, f.post(toolCall("1", "ping")), "upstream connection failed")
 	})
 	t.Run("member endpoint", func(t *testing.T) {
 		a := freeAddr(t)
@@ -641,6 +669,24 @@ func TestMCPDoorTransportFailureIsClosedSentence(t *testing.T) {
 			t.Fatalf("row upstream_id=%q, want beta's %q", row.UpstreamID, f.upstreamID("beta"))
 		}
 	})
+	// The same route, failing at forwardRead's ReadBody (requirement 7).
+	t.Run("routed call reset mid-body", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"search"}},
+			"beta": {Tools: []string{"x"}, Handler: func(w http.ResponseWriter, r *http.Request) {
+				switch rpcMethodOf(r) {
+				case "tools/list":
+					listAnswer(w, "x")
+				case "tools/call":
+					resetBody(t, w)
+				default:
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+				}
+			}},
+		}, true, nil, nil, nil)
+		check(t, f, f.post(toolCall("1", "beta__x")), "upstream connection failed")
+	})
 }
 
 // PORM-191 criterion 3, security requirements 1 and 5: the group member
@@ -669,6 +715,31 @@ func TestGroupMemberSkippedLogIsClosedSentence(t *testing.T) {
 		t.Errorf("skip err=%q, want %q", got, "cannot connect to "+a)
 	}
 	assertNoLeak(t, "server log", logs.String())
+
+	// The catalogue request failing at listTools's ReadBody (requirement 7).
+	t.Run("reset mid-catalogue", func(t *testing.T) {
+		f := newFixture(t, map[string]upstreamSpec{
+			"alpha": {Tools: []string{"search"}},
+			"beta": {Tools: []string{"x"}, Handler: func(w http.ResponseWriter, r *http.Request) {
+				if rpcMethodOf(r) == "tools/list" {
+					resetBody(t, w)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+			}},
+		}, true, nil, nil, nil)
+		logs := captureLogs(f)
+		f.post(listRequest)
+		w := skipWarnings(t, logs)
+		if len(w) != 1 {
+			t.Fatalf("%d skip warnings, want exactly 1: %s", len(w), logs.String())
+		}
+		if got, _ := w[0]["err"].(string); got != "upstream connection failed" {
+			t.Errorf("skip err=%q, want upstream connection failed", got)
+		}
+		assertNoLeak(t, "server log", logs.String())
+	})
 }
 
 // PORM-191 amendment A2, security requirement 1: a stored URL that
