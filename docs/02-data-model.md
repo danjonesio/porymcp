@@ -323,9 +323,11 @@ On creation/rotation the plaintext key is returned **once**.
   call it is the failure the proxy saw, while the client was told only
   `upstream request failed`. An upstream that answered a redirect reads
   `upstream redirected to <host>` (the redirect target's host alone, never
-  the full `Location`, which can carry a query string), and that redirect
-  message is bounded at 256 bytes. The field can hold upstream-controlled
-  text, and is rendered as text, never HTML (`docs/06-ui.md`)
+  the full `Location`, which can carry a query string). Credential-shaped
+  text in the field is replaced by `[redacted]` and the field is bounded at
+  256 bytes on every row (PORM-72), both measured in bytes. The field can
+  hold upstream-controlled text, and is rendered as text, never HTML
+  (`docs/06-ui.md`)
 - `request_id` (for correlation)
 
 ## AdminEvent

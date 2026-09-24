@@ -4,6 +4,27 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Credential-shaped text in error_message is redacted (PORM-72)
+
+- **An upstream that echoes the credential it was sent no longer writes it
+  to the audit log.** A row that used to read `invalid token ghp_…` reads
+  `invalid token [redacted]`. The rules cover `Bearer` and `Basic` values,
+  labelled values such as `X-API-Key: …`, vendor prefixes (`sk-`, `ghp_`,
+  `github_pat_`, `glpat-`, `xoxb-`, `AKIA`, JWTs) and any run of 20 or more
+  base64 characters holding letters and two digits. Redaction is best
+  effort: a short opaque value or a UUID-shaped key is not recognised.
+- **`error_message` is at most 256 bytes on every row.** The bound is
+  applied after redaction, so a token cut at the boundary is never stored
+  in part.
+- **An id that looks like a token is redacted too.** A trace id, a
+  container id, another vendor's request id or a host label of 20 or more
+  letters and digits reads `[redacted]` inside the upstream's sentence. The
+  row's `upstream_id` and `request_id` are unchanged.
+- **Rows written before the upgrade keep the upstream's text as sent.**
+  Nothing purges them until retention ships (PORM-13). An operator whose
+  upstream echoed a credential into an older row should rotate that
+  credential at the vendor.
+
 ### Transport failures on the MCP door are recorded as fixed sentences (PORM-191)
 
 - **A refused connection, a DNS failure, a TLS failure or a reset now reads a
