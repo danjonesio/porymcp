@@ -62,7 +62,7 @@ var bearerAuth = json.RawMessage(`{"token":"secret-token-1"}`)
 // security requirement 12): one GET to the base joined with the test path,
 // the credential on it, no initialize, and one closed sentence per outcome.
 func TestHTTPProbe(t *testing.T) {
-	c := New()
+	c := New(testGuard)
 	ctx := context.Background()
 
 	t.Run("200 is ok and sends exactly one GET with the credential", func(t *testing.T) {

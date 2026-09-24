@@ -8,15 +8,20 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // The policy lives on the construction, not on the one function that reads a
@@ -39,17 +44,42 @@ func TestClientRefusesRedirectsByConstruction(t *testing.T) {
 	}
 }
 
-// The default transport is wrapped, not replaced, so certificate verification
-// is whatever Go does by default and HTTPS_PROXY still works. A patch that
-// reaches for InsecureSkipVerify to test against a self-signed dev server has
-// to argue with this.
+// The default transport is cloned, then wrapped, so certificate verification
+// is whatever Go does by default and HTTPS_PROXY still works (security
+// requirement 7). Clone fills TLSClientConfig with the h2 defaults, so the
+// pin is on the fields that would weaken it, not on nil. A patch that reaches
+// for InsecureSkipVerify to test against a self-signed dev server, or for a
+// DialTLSContext that would route https around the address guard, has to
+// argue with this.
 func TestClientDoesNotWeakenTLS(t *testing.T) {
-	tr, ok := NewHTTPClient(Options{}).Transport.(UpstreamTransport)
+	wrapped, ok := NewHTTPClient(Options{}).Transport.(UpstreamTransport)
 	if !ok {
 		t.Fatal("transport is not an UpstreamTransport")
 	}
-	if tr.Next != http.DefaultTransport {
-		t.Fatalf("UpstreamTransport.Next is %T, want http.DefaultTransport: a replacement transport is where a TLSClientConfig would arrive", tr.Next)
+	tr, ok := wrapped.Next.(*http.Transport)
+	if !ok {
+		t.Fatalf("UpstreamTransport.Next is %T, want the cloned *http.Transport", wrapped.Next)
+	}
+	if tr == http.DefaultTransport {
+		t.Fatal("Next is the shared http.DefaultTransport itself; the guard must go on a clone")
+	}
+	if c := tr.TLSClientConfig; c != nil {
+		if c.InsecureSkipVerify || c.RootCAs != nil || c.VerifyPeerCertificate != nil || c.VerifyConnection != nil || c.ServerName != "" {
+			t.Fatalf("TLSClientConfig weakened: skip=%v roots=%v verifyPeer=%v verifyConn=%v serverName=%q",
+				c.InsecureSkipVerify, c.RootCAs != nil, c.VerifyPeerCertificate != nil, c.VerifyConnection != nil, c.ServerName)
+		}
+	}
+	if tr.DialTLSContext != nil || tr.DialTLS != nil || tr.Dial != nil { //nolint:staticcheck // the deprecated fields are exactly the bypasses being pinned
+		t.Fatal("a DialTLS or Dial hook is set; https would route around the address guard")
+	}
+	if tr.DialContext == nil {
+		t.Fatal("DialContext is nil; the address guard is not installed")
+	}
+	if reflect.ValueOf(tr.Proxy).Pointer() != reflect.ValueOf(http.ProxyFromEnvironment).Pointer() {
+		t.Fatal("Proxy is not http.ProxyFromEnvironment; HTTPS_PROXY deployments would break")
+	}
+	if !tr.ForceAttemptHTTP2 {
+		t.Fatal("ForceAttemptHTTP2 is off; the clone lost the default transport's HTTP/2")
 	}
 }
 
@@ -79,7 +109,7 @@ func TestSendRefusesEveryRedirectClass(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	client := NewHTTPClient(Options{Timeout: 5 * time.Second})
+	client := NewHTTPClient(Options{Timeout: 5 * time.Second, Guard: testGuard})
 	for _, code := range []int{300, 301, 302, 303, 304, 307, 308} {
 		for _, loc := range []bool{true, false} {
 			name := strconv.Itoa(code)
@@ -135,7 +165,7 @@ func TestOpenRefusesEveryRedirectClass(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	client := NewHTTPClient(Options{Timeout: 5 * time.Second})
+	client := NewHTTPClient(Options{Timeout: 5 * time.Second, Guard: testGuard})
 	for code := 300; code <= 308; code++ {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			status = code
@@ -362,7 +392,7 @@ func TestOpenRelayPasses304Only(t *testing.T) {
 		w.WriteHeader(status)
 	}))
 	defer origin.Close()
-	client := NewHTTPClient(Options{Timeout: 5 * time.Second})
+	client := NewHTTPClient(Options{Timeout: 5 * time.Second, Guard: testGuard})
 	for code := 300; code <= 308; code++ {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			status = code
@@ -394,5 +424,73 @@ func TestOpenRelayPasses304Only(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, origin.URL, nil)
 	if resp, err := Open(client, req); !errors.Is(err, ErrRedirected) || resp != nil {
 		t.Fatalf("Open on 304: resp=%v err=%v; the MCP door's refusal must be unchanged", resp, err)
+	}
+}
+
+// Security requirement 6: the guard goes on a clone and never on the shared
+// http.DefaultTransport, which the container healthcheck and every test
+// client dial loopback through.
+func TestDefaultTransportUntouched(t *testing.T) {
+	shared := http.DefaultTransport.(*http.Transport)
+	before := reflect.ValueOf(shared.DialContext).Pointer()
+	_ = NewHTTPClient(Options{})
+	_ = NewHTTPClient(Options{Guard: testGuard})
+	if after := reflect.ValueOf(shared.DialContext).Pointer(); after != before {
+		t.Fatal("NewHTTPClient changed http.DefaultTransport.DialContext; the healthcheck would be refused")
+	}
+	if got := NewHTTPClient(Options{}).Transport.(UpstreamTransport).Next; got == http.RoundTripper(shared) {
+		t.Fatal("the client wraps the shared default transport itself")
+	}
+}
+
+// Security requirement 4: a refusal leaves Open as the bare Denied value.
+// Do wraps it in a *url.Error whose text quotes the request URL, and that
+// text is what the MCP door writes into an audit row.
+func TestOpenReturnsBareDenied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the loopback server was reached under the default guard")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := NewHTTPClient(Options{Timeout: 5 * time.Second})
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/mcp?token=SECRET_QUERY_MARKER", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := Open(client, req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	want := netguard.Denied{Class: netguard.ClassLoopback}
+	if err != want {
+		t.Fatalf("Open err=%v (%T), want exactly %v", err, err, want)
+	}
+	if msg := err.Error(); strings.Contains(msg, "127.0.0.1") || strings.Contains(msg, "http") || strings.Contains(msg, "SECRET_QUERY_MARKER") {
+		t.Fatalf("error text %q carries the address or the URL", msg)
+	}
+}
+
+// Security requirements 4 and 5: the closed sentence set names the class
+// through both wrappings Do can apply, and a resolver error still reads as
+// one.
+func TestTransportFailureNamesClass(t *testing.T) {
+	denied := netguard.Denied{Class: netguard.ClassLoopback}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"bare", denied, "upstream address denied: loopback"},
+		{"url.Error", &url.Error{Op: "Post", URL: "http://127.0.0.1:1/mcp?q=1", Err: denied}, "upstream address denied: loopback"},
+		{"proxyconnect", &url.Error{Op: "Post", URL: "http://127.0.0.1:1/mcp", Err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: denied}}, "upstream address denied: loopback"},
+		{"metadata", netguard.Denied{Class: netguard.ClassMetadata}, "upstream address denied: metadata"},
+		{"dns", &net.DNSError{Err: "no such host", Name: "example.test", IsNotFound: true}, "cannot resolve example.test"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TransportFailure(tc.err, "example.test"); got != tc.want {
+				t.Fatalf("TransportFailure=%q, want %q", got, tc.want)
+			}
+		})
 	}
 }

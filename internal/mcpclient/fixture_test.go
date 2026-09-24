@@ -12,7 +12,13 @@ import (
 	"testing"
 
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
+
+// testGuard is the address policy every fixture-backed test runs under: the
+// fixtures listen on loopback, which the shipped default refuses. Tests that
+// exercise the refusal itself build a client with the zero value.
+var testGuard = netguard.Options{AllowLoopback: true}
 
 // The fixture is a real MCP server as the reference implementations behave,
 // not as a hand-written stub would: it MINTS A SESSION and refuses anything
@@ -320,7 +326,7 @@ func (f *fixture) withUserinfo(user, password, query string) string {
 // discover runs one discovery against the fixture with the default client.
 func discover(t *testing.T, up *models.Upstream, auth json.RawMessage) Discovery {
 	t.Helper()
-	return New().Discover(t.Context(), up, auth)
+	return New(testGuard).Discover(t.Context(), up, auth)
 }
 
 // marshal renders a Discovery exactly as the management API would, so a leak
@@ -373,7 +379,7 @@ func (c *countingTransport) count() int {
 // clientWith returns a discovery client whose transport is the caller's, so a
 // test can assert on requests that never leave or hand back a crafted error.
 func clientWith(tr http.RoundTripper) *Client {
-	c := New()
+	c := New(testGuard)
 	c.http.Transport = tr
 	return c
 }

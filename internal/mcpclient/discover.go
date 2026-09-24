@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/danjonesio/porymcp/internal/netguard"
+
 	"github.com/danjonesio/porymcp/internal/models"
 )
 
@@ -309,12 +311,14 @@ func preflight(up *models.Upstream, plainAuth json.RawMessage, httpBase bool) (h
 // why the redirect policy is not something a caller gets to pass in.
 type Client struct{ http *http.Client }
 
-func New() *Client {
+// New builds a discovery client. guard is the operator's address policy
+// from config; the proxy and the management API pass the same value.
+func New(guard netguard.Options) *Client {
 	// Timeout as well as the context deadline: the context bounds the whole
 	// sequence, and Client.Timeout is the backstop for a body that trickles
 	// in a byte at a time, which no read cap stops. Both surface as
 	// context.DeadlineExceeded, so one branch classifies them.
-	return &Client{http: NewHTTPClient(Options{Timeout: discoverBudget})}
+	return &Client{http: NewHTTPClient(Options{Timeout: discoverBudget, Guard: guard})}
 }
 
 // Discover asks one upstream what it advertises, in whichever era it speaks.
@@ -852,31 +856,55 @@ func (p *probe) endSession(ctx context.Context) {
 // and the whole query string, and a query parameter is where a large share of
 // hosted MCP servers put their token.
 func (p *probe) transportFailure(step string, err error) string {
-	// Both the sequence deadline and Client.Timeout arrive as this.
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "upstream did not answer within " + discoverBudget.String()
-	}
 	// A body past the read cap is news of its own. Before Send refused it, the
 	// half-read document failed to parse and a working server with a very
 	// large catalogue was reported as one that does not speak JSON-RPC.
 	if errors.Is(err, ErrBodyTooLarge) {
 		return "upstream's answer to " + step + " is larger than discovery will read"
 	}
-	return TransportFailure(err, p.host)
+	return adminTransportFailure(err, p.host)
+}
+
+// loopbackRemedy is the clause discovery and the HTTP probe add to a loopback
+// refusal. An operator who typed localhost on a bare binary wants the switch;
+// one who typed it in a container wants the host, which loopback is not.
+const loopbackRemedy = "; on a bare binary set UPSTREAM_ALLOW_LOOPBACK=true, in a container use host.docker.internal"
+
+// adminTransportFailure is TransportFailure for the two surfaces only an
+// admin reads, discovery and the HTTP probe: the discovery budget's own
+// sentence (both the sequence deadline and Client.Timeout arrive as
+// context.DeadlineExceeded), then the loopback remedy, then the closed set.
+// Audit rows go through TransportFailure and keep the bare sentence.
+func adminTransportFailure(err error, host string) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "upstream did not answer within " + discoverBudget.String()
+	}
+	var denied netguard.Denied
+	if errors.As(err, &denied) && denied.Class == netguard.ClassLoopback {
+		return denied.Error() + loopbackRemedy
+	}
+	return TransportFailure(err, host)
 }
 
 // TransportFailure is the closed sentence set for a request that got no
-// answer: a refused redirect, a DNS failure, a TLS failure, a connection
-// failure, or anything else. host is the only thing ever interpolated and the
-// caller passes it only when it is HostSafe; an empty host reads as "the
-// upstream". Nothing here reads err's own text except the TLS check, and
-// nothing writes it: *url.Error keeps the path and the whole query string,
-// which on the relay door is the client's. Budget expiries are not here:
-// discovery's own method names its budget and the proxy's causeError names
-// its own, because the two are different numbers.
+// answer: an address the guard refused, a refused redirect, a DNS failure, a
+// TLS failure, a connection failure, or anything else. host is the only thing
+// ever interpolated and the caller passes it only when it is HostSafe; an
+// empty host reads as "the upstream". Nothing here reads err's own text
+// except the TLS check, and nothing writes it: *url.Error keeps the path and
+// the whole query string, which on the relay door is the client's. Budget
+// expiries are not here: discovery's own method names its budget and the
+// proxy's causeError names its own, because the two are different numbers.
 func TransportFailure(err error, host string) string {
 	if host == "" {
 		host = "the upstream"
+	}
+	// First: a refusal names its class and never an address, and it must
+	// not fall through to the *net.OpError arm it can arrive wrapped in
+	// behind an egress proxy.
+	var denied netguard.Denied
+	if errors.As(err, &denied) {
+		return denied.Error()
 	}
 	var redirect Redirect
 	if errors.As(err, &redirect) {
@@ -925,21 +953,25 @@ func statusFailure(status int, step string) (string, bool) {
 	return "", false
 }
 
-// CheckTarget is the whole gate on where a request carrying an upstream
-// credential may go: an absolute http or https URL, with a host, and no
-// fragment. Deliberately syntax and nothing else.
+// ErrURLFragment and ErrURLUserinfo are the two URL rules the management
+// API names in a 400 of their own; the others share one sentence there.
+// CheckTarget returns the first, CheckHTTPBase and the API's write gate the
+// second, so each rule has one sentence.
+var (
+	ErrURLFragment = errors.New("url must not carry a fragment")
+	ErrURLUserinfo = errors.New("url must not embed credentials")
+)
+
+// CheckTarget is the whole syntax gate on where a request carrying an
+// upstream credential may go: an absolute http or https URL, with a host, and
+// no fragment. Deliberately syntax and nothing else: where the host resolves
+// is checked at dial time by internal/netguard, on the transport's
+// DialContext inside NewHTTPClient. A check that resolved the host here would
+// be defeated by the second resolution at dial time (DNS rebinding).
 //
 // Exported so the management API can refuse such a URL on create and patch
 // rather than storing one only discovery can complain about. There is one
 // answer to "is this a URL PoryMCP will connect to", and it lives here.
-//
-// TODO(PORM-79): refusing loopback, link-local and cloud-metadata addresses
-// does NOT belong in this function. A check that resolves the host here and
-// inspects the answer is defeated by the second resolution at dial time (Go
-// re-resolves, which is classic DNS rebinding) so the real block has to sit on
-// the transport's DialContext/Control hook inside NewHTTPClient, where it can
-// read the peer address the connection actually got. This is the seam that
-// says the decision has one owner, not the decision.
 func CheckTarget(u *url.URL) error {
 	switch {
 	case u == nil:
@@ -949,7 +981,7 @@ func CheckTarget(u *url.URL) error {
 	case u.Host == "":
 		return errors.New("no host")
 	case u.Fragment != "":
-		return errors.New("url carries a fragment")
+		return ErrURLFragment
 	}
 	return nil
 }
@@ -969,7 +1001,7 @@ func CheckHTTPBase(u *url.URL) error {
 		return errors.New("url must not carry a query string")
 	}
 	if u.User != nil {
-		return errors.New("url must not embed credentials")
+		return ErrURLUserinfo
 	}
 	return nil
 }
