@@ -42,6 +42,9 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.LogWarnings(log)
+	// egress_proxy is a boolean on purpose, a proxy URL can carry credentials.
+	log.Info("upstream guard", "allow_loopback", cfg.UpstreamGuard.AllowLoopback,
+		"deny_private", cfg.UpstreamGuard.DenyPrivate, "egress_proxy", config.EgressProxySet())
 
 	st, err := store.Open(cfg.DatabaseURL)
 	if err != nil {

@@ -81,6 +81,8 @@ func TestLoadBoolFlags(t *testing.T) {
 	for _, tc := range cases {
 		t.Setenv("ALLOW_INSECURE_HTTP", tc.value)
 		t.Setenv("ALLOW_LOCALHOST", tc.value)
+		t.Setenv("UPSTREAM_ALLOW_LOOPBACK", tc.value)
+		t.Setenv("UPSTREAM_DENY_PRIVATE", tc.value)
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("value %q: %v", tc.value, err)
@@ -89,6 +91,65 @@ func TestLoadBoolFlags(t *testing.T) {
 			t.Fatalf("value %q: insecure=%v localhost=%v want %v",
 				tc.value, cfg.AllowInsecureHTTP, cfg.AllowLocalhost, tc.want)
 		}
+		if cfg.UpstreamGuard.AllowLoopback != tc.want || cfg.UpstreamGuard.DenyPrivate != tc.want {
+			t.Fatalf("value %q: allow_loopback=%v deny_private=%v want %v",
+				tc.value, cfg.UpstreamGuard.AllowLoopback, cfg.UpstreamGuard.DenyPrivate, tc.want)
+		}
+	}
+}
+
+// Security requirement 13: a value envTruthy does not know reads as false,
+// and startup says so by name. For UPSTREAM_DENY_PRIVATE a silent false
+// would leave private ranges open while the operator believes them closed.
+func TestLoadWarnsOnUnrecognisedGuardValue(t *testing.T) {
+	t.Setenv("ADMIN_API_KEY", "test-admin")
+	t.Setenv("ENCRYPTION_KEY", strings.Repeat("ab", 32))
+	t.Setenv("UPSTREAM_DENY_PRIVATE", "on")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UpstreamGuard.DenyPrivate {
+		t.Fatal("\"on\" must not read as true")
+	}
+	var buf bytes.Buffer
+	cfg.LogWarnings(slog.New(slog.NewTextHandler(&buf, nil)))
+	const want = "UPSTREAM_DENY_PRIVATE is not a recognised boolean; treating it as false (use 1, true, yes, 0, false or no)"
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("warnings %q lack %q", buf.String(), want)
+	}
+	if strings.Contains(buf.String(), "UPSTREAM_ALLOW_LOOPBACK is set") {
+		t.Fatal("loopback warning logged with the flag off")
+	}
+
+	t.Setenv("UPSTREAM_DENY_PRIVATE", "")
+	t.Setenv("UPSTREAM_ALLOW_LOOPBACK", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Reset()
+	cfg.LogWarnings(slog.New(slog.NewTextHandler(&buf, nil)))
+	if !strings.Contains(buf.String(), "UPSTREAM_ALLOW_LOOPBACK is set; upstreams on loopback addresses are allowed") {
+		t.Fatalf("warnings %q lack the loopback warning", buf.String())
+	}
+	if strings.Contains(buf.String(), "not a recognised boolean") {
+		t.Fatalf("warnings %q flag a recognised value", buf.String())
+	}
+}
+
+// Security requirement 14: net/http honours the lowercase proxy names too,
+// so the startup line must not say false while every dial goes to a proxy.
+func TestEgressProxySetLowercase(t *testing.T) {
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		t.Setenv(key, "")
+	}
+	if EgressProxySet() {
+		t.Fatal("no proxy variable set, want false")
+	}
+	t.Setenv("https_proxy", "http://proxy.internal:3128")
+	if !EgressProxySet() {
+		t.Fatal("https_proxy set, want true")
 	}
 }
 
