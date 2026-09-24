@@ -260,14 +260,6 @@ func Failed(kind, msg string) Discovery {
 	return Discovery{Kind: kind, Tools: []Tool{}, Error: bound(msg, MaxErrorBytes)}
 }
 
-// preflight is everything Discover and Probe check before a single byte
-// leaves the process, in one function so the two doors cannot drift: the
-// stored transport, the URL (CheckTarget, plus CheckHTTPBase's two rules when
-// httpBase is set), the auth_config's header names and the credential's
-// presence. It returns the host to name in later sentences ("the upstream"
-// when the real one is not HostSafe) and, when something is refused, the
-// sentence to fail with. A refusal here costs the upstream nothing and never
-// repeats the operator's own value.
 // RowHost is the one host a row or a log line may name for a registered URL:
 // its host, with the port when the URL names one, when HostSafe accepts it
 // and bounded at MaxErrorBytes; "" (which TransportFailure prints as "the
@@ -282,6 +274,14 @@ func RowHost(raw string) string {
 	return bound(u.Host, MaxErrorBytes)
 }
 
+// preflight is everything Discover and Probe check before a single byte
+// leaves the process, in one function so the two doors cannot drift: the
+// stored transport, the URL (CheckTarget, plus CheckHTTPBase's two rules when
+// httpBase is set), the auth_config's header names and the credential's
+// presence. It returns the host to name in later sentences ("the upstream"
+// when the real one is not HostSafe) and, when something is refused, the
+// sentence to fail with. A refusal here costs the upstream nothing and never
+// repeats the operator's own value.
 func preflight(up *models.Upstream, plainAuth json.RawMessage, httpBase bool) (host, fail string) {
 	if err := TransportError(up.Transport); err != nil {
 		return "", err.Error()
