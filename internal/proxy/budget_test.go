@@ -345,7 +345,10 @@ func TestUpstreamFailureText(t *testing.T) {
 // read is one of two fixed sentences, after the budget and the client's own
 // cancellation, and never the read error's text, which names an address.
 func TestReadFailureText(t *testing.T) {
-	live, budget, client := failureContexts(t)
+	live, _, client := failureContexts(t)
+	// The answer budget is the one that can fire while a body is read.
+	budget, cancelBudget := context.WithCancelCause(t.Context())
+	cancelBudget(&budgetError{what: "did not answer within", d: 50 * time.Millisecond})
 	reset := &net.OpError{Op: "read", Net: "tcp", Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 5), Port: 3001}, Err: syscall.ECONNRESET}
 	cases := []struct {
 		name string
@@ -356,7 +359,7 @@ func TestReadFailureText(t *testing.T) {
 		{"cut short", live, io.ErrUnexpectedEOF, "unexpected EOF"},
 		{"reset", live, reset, "upstream connection failed"},
 		{"body too large", live, mcpclient.BodyTooLarge{Limit: 16777216}, "upstream body exceeds 16777216 bytes"},
-		{"budget over a cut body", budget, io.ErrUnexpectedEOF, "upstream did not connect within 50ms"},
+		{"budget over a cut body", budget, io.ErrUnexpectedEOF, "upstream did not answer within 50ms"},
 		{"client went away", client, reset, "client went away before the answer"},
 	}
 	for _, tc := range cases {
