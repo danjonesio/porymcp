@@ -16,7 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
+	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/google/uuid"
 )
 
@@ -1180,5 +1183,36 @@ func TestDiscoverLogsNothing(t *testing.T) {
 	}
 	if logs.Len() != 0 {
 		t.Fatalf("the discovery handlers wrote %s", logs.String())
+	}
+}
+
+// PORM-79 security requirement 12: both discover routes answer a refused
+// dial with ok false and the loopback sentence carrying its remedy, and the
+// unsaved route keeps its rate limit (TestDiscoverRateLimited pins the 429).
+func TestDiscoverRefusedDial(t *testing.T) {
+	const want = "upstream address denied: loopback; on a bare binary set UPSTREAM_ALLOW_LOOPBACK=true, in a container use host.docker.internal"
+	stub := newMCPStub(t)
+	s, seed, st := testAPI(t)
+	id, _ := mustUpstream(t, seed, "Local", map[string]any{"url": stub.srv.URL})
+
+	// A second server over the same store with the shipped default guard.
+	cfg := *s.cfg
+	cfg.UpstreamGuard = netguard.Options{}
+	h := New(&cfg, st, nil, mcpclient.New(cfg.UpstreamGuard), webutil.EncryptionOK).Routes()
+
+	for name, rr := range map[string]*httptest.ResponseRecorder{
+		"saved":   doJSON(t, h, http.MethodPost, "/upstreams/"+id+"/discover", "test-admin", nil),
+		"unsaved": doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin", map[string]any{"url": stub.srv.URL}),
+	} {
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: code %d body %s", name, rr.Code, rr.Body.String())
+		}
+		d := discovery(t, rr)
+		if d["ok"] != false || d["error"] != want {
+			t.Fatalf("%s: ok=%v error=%q, want %q", name, d["ok"], d["error"], want)
+		}
+	}
+	if n := len(stub.requests()); n != 0 {
+		t.Fatalf("the loopback stub saw %d requests", n)
 	}
 }

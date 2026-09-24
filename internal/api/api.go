@@ -85,7 +85,7 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, mcp *mcpclient.Cl
 		log = slog.New(slog.DiscardHandler)
 	}
 	if mcp == nil {
-		mcp = mcpclient.New()
+		mcp = mcpclient.New(cfg.UpstreamGuard)
 	}
 	keys := cfg.Keyring()
 	return &Server{

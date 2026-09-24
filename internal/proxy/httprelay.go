@@ -29,6 +29,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/auth"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // The four relay routes. chi's /x/* does not match /x, so the base URL is a
@@ -530,6 +531,10 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	reason := ""
 	if err != nil {
 		reason = relayFailureText(ctx, err, base.Host)
+		var denied netguard.Denied
+		if errors.As(err, &denied) {
+			h.warnDenied(up.ID, requestID, denied.Class)
+		}
 	}
 	cancel(nil)
 	if err != nil {

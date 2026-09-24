@@ -18,6 +18,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/config"
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 )
@@ -115,7 +116,7 @@ func newBlockFixture(t *testing.T, targetType, toolFilter string) *blockFixture 
 	// The same cfg shape TestRouterTopology uses. PublicURL is what the
 	// proxy's host check compares the request Host against, so every request
 	// below is made to http://localhost:8080/... rather than to a bare path.
-	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: encKey, PublicURL: "http://localhost:8080"}
+	cfg := &config.Config{AdminAPIKey: "test-admin", EncryptionKey: encKey, PublicURL: "http://localhost:8080", UpstreamGuard: netguard.Options{AllowLoopback: true}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auditor := audit.New(st, log)
 	t.Cleanup(auditor.Close) // LIFO: the audit logger stops before the store closes

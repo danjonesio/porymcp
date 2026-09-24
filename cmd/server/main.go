@@ -495,7 +495,7 @@ func newRouter(cfg *config.Config, st store.Store, auditor *audit.Logger, log *s
 	// policy (refuse every redirect, wrap rather than replace the default
 	// transport) lives so there is one place to forget it rather than two
 	// (PORM-94).
-	r.Mount("/api/v1", api.New(cfg, st, log, mcpclient.New(), encryption).Routes())
+	r.Mount("/api/v1", api.New(cfg, st, log, mcpclient.New(cfg.UpstreamGuard), encryption).Routes())
 	px := proxy.New(cfg, st, auditor, log)
 	r.HandleFunc("/mcp", px.ServeHTTP)
 	r.HandleFunc(proxy.KeyRoute, px.ServeHTTP)

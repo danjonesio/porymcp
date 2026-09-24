@@ -8,11 +8,13 @@ package proxy
 // new.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,6 +28,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 )
 
 // httpSpec describes one plain HTTP API upstream for the relay fixture.
@@ -1204,5 +1207,46 @@ func TestRelayPreflight(t *testing.T) {
 	h = rr.Header()
 	if h.Get("Allow") != allowedMethods || h.Get("Access-Control-Allow-Headers") != allowedHeaders+", Mcp-Param-Foo" {
 		t.Errorf("MCP preflight changed: Allow %q headers %q", h.Get("Allow"), h.Get("Access-Control-Allow-Headers"))
+	}
+}
+
+// PORM-79 security requirements 4 and 11 on the relay door: the twin of
+// TestProxyRefusedDialAudited. The row goes through relayFailureText and
+// TransportFailure's first arm; the Warn line is the same helper's.
+func TestRelayRefusedDialAudited(t *testing.T) {
+	f := relayGET(t, nil)
+	var logs bytes.Buffer
+	cfg := *f.H.cfg
+	cfg.UpstreamGuard = netguard.Options{}
+	f.H = New(&cfg, f.Store, f.H.audit, slog.New(slog.NewJSONHandler(&logs, nil)))
+	rt := chi.NewRouter()
+	rt.HandleFunc(HTTPBaseRoute, f.H.ServeRelay)
+	rt.HandleFunc(HTTPRoute, f.H.ServeRelay)
+	f.Router = rt
+
+	rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	if m := jsonBody(t, rr.Body.Bytes()); m["error"] != "upstream request failed" {
+		t.Errorf("body %s", rr.Body.String())
+	}
+	row := f.lastRow(1)
+	if row.Status != models.StatusError || row.ErrorMessage != "upstream address denied: loopback" {
+		t.Fatalf("row = %+v, want the class sentence", row)
+	}
+	if n := len(f.APIs["beta"].requests()); n != 0 {
+		t.Fatalf("the loopback API saw %d requests", n)
+	}
+	line := logs.String()
+	for _, want := range []string{`"msg":"upstream address denied"`, `"class":"loopback"`, `"upstream_id":"`, `"request_id":"`} {
+		if !strings.Contains(line, want) {
+			t.Errorf("server log lacks %s: %s", want, line)
+		}
+	}
+	for _, leak := range []string{"127.0.0.1", "http://"} {
+		if strings.Contains(line, leak) {
+			t.Errorf("server log carries %q: %s", leak, line)
+		}
 	}
 }

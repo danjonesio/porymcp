@@ -16,6 +16,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/mcpclient/oauthstub"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/google/uuid"
 )
@@ -45,7 +46,7 @@ func newRig(t *testing.T) *rig {
 	t.Cleanup(func() { _ = st.Close() })
 	k, _ := keyring(t, 0)
 	r := &rig{t: t, st: st, keys: k, stub: oauthstub.New(t), log: &bytes.Buffer{}, now: time.Now().UTC().Truncate(time.Second)}
-	r.p = NewPresenter(k, st, mcpclient.New(), slog.New(slog.NewJSONHandler(r.log, nil)))
+	r.p = NewPresenter(k, st, mcpclient.New(netguard.Options{AllowLoopback: true}), slog.New(slog.NewJSONHandler(r.log, nil)))
 	r.p.SetClock(func() time.Time { return r.now })
 	return r
 }
@@ -356,7 +357,7 @@ func TestPresentConflictAfterRekeyStillStoresNewTokens(t *testing.T) {
 	set := r.set(r.now.Add(-time.Minute))
 	u := r.row(set)
 	r.keys = newRing
-	r.p = NewPresenter(newRing, r.st, mcpclient.New(), slog.New(slog.NewJSONHandler(r.log, nil)))
+	r.p = NewPresenter(newRing, r.st, mcpclient.New(netguard.Options{AllowLoopback: true}), slog.New(slog.NewJSONHandler(r.log, nil)))
 	r.p.SetClock(func() time.Time { return r.now })
 
 	release := r.stub.HoldToken()
@@ -476,7 +477,7 @@ func (f *failingSwap) SwapUpstreamAuth(ctx context.Context, id string, expect, n
 func TestPresentStoreErrorStillPresentsNewToken(t *testing.T) {
 	r := newRig(t)
 	fs := &failingSwap{Store: r.st, fail: true}
-	r.p = NewPresenter(r.keys, fs, mcpclient.New(), slog.New(slog.NewJSONHandler(r.log, nil)))
+	r.p = NewPresenter(r.keys, fs, mcpclient.New(netguard.Options{AllowLoopback: true}), slog.New(slog.NewJSONHandler(r.log, nil)))
 	r.p.SetClock(func() time.Time { return r.now })
 	set := r.set(r.now.Add(-time.Minute))
 	u := r.row(set)
@@ -521,7 +522,7 @@ func TestPresentConflictReadErrorStillPresentsNewToken(t *testing.T) {
 	r := newRig(t)
 	set := r.set(r.now.Add(-time.Minute))
 	u := r.row(set)
-	r.p = NewPresenter(r.keys, &conflictThenReadFail{Store: r.st}, mcpclient.New(), slog.New(slog.NewJSONHandler(r.log, nil)))
+	r.p = NewPresenter(r.keys, &conflictThenReadFail{Store: r.st}, mcpclient.New(netguard.Options{AllowLoopback: true}), slog.New(slog.NewJSONHandler(r.log, nil)))
 	r.p.SetClock(func() time.Time { return r.now })
 	plain, err := r.p.Present(context.Background(), u, proxyCaller)
 	if err != nil || !r.stub.AccessValid(decode(t, plain).AccessToken) || decode(t, plain).AccessToken == set.AccessToken {

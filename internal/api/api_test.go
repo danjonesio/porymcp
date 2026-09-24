@@ -21,6 +21,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/google/uuid"
@@ -72,12 +73,14 @@ func testAPIWrappedStore(t *testing.T, publicURL string, wrap func(store.Store) 
 		AdminAPIKey:   "test-admin",
 		EncryptionKey: key,
 		PublicURL:     publicURL,
+		// The stubs listen on loopback, which the shipped default refuses.
+		UpstreamGuard: netguard.Options{AllowLoopback: true},
 	}
 	var backing store.Store = st
 	if wrap != nil {
 		backing = wrap(st)
 	}
-	s := New(cfg, backing, nil, mcpclient.New(), webutil.EncryptionOK)
+	s := New(cfg, backing, nil, mcpclient.New(cfg.UpstreamGuard), webutil.EncryptionOK)
 	return s, s.Routes(), st, path
 }
 

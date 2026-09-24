@@ -19,6 +19,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/go-chi/chi/v5"
@@ -59,7 +60,7 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 	return &Handler{
 		cfg:         cfg,
 		keys:        keys,
-		present:     credential.NewPresenter(keys, st, mcpclient.New(), log),
+		present:     credential.NewPresenter(keys, st, mcpclient.New(cfg.UpstreamGuard), log),
 		store:       st,
 		audit:       al,
 		limit:       auth.NewLimiter(),
@@ -72,7 +73,9 @@ func New(cfg *config.Config, st store.Store, al *audit.Logger, log *slog.Logger)
 		// they are set. See its comment for why. No timeout: a relayed event
 		// stream stays open for as long as the upstream and the client keep
 		// it, and every request is bounded by its context instead (budget.go).
-		client: mcpclient.NewHTTPClient(mcpclient.Options{}),
+		// The address guard's two switches are config's (PORM-79); the
+		// presenter's client above carries the same value.
+		client: mcpclient.NewHTTPClient(mcpclient.Options{Guard: cfg.UpstreamGuard}),
 		eras:   newEraCache(),
 	}
 }
@@ -784,6 +787,13 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 	if err != nil {
+		// A refusal by the address guard arrives as the bare class sentence
+		// (mcpclient's open unwraps it) and is the one transport error that
+		// also gets a log line.
+		var denied netguard.Denied
+		if errors.As(err, &denied) {
+			h.warnDenied(usedID, requestID, denied.Class)
+		}
 		// Bounded because the message is not always the proxy's own words: a
 		// transport error quotes what the upstream sent (a malformed header
 		// line, say) and http.Client.Do would quote an unparseable Location
@@ -1818,6 +1828,21 @@ func (h *Handler) block(w http.ResponseWriter, vk *models.VirtualKey, requestID 
 			"request_id", requestID,
 		)
 	}
+}
+
+// warnDenied is the one line a refused dial writes to the server log, from
+// both doors (PORM-79): the class and the ids, never the URL or an address.
+// The audit row holds the same sentence; the line is for an operator who
+// alerts on logs without reading the database.
+func (h *Handler) warnDenied(upstreamID, requestID, class string) {
+	if h.log == nil {
+		return
+	}
+	h.log.Warn("upstream address denied",
+		"upstream_id", upstreamID,
+		"class", class,
+		"request_id", requestID,
+	)
 }
 
 func (h *Handler) finish(vk *models.VirtualKey, requestID, method, tool, upstreamID, status, errMsg string, start time.Time, size int, params json.RawMessage) {

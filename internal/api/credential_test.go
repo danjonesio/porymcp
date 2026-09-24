@@ -164,7 +164,7 @@ func TestStatsCountsCredentialStates(t *testing.T) {
 	// this test exercises (the plan's recipe); h keeps seeding rows.
 	cfg2 := *s.cfg
 	cfg2.EncryptionKeyPrevious = [][]byte{old}
-	h2 := New(&cfg2, backing, nil, mcpclient.New(), webutil.EncryptionOK).Routes()
+	h2 := New(&cfg2, backing, nil, mcpclient.New(cfg2.UpstreamGuard), webutil.EncryptionOK).Routes()
 
 	mustUpstream(t, h, "Docs", map[string]any{"auth_type": "none", "auth_config": map[string]string{}})
 	mustUpstream(t, h, "GitHub", map[string]any{"auth_type": "bearer", "auth_config": map[string]string{"token": "sk"}})

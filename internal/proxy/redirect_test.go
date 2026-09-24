@@ -566,7 +566,7 @@ func TestUpstreamRelayErrorMessageIsBounded(t *testing.T) {
 // mcpclient.Open, and for PORM-64's discovery client, both of which reuse this
 // construction.
 func TestProxyClientRefusesRedirectsByConstruction(t *testing.T) {
-	h := New(&config.Config{PublicURL: "http://localhost:8080"}, nil, nil, nil)
+	h := New(&config.Config{PublicURL: "http://localhost:8080", UpstreamGuard: testGuard}, nil, nil, nil)
 	if h.client.CheckRedirect == nil {
 		t.Fatal("the proxy's client has no CheckRedirect; Go follows up to ten redirects with the real credential")
 	}
@@ -609,5 +609,32 @@ func TestUpstreamRedirectLabelledEventStreamIsRefused(t *testing.T) {
 				t.Fatalf("row status=%q error_message=%q", row.Status, row.ErrorMessage)
 			}
 		})
+	}
+}
+
+// PORM-79: the no-redirect policy and the address guard compose. The upstream
+// 302s to a metadata address, which no option reopens; the row reads the
+// redirect refusal and never the guard's, because there is no second dial
+// for the guard to refuse. TestUpstreamRedirectIsNotFollowed above now runs
+// through the same cloned, guarded transport.
+func TestRedirectIsNotFollowedThroughGuard(t *testing.T) {
+	f := newSingleFixture(t, upstreamSpec{
+		Tools:          []string{"ping"},
+		RedirectStatus: http.StatusFound,
+		RedirectTo:     "http://169.254.169.254:80/latest/meta-data/?code=REDIRECT_QUERY_MARKER",
+	}, nil, nil)
+	rr := f.post(toolCall("1", "ping"))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("HTTP code=%d want 502; body=%s", rr.Code, rr.Body.String())
+	}
+	row := f.waitAudit(models.LogFilter{Status: models.StatusError, Tool: "ping"})[0]
+	if row.ErrorMessage != "upstream redirected to 169.254.169.254:80" {
+		t.Fatalf("error_message=%q, want the redirect refusal", row.ErrorMessage)
+	}
+	if strings.Contains(row.ErrorMessage, "denied") {
+		t.Fatalf("error_message=%q names the guard; a second dial was attempted", row.ErrorMessage)
+	}
+	if n := f.totalReqs("solo"); n != 1 {
+		t.Fatalf("upstream saw %d requests, want exactly 1", n)
 	}
 }
