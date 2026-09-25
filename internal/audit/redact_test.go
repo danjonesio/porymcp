@@ -318,3 +318,143 @@ func BenchmarkRedactText(b *testing.B) {
 		})
 	}
 }
+
+// TestRedactLiterals is PORM-208 criterion 3 and security requirements 5
+// and 7: the injected literal is replaced before the pattern rules,
+// wherever it appears and however the literals overlap, a literal under
+// the floor is ignored, and a clean string comes back as the same value
+// without an allocation.
+func TestRedactLiterals(t *testing.T) {
+	const lit = "abcdefghijkl"
+	cases := []struct {
+		name string
+		in   string
+		lits []string
+		want string
+	}{
+		{"plain literal the rules miss", "invalid token " + lit, []string{lit}, "invalid token [redacted]"},
+		{"seven bytes ignored", "invalid token abcdefg", []string{"abcdefg"}, "invalid token abcdefg"},
+		{"inside a longer word", "x" + lit + "y", []string{lit}, "x[redacted]y"},
+		{"overlapping literals", "aaaaaaaaXYZbbbbbbbb", []string{"aaaaaaaaXYZ", "XYZbbbbbbbb"}, "[redacted]"},
+		{"touching literals", "aaaaaaaa" + "bbbbbbbb", []string{"aaaaaaaa", "bbbbbbbb"}, "[redacted]"},
+		{"separated literals", "aaaaaaaa bbbbbbbb", []string{"aaaaaaaa", "bbbbbbbb"}, "[redacted] [redacted]"},
+		{"twice", lit + " and " + lit, []string{lit}, "[redacted] and [redacted]"},
+		{"nil literals", "invalid token " + lit, nil, "invalid token " + lit},
+		{"empty", "", []string{lit}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := RedactLiterals(c.in, c.lits); got != c.want {
+				t.Errorf("RedactLiterals = %q, want %q", got, c.want)
+			}
+		})
+	}
+
+	t.Run("before the pattern rules", func(t *testing.T) {
+		// A pattern-shaped literal is replaced once: the marker the literal
+		// pass leaves is not itself credential-shaped.
+		if got := RedactBoundedLiterals("invalid token "+ghpToken, 4<<10, []string{ghpToken}); got != "invalid token [redacted]" {
+			t.Errorf("RedactBoundedLiterals = %q", got)
+		}
+		// The pattern rules still run after the literal pass, so a
+		// credential the proxy did not inject is still caught.
+		if got := RedactBoundedLiterals("stored "+lit+" other "+ghpToken, 4<<10, []string{lit}); got != "stored [redacted] other [redacted]" {
+			t.Errorf("RedactBoundedLiterals = %q", got)
+		}
+	})
+
+	t.Run("a periodic literal over a long run costs a handful of allocations", func(t *testing.T) {
+		// Every offset of the run is a hit; the hits merge as they are
+		// collected, so the pass costs the spans slice and the output, not
+		// one span per byte of a body that can be 16 MiB.
+		in := strings.Repeat("a", 1<<20)
+		if n := testing.AllocsPerRun(5, func() {
+			if got := RedactLiterals(in, []string{"aaaaaaaa"}); got != redacted {
+				t.Errorf("RedactLiterals = %.20q", got)
+			}
+		}); n > 8 {
+			t.Errorf("RedactLiterals allocated %.0f times on a 1 MiB periodic run", n)
+		}
+	})
+
+	t.Run("a clean string is the same value with no allocation", func(t *testing.T) {
+		in := "rate limited, retry later"
+		for _, lits := range [][]string{nil, {}, {lit}} {
+			if n := testing.AllocsPerRun(20, func() {
+				if got := RedactLiterals(in, lits); got != in {
+					t.Errorf("RedactLiterals = %q", got)
+				}
+			}); n != 0 {
+				t.Errorf("RedactLiterals allocated %.0f times on a clean string with %q", n, lits)
+			}
+		}
+	})
+}
+
+// TestRedactBoundedLiteralsBeforeTheCut is PORM-208 security requirement
+// 2: the literal pass runs over the whole text before the window cut, so
+// a literal that straddles the edge leaves no fragment, and a short clean
+// string is byte-identical to RedactBounded. Each case fails when the cut
+// runs first.
+func TestRedactBoundedLiteralsBeforeTheCut(t *testing.T) {
+	const lit = "abcdefghijkl"
+	window := 4 << 10
+	// A window of one word, no boundary inside it, ending ten bytes into the
+	// twelve-byte literal: a cut before the literal pass would keep those
+	// ten bytes whole, since there is no boundary to cut back to.
+	noBoundary := strings.Repeat("x", window-10) + lit
+	// A custom-style literal with a space, the window ending after "abcd efgh ".
+	spaced := strings.Repeat("y", window-10) + "abcd efgh ijkl"
+	cases := []struct {
+		name string
+		in   string
+		lits []string
+		toks []string
+	}{
+		{"no boundary in the window", noBoundary, []string{lit}, []string{lit}},
+		{"space-bearing literal at the edge", spaced, []string{"abcd efgh ijkl"}, []string{"abcd efgh ijkl"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := RedactBoundedLiterals(c.in, window, c.lits)
+			for _, tok := range c.toks {
+				assertNoFragment(t, "bounded value", got, tok)
+			}
+			if len(got) > window+len(redacted) {
+				t.Errorf("bounded value is %d bytes, window %d", len(got), window)
+			}
+		})
+	}
+	t.Run("short and clean is RedactBounded", func(t *testing.T) {
+		in := "rate limited, retry later"
+		if got, want := RedactBoundedLiterals(in, window, []string{lit}), RedactBounded(in, window); got != want {
+			t.Errorf("RedactBoundedLiterals = %q, RedactBounded = %q", got, want)
+		}
+	})
+}
+
+// TestRecordRedactsLiteral is PORM-208 security requirement 3: the
+// literals reach Record on the call and are gone from the stored row.
+func TestRecordRedactsLiteral(t *testing.T) {
+	st := openStore(t)
+	l := New(st, nil)
+	const lit = "abcdefghijkl"
+	l.Record(models.AuditLog{VirtualKeyID: "k", Method: "tools/call", Status: models.StatusError, RequestID: "lit", ErrorMessage: "invalid token " + lit}, lit)
+	l.Record(models.AuditLog{VirtualKeyID: "k", Method: "tools/call", Status: models.StatusError, RequestID: "none", ErrorMessage: "invalid token " + lit})
+	l.Close()
+	got, _, err := st.ListAuditLogs(context.Background(), models.LogFilter{Status: models.StatusError, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := map[string]string{}
+	for _, row := range got {
+		stored[row.RequestID] = row.ErrorMessage
+	}
+	if stored["lit"] != "invalid token [redacted]" {
+		t.Errorf("row with literals stored as %q", stored["lit"])
+	}
+	assertNoFragment(t, "lit row", stored["lit"], lit)
+	if stored["none"] != "invalid token "+lit {
+		t.Errorf("row without literals stored as %q, want the pattern rules alone", stored["none"])
+	}
+}

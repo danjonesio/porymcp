@@ -3,8 +3,13 @@ package mcpclient
 import (
 	"encoding/json"
 	"errors"
+	"html"
 	"net/http"
+	"net/textproto"
+	"net/url"
+	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/danjonesio/porymcp/internal/models"
 )
@@ -123,4 +128,135 @@ func headersFor(authType string, raw json.RawMessage) (http.Header, error) {
 		return nil, ErrNoCredential
 	}
 	return h, nil
+}
+
+// MinLiteralBytes is the shortest injected value the proxy replaces by
+// literal match (PORM-208). A shorter value is left to the pattern rules so
+// that a credential of a few bytes cannot blank ordinary words in error
+// text. audit.RedactLiterals applies the same floor.
+const MinLiteralBytes = 8
+
+// literalDelimiters splits a whitespace piece of a header value into the
+// sub-pieces an upstream may echo on their own: a labelled value ("key=v")
+// loses its label and a cookie-style value ("sid=v;") its terminator.
+const literalDelimiters = `=,;:"'&`
+
+// Literals returns the values a credential writes on the wire, in every
+// spelling an upstream is likely to echo, for the literal redaction pass
+// (PORM-208). It derives from headersFor, so the switch over kinds is not
+// restated. Each header value is trimmed as net/http writes it, then split
+// into the pieces an echo can carry (literalCandidates), and each piece is
+// added with its URL-encoded and HTML-escaped spellings where those differ
+// (encodedForms). Pieces under MinLiteralBytes are dropped, so a scheme
+// word such as "Bearer" is never a literal on its own and an echoed
+// "Authorization: Bearer <token>" keeps its scheme word. The result is
+// deduplicated and sorted longest first; it is nil when the kind writes
+// nothing or the credential is not valid for its kind.
+func Literals(authType string, raw json.RawMessage) []string {
+	h, err := headersFor(authType, raw)
+	if err != nil || len(h) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(h))
+	for name := range h {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if len(s) < MinLiteralBytes || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	for _, name := range names {
+		for _, v := range h[name] {
+			for _, c := range literalCandidates(textproto.TrimString(v)) {
+				if len(c) < MinLiteralBytes {
+					continue // and no encoded spelling of it either
+				}
+				add(c)
+				for _, e := range encodedForms(c) {
+					add(e)
+				}
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i]) != len(out[j]) {
+			return len(out[i]) > len(out[j])
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// literalCandidates is the pieces of one trimmed header value an upstream
+// may echo: every whitespace piece, the sub-pieces of each piece split at
+// literalDelimiters, the remainder after the first whitespace run (so a
+// value "Token a b" yields "a b"), and the whole value when no whitespace
+// piece reaches MinLiteralBytes (so "abcd efgh ijkl" is a literal, and
+// "Bearer <long token>" is not, which keeps the scheme word in an echo).
+// Candidates under MinLiteralBytes are the caller's to drop.
+func literalCandidates(v string) []string {
+	var out []string
+	long := false
+	for _, p := range strings.Fields(v) {
+		if len(p) >= MinLiteralBytes {
+			long = true
+		}
+		out = append(out, p)
+		out = append(out, strings.FieldsFunc(p, isLiteralDelimiter)...)
+	}
+	if i := strings.IndexFunc(v, unicode.IsSpace); i >= 0 {
+		out = append(out, strings.TrimLeftFunc(v[i:], unicode.IsSpace))
+	}
+	if !long {
+		out = append(out, v)
+	}
+	return out
+}
+
+func isLiteralDelimiter(r rune) bool {
+	return strings.ContainsRune(literalDelimiters, r)
+}
+
+// encodedForms is the URL-encoded and HTML-escaped spellings of c that
+// differ from c. An upstream may percent-encode an echo, with either hex
+// case, or escape it as HTML. The bare token already covers "Bearer%20<tok>"
+// and "Bearer&#32;<tok>"; these cover a token whose own bytes change under
+// encoding, such as base64's "+", "/" and "=".
+func encodedForms(c string) []string {
+	var out []string
+	for _, e := range []string{url.QueryEscape(c), url.PathEscape(c)} {
+		if e != c {
+			out = append(out, e, lowerHex(e))
+		}
+	}
+	if e := html.EscapeString(c); e != c {
+		out = append(out, e)
+	}
+	return out
+}
+
+// lowerHex lowercases the two hex digits after every "%" in a
+// percent-encoded string and nothing else, so the token's own letters keep
+// their case. Every "%" in url.QueryEscape's and url.PathEscape's output
+// starts a triplet, because a literal "%" is written as "%25".
+func lowerHex(s string) string {
+	b := []byte(s)
+	for i := 0; i+2 < len(b); i++ {
+		if b[i] != '%' {
+			continue
+		}
+		for j := i + 1; j <= i+2; j++ {
+			if b[j] >= 'A' && b[j] <= 'F' {
+				b[j] += 'a' - 'A'
+			}
+		}
+		i += 2
+	}
+	return string(b)
 }

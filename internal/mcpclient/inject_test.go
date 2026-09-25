@@ -92,3 +92,78 @@ func TestApplyAuthCustomOverrideIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestLiterals is PORM-208 security requirements 1 and 5: the literal set
+// is derived from the wire form of what headersFor writes, holds every
+// piece an upstream may echo in its plain and encoded spellings, drops
+// anything under MinLiteralBytes, and never names the scheme word.
+func TestLiterals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		authType string
+		raw      string
+		want     []string // every entry must be in the set
+		absent   []string // no entry may be in the set
+		none     bool     // the set must be nil
+	}{
+		"bearer token":       {models.AuthBearer, `{"token":"abcdefghijkl"}`, []string{"abcdefghijkl"}, []string{"Bearer abcdefghijkl", "Bearer"}, false},
+		"bearer value form":  {models.AuthBearer, `{"value":"Bearer abcdefghijkl"}`, []string{"abcdefghijkl"}, []string{"Bearer abcdefghijkl"}, false},
+		"header labelled":    {models.AuthHeader, `{"header":"X-Token","value":"key=abcdefghijkl"}`, []string{"key=abcdefghijkl", "abcdefghijkl", "key%3Dabcdefghijkl", "key%3dabcdefghijkl"}, nil, false},
+		"api_key value":      {models.AuthAPIKey, `{"value":"abcdefghijkl"}`, []string{"abcdefghijkl"}, nil, false},
+		"api_key token":      {models.AuthAPIKey, `{"token":"abcdefghijkl"}`, []string{"abcdefghijkl"}, nil, false},
+		"custom every value": {models.AuthCustom, `{"headers":{"X-Tenant":"acme-corp-europe"},"header":"X-Secret","value":"abcdefghijkl"}`, []string{"acme-corp-europe", "abcdefghijkl"}, nil, false},
+		"oauth access token": {models.AuthOAuth, `{"access_token":"abcdefghijkl","refresh_token":"rt"}`, []string{"abcdefghijkl"}, []string{"Bearer abcdefghijkl"}, false},
+		"none":               {models.AuthNone, ``, nil, nil, true},
+		"seven bytes":        {models.AuthHeader, `{"header":"X-T","value":"abcdefg"}`, nil, nil, true},
+		// A short bearer has no piece over the floor, so the whole wire
+		// value is the literal: an echo with the scheme word is caught, an
+		// echo of the bare token is left to the pattern rules.
+		"seven-byte bearer": {models.AuthBearer, `{"token":"abcdefg"}`, []string{"Bearer abcdefg"}, []string{"abcdefg"}, false},
+		"invalid raw":       {models.AuthBearer, `{"token":`, nil, nil, true},
+		"padded value":      {models.AuthHeader, `{"header":"X-T","value":"\t abcdefghijkl \t"}`, []string{"abcdefghijkl"}, []string{"\t abcdefghijkl \t", " abcdefghijkl"}, false},
+		"spaced, no long piece": {models.AuthHeader, `{"header":"X-T","value":"abcd efgh ijkl"}`,
+			[]string{"abcd efgh ijkl", "efgh ijkl", "abcd+efgh+ijkl", "abcd%20efgh%20ijkl"}, []string{"abcd", "efgh", "ijkl"}, false},
+		"scheme word, short pieces": {models.AuthHeader, `{"header":"Authorization","value":"Token abc1234 xyz9876"}`,
+			[]string{"Token abc1234 xyz9876", "abc1234 xyz9876"}, []string{"abc1234", "xyz9876"}, false},
+		"base64 bytes": {models.AuthBearer, `{"token":"ab+cd/ef=ghij"}`,
+			[]string{"ab+cd/ef=ghij", "ab%2Bcd%2Fef%3Dghij", "ab%2bcd%2fef%3dghij", "ab+cd%2Fef=ghij", "ab+cd%2fef=ghij", "ab+cd/ef"}, []string{"ghij"}, false},
+		// A piece under the floor gets no encoded spelling either, even
+		// when the spelling would be long enough on its own.
+		"short piece, long encoding": {models.AuthBearer, `{"token":"ab+/cd"}`,
+			[]string{"Bearer ab+/cd"}, []string{"ab%2B%2Fcd", "ab%2b%2fcd", "ab+%2Fcd", "ab+%2fcd"}, false},
+		"ampersand": {models.AuthHeader, `{"header":"X-T","value":"abc&defghijkl"}`,
+			[]string{"abc&defghijkl", "abc&amp;defghijkl", "abc%26defghijkl", "defghijkl"}, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := Literals(tc.authType, json.RawMessage(tc.raw))
+			if tc.none {
+				if got != nil {
+					t.Fatalf("Literals = %q, want nil", got)
+				}
+				return
+			}
+			set := map[string]bool{}
+			for i, l := range got {
+				if len(l) < MinLiteralBytes {
+					t.Errorf("literal %q is under %d bytes", l, MinLiteralBytes)
+				}
+				if set[l] {
+					t.Errorf("literal %q appears twice", l)
+				}
+				set[l] = true
+				if i > 0 && len(got[i-1]) < len(l) {
+					t.Errorf("literals are not sorted longest first at %d: %q", i, got)
+				}
+			}
+			for _, w := range tc.want {
+				if !set[w] {
+					t.Errorf("literal %q missing from %q", w, got)
+				}
+			}
+			for _, a := range tc.absent {
+				if set[a] {
+					t.Errorf("literal %q present in %q", a, got)
+				}
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -523,4 +524,323 @@ func TestBufferedSSEResultIsRelayedUnchanged(t *testing.T) {
 		t.Fatalf("HTTP code=%d want 503", rr.Code)
 	}
 	assertRelayUnchanged(t, rr.Header(), rr.Body.String(), body, "text/event-stream", "sess-3")
+}
+
+// assertRedactedRowOf is assertRedactedRow for any stored credential tok
+// and the exact message wantMsg the row must carry (PORM-208).
+func assertRedactedRowOf(t *testing.T, row models.AuditLog, tok, wantMsg string) {
+	t.Helper()
+	if row.Status != models.StatusError {
+		t.Errorf("row status=%q, want error", row.Status)
+	}
+	if row.ErrorMessage != wantMsg {
+		t.Errorf("row error_message=%q, want %q", row.ErrorMessage, wantMsg)
+	}
+	assertNoLeak(t, "row error_message", row.ErrorMessage, fragments(tok)...)
+}
+
+// assertRedactedAnswerOf is assertRedactedAnswer for any stored credential
+// tok and the exact message wantMsg the client's error must carry, on a JSON
+// or an event-stream body (PORM-208). The row is the caller's to check.
+func assertRedactedAnswerOf(t *testing.T, body []byte, wantID, tok, wantMsg string) {
+	t.Helper()
+	assertNoLeak(t, "client body", string(body), fragments(tok)...)
+	doc := body
+	if docs, err := mcpclient.PickResponse("text/event-stream", body, wantID); err == nil && mcpclient.LooksLikeSSE(body) {
+		doc = docs
+	}
+	code, msg, id := rpcErrorOf(t, doc)
+	if code != -32000 || fmt.Sprint(id) != wantID {
+		t.Errorf("client error code=%d id=%v, want -32000 and %s", code, id, wantID)
+	}
+	if msg != wantMsg {
+		t.Errorf("client error message=%q, want %q", msg, wantMsg)
+	}
+}
+
+// TestShortCredentialNeverReachesReader is PORM-208 criteria 1 and 2 with
+// amendments A1 and A8: an upstream stored with a 12-byte plain bearer, one
+// the pattern rules cannot see, echoes it in a JSON-RPC error, in a 401
+// text/plain refusal and in an event stream, in the plain spelling and
+// after "Bearer%20" and "Bearer&#32;". The key holder and the row read the
+// message with the literal replaced on the single key, the member endpoint
+// and the group endpoint, and no 8-byte window of the bearer crosses. A
+// text refusal keeps its PORM-205 shape: an empty row, and no body on the
+// group endpoint.
+func TestShortCredentialNeverReachesReader(t *testing.T) {
+	const lit = "abcdefghijkl"
+	spellings := []struct{ name, in, want string }{
+		{"plain", lit, "[redacted]"},
+		{"url_encoded_scheme", "Bearer%20" + lit, "Bearer%20[redacted]"},
+		{"entity_scheme", "Bearer&#32;" + lit, "Bearer&#32;[redacted]"},
+	}
+	type door int
+	const (
+		single door = iota
+		member
+		group
+	)
+	doors := []struct {
+		name string
+		door door
+		path string // the stream door's path
+		tool string // the row's tool name
+	}{
+		{"single", single, "/a1/mcp", "ping_tool"},
+		{"member", member, "/a1/solo/mcp", "ping_tool"},
+		{"group", group, "", "solo__ping_tool"},
+	}
+	build := func(d door, spec upstreamSpec) *fixture {
+		if d == single {
+			return newSingleFixture(t, spec, nil, nil)
+		}
+		return singleMember(t, spec)
+	}
+	call := func(d door, f *fixture, tool string) *httptest.ResponseRecorder {
+		if d == member {
+			return f.postMember("solo", toolCall("7", "ping_tool"))
+		}
+		return f.post(toolCall("7", tool))
+	}
+	for _, sp := range spellings {
+		msg := "invalid token " + sp.in
+		want := "invalid token " + sp.want
+		for _, d := range doors {
+			t.Run(sp.name+"/"+d.name+"/json", func(t *testing.T) {
+				f := build(d.door, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, CallBody: errorAnswer(7, msg)})
+				rr := call(d.door, f, d.tool)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+				}
+				row := f.waitAudit(models.LogFilter{Tool: d.tool})[0]
+				assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", lit, want)
+				assertRedactedRowOf(t, row, lit, want)
+			})
+			t.Run(sp.name+"/"+d.name+"/text_plain_401", func(t *testing.T) {
+				f := build(d.door, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, CallCode: http.StatusUnauthorized, CallCT: "text/plain", CallBody: msg})
+				rr := call(d.door, f, d.tool)
+				if rr.Code != http.StatusUnauthorized {
+					t.Fatalf("HTTP code=%d want 401; body=%.200s", rr.Code, rr.Body.String())
+				}
+				wantBody := want
+				if d.door == group {
+					wantBody = "" // PORM-205: a text refusal reaches the group's client as its status alone
+				}
+				if got := rr.Body.String(); got != wantBody {
+					t.Errorf("client body=%q, want %q", got, wantBody)
+				}
+				assertNoLeak(t, "client body", rr.Body.String(), fragments(lit)...)
+				row := f.waitAudit(models.LogFilter{Tool: d.tool})[0]
+				if row.Status != models.StatusError || row.ErrorMessage != "" {
+					t.Errorf("row status=%q error_message=%q, want error / empty (A1)", row.Status, row.ErrorMessage)
+				}
+				assertNoLeak(t, "row error_message", row.ErrorMessage, fragments(lit)...)
+			})
+			t.Run(sp.name+"/"+d.name+"/event_stream", func(t *testing.T) {
+				if d.door == group {
+					// The group's tools/call is read whole and reduced, so a
+					// stream label takes the buffered door there.
+					f := singleMember(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, CallCT: "text/event-stream", CallBody: sseFrame(errorAnswer(7, msg))})
+					rr := f.post(toolCall("7", d.tool))
+					if rr.Code != http.StatusOK {
+						t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+					}
+					row := f.waitAudit(models.LogFilter{Tool: d.tool})[0]
+					assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", lit, want)
+					assertRedactedRowOf(t, row, lit, want)
+					return
+				}
+				f := build(d.door, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, Handler: thenClose(sseFrame(progressDoc), sseFrame(errorAnswer(1, msg)))})
+				srv := f.serve()
+				resp, id := open(t, f, srv, d.path, toolCall("1", "ping_tool"))
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				row := oneRow(t, f, id)
+				assertRedactedAnswerOf(t, body, "1", lit, want)
+				assertRedactedRowOf(t, row, lit, want)
+			})
+		}
+	}
+
+	t.Run("stream_split_inside_the_literal", func(t *testing.T) {
+		msg := "invalid token " + lit
+		split := func(w http.ResponseWriter, r *http.Request) {
+			sseHeader(w)
+			doc := errorAnswer(1, msg)
+			cut := strings.Index(doc, lit) + 6
+			writeEvents(w, "data: "+doc[:cut])
+			time.Sleep(50 * time.Millisecond)
+			writeEvents(w, doc[cut:]+"\n\n")
+		}
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, Handler: split}, nil, nil)
+		srv := f.serve()
+		resp, id := open(t, f, srv, "/a1/mcp", toolCall("1", "ping_tool"))
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		row := oneRow(t, f, id)
+		assertRedactedAnswerOf(t, body, "1", lit, "invalid token [redacted]")
+		assertRedactedRowOf(t, row, lit, "invalid token [redacted]")
+	})
+}
+
+// TestLiteralRedactionPerKind is PORM-208's scope: every credential kind
+// headersFor writes reaches the literal pass. Each kind stores a 12-byte
+// plain value the upstream echoes in its JSON-RPC error on the single key,
+// and the stub's last request shows the kind's own header carried it.
+func TestLiteralRedactionPerKind(t *testing.T) {
+	const lit = "abcdefghijkl"
+	msg := "invalid token " + lit
+	const want = "invalid token [redacted]"
+	kinds := []struct {
+		name, authType string
+		cfg            models.AuthConfig
+		header, value  string // what the stub must have seen
+	}{
+		{"header", models.AuthHeader, models.AuthConfig{Header: "X-Token", Value: lit}, "X-Token", lit},
+		{"api_key", models.AuthAPIKey, models.AuthConfig{Value: lit}, "X-API-Key", lit},
+		{"custom", models.AuthCustom, models.AuthConfig{Headers: map[string]string{"X-Tenant": "acme-corp-europe"}, Header: "X-Secret", Value: lit}, "X-Secret", lit},
+	}
+	check := func(t *testing.T, f *fixture, header, value string) {
+		t.Helper()
+		rr := f.post(toolCall("7", "ping_tool"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+		}
+		reqs := f.requestsTo("solo")
+		if len(reqs) == 0 {
+			t.Fatal("the upstream saw no request")
+		}
+		if got := reqs[len(reqs)-1].Header.Get(header); got != value {
+			t.Fatalf("upstream saw %s=%q, want %q", header, got, value)
+		}
+		row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+		assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", lit, want)
+		assertRedactedRowOf(t, row, lit, want)
+	}
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, AuthType: k.authType, AuthConfig: k.cfg, CallBody: errorAnswer(7, msg)}, nil, nil)
+			check(t, f, k.header, k.value)
+		})
+	}
+	t.Run("oauth", func(t *testing.T) {
+		// The stub stays the upstream; only the credential becomes an oauth
+		// set, unexpired so no refresh runs and the access token is the one
+		// literal the request carries.
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, CallBody: errorAnswer(7, msg)}, nil, nil)
+		u, err := f.Store.GetUpstream(context.Background(), "u1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		toOAuth(t, f, "u1", u.URL, models.OAuthTokenSet{
+			AccessToken: lit, RefreshToken: "rt", ExpiresAt: time.Now().Add(time.Hour),
+			TokenEndpoint: "http://127.0.0.1:1/token", ClientID: "cid", ClientSource: "supplied",
+			Resource: u.URL,
+		})
+		check(t, f, "Authorization", "Bearer "+lit)
+	})
+}
+
+// TestThirdCredentialStillRedacted is PORM-208 security requirement 10:
+// the pattern rules run after the literal pass, so a credential the proxy
+// did not inject is still caught beside the one it did.
+func TestThirdCredentialStillRedacted(t *testing.T) {
+	const lit = "abcdefghijkl"
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, CallBody: errorAnswer(7, "stored "+lit+" other "+echoedToken)}, nil, nil)
+	rr := f.post(toolCall("7", "ping_tool"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+	}
+	const want = "stored [redacted] other [redacted]"
+	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+	assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", lit, want)
+	assertRedactedRowOf(t, row, lit, want)
+	assertNoLeak(t, "client body", rr.Body.String(), fragments(echoedToken)...)
+	assertNoLeak(t, "row error_message", row.ErrorMessage, fragments(echoedToken)...)
+}
+
+// TestCustomHeaderValuesAreLiterals is PORM-208 amendment A5: every value a
+// custom credential writes counts as a literal, a non-secret one included,
+// so it is redacted wherever it appears in an upstream's error text.
+func TestCustomHeaderValuesAreLiterals(t *testing.T) {
+	const lit = "abcdefghijkl"
+	cfg := models.AuthConfig{Headers: map[string]string{"X-Tenant": "acme-corp-europe"}, Header: "X-Secret", Value: lit}
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, AuthType: models.AuthCustom, AuthConfig: cfg, CallBody: errorAnswer(7, "tenant acme-corp-europe rejected")}, nil, nil)
+	rr := f.post(toolCall("7", "ping_tool"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+	}
+	const want = "tenant [redacted] rejected"
+	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+	assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", "acme-corp-europe", want)
+	assertRedactedRowOf(t, row, "acme-corp-europe", want)
+}
+
+// TestSevenByteCredentialIsLeftToPatterns is PORM-208 security requirement
+// 5: a stored value under MinLiteralBytes is not a literal, so its bare echo
+// is the pattern rules' alone, which read a 7-byte plain word as prose.
+func TestSevenByteCredentialIsLeftToPatterns(t *testing.T) {
+	const short = "abcdefg"
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: short, CallBody: errorAnswer(7, "invalid token "+short)}, nil, nil)
+	rr := f.post(toolCall("7", "ping_tool"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+	}
+	_, msg, _ := rpcErrorOf(t, rr.Body.Bytes())
+	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+	if msg != "invalid token "+short || row.ErrorMessage != "invalid token "+short {
+		t.Errorf("client message=%q row=%q, want the echo as sent", msg, row.ErrorMessage)
+	}
+
+	t.Run("echoed with its scheme word", func(t *testing.T) {
+		// The wire value "Bearer abcdefg" has no piece over the floor, so
+		// the whole value is the literal: an echo that quotes the header
+		// loses the scheme word with the token.
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: short, CallBody: errorAnswer(7, "Authorization: Bearer "+short)}, nil, nil)
+		rr := f.post(toolCall("7", "ping_tool"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+		}
+		row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+		assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", "Bearer "+short, "Authorization: [redacted]")
+		assertRedactedRowOf(t, row, "Bearer "+short, "Authorization: [redacted]")
+	})
+}
+
+// TestStreamRowKeepsProxySentences is PORM-208 security requirement 4 on
+// the stream door: the literals apply only when the row's message is the
+// upstream's own text. A stream that ends without an answer writes the
+// proxy's sentence, unchanged even when the stored bearer is one of its
+// words.
+func TestStreamRowKeepsProxySentences(t *testing.T) {
+	const word = "upstream" // 8 bytes: a literal, and the sentence's first word
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: word, Handler: thenClose(sseFrame(progressDoc))}, nil, nil)
+	srv := f.serve()
+	resp, id := open(t, f, srv, "/a1/mcp", toolCall("1", "ping_tool"))
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	row := oneRow(t, f, id)
+	const want = "upstream closed the stream before the answer"
+	if row.Status != models.StatusError || row.ErrorMessage != want {
+		t.Errorf("row status=%q error_message=%q, want error / %q", row.Status, row.ErrorMessage, want)
+	}
+}
+
+// TestFailClosedRowRedactsLiteral is PORM-208 security requirement 9 on
+// the fail-closed branch: a JSON refusal the refusal pass cannot rewrite is
+// refused with the fixed sentence, and the row, which took the upstream's
+// error.message before the gate, still reads the literal replaced.
+func TestFailClosedRowRedactsLiteral(t *testing.T) {
+	const lit = "abcdefghijkl"
+	// Not a JSON-RPC envelope, so the refusal pass runs; nested past
+	// maxWalkDepth, so the walk fails closed.
+	body := `{"error":{"code":1,"message":"invalid token ` + lit + `"},"deep":` + strings.Repeat("[", maxWalkDepth+8) + strings.Repeat("]", maxWalkDepth+8) + `}`
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, CallCode: http.StatusUnauthorized, CallCT: "application/json", CallBody: body}, nil, nil)
+	rr := f.post(toolCall("7", "ping_tool"))
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), "upstream request failed") {
+		t.Fatalf("HTTP code=%d body=%.200s, want 502 with the fixed sentence", rr.Code, rr.Body.String())
+	}
+	assertNoLeak(t, "client body", rr.Body.String(), fragments(lit)...)
+	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+	assertRedactedRowOf(t, row, lit, "invalid token [redacted]")
 }

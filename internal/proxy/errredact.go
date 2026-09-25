@@ -23,7 +23,8 @@ import (
 const clientMessageBytes = 64 << 10
 
 // redactErrorDoc returns doc with the message of every JSON-RPC error member
-// passed through audit.RedactBounded, and whether the bytes changed. The
+// passed through audit.RedactBoundedLiterals, with literals the values the
+// proxy injected (PORM-208), and whether the bytes changed. The
 // check is rpcFailed first, the judge's own decode, which allocates nothing
 // for a result and matches keys the way the judge does; only a document
 // rpcFailed accepts is decoded into raw maps. Every member whose key folds to
@@ -37,7 +38,7 @@ const clientMessageBytes = 64 << 10
 // already accepts. Once a message has changed the original doc is never
 // returned: a re-encoding failure, which cannot happen over values the
 // decoder just accepted, comes back as err and the callers fail closed.
-func redactErrorDoc(doc []byte) (out []byte, changed bool, err error) {
+func redactErrorDoc(doc []byte, literals ...string) (out []byte, changed bool, err error) {
 	if !rpcFailed(doc) {
 		return doc, false, nil
 	}
@@ -49,7 +50,7 @@ func redactErrorDoc(doc []byte) (out []byte, changed bool, err error) {
 		if !strings.EqualFold(k, "error") {
 			continue
 		}
-		patched, ok, perr := redactErrorMember(v)
+		patched, ok, perr := redactErrorMember(v, literals)
 		if perr != nil {
 			return nil, true, perr
 		}
@@ -71,14 +72,14 @@ func redactErrorDoc(doc []byte) (out []byte, changed bool, err error) {
 // redactErrorMember rewrites one error member: a string is the message
 // itself, an object carries it under every key that folds to "message".
 // Anything else, and a message that is not a string, is left as it is.
-func redactErrorMember(raw json.RawMessage) (json.RawMessage, bool, error) {
+func redactErrorMember(raw json.RawMessage, lits []string) (json.RawMessage, bool, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return raw, false, nil
 	}
 	switch trimmed[0] {
 	case '"':
-		return redactString(trimmed)
+		return redactString(trimmed, lits)
 	case '{':
 		var obj map[string]json.RawMessage
 		if json.Unmarshal(trimmed, &obj) != nil {
@@ -93,7 +94,7 @@ func redactErrorMember(raw json.RawMessage) (json.RawMessage, bool, error) {
 			if len(t) == 0 || t[0] != '"' {
 				continue
 			}
-			patched, ok, err := redactString(t)
+			patched, ok, err := redactString(t, lits)
 			if err != nil {
 				return nil, true, err
 			}
@@ -114,14 +115,15 @@ func redactErrorMember(raw json.RawMessage) (json.RawMessage, bool, error) {
 	return raw, false, nil
 }
 
-// redactString runs the client bound and the rules on one JSON string and
-// re-encodes it only when they changed it.
-func redactString(raw json.RawMessage) (json.RawMessage, bool, error) {
+// redactString runs the literal pass, the client bound and the rules on one
+// JSON string and re-encodes it only when they changed it. The string is
+// decoded first, so a literal written with \u escapes is matched.
+func redactString(raw json.RawMessage, lits []string) (json.RawMessage, bool, error) {
 	var s string
 	if json.Unmarshal(raw, &s) != nil {
 		return raw, false, nil
 	}
-	r := audit.RedactBounded(s, clientMessageBytes)
+	r := audit.RedactBoundedLiterals(s, clientMessageBytes, lits)
 	if r == s {
 		return raw, false, nil
 	}
@@ -145,15 +147,17 @@ func redactPayload(payload []byte, _ int) ([]byte, bool, error) {
 // events with bare JSON lines goes through the holder, as on the stream door.
 // Otherwise it calls redactErrorDoc on the body. It returns body itself when
 // nothing changed.
-// err is the walker's callback error only, and the caller fails closed on it.
-func redactErrorAnswer(contentType string, body []byte) ([]byte, error) {
+// literals are the values the proxy injected, replaced before the rules
+// (PORM-208). err is the walker's callback error only, and the caller fails
+// closed on it.
+func redactErrorAnswer(contentType string, body []byte, literals ...string) ([]byte, error) {
 	if mcpclient.SSEFramed(contentType, body) {
 		if hasStrayLine(body) {
-			return redactThroughHolder(body)
+			return redactThroughHolder(body, literals)
 		}
-		return redactUnit(body, nil)
+		return redactUnit(body, nil, literals)
 	}
-	out, _, err := redactErrorDoc(body)
+	out, _, err := redactErrorDoc(body, literals...)
 	if err != nil {
 		return nil, err
 	}
@@ -202,8 +206,9 @@ func rpcErrorEnvelope(body []byte) bool {
 // so a clean refusal is relayed byte for byte. Invalid UTF-8 is scanned as
 // well: under the bound the rules copy unmatched bytes as they are, so one
 // stray byte cannot switch redaction off; over the bound Clamp strips
-// invalid bytes from the kept prefix.
-func redactRefusal(contentType string, body []byte) ([]byte, error) {
+// invalid bytes from the kept prefix. literals are the values the proxy
+// injected, replaced over the whole text before any cut (PORM-208).
+func redactRefusal(contentType string, body []byte, literals ...string) ([]byte, error) {
 	if len(body) == 0 || rpcErrorEnvelope(body) {
 		return body, nil
 	}
@@ -211,7 +216,7 @@ func redactRefusal(contentType string, body []byte) ([]byte, error) {
 		return body, nil
 	}
 	if len(body) <= clientMessageBytes && json.Valid(body) {
-		walked, changed, err := redactJSONStrings(body, 0)
+		walked, changed, err := redactJSONStrings(body, 0, literals)
 		if err != nil {
 			return nil, err
 		}
@@ -219,7 +224,7 @@ func redactRefusal(contentType string, body []byte) ([]byte, error) {
 			walked = body
 		}
 		s := string(walked)
-		r := audit.RedactBounded(s, clientMessageBytes)
+		r := audit.RedactBoundedLiterals(s, clientMessageBytes, literals)
 		if r == s {
 			return walked, nil
 		}
@@ -228,17 +233,20 @@ func redactRefusal(contentType string, body []byte) ([]byte, error) {
 		}
 		return []byte(r), nil
 	}
-	// Only the window plus one byte is converted: Clamp cuts at the window
-	// either way, and a 16 MiB refusal is not copied twice.
-	s := string(body[:min(len(body), clientMessageBytes+1)])
-	if escapedJSON(s) {
+	// The whole body is converted, not the window plus one byte: the literal
+	// pass must see every byte before the cut, or a literal split at the
+	// window's edge would leave a fragment. The copy is bounded by
+	// mcpclient.MaxBodyBytes and made only for a refusal. Clamp still cuts at
+	// the window.
+	s := string(body)
+	if escapedJSON(s[:min(len(s), clientMessageBytes+1)]) {
 		// A body that opens as JSON but gets no walk, because it is over the
 		// bound or does not parse, would be scanned as text, and the text
 		// rules cannot see a credential written with \u or \/ escapes; one
 		// that holds either inside the window is refused instead.
 		return nil, errRefusalNotRewritable
 	}
-	r := audit.RedactBounded(s, clientMessageBytes)
+	r := audit.RedactBoundedLiterals(s, clientMessageBytes, literals)
 	if r == s && len(body) <= clientMessageBytes {
 		return body, nil
 	}
@@ -260,7 +268,7 @@ const maxWalkDepth = 32
 // upstream's bytes. depth is the caller's level, 0 at the top; past
 // maxWalkDepth the walk returns errRefusalNotRewritable and the caller fails
 // closed.
-func redactJSONStrings(raw json.RawMessage, depth int) (json.RawMessage, bool, error) {
+func redactJSONStrings(raw json.RawMessage, depth int, lits []string) (json.RawMessage, bool, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return raw, false, nil
@@ -270,7 +278,7 @@ func redactJSONStrings(raw json.RawMessage, depth int) (json.RawMessage, bool, e
 	}
 	switch trimmed[0] {
 	case '"':
-		return redactString(trimmed)
+		return redactString(trimmed, lits)
 	case '{':
 		var obj map[string]json.RawMessage
 		if json.Unmarshal(trimmed, &obj) != nil {
@@ -282,7 +290,7 @@ func redactJSONStrings(raw json.RawMessage, depth int) (json.RawMessage, bool, e
 		// the shadowed bytes the way any decoder that keeps the last would.
 		changed := memberCount(trimmed) != len(obj)
 		for k, v := range obj {
-			patched, ok, err := redactJSONStrings(v, depth+1)
+			patched, ok, err := redactJSONStrings(v, depth+1, lits)
 			if err != nil {
 				return nil, true, err
 			}
@@ -306,7 +314,7 @@ func redactJSONStrings(raw json.RawMessage, depth int) (json.RawMessage, bool, e
 		}
 		changed := false
 		for i, v := range arr {
-			patched, ok, err := redactJSONStrings(v, depth+1)
+			patched, ok, err := redactJSONStrings(v, depth+1, lits)
 			if err != nil {
 				return nil, true, err
 			}
@@ -372,16 +380,24 @@ func carriesEvent(body []byte) bool {
 // redactUnit rewrites one SSE-framed unit: the events through walkSSE and
 // redactPayload, or, when the walk saw no data event, the whole unit as one
 // document. join is the caller's scratch for a multi-line payload, or nil.
-// The holder calls this on each unit it closes and on what it holds at EOF.
-func redactUnit(unit []byte, join *[]byte) ([]byte, error) {
-	out, changed, seen, err := walkSSE(unit, redactPayload, join)
+// lits are the injected values (PORM-208); with none, the walk takes
+// redactPayload itself, so a result event costs what it always did. The
+// holder calls this on each unit it closes and on what it holds at EOF.
+func redactUnit(unit []byte, join *[]byte, lits []string) ([]byte, error) {
+	fn := redactPayload
+	if len(lits) > 0 {
+		fn = func(payload []byte, _ int) ([]byte, bool, error) {
+			return redactErrorDoc(payload, lits...)
+		}
+	}
+	out, changed, seen, err := walkSSE(unit, fn, join)
 	if err != nil {
 		return nil, err
 	}
 	if seen > 0 || changed {
 		return out, nil
 	}
-	out, _, err = redactErrorDoc(unit)
+	out, _, err = redactErrorDoc(unit, lits...)
 	if err != nil {
 		return nil, err
 	}
@@ -450,6 +466,9 @@ type eventHolder struct {
 	skipLF    bool   // the last byte was a CR inside p; a LF next is its pair
 	join      []byte // scratch for a multi-line payload, kept across events
 	out       []byte
+	// literals are the injected values redactUnit replaces before the rules
+	// (PORM-208), set where the holder is built; nil means the rules alone.
+	literals []string
 }
 
 // feed appends p and returns the bytes to write now; an empty return means
@@ -522,7 +541,7 @@ func (h *eventHolder) scan() error {
 			h.inEvent = true
 			_, h.hasData = dataPayload(line)
 		case blank && h.hasData:
-			res, err := redactUnit(h.held[h.start:lineStart], &h.join)
+			res, err := redactUnit(h.held[h.start:lineStart], &h.join, h.literals)
 			if err != nil {
 				return err
 			}
@@ -738,7 +757,7 @@ func (h *eventHolder) end() ([]byte, error) {
 	if h.state == passthrough || len(h.held) == 0 {
 		return nil, nil
 	}
-	out, err := redactUnit(h.held, &h.join)
+	out, err := redactUnit(h.held, &h.join, h.literals)
 	h.held = nil
 	return out, err
 }
@@ -784,10 +803,10 @@ func hasStrayLine(body []byte) bool {
 }
 
 // redactThroughHolder rewrites a buffered body the way the stream door would,
-// for the bodies where the two rules differ. It returns body itself when
-// nothing changed.
-func redactThroughHolder(body []byte) ([]byte, error) {
-	var h eventHolder
+// for the bodies where the two rules differ, with lits the injected values
+// (PORM-208). It returns body itself when nothing changed.
+func redactThroughHolder(body []byte, lits []string) ([]byte, error) {
+	h := eventHolder{literals: lits}
 	out, err := h.feed(body)
 	if err != nil {
 		return nil, err

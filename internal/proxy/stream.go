@@ -319,10 +319,8 @@ func endByCause(ctx context.Context, r *http.Request, fallback streamEnd) (strea
 // the stream itself after one, the answer was that event and the row is a
 // success (docs/03-api.md says so).
 func streamVerdict(method string, status int, ct string, c *streamCapture, wantID string, end streamEnd, err error) (string, string) {
-	for _, b := range [][]byte{c.last, c.head} {
-		if answerDoc(ct, b, wantID) {
-			return answerStatus(status, ct, b, wantID)
-		}
+	if b, ok := upstreamAnswer(ct, c, wantID); ok {
+		return answerStatus(status, ct, b, wantID)
 	}
 	listen := method == "subscriptions/listen"
 	switch end {
@@ -356,6 +354,19 @@ func streamVerdict(method string, status int, ct string, c *streamCapture, wantI
 	}
 }
 
+// upstreamAnswer returns the upstream's own answer document from the
+// capture, and whether there is one. It is the one branch of streamVerdict
+// whose message is the upstream's text rather than a proxy sentence, so it
+// is also the one row the injected literals apply to (PORM-208).
+func upstreamAnswer(ct string, c *streamCapture, wantID string) ([]byte, bool) {
+	for _, b := range [][]byte{c.last, c.head} {
+		if answerDoc(ct, b, wantID) {
+			return b, true
+		}
+	}
+	return nil, false
+}
+
 // streamRow is what the row and the re-check need from the request, fixed
 // before the first byte is relayed.
 type streamRow struct {
@@ -368,6 +379,7 @@ type streamRow struct {
 	wantID                               string
 	memberPath                           bool
 	slug                                 string
+	literals                             []string // the injected values (PORM-208), for the holder and the row
 }
 
 // relayStream relays resp's body to the client as it arrives and writes the
@@ -477,9 +489,16 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 		size := int(min(written, math.MaxInt32))
 		// msg may be the upstream's own error.message; it goes to
 		// audit.Record whole, which redacts credential-shaped text and then
-		// bounds it (PORM-72). A cut here would leave a token fragment.
+		// bounds it (PORM-72). A cut here would leave a token fragment. The
+		// injected literals go with it only when msg is the upstream's text:
+		// a proxy sentence (revoked, idle, a read error, an event too large)
+		// is never rewritten (PORM-208).
+		var literals []string
+		if _, ok := upstreamAnswer(ct, &capture, row.wantID); ok {
+			literals = row.literals
+		}
 		h.finish(row.vk, row.requestID, row.auditMethod, row.tool, row.upstreamID, st,
-			msg, row.start, size, row.params)
+			msg, row.start, size, row.params, literals...)
 		left := h.openStreams.Add(-1)
 		if h.log != nil {
 			h.log.Info("stream closed", "request_id", row.requestID, "virtual_key_id", row.vk.ID,
@@ -513,7 +532,7 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 		return true
 	}
 
-	var hold eventHolder
+	hold := eventHolder{literals: row.literals}
 	buf := make([]byte, 32<<10)
 	for {
 		n, rerr := resp.Body.Read(buf)
