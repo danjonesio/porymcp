@@ -166,8 +166,8 @@ func redactErrorAnswer(contentType string, body []byte) ([]byte, error) {
 var errRefusalNotRewritable = errors.New("refusal body not rewritable")
 
 // rpcErrorEnvelope reports whether body is a JSON-RPC error document: an
-// object with a jsonrpc member and a non-null error member, both spelled
-// exactly, as JSON-RPC member names are. rpcFailed alone is true for any
+// object with a jsonrpc member that is "2.0" and a non-null error member,
+// both spelled exactly, as JSON-RPC member names are. rpcFailed alone is true for any
 // JSON with an error member, which is the shape an OAuth gateway's 401
 // takes, and a struct decode would fold the case of the names, so neither
 // is enough here. The map keeps the last of duplicate keys, so an error
@@ -177,7 +177,7 @@ func rpcErrorEnvelope(body []byte) bool {
 	if json.Unmarshal(body, &env) != nil {
 		return false
 	}
-	if _, ok := env["jsonrpc"]; !ok {
+	if v, ok := env["jsonrpc"]; !ok || !bytes.Equal(bytes.TrimSpace(v), []byte(`"2.0"`)) {
 		return false
 	}
 	errMember, ok := env["error"]
@@ -188,8 +188,10 @@ func rpcErrorEnvelope(body []byte) bool {
 // not a JSON-RPC error envelope, so a gateway's plain-text, HTML or JSON 401
 // never carries the injected credential to the key holder (PORM-205). A
 // JSON-RPC error envelope is left to redactErrorAnswer, so error.data stays
-// as sent. A body that reads as an event stream under an event-stream label
-// is left to redactErrorAnswer too. Valid JSON within the client bound is
+// as sent. A body under an event-stream label, or sniffed as one, that
+// carries a data event is left to redactErrorAnswer too; one that only opens
+// like a stream (a comment, an id: or a retry: line) and then holds plain
+// text is scanned as text. Valid JSON within the client bound is
 // walked with each string decoded, the way redactErrorDoc does, so an
 // escaped credential is caught, and then scanned once more as text, so a
 // labelled short value and a shadowed duplicate member are caught as well;
@@ -205,11 +207,11 @@ func redactRefusal(contentType string, body []byte) ([]byte, error) {
 	if len(body) == 0 || rpcErrorEnvelope(body) {
 		return body, nil
 	}
-	if mcpclient.SSEFramed(contentType, body) && mcpclient.LooksLikeSSE(body) {
+	if mcpclient.SSEFramed(contentType, body) && carriesEvent(body) {
 		return body, nil
 	}
 	if len(body) <= clientMessageBytes && json.Valid(body) {
-		walked, changed, err := redactJSONStrings(body)
+		walked, changed, err := redactJSONStrings(body, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -242,17 +244,28 @@ func redactRefusal(contentType string, body []byte) ([]byte, error) {
 	return []byte(r), nil
 }
 
+// maxWalkDepth bounds the nesting redactJSONStrings follows. Every level
+// decodes its whole subtree once, so the walk costs the body's size times
+// its depth; a gateway's refusal is a few levels deep, and a body nested
+// past this many levels is refused rather than walked.
+const maxWalkDepth = 32
+
 // redactJSONStrings walks raw the way redactErrorMember does: a string leaf
 // goes through redactString, an object is decoded into
 // map[string]json.RawMessage and an array into []json.RawMessage, each value
 // recursed, and the node is re-encoded with marshalRaw only when a value
 // changed. Keys are never rewritten, so two members cannot collide. A clean
 // document comes back as raw itself. Numbers, booleans and null are the
-// upstream's bytes.
-func redactJSONStrings(raw json.RawMessage) (json.RawMessage, bool, error) {
+// upstream's bytes. depth is the caller's level, 0 at the top; past
+// maxWalkDepth the walk returns errRefusalNotRewritable and the caller fails
+// closed.
+func redactJSONStrings(raw json.RawMessage, depth int) (json.RawMessage, bool, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return raw, false, nil
+	}
+	if depth > maxWalkDepth && (trimmed[0] == '{' || trimmed[0] == '[') {
+		return nil, true, errRefusalNotRewritable
 	}
 	switch trimmed[0] {
 	case '"':
@@ -268,7 +281,7 @@ func redactJSONStrings(raw json.RawMessage) (json.RawMessage, bool, error) {
 		// the shadowed bytes the way any decoder that keeps the last would.
 		changed := memberCount(trimmed) != len(obj)
 		for k, v := range obj {
-			patched, ok, err := redactJSONStrings(v)
+			patched, ok, err := redactJSONStrings(v, depth+1)
 			if err != nil {
 				return nil, true, err
 			}
@@ -292,7 +305,7 @@ func redactJSONStrings(raw json.RawMessage) (json.RawMessage, bool, error) {
 		}
 		changed := false
 		for i, v := range arr {
-			patched, ok, err := redactJSONStrings(v)
+			patched, ok, err := redactJSONStrings(v, depth+1)
 			if err != nil {
 				return nil, true, err
 			}
@@ -343,6 +356,16 @@ func escapedJSON(s string) bool {
 		return false
 	}
 	return strings.Contains(t, `\u`) || strings.Contains(t, `\/`)
+}
+
+// carriesEvent reports whether body holds at least one data event in SSE
+// framing, the shape redactErrorAnswer's walk has already rewritten. A body
+// whose first line merely looks like a stream field is not one.
+func carriesEvent(body []byte) bool {
+	_, _, seen, err := walkSSE(body, func(payload []byte, _ int) ([]byte, bool, error) {
+		return payload, false, nil
+	}, nil)
+	return err == nil && seen > 0
 }
 
 // redactUnit rewrites one SSE-framed unit: the events through walkSSE and

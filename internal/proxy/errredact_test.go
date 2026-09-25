@@ -241,6 +241,9 @@ func TestRedactRefusal(t *testing.T) {
 		{name: "rpc_error_with_data", ct: "application/json", body: `{"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"no","data":"invalid token ` + tok + `"}}`, same: true},
 		{name: "sse_events", ct: "text/event-stream", body: sseFrame("invalid token " + tok), same: true},
 		{name: "sse_label_plain_body", ct: "text/event-stream", body: "invalid token " + tok, want: "invalid token [redacted]"},
+		{name: "sse_comment_first_line", ct: "text/event-stream", body: ": x\ninvalid token " + tok, want: ": x\ninvalid token [redacted]"},
+		{name: "sse_retry_first_line", ct: "text/event-stream", body: "retry: 1\ninvalid token " + tok, want: "retry: 1\ninvalid token [redacted]"},
+		{name: "unlabelled_id_first_line", ct: "", body: "id: 12\ninvalid token " + tok, want: "id: 12\ninvalid token [redacted]"},
 		{name: "clean_text", ct: "text/plain", body: "forbidden: this key may not call ping_tool", same: true},
 		{name: "text_token", ct: "text/plain", body: "invalid token " + tok, want: "invalid token [redacted]"},
 		{name: "auth_header_quote", ct: "text/plain", body: "401 Unauthorized: Authorization: Bearer " + tok, want: "401 Unauthorized: Authorization: Bearer [redacted]"},
@@ -254,8 +257,12 @@ func TestRedactRefusal(t *testing.T) {
 		{name: "json_duplicate_key_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `","detail":"x"}`, want: `{"detail":"x"}`},
 		{name: "json_error_null_duplicate", ct: "application/json", body: `{"error":{"message":"` + tok + `"},"error":null}`, want: `{"error":null}`},
 		{name: "envelope_case_folded", ct: "application/json", body: `{"JSONRPC":"2.0","Error":"x","detail":"` + tok + `"}`, want: `{"Error":"x","JSONRPC":"2.0","detail":"[redacted]"}`},
+		{name: "envelope_jsonrpc_not_2", ct: "application/json", body: `{"jsonrpc":1,"error":"x","detail":"` + tok + `"}`, want: `{"detail":"[redacted]","error":"x","jsonrpc":1}`},
+		{name: "nested_within_limit", ct: "application/json", body: strings.Repeat(`{"a":[`, 16) + `"invalid token ` + tok + `"` + strings.Repeat(`]}`, 16), want: strings.Repeat(`{"a":[`, 16) + `"invalid token [redacted]"` + strings.Repeat(`]}`, 16)},
+		{name: "nested_too_deep", ct: "application/json", body: strings.Repeat(`[`, 9990) + `"` + tok + `"` + strings.Repeat(`]`, 9990), wantErr: true},
 		{name: "json_labelled_short", ct: "application/json", body: `{"message":"unauthorized","api_key":"k9f2x7q1"}`, want: `{"message":"unauthorized","api_key":"[redacted]"}`},
 		{name: "json_escape_after_label", ct: "application/json", body: `{"api_key":"k9f2x7q1\"x"}`, wantErr: true},
+		{name: "json_escape_walk_only", ct: "application/json", body: `{"token":"ab\"cd` + tok + `"}`, want: `{"token":"ab\"[redacted]"}`},
 		{name: "json_clean", ct: "application/json", body: `{"message":"no"}`, same: true},
 		{name: "json_invalid", ct: "application/json", body: "invalid token " + tok, want: "invalid token [redacted]"},
 		{name: "octet_stream", ct: "application/octet-stream", body: "invalid token " + tok, want: "invalid token [redacted]"},
@@ -291,8 +298,8 @@ func TestRedactRefusal(t *testing.T) {
 			body := []byte(c.body)
 			out, err := redactRefusal(c.ct, body)
 			if c.wantErr {
-				if err == nil {
-					t.Fatalf("want an error, got %q", truncateForLog(out))
+				if !errors.Is(err, errRefusalNotRewritable) {
+					t.Fatalf("want errRefusalNotRewritable, got err=%v out=%q", err, truncateForLog(out))
 				}
 				return
 			}
