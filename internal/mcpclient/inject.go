@@ -132,7 +132,7 @@ func headersFor(authType string, raw json.RawMessage) (http.Header, error) {
 
 // MinLiteralBytes is the shortest injected value the proxy replaces by
 // literal match (PORM-208). A shorter value is left to the pattern rules so
-// that a trivially short credential cannot blank ordinary words in error
+// that a credential of a few bytes cannot blank ordinary words in error
 // text. audit.RedactLiterals applies the same floor.
 const MinLiteralBytes = 8
 
