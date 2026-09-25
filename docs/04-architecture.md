@@ -119,7 +119,7 @@ as the upstream sent it apart from the message of a JSON-RPC error, which is
 redacted before it leaves (PORM-195), and the row is judged from the answering
 document as it arrived. A body with a status of `400` or above that is not a
 JSON-RPC error envelope is redacted whole by the same rules (PORM-205); JSON
-up to 64 KiB is decoded and re-encoded, and any other body, a longer JSON one
+up to 64 KiB is decoded and scanned, and any other body, a longer JSON one
 included, is cut at 64 KiB. A 2xx event stream is relayed event by event, and
 a bare JSON document under that label is sent when the stream ends.
 

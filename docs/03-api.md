@@ -1076,15 +1076,21 @@ never the admin key. The three MCP endpoints come first; the HTTP API relay
   any other media type keeps the member's status with no body when that status
   is `400` or above, and gets the caller a `502` and an `error` row otherwise.
   On a single-upstream key this *is* the 1:1 endpoint, and the upstream's
-  answer is relayed as it came, with two exceptions on every MCP endpoint. The
-  message of a JSON-RPC error is redacted as described under the audit row's
-  `error_message`. A body with a status of `400` or above that is not a
+  answer is relayed as it came, with two exceptions. The message of a JSON-RPC
+  error is redacted as described under the audit row's `error_message`, on
+  every MCP endpoint. A body with a status of `400` or above that is not a
   JSON-RPC error envelope, such as a gateway's plain-text, HTML or JSON `401`,
   keeps its status and `Content-Type` and has credential-shaped text replaced
-  by `[redacted]`; JSON up to 64 KiB is decoded and re-encoded compact with
-  its members in sorted order; any other body, a longer JSON one included, is
-  cut at 64 KiB at a value boundary, so a cut JSON body no longer parses; one
-  with nothing credential-shaped under that bound crosses byte for byte.
+  by `[redacted]` on a single-upstream key and a member endpoint, whatever its
+  media type apart from an event stream; on the aggregate endpoint only a JSON
+  one crosses, as the sentence above says, and it is redacted the same way.
+  JSON up to 64 KiB is decoded and scanned, and comes back compact with its
+  members in sorted order when a decoded string held the match; a body the
+  rules would leave unparseable, or a JSON body over 64 KiB written with `\u`
+  or `\/` escapes, answers `502` with `upstream request failed`; any other
+  body, a longer JSON one included, is cut at 64 KiB at a value boundary, so a
+  cut JSON body no longer parses; one with nothing credential-shaped under
+  that bound crosses byte for byte.
 - Shared: `POST /mcp`: the same door without the id in the path; the key
   identifies the virtual key. `POST //{upstream_slug}/mcp` (the same door with
   the id left empty) is its per-member analogue, resolved against the caller's
@@ -1593,9 +1599,10 @@ other host reads as `the upstream`. The field is read by operators and never
 returned to a key holder. An upstream's own JSON-RPC error message is returned
 to the key holder cut at 64 KiB and recorded cut to 256 bytes, in both places
 with credential-shaped text replaced by `[redacted]` (PORM-72, PORM-195). A
-body with a status of `400` or above that is not JSON-RPC leaves the row's
-`error_message` empty; the key holder receives it with the same replacement
-(PORM-205).
+body with a status of `400` or above that is not a JSON-RPC error envelope
+leaves the row's `error_message` empty unless it carries an `error` object
+with a `message`, which the row reads as it does for a JSON-RPC error; the key
+holder receives the body with the same replacement (PORM-205).
 
 Whether a row is `success` or `error` is judged from the document that
 answers the request, in either framing: an upstream's JSON-RPC error inside

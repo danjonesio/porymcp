@@ -19,9 +19,10 @@ Behaviour changes that affect a running deployment. Newest first.
   stood.
 - **A refusal body is at most 64 KiB.** It is cut at a value boundary before
   the rules run, so a JSON refusal over that bound no longer parses. A JSON
-  refusal under it is decoded, redacted and re-encoded compact with its
-  members sorted; one the rules would leave unparseable answers `502` with
-  `upstream request failed`.
+  refusal under it is decoded and scanned, and comes back compact with its
+  members sorted when a decoded string held the match; one the rules would
+  leave unparseable, or one over the bound written with `\u` or `\/` escapes,
+  answers `502` with `upstream request failed`.
 - **On a group endpoint a plain-text or HTML refusal still reaches the agent as
   its status with no body.** A JSON body there that is not JSON-RPC is redacted
   as on the other endpoints.
