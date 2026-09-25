@@ -1306,3 +1306,92 @@ func TestHTTPRelayClientWentAwayIsClosedSentence(t *testing.T) {
 		t.Errorf("error_message=%q carries the URL or Go's text", row.ErrorMessage)
 	}
 }
+
+// relayToken is the stored credential of the PORM-204 relay tests: a
+// 12-byte plain bearer that no pattern rule matches (secretLike is false for
+// it), so every assertion below proves the literal pass and not the rules.
+const relayToken = "abcdefghijkl"
+
+// relayEcho is a relay fixture whose one HTTP API upstream stores relayToken
+// and answers with h.
+func relayEcho(t *testing.T, h http.HandlerFunc) *relayFixture {
+	t.Helper()
+	return newRelayFixture(t, nil, map[string]httpSpec{"beta": {Base: "/v1", Bearer: relayToken, Handler: h}}, false)
+}
+
+// sentBearer is the bearer the stub was given, read back from the request so
+// a test proves the injected value is what gets redacted.
+func sentBearer(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// assertNoHeaderLeak is assertNoLeak over every header name and value.
+func assertNoHeaderLeak(t *testing.T, h http.Header, tok string) {
+	t.Helper()
+	for name, vals := range h {
+		assertNoLeak(t, "header name "+name, name, fragments(tok)...)
+		for _, v := range vals {
+			assertNoLeak(t, "header "+name, v, fragments(tok)...)
+		}
+	}
+}
+
+// TestRelayResponseHeadersRedacted is PORM-204 security requirements 5 and 7
+// (amendment A2): every relayed response header value takes the literal pass
+// on every status, a header whose name carries the credential is dropped,
+// Authorization never crosses, and on HEAD the upstream's Content-Length is
+// copied as it is with no body and a row size of 0.
+func TestRelayResponseHeadersRedacted(t *testing.T) {
+	echo := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			sent := sentBearer(r)
+			w.Header().Set("X-Echo", "Bearer "+sent)
+			w.Header().Set("Authorization", "Bearer "+sent)
+			w.Header().Set("X-"+sent, "1")
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodHead {
+				w.Header().Set("Content-Length", "42")
+				w.WriteHeader(status)
+				return
+			}
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"login":"octocat"}`)
+		}
+	}
+	check := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := rr.Header().Get("X-Echo"); got != "Bearer [redacted]" {
+			t.Errorf("X-Echo = %q, want Bearer [redacted]", got)
+		}
+		if got := rr.Header().Get("Authorization"); got != "" {
+			t.Errorf("Authorization crossed: %q", got)
+		}
+		if got := rr.Header().Get("X-" + relayToken); got != "" {
+			t.Errorf("a header named after the credential crossed: %q", got)
+		}
+		assertNoHeaderLeak(t, rr.Header(), relayToken)
+	}
+	t.Run("a 200 answer", func(t *testing.T) {
+		f := relayEcho(t, echo(http.StatusOK))
+		rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+		if rr.Code != http.StatusOK || rr.Body.String() != `{"login":"octocat"}` {
+			t.Fatalf("status %d body %q", rr.Code, rr.Body.String())
+		}
+		check(t, rr)
+	})
+	t.Run("a HEAD answered 401", func(t *testing.T) {
+		f := relayEcho(t, echo(http.StatusUnauthorized))
+		rr := f.send(http.MethodHead, "/a1/api/user", "", nil)
+		if rr.Code != http.StatusUnauthorized || rr.Body.Len() != 0 {
+			t.Fatalf("status %d body %q, want 401 and no body", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Content-Length"); got != "42" {
+			t.Errorf("Content-Length = %q, want the upstream's 42", got)
+		}
+		check(t, rr)
+		row := f.lastRow(1)
+		if row.Status != models.StatusError || row.ErrorMessage != "upstream answered 401" || row.ResponseSizeBytes != 0 {
+			t.Errorf("row = status %q error %q size %d", row.Status, row.ErrorMessage, row.ResponseSizeBytes)
+		}
+	})
+}

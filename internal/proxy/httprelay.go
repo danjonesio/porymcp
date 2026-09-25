@@ -212,7 +212,10 @@ func copyRelayRequestHeaders(dst, src http.Header, token string) {
 // the client, every value copied.
 var relayResponseDenylist = map[string]bool{
 	"content-encoding": true,
-	"set-cookie":       true, "set-cookie2": true, "www-authenticate": true, "proxy-authenticate": true,
+	// An upstream that echoes the request's credential header would hand it
+	// to the key holder (PORM-204); Proxy-Authorization is already hop-by-hop.
+	"authorization": true,
+	"set-cookie":    true, "set-cookie2": true, "www-authenticate": true, "proxy-authenticate": true,
 	"location": true, "refresh": true,
 	"content-security-policy": true, "content-security-policy-report-only": true,
 	"strict-transport-security": true, "x-frame-options": true, "x-content-type-options": true,
@@ -237,11 +240,23 @@ var relayResponseDenylist = map[string]bool{
 // after its own first value lands. Every value of a permitted name is copied
 // (Add), so nothing repeated is lost. Content-Length crosses on a HEAD answer
 // only, where the length is the point of the request; on every other answer
-// the caller sets it from the body it relays.
-func copyRelayResponseHeaders(dst, src http.Header, head bool) {
+// the caller sets it from the body it relays. Every other permitted value
+// passes through audit.RedactLiterals, and a name the same pass would change
+// is dropped, so a header that echoes the injected credential reads
+// [redacted] or does not cross (PORM-204). The name check folds case,
+// because net/http canonicalises a name (an echoed "x-<token>" arrives as
+// "X-<Token>") while the value pass is exact. The pattern rules are not run
+// on headers, because an ETag or a request id would trip the long-run rule.
+// A HEAD answer's Content-Length is copied as it is: a numeric value is never
+// a credential, and a replaced value would be an invalid header.
+func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string) {
 	protected := make(map[string]bool, len(dst))
 	for name := range dst {
 		protected[strings.ToLower(name)] = true
+	}
+	folded := make([]string, len(literals))
+	for i, l := range literals {
+		folded[i] = strings.ToLower(l)
 	}
 	listed := connectionListed(src)
 	for name, vals := range src {
@@ -250,12 +265,18 @@ func copyRelayResponseHeaders(dst, src http.Header, head bool) {
 			if !head {
 				continue
 			}
-		} else if mcpclient.HopByHop(name) || listed[lower] || relayResponseDenylist[lower] ||
-			protected[lower] || strings.HasPrefix(lower, "access-control-") {
+			for _, v := range vals {
+				dst.Add(name, v)
+			}
+			continue
+		}
+		if mcpclient.HopByHop(name) || listed[lower] || relayResponseDenylist[lower] ||
+			protected[lower] || strings.HasPrefix(lower, "access-control-") ||
+			audit.RedactLiterals(lower, folded) != lower {
 			continue
 		}
 		for _, v := range vals {
-			dst.Add(name, v)
+			dst.Add(name, audit.RedactLiterals(v, literals))
 		}
 	}
 }
@@ -460,6 +481,10 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 		h.finish(vk, requestID, verb, tool, up.ID, models.StatusError, err.Error(), start, size, params)
 		return
 	}
+	// The values the credential writes on the wire, for the literal pass over
+	// the answer's headers and error body (PORM-204). Never handed to finish:
+	// the row's error_message on this door is always PoryMCP's own sentence.
+	literals := mcpclient.Literals(up.AuthType, plain)
 
 	// 6, 7. The outbound request under the relay's budgets, with the joined
 	// URL assigned rather than re-parsed (so an escaped segment goes out as
@@ -534,7 +559,7 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// calls it text/html on PoryMCP's origin (the MCP door's default is
 	// application/json for the same reason).
 	head := verb == http.MethodHead
-	copyRelayResponseHeaders(w.Header(), headers, head)
+	copyRelayResponseHeaders(w.Header(), headers, head, literals)
 	writeBody := status != http.StatusNotModified && !head
 	if writeBody {
 		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
