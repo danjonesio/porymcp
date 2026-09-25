@@ -138,14 +138,32 @@
   pressed against padding with no separator can keep a fragment there as in
   the row. The bound is per message: a body or stream made of many error
   events costs about 3 MB/s of redaction on the request goroutine for as
-  long as it lasts. The rewrite covers what the judge reads as an error, so
-  a nonconforming body with duplicate `error` keys whose last is null can
-  still carry text, and so can an upstream that frames one document across
-  a whitespace-only line, which the judge and the rewrite both read as two
-  events and a browser client joins. A `result` and a notification are
-  relayed as the upstream sent them (an upstream that echoes a credential
-  there is PORM-87), and so are an error's `data` member and an error body
-  that is not JSON-RPC, such as a plain-text 401.
+  long as it lasts. The rewrite covers what the judge reads as an error, so on
+  a `2xx` answer a nonconforming body with duplicate `error` keys whose last
+  is null can still carry text, and so can an upstream that frames one
+  document across a whitespace-only line, which the judge and the rewrite both
+  read as two events and a browser client joins. A `result` and a notification
+  are relayed as the upstream sent them (an upstream that echoes a credential
+  there is PORM-87), and so is an error's `data` member. A body with a status
+  of `400` or above that is not a JSON-RPC error envelope (an object with a
+  `jsonrpc` member and an `error` member), such as a gateway's plain-text,
+  HTML, `application/problem+json` or OAuth-style JSON 401, is redacted whole
+  by the same rules on a single-upstream key and a member endpoint, whatever
+  its media type apart from an event stream (PORM-205). Its status and
+  `Content-Type` are the upstream's. JSON up to 64 KiB is walked with each
+  string decoded, then scanned once more as text, and comes back compact with
+  its members in sorted order when something changed; a scan that would leave
+  it unparseable answers `502` with the fixed sentence instead. Any other
+  body, a longer JSON one included, is cut at 64 KiB at a value boundary
+  before the rules run. One with nothing credential-shaped under that bound is
+  relayed byte for byte. On a group endpoint such a body crosses only as JSON
+  or an event stream, and a JSON one is redacted the same way; in any other
+  media type the member's status reaches the client with no body. Two shapes
+  stay as sent: a JSON-RPC error envelope whose credential sits outside
+  `message` (its `data` or a sibling member), and an event-stream refusal
+  whose events are not JSON-RPC. The rules are the audit row's, so a
+  credential too short or too plain for them is not caught on this door
+  either.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by pattern (PORM-72). `audit.Record` replaces
   credential-shaped text with `[redacted]` and bounds the field at 256 bytes
@@ -396,9 +414,10 @@
   `X-Powered-By`, `Via`, `Alt-Svc` and `X-Request-Id` are dropped, so a key
   holder learns neither the upstream's software nor the authorization server
   its 401 names from a response header. The response body is relayed as
-  received apart from a JSON-RPC error's message (PORM-195), so an upstream
-  that names itself in an error message, a tool description or a 401 body
-  still does; that channel is out of scope here.
+  received apart from a JSON-RPC error's message (PORM-195) and
+  credential-shaped text in a refusal that is not JSON-RPC (PORM-205), so an
+  upstream that names itself in an error message, a tool description or a 401
+  body still does; that channel is out of scope here.
   `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`,
   `Access-Control-Expose-Headers`, `Vary`, `Content-Security-Policy`,
   `X-Frame-Options` and `X-Content-Type-Options` are dropped, so the single
@@ -911,9 +930,12 @@
   endpoint the bytes are relayed as the upstream sent them, except the
   message of a JSON-RPC error: that message has credential-shaped text
   replaced by `[redacted]` in each event or document that carries an error
-  (PORM-195). A rewritten document comes back compact, with its members in
-  sorted order and, in an event stream, as one `data:` line; every other
-  event and line, and the framing around them, is unchanged. The
+  (PORM-195). A body with a status of `400` or above that is not a JSON-RPC
+  error envelope is redacted whole by the same rules (PORM-205); JSON up to 64
+  KiB is decoded and re-encoded, and any other body, a longer JSON one
+  included, is cut at 64 KiB. A rewritten document comes back compact, with
+  its members in sorted order and, in an event stream, as one `data:` line;
+  every other event and line, and the framing around them, is unchanged. The
   audit row is judged from the original document, so an event stream
   carrying a JSON-RPC error is an `error` row there too; the row carries the
   upstream's own `error.message`, with credential-shaped text replaced by

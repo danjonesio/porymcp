@@ -4,6 +4,28 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### A refusal that is not JSON-RPC no longer returns the credential to the agent (PORM-205)
+
+- **A gateway's plain-text, HTML or JSON 401 that quotes the credential reads
+  `invalid token [redacted]` in the agent's answer.** The status and
+  `Content-Type` are the upstream's. The same rules as the audit row's
+  `error_message` apply to any body with a status of 400 or above that is not
+  a JSON-RPC error envelope, whatever its media type apart from an event
+  stream, on a single-upstream key and a member endpoint. A binary 4xx body is
+  scanned and cut like any other.
+- **A refusal with nothing credential-shaped in it and under 64 KiB is relayed
+  byte for byte.** An agent that matches on a refusal's text now sees
+  `[redacted]` where a trace id, a container id or another token-shaped run
+  stood.
+- **A refusal body is at most 64 KiB.** It is cut at a value boundary before
+  the rules run, so a JSON refusal over that bound no longer parses. A JSON
+  refusal under it is decoded, redacted and re-encoded compact with its
+  members sorted; one the rules would leave unparseable answers `502` with
+  `upstream request failed`.
+- **On a group endpoint a plain-text or HTML refusal still reaches the agent as
+  its status with no body.** A JSON body there that is not JSON-RPC is redacted
+  as on the other endpoints.
+
 ### An upstream's error message no longer returns the credential to the agent (PORM-195)
 
 - **A failed call at an upstream that echoes its credential reads

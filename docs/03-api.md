@@ -1075,8 +1075,15 @@ never the admin key. The three MCP endpoints come first; the HTTP API relay
   `application/json` or `text/event-stream`, under that media type; a body in
   any other media type gets the caller a `502` and an `error` row. On a single-upstream
   key this *is* the 1:1 endpoint, and the upstream's answer is relayed as it
-  came. The one exception on every MCP endpoint is the message of a JSON-RPC
-  error, which is redacted as described under the audit row's `error_message`.
+  came, with two exceptions on every MCP endpoint. The message of a JSON-RPC
+  error is redacted as described under the audit row's `error_message`. A body
+  with a status of `400` or above that is not a JSON-RPC error envelope, such
+  as a gateway's plain-text, HTML or JSON `401`, keeps its status and
+  `Content-Type` and has credential-shaped text replaced by `[redacted]`; JSON
+  up to 64 KiB is decoded and re-encoded compact with its members in sorted
+  order; any other body, a longer JSON one included, is cut at 64 KiB at a
+  value boundary, so a cut JSON body no longer parses; one with nothing
+  credential-shaped under that bound crosses byte for byte.
 - Shared: `POST /mcp`: the same door without the id in the path; the key
   identifies the virtual key. `POST //{upstream_slug}/mcp` (the same door with
   the id left empty) is its per-member analogue, resolved against the caller's
@@ -1582,10 +1589,12 @@ its query string or the address the host resolved to. The HTTP relay door
 writes the same sentence for the same failure. The host is written only when
 it holds ASCII letters, digits, `.`, `_`, `-`, `:`, `[` and `]` alone; any
 other host reads as `the upstream`. The field is read by operators and never
-returned to a key holder. An upstream's own JSON-RPC error message is
-returned to the key holder cut at 64 KiB and recorded cut to 256 bytes, in
-both places with credential-shaped text replaced by `[redacted]` (PORM-72,
-PORM-195).
+returned to a key holder. An upstream's own JSON-RPC error message is returned
+to the key holder cut at 64 KiB and recorded cut to 256 bytes, in both places
+with credential-shaped text replaced by `[redacted]` (PORM-72, PORM-195). A
+body with a status of `400` or above that is not JSON-RPC leaves the row's
+`error_message` empty; the key holder receives it with the same replacement
+(PORM-205).
 
 Whether a row is `success` or `error` is judged from the document that
 answers the request, in either framing: an upstream's JSON-RPC error inside
