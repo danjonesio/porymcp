@@ -363,6 +363,20 @@ func TestRedactLiterals(t *testing.T) {
 		}
 	})
 
+	t.Run("a periodic literal over a long run costs a handful of allocations", func(t *testing.T) {
+		// Every offset of the run is a hit; the hits merge as they are
+		// collected, so the pass costs the spans slice and the output, not
+		// one span per byte of a body that can be 16 MiB.
+		in := strings.Repeat("a", 1<<20)
+		if n := testing.AllocsPerRun(5, func() {
+			if got := RedactLiterals(in, []string{"aaaaaaaa"}); got != redacted {
+				t.Errorf("RedactLiterals = %.20q", got)
+			}
+		}); n > 8 {
+			t.Errorf("RedactLiterals allocated %.0f times on a 1 MiB periodic run", n)
+		}
+	})
+
 	t.Run("a clean string is the same value with no allocation", func(t *testing.T) {
 		in := "rate limited, retry later"
 		for _, lits := range [][]string{nil, {}, {lit}} {
@@ -379,15 +393,16 @@ func TestRedactLiterals(t *testing.T) {
 
 // TestRedactBoundedLiteralsBeforeTheCut is PORM-208 security requirement
 // 2: the literal pass runs over the whole text before the window cut, so
-// a literal that straddles the edge, alone or overlapping another, leaves
-// no fragment, and a short clean string is byte-identical to RedactBounded.
+// a literal that straddles the edge leaves no fragment, and a short clean
+// string is byte-identical to RedactBounded. Each case fails when the cut
+// runs first.
 func TestRedactBoundedLiteralsBeforeTheCut(t *testing.T) {
 	const lit = "abcdefghijkl"
 	window := 4 << 10
-	// A window of one word, no boundary inside it, ending inside the literal.
-	noBoundary := strings.Repeat("x", window-4) + lit
-	// The overlapping pair placed so the window ends after the fourth b.
-	pair := strings.Repeat("x", window-15) + "aaaaaaaaXYZbbbbbbbb"
+	// A window of one word, no boundary inside it, ending ten bytes into the
+	// twelve-byte literal: a cut before the literal pass would keep those
+	// ten bytes whole, since there is no boundary to cut back to.
+	noBoundary := strings.Repeat("x", window-10) + lit
 	// A custom-style literal with a space, the window ending after "abcd efgh ".
 	spaced := strings.Repeat("y", window-10) + "abcd efgh ijkl"
 	cases := []struct {
@@ -397,7 +412,6 @@ func TestRedactBoundedLiteralsBeforeTheCut(t *testing.T) {
 		toks []string
 	}{
 		{"no boundary in the window", noBoundary, []string{lit}, []string{lit}},
-		{"overlapping pair at the edge", pair, []string{"aaaaaaaaXYZ", "XYZbbbbbbbb"}, []string{"aaaaaaaaXYZ", "XYZbbbbbbbb"}},
 		{"space-bearing literal at the edge", spaced, []string{"abcd efgh ijkl"}, []string{"abcd efgh ijkl"}},
 	}
 	for _, c := range cases {

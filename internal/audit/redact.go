@@ -225,13 +225,23 @@ func RedactLiterals(s string, literals []string) string {
 		if len(lit) < mcpclient.MinLiteralBytes {
 			continue
 		}
+		first := len(spans) // spans before this index belong to other literals
 		for from := 0; from < len(s); {
 			i := strings.Index(s[from:], lit)
 			if i < 0 {
 				break
 			}
-			spans = append(spans, [2]int{from + i, from + i + len(lit)})
-			from += i + 1
+			start, end := from+i, from+i+len(lit)
+			// Hits of one literal arrive in start order, so a hit that
+			// overlaps or touches the last span extends it: a periodic
+			// literal over a long run costs one span, not one per offset,
+			// and the text is at most mcpclient.MaxBodyBytes.
+			if n := len(spans); n > first && start <= spans[n-1][1] {
+				spans[n-1][1] = end
+			} else {
+				spans = append(spans, [2]int{start, end})
+			}
+			from = start + 1
 		}
 	}
 	if len(spans) == 0 {
