@@ -1394,6 +1394,29 @@ func TestRelayResponseHeadersRedacted(t *testing.T) {
 			t.Errorf("row = status %q error %q size %d", row.Status, row.ErrorMessage, row.ResponseSizeBytes)
 		}
 	})
+	// Security requirement 5 on the one header that skips the pass: a HEAD
+	// Content-Length crosses only as a single value that parses as a length,
+	// because Go's HTTP/2 client leaves a non-numeric or repeated value in
+	// the header rather than rejecting it.
+	t.Run("a HEAD Content-Length crosses only as one number", func(t *testing.T) {
+		for _, c := range []struct {
+			name string
+			vals []string
+			want string
+		}{
+			{name: "one number", vals: []string{"42"}, want: "42"},
+			{name: "text", vals: []string{relayToken}, want: ""},
+			{name: "a number and text", vals: []string{"5", relayToken}, want: ""},
+			{name: "negative", vals: []string{"-1"}, want: ""},
+		} {
+			src := http.Header{"Content-Length": c.vals}
+			dst := http.Header{}
+			copyRelayResponseHeaders(dst, src, true, []string{relayToken})
+			if got := dst.Values("Content-Length"); strings.Join(got, ",") != c.want {
+				t.Errorf("%s: Content-Length = %q, want %q", c.name, got, c.want)
+			}
+		}
+	})
 	// Security requirement 6: the names that describe the upstream's body are
 	// dropped when the body was changed, and kept when it was not (the 404 in
 	// TestRelayCleanErrorBodyCrossesAsSent).
@@ -1614,6 +1637,7 @@ func TestRelayUnscannable(t *testing.T) {
 		name string
 		enc  []string
 		ct   string
+		ct2  string // a second Content-Type line, when set
 		body string
 		want bool
 	}{
@@ -1629,6 +1653,13 @@ func TestRelayUnscannable(t *testing.T) {
 		{name: "utf-32 charset", ct: "text/plain; charset=utf-32", body: "x", want: true},
 		{name: "malformed label naming utf-16", ct: "text/plain; charset=utf-16; x", body: "x", want: true},
 		{name: "duplicate charset", ct: "text/plain; charset=utf-16; charset=utf-8", body: "x", want: true},
+		{name: "utf16 without the hyphen", ct: "text/plain; charset=utf16", body: "x", want: true},
+		{name: "utf_16 with an underscore", ct: "text/plain; charset=utf_16", body: "x", want: true},
+		{name: "ucs-2", ct: "text/plain; charset=ucs-2", body: "x", want: true},
+		{name: "unicode alias", ct: "text/plain; charset=unicode", body: "x", want: true},
+		{name: "unicodefffe alias", ct: "text/plain; charset=unicodeFFFE", body: "x", want: true},
+		{name: "ucs-4", ct: "text/plain; charset=ucs-4", body: "x", want: true},
+		{name: "utf-16 on a second Content-Type line", ct: "text/plain", ct2: "text/plain; charset=utf-16le", body: "x", want: true},
 		{name: "utf-16 BE mark", ct: "text/plain", body: "\xfe\xffx", want: true},
 		{name: "utf-16 LE mark", ct: "text/plain", body: "\xff\xfex", want: true},
 		{name: "utf-32 BE mark", ct: "text/plain", body: "\x00\x00\xfe\xffx", want: true},
@@ -1644,6 +1675,9 @@ func TestRelayUnscannable(t *testing.T) {
 			}
 			if c.ct != "" {
 				h.Set("Content-Type", c.ct)
+			}
+			if c.ct2 != "" {
+				h.Add("Content-Type", c.ct2)
 			}
 			if got := relayUnscannable(h, []byte(c.body)); got != c.want {
 				t.Errorf("relayUnscannable = %v, want %v", got, c.want)

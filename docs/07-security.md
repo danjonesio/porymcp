@@ -217,7 +217,9 @@
   framing; and a token from an earlier request echoed after an oauth
   refresh. Escaped spellings (`\u`, `\/`) inside a body that does not open
   as JSON, such as JSON inlined in an HTML page or an event stream, are seen
-  by neither pass on either door. `[redacted]` confirms a whole-literal
+  by neither pass on either door, and neither is a UTF-16 or UTF-32 body
+  that carries no byte order mark and no charset naming it (a labelled or
+  marked one is withheld on the HTTP API relay). `[redacted]` confirms a whole-literal
   match of 8 bytes or more, so an upstream that echoes the key holder's own
   input gives one audited guess per request against a short, low-entropy
   custom header value; against a random token the guess space makes this

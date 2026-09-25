@@ -247,8 +247,9 @@ var relayResponseDenylist = map[string]bool{
 // because net/http canonicalises a name (an echoed "x-<token>" arrives as
 // "X-<Token>") while the value pass is exact. The pattern rules are not run
 // on headers, because an ETag or a request id would trip the long-run rule.
-// A HEAD answer's Content-Length is copied as it is: a numeric value is never
-// a credential, and a replaced value would be an invalid header.
+// A HEAD answer's Content-Length crosses only as one value that parses as a
+// length: Go's HTTP/2 client leaves a non-numeric or repeated value in the
+// header rather than rejecting it, and the relay must not write text there.
 func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string) {
 	protected := make(map[string]bool, len(dst))
 	for name := range dst {
@@ -262,11 +263,10 @@ func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string
 	for name, vals := range src {
 		lower := strings.ToLower(name)
 		if lower == "content-length" {
-			if !head {
-				continue
-			}
-			for _, v := range vals {
-				dst.Add(name, v)
+			if head && len(vals) == 1 {
+				if _, err := strconv.ParseUint(vals[0], 10, 63); err == nil {
+					dst.Add(name, vals[0])
+				}
 			}
 			continue
 		}
@@ -281,6 +281,15 @@ func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string
 	}
 }
 
+// unreadableCharsets are the charset spellings that put a NUL between the
+// bytes of an ASCII token, so neither redaction pass can see it: the UTF-16
+// and UTF-32 names with a hyphen, an underscore or nothing between, the
+// UCS-2 and UCS-4 names, and the WHATWG aliases that contain "unicode"
+// (unicode, csunicode, unicodefeff, unicodefffe). Matched as substrings of
+// the lower-cased label, so an extra match only sends a body to the withheld
+// branch.
+var unreadableCharsets = []string{"utf-16", "utf_16", "utf16", "utf-32", "utf_32", "utf32", "ucs-2", "ucs2", "ucs-4", "ucs4", "unicode"}
+
 // relayUnscannable reports an error answer neither redaction pass can read:
 // a body still under a Content-Encoding the transport did not decode (Go
 // decodes only the gzip it asked for, and deletes the header when it does),
@@ -288,10 +297,11 @@ func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string
 // NULs (PORM-204). The charset is read from the raw label by substring
 // rather than through mime.ParseMediaType, which drops every parameter of a
 // label it cannot parse, so a malformed label cannot switch the check off.
-// Every Content-Encoding value is read and split at commas, as
-// connectionListed splits Connection, so a second line or a list cannot hide
-// a coding behind identity. The UTF-32 LE mark opens with the UTF-16 LE one,
-// so three prefixes cover the four marks.
+// Every Content-Encoding and Content-Type value is read, because every value
+// crosses to the client and a fetch-based client takes the last label; the
+// codings are split at commas, as connectionListed splits Connection, so a
+// second line or a list cannot hide a coding behind identity. The UTF-32 LE
+// mark opens with the UTF-16 LE one, so three prefixes cover the four marks.
 func relayUnscannable(headers http.Header, body []byte) bool {
 	for _, v := range headers.Values("Content-Encoding") {
 		for _, coding := range strings.Split(v, ",") {
@@ -300,9 +310,11 @@ func relayUnscannable(headers http.Header, body []byte) bool {
 			}
 		}
 	}
-	ct := strings.ToLower(headers.Get("Content-Type"))
-	if strings.Contains(ct, "utf-16") || strings.Contains(ct, "utf-32") {
-		return true
+	ct := strings.ToLower(strings.Join(headers.Values("Content-Type"), ","))
+	for _, cs := range unreadableCharsets {
+		if strings.Contains(ct, cs) {
+			return true
+		}
 	}
 	return bytes.HasPrefix(body, []byte{0, 0, 0xFE, 0xFF}) ||
 		bytes.HasPrefix(body, []byte{0xFF, 0xFE}) ||
