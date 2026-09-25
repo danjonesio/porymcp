@@ -231,10 +231,11 @@ func redactRefusal(contentType string, body []byte) ([]byte, error) {
 	// Only the window plus one byte is converted: Clamp cuts at the window
 	// either way, and a 16 MiB refusal is not copied twice.
 	s := string(body[:min(len(body), clientMessageBytes+1)])
-	if len(body) > clientMessageBytes && escapedJSON(s) {
-		// A JSON body over the bound gets no walk, and the text rules cannot
-		// see a credential written with \u or \/ escapes, so a document that
-		// holds either inside the window is not scanned but refused.
+	if escapedJSON(s) {
+		// A body that opens as JSON but gets no walk, because it is over the
+		// bound or does not parse, would be scanned as text, and the text
+		// rules cannot see a credential written with \u or \/ escapes; one
+		// that holds either inside the window is refused instead.
 		return nil, errRefusalNotRewritable
 	}
 	r := audit.RedactBounded(s, clientMessageBytes)
@@ -347,12 +348,12 @@ func memberCount(obj []byte) int {
 	return n
 }
 
-// escapedJSON reports whether s starts as a JSON object or array and holds
-// a \u or \/ escape, the two escapes that can split a credential into
+// escapedJSON reports whether s opens as a JSON object, array or string and
+// holds a \u or \/ escape, the two escapes that can split a credential into
 // pieces the text rules do not match.
 func escapedJSON(s string) bool {
 	t := strings.TrimLeft(s, " \t\r\n")
-	if t == "" || (t[0] != '{' && t[0] != '[') {
+	if t == "" || (t[0] != '{' && t[0] != '[' && t[0] != '"') {
 		return false
 	}
 	return strings.Contains(t, `\u`) || strings.Contains(t, `\/`)

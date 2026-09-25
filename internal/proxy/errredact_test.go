@@ -282,6 +282,10 @@ func TestRedactRefusal(t *testing.T) {
 			}
 		}},
 		{name: "long_json_escaped_in_window", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `","pad":"` + strings.Repeat("a ", 40<<10) + `"}`, wantErr: true},
+		{name: "long_top_string_escaped", ct: "application/json", body: `"invalid token ` + escapeEvery(tok, 6) + ` ` + strings.Repeat("a ", 40<<10) + `"`, wantErr: true},
+		{name: "under_invalid_json_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `"`, wantErr: true},
+		{name: "json_lines_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `"}` + "\n" + `{"a":1}`, wantErr: true},
+		{name: "text_opening_brace_clean", ct: "text/plain", body: `{not json: invalid token ` + tok, want: `{not json: invalid token [redacted]`},
 		{name: "long_json_escaped", ct: "application/json", body: `{"pad":"` + strings.Repeat("a ", 40<<10) + `","detail":"` + escapeEvery(tok, 6) + `"}`, check: func(t *testing.T, out []byte) {
 			if len(out) > clientMessageBytes {
 				t.Fatalf("len=%d over the bound", len(out))
