@@ -830,8 +830,20 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// comes back as the same bytes. No Content-Length is set or copied on
 	// this path (copyResponseHeaders never copies it), so net/http frames the
 	// rewritten length itself.
+	//
+	// A refusal (a status of 400 or more) whose body is not a JSON-RPC error
+	// envelope is not covered by that rewrite: a gateway's plain-text, HTML
+	// or JSON 401 that quotes the credential would cross as sent (PORM-205).
+	// redactRefusal runs on such a body after the error rewrite, in the same
+	// gate, so the one fail-closed branch below covers both passes: JSON is
+	// walked and then scanned, anything else is scanned and cut at the
+	// client bound. A JSON-RPC error envelope is left to the message rewrite
+	// so error.data stays as sent.
 	if st == models.StatusError || mcpclient.SSEFramed(ct, respBody) {
 		redacted, rerr := redactErrorAnswer(ct, respBody)
+		if rerr == nil && statusCode >= 400 {
+			redacted, rerr = redactRefusal(ct, redacted)
+		}
 		if rerr != nil {
 			// Judged an error and not rewritable: the response headers are
 			// copied as on the normal path below, then the fixed sentence of

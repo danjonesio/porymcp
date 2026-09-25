@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -368,6 +369,144 @@ func TestUpstreamErrorAnswerToClientIsRedacted(t *testing.T) {
 		assertNoLeak(t, "client body", rr.Body.String(), fragments(echoedToken)...)
 		if !strings.Contains(rr.Body.String(), "invalid token [redacted]") {
 			t.Errorf("client body=%s", rr.Body.String())
+		}
+	})
+}
+
+// assertRedactedRefusal is what a refusal that is not JSON-RPC must read at
+// the client (PORM-205 criterion 1, security requirements 1, 7 and 8): the
+// upstream's text with the credential replaced and nothing else changed, no
+// fragment of the credential anywhere, and a row judged as today with the
+// size the client was actually sent.
+func assertRedactedRefusal(t *testing.T, f *fixture, rr *httptest.ResponseRecorder, wantBody string, row models.AuditLog) {
+	t.Helper()
+	assertSentToken(t, f)
+	if got := rr.Body.String(); got != wantBody {
+		t.Errorf("client body:\n got %.300q\nwant %.300q", got, wantBody)
+	}
+	assertNoLeak(t, "client body", rr.Body.String(), fragments(echoedToken)...)
+	if row.Status != models.StatusError || row.ErrorMessage != "" {
+		t.Errorf("row status=%q error_message=%q, want error / empty", row.Status, row.ErrorMessage)
+	}
+	if rr.Body.Len() != row.ResponseSizeBytes {
+		t.Errorf("row size=%d, client got %d bytes", row.ResponseSizeBytes, rr.Body.Len())
+	}
+}
+
+// TestUpstreamRefusalToClientIsRedacted is PORM-205 criterion 1 with
+// amendment A1: an upstream that refuses a tools/call before its JSON-RPC
+// layer and quotes the bearer it was sent answers the key holder with its
+// text and not the credential, in plain text, HTML, problem JSON, OAuth-style
+// JSON, under a wrong event-stream label, beside an invalid byte and past
+// the client bound, on the single key and the member endpoint. On the group
+// endpoint a text refusal keeps reaching the client as its status with no
+// body, and a JSON one is redacted like the others.
+func TestUpstreamRefusalToClientIsRedacted(t *testing.T) {
+	tok := echoedToken
+	page := "<html><body><p>invalid token " + tok + "</p></body></html>"
+	redactedPage := "<html><body><p>invalid token [redacted]</p></body></html>"
+	const html = "text/html; charset=utf-8"
+	type door int
+	const (
+		single door = iota
+		member
+		group
+	)
+	cases := []struct {
+		name, ct, body string
+		door           door
+		want, wantCT   string // the exact body and label the client gets
+		check          func(t *testing.T, rr *httptest.ResponseRecorder)
+	}{
+		{name: "single_text_plain", ct: "text/plain", body: "invalid token " + tok, want: "invalid token [redacted]", wantCT: "text/plain"},
+		{name: "single_text_html", ct: html, body: page, want: redactedPage, wantCT: html},
+		{name: "member_text_plain", ct: "text/plain", body: "invalid token " + tok, door: member, want: "invalid token [redacted]", wantCT: "text/plain"},
+		{name: "member_text_html", ct: html, body: page, door: member, want: redactedPage, wantCT: html},
+		{name: "group_text_plain", ct: "text/plain", body: "invalid token " + tok, door: group, want: "", wantCT: ""},
+		{name: "group_text_html", ct: html, body: page, door: group, want: "", wantCT: ""},
+		{name: "group_json_label", ct: "application/json", body: "invalid token " + tok, door: group, want: "invalid token [redacted]", wantCT: "application/json"},
+		{name: "group_unlabelled_json", ct: "-", body: `{"detail":"invalid token ` + tok + `"}`, door: group, want: `{"detail":"invalid token [redacted]"}`, wantCT: "application/json"},
+		{name: "auth_header_quote", ct: "text/plain", body: "401 Unauthorized: Authorization: Bearer " + tok, want: "401 Unauthorized: Authorization: Bearer [redacted]", wantCT: "text/plain"},
+		{name: "problem_json", ct: "application/problem+json", body: `{"title":"Unauthorized","detail":"invalid token ` + tok + `"}`, want: `{"detail":"invalid token [redacted]","title":"Unauthorized"}`, wantCT: "application/problem+json"},
+		{name: "oauth_error_json", ct: "application/json", body: `{"error":"invalid_token","error_description":"Bearer ` + tok + ` is expired"}`, want: `{"error":"invalid_token","error_description":"Bearer [redacted] is expired"}`, wantCT: "application/json"},
+		{name: "sse_label_plain_body", ct: "text/event-stream", body: "invalid token " + tok, want: "invalid token [redacted]", wantCT: "text/event-stream"},
+		{name: "non_utf8", ct: "text/plain", body: "invalid token " + tok + " \xff", want: "invalid token [redacted] \xff", wantCT: "text/plain"},
+		{name: "long", ct: "text/plain", body: strings.Repeat("word ", 20<<10) + tok, wantCT: "text/plain", check: func(t *testing.T, rr *httptest.ResponseRecorder) {
+			if rr.Body.Len() > clientMessageBytes || !strings.HasPrefix(rr.Body.String(), "word word") {
+				t.Errorf("client body is %d bytes starting %.20q, want the upstream's words cut at %d", rr.Body.Len(), rr.Body.String(), clientMessageBytes)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := upstreamSpec{Tools: []string{"ping_tool"}, Bearer: tok, CallCode: http.StatusUnauthorized, CallCT: tc.ct, CallBody: tc.body}
+			var f *fixture
+			var rr *httptest.ResponseRecorder
+			tool := "ping_tool"
+			switch tc.door {
+			case single:
+				f = newSingleFixture(t, spec, nil, nil)
+				rr = f.post(toolCall("7", "ping_tool"))
+			case member:
+				f = singleMember(t, spec)
+				rr = f.postMember("solo", toolCall("7", "ping_tool"))
+			case group:
+				f = singleMember(t, spec)
+				tool = "solo__ping_tool"
+				rr = f.post(toolCall("7", tool))
+			}
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("HTTP code=%d want 401; body=%.200s", rr.Code, rr.Body.String())
+			}
+			if got := rr.Header().Get("Content-Type"); got != tc.wantCT {
+				t.Errorf("Content-Type=%q want %q", got, tc.wantCT)
+			}
+			row := f.waitAudit(models.LogFilter{Tool: tool})[0]
+			if tc.check != nil {
+				assertSentToken(t, f)
+				assertNoLeak(t, "client body", rr.Body.String(), fragments(tok)...)
+				if rr.Body.Len() != row.ResponseSizeBytes {
+					t.Errorf("row size=%d, client got %d bytes", row.ResponseSizeBytes, rr.Body.Len())
+				}
+				tc.check(t, rr)
+				return
+			}
+			assertRedactedRefusal(t, f, rr, tc.want, row)
+		})
+	}
+
+	t.Run("empty", func(t *testing.T) {
+		// A refusal with no body at all: the stub answers the call with a bare
+		// 401 and everything else as its ordinary arms would.
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			_ = json.Unmarshal(body, &req)
+			switch req.Method {
+			case "tools/call":
+				w.WriteHeader(http.StatusUnauthorized)
+			case "tools/list":
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"ping_tool","inputSchema":{"type":"object"}}]}}`, req.ID)
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{}}`, req.ID)
+			}
+		}
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: tok, Handler: handler}, nil, nil)
+		rr := f.post(toolCall("7", "ping_tool"))
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("HTTP code=%d want 401; body=%.200s", rr.Code, rr.Body.String())
+		}
+		if rr.Body.Len() != 0 || rr.Header().Get("Content-Type") != "" {
+			t.Errorf("body=%q Content-Type=%q, want neither", rr.Body.String(), rr.Header().Get("Content-Type"))
+		}
+		row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+		if row.Status != models.StatusError || row.ResponseSizeBytes != 0 {
+			t.Errorf("row status=%q size=%d, want error / 0", row.Status, row.ResponseSizeBytes)
 		}
 	})
 }

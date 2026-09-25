@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -129,6 +130,49 @@ func TestRelayNonRPCJSON401AuditedAsToday(t *testing.T) {
 	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
 	if row.Status != models.StatusError || row.ErrorMessage != "" {
 		t.Fatalf("row status=%q error_message=%q, want error / empty", row.Status, row.ErrorMessage)
+	}
+}
+
+// TestRelayRefusalWithNothingToRedactIsUnchanged is PORM-205 criterion 2
+// with amendment A2, security requirement 3: a refusal that is not JSON-RPC
+// and holds nothing credential-shaped crosses byte for byte with its status
+// and its label, on the single key and the member endpoint, and the row
+// records the bytes sent.
+func TestRelayRefusalWithNothingToRedactIsUnchanged(t *testing.T) {
+	cases := []struct {
+		name, ct, body string
+		code           int
+	}{
+		{name: "text_plain", ct: "text/plain", code: http.StatusForbidden, body: "forbidden: this key may not call ping_tool\n"},
+		{name: "text_html", ct: "text/html; charset=utf-8", code: http.StatusNotFound, body: "<html><body><h1>Not found</h1></body></html>"},
+	}
+	for _, tc := range cases {
+		for _, member := range []bool{false, true} {
+			name := tc.name + "/single"
+			if member {
+				name = tc.name + "/member"
+			}
+			t.Run(name, func(t *testing.T) {
+				spec := upstreamSpec{Tools: []string{"ping_tool"}, CallCode: tc.code, CallCT: tc.ct, CallBody: tc.body}
+				var f *fixture
+				var rr *httptest.ResponseRecorder
+				if member {
+					f = singleMember(t, spec)
+					rr = f.postMember("solo", toolCall("7", "ping_tool"))
+				} else {
+					f = newSingleFixture(t, spec, nil, nil)
+					rr = f.post(toolCall("7", "ping_tool"))
+				}
+				if rr.Code != tc.code {
+					t.Fatalf("HTTP code=%d want %d", rr.Code, tc.code)
+				}
+				assertRelayUnchanged(t, rr.Header(), rr.Body.String(), tc.body, tc.ct, "")
+				row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+				if row.Status != models.StatusError || row.ErrorMessage != "" || row.ResponseSizeBytes != len(tc.body) {
+					t.Fatalf("row status=%q error_message=%q size=%d, want error / empty / %d", row.Status, row.ErrorMessage, row.ResponseSizeBytes, len(tc.body))
+				}
+			})
+		}
 	}
 }
 

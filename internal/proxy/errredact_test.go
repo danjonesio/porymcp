@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestRedactErrorDoc is PORM-195 security requirements 3, 6 and 8: a
@@ -212,6 +213,131 @@ func TestRedactErrorAnswer(t *testing.T) {
 			}
 			assertNoLeak(t, "client body", string(out), fragments(echoedToken)...)
 		})
+	}
+}
+
+// TestRedactRefusal is PORM-205 security requirements 1 to 6 on the helper
+// alone: a refusal that is not a JSON-RPC error envelope loses every
+// credential-shaped run in any media type, escaped, shadowed by a duplicate
+// key, labelled and short, or beside an invalid byte; nothing past the bound
+// crosses unscanned; a clean body and an envelope come back as the same
+// bytes; a text pass that would break the JSON fails closed.
+func TestRedactRefusal(t *testing.T) {
+	tok := echoedToken
+	page := "<html><body><p>invalid token " + tok + "</p></body></html>"
+	cases := []struct {
+		name, ct, body string
+		same           bool     // the same backing array comes back
+		want           string   // the exact output, when it is one
+		contains       []string // substrings the output must carry
+		wantErr        bool
+		check          func(t *testing.T, out []byte)
+	}{
+		{name: "empty", ct: "text/plain", body: "", check: func(t *testing.T, out []byte) {
+			if len(out) != 0 {
+				t.Fatalf("empty body became %q", out)
+			}
+		}},
+		{name: "rpc_error_with_data", ct: "application/json", body: `{"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"no","data":"invalid token ` + tok + `"}}`, same: true},
+		{name: "sse_events", ct: "text/event-stream", body: sseFrame("invalid token " + tok), same: true},
+		{name: "sse_label_plain_body", ct: "text/event-stream", body: "invalid token " + tok, want: "invalid token [redacted]"},
+		{name: "sse_comment_first_line", ct: "text/event-stream", body: ": x\ninvalid token " + tok, want: ": x\ninvalid token [redacted]"},
+		{name: "sse_retry_first_line", ct: "text/event-stream", body: "retry: 1\ninvalid token " + tok, want: "retry: 1\ninvalid token [redacted]"},
+		{name: "unlabelled_id_first_line", ct: "", body: "id: 12\ninvalid token " + tok, want: "id: 12\ninvalid token [redacted]"},
+		{name: "clean_text", ct: "text/plain", body: "forbidden: this key may not call ping_tool", same: true},
+		{name: "text_token", ct: "text/plain", body: "invalid token " + tok, want: "invalid token [redacted]"},
+		{name: "auth_header_quote", ct: "text/plain", body: "401 Unauthorized: Authorization: Bearer " + tok, want: "401 Unauthorized: Authorization: Bearer [redacted]"},
+		{name: "html", ct: "text/html; charset=utf-8", body: page, want: "<html><body><p>invalid token [redacted]</p></body></html>"},
+		{name: "non_utf8", ct: "text/plain", body: "invalid token " + tok + " \xff", want: "invalid token [redacted] \xff"},
+		{name: "problem_json", ct: "application/problem+json", body: `{"title":"Unauthorized","detail":"invalid token ` + tok + `"}`, want: `{"detail":"invalid token [redacted]","title":"Unauthorized"}`},
+		{name: "oauth_error_json", ct: "application/json", body: `{"error":"invalid_token","error_description":"Bearer ` + tok + ` is expired"}`, want: `{"error":"invalid_token","error_description":"Bearer [redacted] is expired"}`},
+		{name: "google_error_json", ct: "application/json", body: `{"error":{"code":401,"message":"no","details":"` + tok + `"}}`, want: `{"error":{"code":401,"details":"[redacted]","message":"no"}}`},
+		{name: "json_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `"}`, want: `{"detail":"invalid token [redacted]"}`},
+		{name: "json_duplicate_key", ct: "application/json", body: `{"detail":"invalid token ` + tok + `","detail":"x"}`, want: `{"detail":"x"}`},
+		{name: "json_duplicate_key_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `","detail":"x"}`, want: `{"detail":"x"}`},
+		{name: "json_error_null_duplicate", ct: "application/json", body: `{"error":{"message":"` + tok + `"},"error":null}`, want: `{"error":null}`},
+		{name: "envelope_case_folded", ct: "application/json", body: `{"JSONRPC":"2.0","Error":"x","detail":"` + tok + `"}`, want: `{"Error":"x","JSONRPC":"2.0","detail":"[redacted]"}`},
+		{name: "envelope_jsonrpc_not_2", ct: "application/json", body: `{"jsonrpc":1,"error":"x","detail":"` + tok + `"}`, want: `{"detail":"[redacted]","error":"x","jsonrpc":1}`},
+		{name: "nested_within_limit", ct: "application/json", body: strings.Repeat(`{"a":[`, 16) + `"invalid token ` + tok + `"` + strings.Repeat(`]}`, 16), want: strings.Repeat(`{"a":[`, 16) + `"invalid token [redacted]"` + strings.Repeat(`]}`, 16)},
+		{name: "nested_too_deep", ct: "application/json", body: strings.Repeat(`[`, 9990) + `"` + tok + `"` + strings.Repeat(`]`, 9990), wantErr: true},
+		{name: "json_labelled_short", ct: "application/json", body: `{"message":"unauthorized","api_key":"k9f2x7q1"}`, want: `{"message":"unauthorized","api_key":"[redacted]"}`},
+		{name: "json_escape_after_label", ct: "application/json", body: `{"api_key":"k9f2x7q1\"x"}`, wantErr: true},
+		{name: "json_escape_walk_only", ct: "application/json", body: `{"token":"ab\"cd` + tok + `"}`, want: `{"token":"ab\"[redacted]"}`},
+		{name: "json_clean", ct: "application/json", body: `{"message":"no"}`, same: true},
+		{name: "json_invalid", ct: "application/json", body: "invalid token " + tok, want: "invalid token [redacted]"},
+		{name: "octet_stream", ct: "application/octet-stream", body: "invalid token " + tok, want: "invalid token [redacted]"},
+		{name: "long_clean", ct: "text/plain", body: strings.Repeat("word ", 20<<10), check: func(t *testing.T, out []byte) {
+			if len(out) > clientMessageBytes || !bytes.HasPrefix(out, []byte("word word")) || out[len(out)-1] != ' ' {
+				t.Fatalf("len=%d prefix=%q last=%q", len(out), truncateForLog(out), out[len(out)-1])
+			}
+		}},
+		{name: "long_straddle", ct: "text/plain", body: strings.Repeat("word ", 13107) + tok, check: func(t *testing.T, out []byte) {
+			if len(out) != 65535 {
+				t.Fatalf("len=%d want 65535", len(out))
+			}
+		}},
+		{name: "long_clean_json", ct: "application/json", body: `{"pad":"` + strings.Repeat("a ", 40<<10) + `"}`, check: func(t *testing.T, out []byte) {
+			if len(out) > clientMessageBytes || len(out) < 60<<10 || !bytes.HasPrefix(out, []byte(`{"pad":"a a`)) || json.Valid(out) {
+				t.Fatalf("len=%d valid=%v prefix=%.12q, want a readable prefix cut under the bound and unparseable", len(out), json.Valid(out), out)
+			}
+		}},
+		{name: "long_json_escaped_in_window", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `","pad":"` + strings.Repeat("a ", 40<<10) + `"}`, wantErr: true},
+		{name: "long_top_string_escaped", ct: "application/json", body: `"invalid token ` + escapeEvery(tok, 6) + ` ` + strings.Repeat("a ", 40<<10) + `"`, wantErr: true},
+		{name: "under_invalid_json_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `"`, wantErr: true},
+		{name: "json_lines_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `"}` + "\n" + `{"a":1}`, wantErr: true},
+		{name: "text_opening_brace_clean", ct: "text/plain", body: `{not json: invalid token ` + tok, want: `{not json: invalid token [redacted]`},
+		{name: "long_json_escaped", ct: "application/json", body: `{"pad":"` + strings.Repeat("a ", 40<<10) + `","detail":"` + escapeEvery(tok, 6) + `"}`, check: func(t *testing.T, out []byte) {
+			if len(out) > clientMessageBytes {
+				t.Fatalf("len=%d over the bound", len(out))
+			}
+		}},
+		{name: "long_non_utf8", ct: "text/plain", body: strings.Repeat("caf\xe9 ", 20<<10) + tok, check: func(t *testing.T, out []byte) {
+			if !utf8.Valid(out) {
+				t.Fatal("invalid bytes survived the cut")
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := []byte(c.body)
+			out, err := redactRefusal(c.ct, body)
+			if c.wantErr {
+				if !errors.Is(err, errRefusalNotRewritable) {
+					t.Fatalf("want errRefusalNotRewritable, got err=%v out=%q", err, truncateForLog(out))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.same {
+				if len(body) > 0 && &out[0] != &body[0] {
+					t.Fatalf("body was copied: %q", truncateForLog(out))
+				}
+				return
+			}
+			if c.want != "" && string(out) != c.want {
+				t.Fatalf("output:\n got %q\nwant %q", truncateForLog(out), c.want)
+			}
+			for _, w := range c.contains {
+				if !strings.Contains(string(out), w) {
+					t.Errorf("output lacks %q: %q", w, truncateForLog(out))
+				}
+			}
+			if c.check != nil {
+				c.check(t, out)
+			}
+			assertNoLeak(t, "client body", string(out), fragments(echoedToken)...)
+		})
+	}
+}
+
+// mustBeJSON is the check for a refusal the text pass rewrote in place: the
+// answer still parses under its application/json label.
+func mustBeJSON(t *testing.T, out []byte) {
+	t.Helper()
+	if !json.Valid(out) {
+		t.Fatalf("not JSON: %q", truncateForLog(out))
 	}
 }
 

@@ -160,6 +160,215 @@ func redactErrorAnswer(contentType string, body []byte) ([]byte, error) {
 	return out, nil
 }
 
+// errRefusalNotRewritable is returned when the text pass over a JSON
+// refusal would leave it unparseable; the caller answers with the fixed
+// sentence instead of the upstream's bytes.
+var errRefusalNotRewritable = errors.New("refusal body not rewritable")
+
+// rpcErrorEnvelope reports whether body is a JSON-RPC error document: an
+// object with a jsonrpc member that is "2.0" and a non-null error member,
+// both spelled exactly, as JSON-RPC member names are. rpcFailed alone is true for any
+// JSON with an error member, which is the shape an OAuth gateway's 401
+// takes, and a struct decode would fold the case of the names, so neither
+// is enough here. The map keeps the last of duplicate keys, so an error
+// whose last value is null is not an envelope, as for the judge.
+func rpcErrorEnvelope(body []byte) bool {
+	var env map[string]json.RawMessage
+	if json.Unmarshal(body, &env) != nil {
+		return false
+	}
+	if v, ok := env["jsonrpc"]; !ok || !bytes.Equal(bytes.TrimSpace(v), []byte(`"2.0"`)) {
+		return false
+	}
+	errMember, ok := env["error"]
+	return ok && !bytes.Equal(bytes.TrimSpace(errMember), []byte("null"))
+}
+
+// redactRefusal rewrites a refusal body (a status of 400 or more) that is
+// not a JSON-RPC error envelope, so a gateway's plain-text, HTML or JSON 401
+// never carries the injected credential to the key holder (PORM-205). A
+// JSON-RPC error envelope is left to redactErrorAnswer, so error.data stays
+// as sent. A body under an event-stream label, or sniffed as one, that
+// carries a data event is left to redactErrorAnswer too; one that only opens
+// like a stream (a comment, an id: or a retry: line) and then holds plain
+// text is scanned as text. Valid JSON within the client bound is
+// walked with each string decoded, the way redactErrorDoc does, so an
+// escaped credential is caught, and then scanned once more as text, so a
+// labelled short value and a shadowed duplicate member are caught as well;
+// the text pass runs on the walk's output, and if it leaves the document
+// unparseable the caller fails closed. Any other body is scanned as text and
+// cut at clientMessageBytes; the cut runs before the rules, so no unscanned
+// byte crosses. A body the rules did not change comes back as body itself,
+// so a clean refusal is relayed byte for byte. Invalid UTF-8 is scanned as
+// well: under the bound the rules copy unmatched bytes as they are, so one
+// stray byte cannot switch redaction off; over the bound Clamp strips
+// invalid bytes from the kept prefix.
+func redactRefusal(contentType string, body []byte) ([]byte, error) {
+	if len(body) == 0 || rpcErrorEnvelope(body) {
+		return body, nil
+	}
+	if mcpclient.SSEFramed(contentType, body) && carriesEvent(body) {
+		return body, nil
+	}
+	if len(body) <= clientMessageBytes && json.Valid(body) {
+		walked, changed, err := redactJSONStrings(body, 0)
+		if err != nil {
+			return nil, err
+		}
+		if !changed {
+			walked = body
+		}
+		s := string(walked)
+		r := audit.RedactBounded(s, clientMessageBytes)
+		if r == s {
+			return walked, nil
+		}
+		if !json.Valid([]byte(r)) {
+			return nil, errRefusalNotRewritable
+		}
+		return []byte(r), nil
+	}
+	// Only the window plus one byte is converted: Clamp cuts at the window
+	// either way, and a 16 MiB refusal is not copied twice.
+	s := string(body[:min(len(body), clientMessageBytes+1)])
+	if escapedJSON(s) {
+		// A body that opens as JSON but gets no walk, because it is over the
+		// bound or does not parse, would be scanned as text, and the text
+		// rules cannot see a credential written with \u or \/ escapes; one
+		// that holds either inside the window is refused instead.
+		return nil, errRefusalNotRewritable
+	}
+	r := audit.RedactBounded(s, clientMessageBytes)
+	if r == s && len(body) <= clientMessageBytes {
+		return body, nil
+	}
+	return []byte(r), nil
+}
+
+// maxWalkDepth bounds the nesting redactJSONStrings follows. Every level
+// decodes its whole subtree once, so the walk costs the body's size times
+// its depth; a gateway's refusal is a few levels deep, and a body nested
+// past this many levels is refused rather than walked.
+const maxWalkDepth = 32
+
+// redactJSONStrings walks raw the way redactErrorMember does: a string leaf
+// goes through redactString, an object is decoded into
+// map[string]json.RawMessage and an array into []json.RawMessage, each value
+// recursed, and the node is re-encoded with marshalRaw only when a value
+// changed. Keys are never rewritten, so two members cannot collide. A clean
+// document comes back as raw itself. Numbers, booleans and null are the
+// upstream's bytes. depth is the caller's level, 0 at the top; past
+// maxWalkDepth the walk returns errRefusalNotRewritable and the caller fails
+// closed.
+func redactJSONStrings(raw json.RawMessage, depth int) (json.RawMessage, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw, false, nil
+	}
+	if depth > maxWalkDepth && (trimmed[0] == '{' || trimmed[0] == '[') {
+		return nil, true, errRefusalNotRewritable
+	}
+	switch trimmed[0] {
+	case '"':
+		return redactString(trimmed)
+	case '{':
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(trimmed, &obj) != nil {
+			return raw, false, nil
+		}
+		// The map keeps the last of duplicate keys, so a member shadowed by a
+		// later one is not walked and its bytes would otherwise cross. An
+		// object with fewer entries than members is re-encoded, which drops
+		// the shadowed bytes the way any decoder that keeps the last would.
+		changed := memberCount(trimmed) != len(obj)
+		for k, v := range obj {
+			patched, ok, err := redactJSONStrings(v, depth+1)
+			if err != nil {
+				return nil, true, err
+			}
+			if ok {
+				obj[k] = patched
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false, nil
+		}
+		out, err := marshalRaw(obj)
+		if err != nil {
+			return nil, true, err
+		}
+		return out, true, nil
+	case '[':
+		var arr []json.RawMessage
+		if json.Unmarshal(trimmed, &arr) != nil {
+			return raw, false, nil
+		}
+		changed := false
+		for i, v := range arr {
+			patched, ok, err := redactJSONStrings(v, depth+1)
+			if err != nil {
+				return nil, true, err
+			}
+			if ok {
+				arr[i] = patched
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false, nil
+		}
+		out, err := marshalRaw(arr)
+		if err != nil {
+			return nil, true, err
+		}
+		return out, true, nil
+	}
+	return raw, false, nil
+}
+
+// memberCount is the number of members written in a JSON object, duplicate
+// keys counted each time, or -1 when obj is not one object.
+func memberCount(obj []byte) int {
+	dec := json.NewDecoder(bytes.NewReader(obj))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return -1
+	}
+	n := 0
+	for dec.More() {
+		if _, err := dec.Token(); err != nil {
+			return -1
+		}
+		var v json.RawMessage
+		if dec.Decode(&v) != nil {
+			return -1
+		}
+		n++
+	}
+	return n
+}
+
+// escapedJSON reports whether s opens as a JSON object, array or string and
+// holds a \u or \/ escape, the two escapes that can split a credential into
+// pieces the text rules do not match.
+func escapedJSON(s string) bool {
+	t := strings.TrimLeft(s, " \t\r\n")
+	if t == "" || (t[0] != '{' && t[0] != '[' && t[0] != '"') {
+		return false
+	}
+	return strings.Contains(t, `\u`) || strings.Contains(t, `\/`)
+}
+
+// carriesEvent reports whether body holds at least one data event in SSE
+// framing, the shape redactErrorAnswer's walk has already rewritten. A body
+// whose first line merely looks like a stream field is not one.
+func carriesEvent(body []byte) bool {
+	_, _, seen, err := walkSSE(body, func(payload []byte, _ int) ([]byte, bool, error) {
+		return payload, false, nil
+	}, nil)
+	return err == nil && seen > 0
+}
+
 // redactUnit rewrites one SSE-framed unit: the events through walkSSE and
 // redactPayload, or, when the walk saw no data event, the whole unit as one
 // document. join is the caller's scratch for a multi-line payload, or nil.
