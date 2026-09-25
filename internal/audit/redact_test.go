@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -272,5 +273,48 @@ func TestRecordRedactsErrorMessage(t *testing.T) {
 	assertNoFragment(t, "echo row", stored["echo"], ghpToken)
 	if n := len(stored["huge"]); n > ErrorMessageBytes {
 		t.Errorf("huge message stored as %d bytes, want at most %d", n, ErrorMessageBytes)
+	}
+}
+
+// TestRedactBoundedCutsAtBoundary is PORM-195 security requirement 8: the
+// client-facing cut lands at a value boundary before the rules run, so a
+// credential straddling the window is dropped whole rather than sent in
+// part, and a short message is returned as it was.
+func TestRedactBoundedCutsAtBoundary(t *testing.T) {
+	filler := strings.Repeat("word ", 20)
+	cases := []struct{ name, in, want, tok string }{
+		{"short and clean", "rate limited", "rate limited", ""},
+		{"short with a token", "invalid token " + ghpToken, "invalid token [redacted]", ghpToken},
+		{"cut before a straddling token", filler + ghpToken, filler, ghpToken},
+		{"cut inside a clean sentence", filler + "more words after the window", filler + "more ", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := RedactBounded(c.in, len(filler)+10)
+			if got != c.want {
+				t.Errorf("RedactBounded = %q, want %q", got, c.want)
+			}
+			if c.tok != "" {
+				assertNoFragment(t, "bounded value", got, c.tok)
+			}
+		})
+	}
+}
+
+// BenchmarkRedactText records the cost of the rules on the request goroutine
+// at the sizes the proxy meets: the audit window, the client bound (PORM-195)
+// and the two body caps.
+func BenchmarkRedactText(b *testing.B) {
+	for _, size := range []int{4 << 10, 64 << 10, 1 << 20, 16 << 20} {
+		msg := strings.Repeat("invalid token for user ", size/23+1)[:size-len(ghpToken)] + ghpToken
+		b.Run(strconv.Itoa(size/1024)+"KiB", func(b *testing.B) {
+			b.SetBytes(int64(len(msg)))
+			b.ReportAllocs()
+			for range b.N {
+				if got := RedactText(msg); strings.HasSuffix(got, ghpToken) {
+					b.Fatal("token survived")
+				}
+			}
+		})
 	}
 }

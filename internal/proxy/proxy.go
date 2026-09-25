@@ -808,7 +808,8 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 
-	st, errMsg := answerStatus(statusCode, headers.Get("Content-Type"), respBody, strings.TrimSpace(string(req.ID)))
+	ct := headers.Get("Content-Type")
+	st, errMsg := answerStatus(statusCode, ct, respBody, strings.TrimSpace(string(req.ID)))
 	// errMsg is the upstream's own error.message out of a body allowed to be
 	// 16 MiB, and it may echo the credential the proxy sent (PORM-72). It
 	// goes to audit.Record whole: Record cuts it to a scan window, replaces
@@ -817,6 +818,36 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// cut here would defeat that. Method and tool are the client's strings
 	// and params can be the whole 8 MiB the reader admits, so those are
 	// still bounded here.
+	//
+	// The same echo must not reach the key holder (PORM-195). This is the
+	// one place every buffered door writes from (the single key, a member
+	// endpoint, the group's reduced and unreduced answers, a tools/list
+	// error), so the body is rewritten here, after the row was judged from
+	// the upstream's bytes and before the row records the size the client is
+	// actually sent. A body the judge read as a success carries no error to
+	// redact, and only an SSE-framed body can hold an error event the judge
+	// did not pick, so those two are the gate; a body with nothing to redact
+	// comes back as the same bytes. No Content-Length is set or copied on
+	// this path (copyResponseHeaders never copies it), so net/http frames the
+	// rewritten length itself.
+	if st == models.StatusError || mcpclient.SSEFramed(ct, respBody) {
+		redacted, rerr := redactErrorAnswer(ct, respBody)
+		if rerr != nil {
+			// Judged an error and not rewritable: the response headers are
+			// copied as on the normal path below, then the fixed sentence of
+			// the transport-error path above crosses with its status, and
+			// the row and the key's touch follow. The upstream's bytes never
+			// go out.
+			copyResponseHeaders(w.Header(), headers)
+			n := writeRPCError(w, http.StatusBadGateway, req.ID, -32000, "upstream request failed")
+			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
+				usedID, models.StatusError, errMsg, start, n,
+				boundedParams(req.Params))
+			_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
+			return
+		}
+		respBody = redacted
+	}
 	h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
 		usedID, st, errMsg, start, len(respBody),
 		boundedParams(req.Params))

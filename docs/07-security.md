@@ -129,7 +129,23 @@
   no longer slows a client: a key with no `rate_limit` calls as fast as the
   network allows, and every call still writes its audit row and
   `last_used_at`, so set a limit where that matters.
-- Proxy never logs or returns real upstream secrets.
+- Proxy never logs or returns real upstream secrets. An upstream's own
+  JSON-RPC error message is redacted by the same rules as `error_message`
+  before it reaches the key holder (PORM-195), in JSON, in an event stream
+  and on a group endpoint; the client copy is cut at 64 KiB at a value
+  boundary and redacted whole within that, so nothing past the bound is
+  sent, and a window with no boundary in it is kept whole, so a token
+  pressed against padding with no separator can keep a fragment there as in
+  the row. The bound is per message: a body or stream made of many error
+  events costs about 3 MB/s of redaction on the request goroutine for as
+  long as it lasts. The rewrite covers what the judge reads as an error, so
+  a nonconforming body with duplicate `error` keys whose last is null can
+  still carry text, and so can an upstream that frames one document across
+  a whitespace-only line, which the judge and the rewrite both read as two
+  events and a browser client joins. A `result` and a notification are
+  relayed as the upstream sent them (an upstream that echoes a credential
+  there is PORM-87), and so are an error's `data` member and an error body
+  that is not JSON-RPC, such as a plain-text 401.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by pattern (PORM-72). `audit.Record` replaces
   credential-shaped text with `[redacted]` and bounds the field at 256 bytes
@@ -149,8 +165,15 @@
   slug, a camelCase tool name holding two digits, a trace id, a container
   id or another vendor's request id of that shape is redacted too; the
   row's `upstream_id`, `tool_name` and `request_id` are the operator's
-  fallback. Rows written before this change
-  hold the upstream's text as sent. Nothing purges them until retention
+  fallback, and an agent reading the error loses them the same way. On a
+  stream, an event over 1 MiB is relayed as it arrives only when it has a
+  `data:` line and its first megabyte shows a `result` or `method` member
+  and no `error`; any other
+  event over 1 MiB is held to its end and rewritten there, and the stream
+  ends when such an event passes 16 MiB, the bound a buffered answer already
+  has. A nonconforming document that carries `result` or `method` first and
+  `error` after a member over 1 MiB is not rewritten. Rows written before
+  this change hold the upstream's text as sent. Nothing purges them until retention
   ships (PORM-13); an operator whose upstream echoed a credential should
   rotate it at the vendor.
 - Management changes are recorded in `admin_events` (PORM-54): one row per
@@ -373,8 +396,9 @@
   `X-Powered-By`, `Via`, `Alt-Svc` and `X-Request-Id` are dropped, so a key
   holder learns neither the upstream's software nor the authorization server
   its 401 names from a response header. The response body is relayed as
-  received, so an upstream that names itself in an error message, a tool
-  description or a 401 body still does; that channel is out of scope here.
+  received apart from a JSON-RPC error's message (PORM-195), so an upstream
+  that names itself in an error message, a tool description or a 401 body
+  still does; that channel is out of scope here.
   `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`,
   `Access-Control-Expose-Headers`, `Vary`, `Content-Security-Policy`,
   `X-Frame-Options` and `X-Content-Type-Options` are dropped, so the single
@@ -884,11 +908,16 @@
   member: the proxy reduces the answer to the one document that answers its
   request, with the same reader discovery uses, and sends a group's client that
   document as `application/json`. On a single-upstream key and a member
-  endpoint the bytes are relayed as the upstream sent them and only the audit
-  row is judged from that document, so an event stream carrying a JSON-RPC
-  error is an `error` row there too; the row carries the upstream's own
-  `error.message`, with credential-shaped text replaced by `[redacted]` and
-  then bounded at 256 bytes, whichever framing it came in. Reading a
+  endpoint the bytes are relayed as the upstream sent them, except the
+  message of a JSON-RPC error: that message has credential-shaped text
+  replaced by `[redacted]` in each event or document that carries an error
+  (PORM-195). A rewritten document comes back compact, with its members in
+  sorted order and, in an event stream, as one `data:` line; every other
+  event and line, and the framing around them, is unchanged. The
+  audit row is judged from the original document, so an event stream
+  carrying a JSON-RPC error is an `error` row there too; the row carries the
+  upstream's own `error.message`, with credential-shaped text replaced by
+  `[redacted]` and then bounded at 256 bytes, whichever framing it came in. Reading a
   member's answer this way runs for every member on every group call, so it is
   bounded twice: the bytes by the 16 MiB body limit every upstream response
   already had, and the events split out of a stream by a fixed 4096, past which

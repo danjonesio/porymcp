@@ -21,9 +21,14 @@ import (
 // stream, a subscriptions/listen it holds open or a tools/call that sends
 // progress notifications before its result, is relayed to the client as it
 // arrives on a member or single-upstream endpoint: the headers go out as soon
-// as the upstream's do, and every read is written and flushed at once, keep-
-// alive lines included. The audit row is written once, when the stream ends,
-// with the bytes relayed and a status judged from the answering event.
+// as the upstream's do; every line outside a data-carrying event (keep-alive
+// comments, event:, id: and retry: lines) is written and flushed on the read
+// that brings it, and an event that carries data is written at its ending
+// line, so the message of a JSON-RPC error inside it can be redacted first
+// (PORM-195, eventHolder). An event over holdBytes is relayed as it arrives
+// only when its first part shows a result or a notification. The audit row
+// is written once, when the stream ends, with the bytes sent and a status
+// judged from the answering event as the upstream sent it.
 //
 // The group endpoint never streams: it reads a member's answer whole to reduce
 // or merge it, and a tools/list is read whole on every route so the per-key
@@ -263,6 +268,7 @@ const (
 	endStopped                    // the proxy is shutting down
 	endRevoked                    // the key or the upstream stopped being valid
 	endReadError                  // the upstream connection failed
+	endRedact                     // the proxy ended it: an event too large to check for a credential
 )
 
 func (e streamEnd) String() string {
@@ -277,6 +283,8 @@ func (e streamEnd) String() string {
 		return "stopped"
 	case endRevoked:
 		return "revoked"
+	case endRedact:
+		return "redact"
 	default:
 		return "read_error"
 	}
@@ -323,6 +331,8 @@ func streamVerdict(method string, status int, ct string, c *streamCapture, wantI
 		return models.StatusError, readErrorText(err)
 	case endRevoked:
 		return models.StatusError, err.Error()
+	case endRedact:
+		return models.StatusError, errEventTooLarge.Error()
 	case endIdle:
 		if listen {
 			return models.StatusSuccess, ""
@@ -375,10 +385,13 @@ type streamRow struct {
 //
 // The row is written from a defer, so it is written on every exit, the abort
 // below included. A stream cut by the proxy (idle, revoked, a failed upstream
-// read) ends with http.ErrAbortHandler, the way httputil.ReverseProxy cuts a
-// broken stream: the connection is dropped and the client sees the stream cut
-// short, since a status can no longer be changed and the proxy writes nothing
-// of its own inside a relayed body. The other ends return normally.
+// read, an event too large to check) ends with http.ErrAbortHandler, the way
+// httputil.ReverseProxy cuts a broken stream: the connection is dropped and
+// the client sees the stream cut short, since a status can no longer be
+// changed and the proxy writes no sentence of its own inside a relayed body.
+// The other ends return normally. Every write to the client goes through an
+// eventHolder (PORM-195): the row still judges the raw bytes through capture,
+// and written counts what the client was sent.
 func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx context.Context, cancel context.CancelCauseFunc, resp *http.Response, row streamRow) {
 	idle, recheck := streamIdleBudget, streamRecheckBudget
 
@@ -475,35 +488,56 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 		}
 	}()
 
+	// send writes what the holder released. The idle bound measures the
+	// upstream's silence and nothing else: it is stopped while the write to
+	// the client is in flight, so a client that stopped reading is ended by
+	// the write's own deadline, and its row says so.
+	send := func(out []byte) bool {
+		idleT.Stop()
+		_ = rc.SetWriteDeadline(time.Now().Add(idle))
+		if ctx.Err() != nil {
+			// A callback set the deadline to now a moment ago; do not
+			// overwrite it with a write that would wait the whole bound.
+			end, endErr = endByCause(ctx, r, endClient)
+			return false
+		}
+		if _, werr := w.Write(out); werr != nil {
+			end, endErr = endByCause(ctx, r, endClient)
+			return false
+		}
+		if ferr := flush(); ferr != nil {
+			end, endErr = endByCause(ctx, r, endClient)
+			return false
+		}
+		written += int64(len(out))
+		return true
+	}
+
+	var hold eventHolder
 	buf := make([]byte, 32<<10)
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			capture.Write(buf[:n])
-			// The idle bound measures the upstream's silence and nothing
-			// else: it is stopped while the write to the client is in
-			// flight, so a client that stopped reading is ended by the
-			// write's own deadline, and its row says so.
-			idleT.Stop()
-			_ = rc.SetWriteDeadline(time.Now().Add(idle))
-			if ctx.Err() != nil {
-				// A callback set the deadline to now a moment ago; do not
-				// overwrite it with a write that would wait the whole bound.
-				end, endErr = endByCause(ctx, r, endClient)
+			out, herr := hold.feed(buf[:n])
+			if herr != nil {
+				end, endErr = endRedact, herr
 				break
 			}
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				end, endErr = endByCause(ctx, r, endClient)
+			if len(out) > 0 && !send(out) {
 				break
 			}
-			if ferr := flush(); ferr != nil {
-				end, endErr = endByCause(ctx, r, endClient)
-				break
-			}
-			written += int64(n)
 			idleT.Reset(idle)
 		}
 		if rerr == io.EOF {
+			out, herr := hold.end()
+			if herr != nil {
+				end, endErr = endRedact, herr
+				break
+			}
+			if len(out) > 0 && !send(out) {
+				break
+			}
 			end = endUpstream
 			break
 		}
@@ -515,7 +549,7 @@ func (h *Handler) relayStream(w http.ResponseWriter, r *http.Request, ctx contex
 			break
 		}
 	}
-	if end == endIdle || end == endRevoked || end == endReadError {
+	if end == endIdle || end == endRevoked || end == endReadError || end == endRedact {
 		panic(http.ErrAbortHandler)
 	}
 }

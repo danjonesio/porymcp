@@ -201,16 +201,27 @@ func valueBoundary(r rune) bool {
 // keeps the upstream's body alive. It does not call Text: Scrub would move
 // exactly-pinned rows, and the invisible-character class is PORM-83's.
 func errorText(s string) string {
-	s, cut := mcpclient.Clamp(s, redactWindowBytes)
+	s, _ = mcpclient.Clamp(RedactBounded(s, redactWindowBytes), ErrorMessageBytes)
+	return strings.Clone(s)
+}
+
+// RedactBounded clamps s to window bytes, cuts back to the last value
+// boundary when it had to clamp so a credential is never cut in half, and
+// replaces credential-shaped text. It is the client-facing half of errorText,
+// which adds the stored row's 256-byte clamp and clone; the proxy calls it
+// on the error message a key holder receives (PORM-195) with its own window.
+// A window with no boundary in it has nothing to cut back to: it is kept
+// whole and the rules decide, so a token pressed against padding with no
+// separator can keep a fragment there, the property PORM-72 accepted.
+func RedactBounded(s string, window int) string {
+	s, cut := mcpclient.Clamp(s, window)
 	if cut {
-		// A window with no boundary in it has nothing to cut back to; it is
-		// kept whole and the rules decide. The cut lands after the whole of
-		// the last kept rune, never inside a multi-byte one.
+		// The cut lands after the whole of the last kept rune, never inside
+		// a multi-byte one.
 		if i := strings.LastIndexFunc(s, valueBoundary); i >= 0 {
 			_, w := utf8.DecodeRuneInString(s[i:])
 			s = s[:i+w]
 		}
 	}
-	s, _ = mcpclient.Clamp(RedactText(s), ErrorMessageBytes)
-	return strings.Clone(s)
+	return RedactText(s)
 }
