@@ -356,8 +356,9 @@ upstream's status, body, `Content-Type`, `ETag`, `Link`, `Last-Modified`,
 redirects do not (a `3xx` other than `304` fails the call with `502`). An
 error body with a status of `400` or above comes back with the stored
 credential, and anything shaped like one, replaced by `[redacted]`; a JSON
-error stays JSON with its fields, unless it is over 64 KiB, where the body is
-cut and no longer parses. When the body cannot be redacted safely, the status
+error stays JSON with its fields. Any error body over 64 KiB is cut, so a
+JSON one no longer parses. When an error body was changed, `ETag` and the
+digest headers are dropped. When the body cannot be redacted safely, the status
 is the upstream's and the body is `{"error":"upstream error body
 withheld","request_id":"..."}`; that body is the proxy's and does not mean
 the virtual key is wrong.

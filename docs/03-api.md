@@ -1278,7 +1278,7 @@ refusal. The management API's error shape is unchanged.
 | `400` | `upstream is disabled` | the key's one HTTP API upstream is disabled | `error`, no dial, as on `/mcp` |
 | `413` | `request body too large` | more than 8 MiB | `error`, no dial |
 | `429` | `rate limit exceeded`, with `Retry-After` in whole seconds | the key's `rate_limit` | `blocked` |
-| the upstream's, `400` or above | `upstream error body withheld` | the upstream's error body could not be redacted safely: JSON the rules would break, a JSON-opening body over 64 KiB or unparseable with a `\u` or `\/` escape in its first 64 KiB, JSON nested more than 32 levels, a body under a `Content-Encoding` the proxy did not decode, or UTF-16 or UTF-32 text. The upstream answered; this body is the proxy's, not the API's, and it does not mean the virtual key is wrong. The upstream's headers cross, redacted, minus the names that described its body | `error`, `upstream answered N, body withheld` |
+| the upstream's, `400` or above | `upstream error body withheld` | the upstream's error body could not be redacted safely: JSON the rules would break, a JSON-opening body over 64 KiB or unparseable with a `\u` or `\/` escape in its first 64 KiB, JSON nested more than 32 levels, a body under a `Content-Encoding` the proxy did not decode, or UTF-16 or UTF-32 text. The upstream answered; this body is the proxy's, not the API's, and it does not mean the virtual key is wrong. The upstream's other headers cross, redacted; `Content-Type` becomes `application/json`, `Content-Length` is the sentence's length, and `ETag`, `Content-MD5`, `Digest`, `Content-Digest` and `Repr-Digest` are dropped | `error`, `upstream answered N, body withheld` |
 | `502` | `upstream request failed` | the credential could not be used, a `3xx` other than `304`, a transport failure, the 5 minute budget, an answer over 16 MiB, or a `1xx` status | `error`, with the cause on the row as on `/mcp` (`docs/03-api.md`, Upstream failures) |
 
 The MCP door's `429` does not carry `Retry-After`; its bytes are unchanged.
@@ -1301,7 +1301,9 @@ what lets an unmodified SDK work.
 **What crosses, outbound.** The upstream's status, every value of every
 response header, and the body, except: the hop-by-hop set and `Connection`'s
 names; `Content-Length` (set from the relayed body, except on `HEAD`, where
-the upstream's is copied) and `Content-Encoding` (the bytes are decoded);
+the upstream's is copied) and `Content-Encoding` (the gzip the transport
+negotiated is decoded; an error body under any other coding is withheld,
+see the refusal table above);
 `Set-Cookie`, `Set-Cookie2`, `WWW-Authenticate`, `Proxy-Authenticate`;
 `Location`, `Refresh`; every `Access-Control-*` name, the security-policy,
 cross-origin, reporting and client-hint names (`Content-Security-Policy`,

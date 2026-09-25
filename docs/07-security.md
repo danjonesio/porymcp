@@ -177,8 +177,9 @@
   runs before them (PORM-208): the credential the proxy injected is replaced
   on this door whatever its shape, in every piece of it of 8 bytes or more,
   over the whole body before the cut. The HTTP API relay applies the same
-  pass to its error bodies and to every relayed response header value
-  (PORM-204), as set out under the relay bullets below.
+  pass to its error bodies, and the literal pass alone to every relayed
+  response header value (PORM-204), as set out under the relay bullets
+  below.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by literal and by pattern (PORM-72,
   PORM-208). `audit.Record` first replaces the credential the proxy injected
@@ -619,13 +620,16 @@
     unparseable with a `\u` or `\/` escape in its first 64 KiB, or JSON
     nested more than 32 levels), one still under a `Content-Encoding` the
     proxy did not decode, or one in UTF-16 or UTF-32, is withheld: the
-    client receives the upstream's status and its remaining headers with
-    `{"error":"upstream error body withheld","request_id":"..."}`, and the
-    row reads `upstream answered N, body withheld`. Every relayed response
-    header value has the injected credential replaced on every status, a
-    header whose name carries it is dropped, and `Authorization` never
-    crosses. A `2xx` body, a `304` and every `HEAD` answer cross as sent; on
-    `HEAD` the upstream's `Content-Length` is that of its unredacted body.
+    client receives the upstream's status and its other headers, redacted
+    and minus the five digest names above, with
+    `{"error":"upstream error body withheld","request_id":"..."}` as
+    `application/json`, and the row reads `upstream answered N, body
+    withheld`. Every relayed response header value has the injected
+    credential replaced on every status, a header whose name carries it is
+    dropped, and `Authorization` never crosses. A `2xx` body crosses as
+    sent; a `304` and a `HEAD` answer keep their shape with their headers
+    under the same pass, and on `HEAD` the upstream's `Content-Length` is
+    that of its unredacted body.
   - The relay's CORS answer is its own: the six verbs, a fixed request-header
     list with nothing reflected, five exposed names, no
     `Access-Control-Allow-Credentials`, no `Mcp-Param-*` reflection.

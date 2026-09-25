@@ -1597,6 +1597,9 @@ func TestRelayErrorBodyAcrossTheClientBound(t *testing.T) {
 		if rr.Code != http.StatusUnauthorized || strings.Contains(rr.Body.String(), "withheld") {
 			t.Fatalf("status %d body %q, want a cut 401", rr.Code, truncateForLog(rr.Body.Bytes()))
 		}
+		if rr.Body.Len() > clientMessageBytes || !strings.HasPrefix(rr.Body.String(), "{ ") {
+			t.Errorf("body is %d bytes opening %q, want a cut prefix of the upstream's at most %d bytes", rr.Body.Len(), truncateForLog(rr.Body.Bytes()[:min(rr.Body.Len(), 4)]), clientMessageBytes)
+		}
 		assertNoLeak(t, "relay body", rr.Body.String(), fragments(tok)...)
 		relayErrorRow(t, f, rr, "upstream answered 401")
 	})

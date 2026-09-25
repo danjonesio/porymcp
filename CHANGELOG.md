@@ -14,14 +14,14 @@ Behaviour changes that affect a running deployment. Newest first.
 - **The status and `Content-Type` are the upstream's.** JSON of 64 KiB or
   less stays valid JSON with every member kept. A longer body is cut at a
   value boundary. A body that cannot be rewritten or read safely is withheld
-  under the upstream's status with `upstream error body withheld`, its
-  redacted headers kept, and the audit row reads `upstream answered N, body
-  withheld`.
+  under the upstream's status with `upstream error body withheld`, its other
+  headers redacted and kept, and the audit row reads `upstream answered N,
+  body withheld`.
 - **Response headers are redacted too.** Every header value has the
   credential the proxy injected replaced by `[redacted]`, on every status,
   and `Authorization` never crosses. `response_size_bytes` on this door is
-  the length the client received. A `2xx` body, a `304` and a `HEAD` answer
-  cross as before.
+  the length the client received. A `2xx` body crosses as before; a `304`
+  and a `HEAD` answer keep their shape with their headers redacted.
 
 ### The credential the proxy injected is redacted whatever its shape (PORM-208)
 
