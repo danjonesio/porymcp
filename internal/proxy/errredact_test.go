@@ -857,3 +857,53 @@ func TestRefusalLiteralAcrossTheClientBound(t *testing.T) {
 		t.Errorf("refusal body is %d bytes, want at most the window plus the marker", len(got))
 	}
 }
+
+// TestRedactBodyHasNoSkips is PORM-204 security requirement 2: the shared
+// core has neither of redactRefusal's MCP-only skips, so on the HTTP API
+// relay a JSON-RPC-shaped error body is walked whole, error.data included,
+// and an event stream is scanned as text. The two bodies are the
+// rpc_error_with_data and sse_events rows of TestRedactRefusal, which pins
+// that redactRefusal returns them as sent.
+func TestRedactBodyHasNoSkips(t *testing.T) {
+	tok := echoedToken
+	cases := []struct {
+		name, body string
+		json       bool
+	}{
+		{name: "rpc_error_with_data", body: `{"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"no","data":"invalid token ` + tok + `"}}`, json: true},
+		{name: "sse_events", body: sseFrame("invalid token " + tok)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := redactBody([]byte(c.body), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), "[redacted]") {
+				t.Fatalf("no marker in %q", truncateForLog(got))
+			}
+			assertNoLeak(t, "redactBody output", string(got), fragments(tok)...)
+			if c.json && !json.Valid(got) {
+				t.Fatalf("envelope no longer parses: %q", truncateForLog(got))
+			}
+		})
+	}
+}
+
+// BenchmarkRedactBody16MiB is the worst case the HTTP API relay can meet on
+// an error answer (PORM-204 security requirement 9): a body at
+// mcpclient.MaxBodyBytes converted once and scanned whole by the literal
+// pass, then cut and scanned by the rules within the client bound.
+func BenchmarkRedactBody16MiB(b *testing.B) {
+	const lit = "abcdefghijkl"
+	filler := strings.Repeat("word ", (16<<20)/5)
+	body := []byte(filler[:len(filler)-len(lit)-5] + lit + " tail")
+	lits := []string{lit}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	for i := 0; i < b.N; i++ {
+		if _, err := redactBody(body, lits); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
