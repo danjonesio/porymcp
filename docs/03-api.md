@@ -1073,17 +1073,18 @@ never the admin key. The three MCP endpoints come first; the HTTP API relay
   member and not the group.
   An answer with no such document in it is passed on as it came when it is
   `application/json` or `text/event-stream`, under that media type; a body in
-  any other media type gets the caller a `502` and an `error` row. On a single-upstream
-  key this *is* the 1:1 endpoint, and the upstream's answer is relayed as it
-  came, with two exceptions on every MCP endpoint. The message of a JSON-RPC
-  error is redacted as described under the audit row's `error_message`. A body
-  with a status of `400` or above that is not a JSON-RPC error envelope, such
-  as a gateway's plain-text, HTML or JSON `401`, keeps its status and
-  `Content-Type` and has credential-shaped text replaced by `[redacted]`; JSON
-  up to 64 KiB is decoded and re-encoded compact with its members in sorted
-  order; any other body, a longer JSON one included, is cut at 64 KiB at a
-  value boundary, so a cut JSON body no longer parses; one with nothing
-  credential-shaped under that bound crosses byte for byte.
+  any other media type keeps the member's status with no body when that status
+  is `400` or above, and gets the caller a `502` and an `error` row otherwise.
+  On a single-upstream key this *is* the 1:1 endpoint, and the upstream's
+  answer is relayed as it came, with two exceptions on every MCP endpoint. The
+  message of a JSON-RPC error is redacted as described under the audit row's
+  `error_message`. A body with a status of `400` or above that is not a
+  JSON-RPC error envelope, such as a gateway's plain-text, HTML or JSON `401`,
+  keeps its status and `Content-Type` and has credential-shaped text replaced
+  by `[redacted]`; JSON up to 64 KiB is decoded and re-encoded compact with
+  its members in sorted order; any other body, a longer JSON one included, is
+  cut at 64 KiB at a value boundary, so a cut JSON body no longer parses; one
+  with nothing credential-shaped under that bound crosses byte for byte.
 - Shared: `POST /mcp`: the same door without the id in the path; the key
   identifies the virtual key. `POST //{upstream_slug}/mcp` (the same door with
   the id left empty) is its per-member analogue, resolved against the caller's
