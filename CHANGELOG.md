@@ -4,6 +4,27 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The credential the proxy injected is redacted whatever its shape (PORM-208)
+
+- **An upstream that echoes the credential it was sent, in a form the
+  pattern rules cannot see, no longer hands it to the agent or the audit
+  row.** The proxy knows the value it injected and replaces it with
+  `[redacted]` before the pattern rules run, on the row's `error_message`,
+  on a JSON-RPC error's message and on a refusal body that is not JSON-RPC,
+  on a single-upstream key, a member endpoint and a group endpoint, buffered
+  and on the stream door. The pattern rules still run after it, so a
+  credential the proxy did not inject is caught as before.
+- **The replacement covers every piece of the credential of 8 bytes or
+  more.** A value under that is left to the pattern rules, so a short word
+  stored as a credential cannot blank ordinary text. The scheme word is
+  never replaced on its own: `Authorization: Bearer <token>` in an echo
+  reads `Authorization: Bearer [redacted]`, and `Bearer%20<token>` reads
+  `Bearer%20[redacted]`.
+- **Every value a `custom` credential's headers hold counts.** A non-secret
+  header stored beside the secret is replaced wherever an error names it.
+- **A refusal body over 64 KiB is scanned whole before it is cut,** so the
+  cut cannot leave a fragment of the credential at the edge.
+
 ### A refusal that is not JSON-RPC no longer returns the credential to the agent (PORM-205)
 
 - **A gateway's plain-text, HTML or JSON 401 that quotes the credential reads

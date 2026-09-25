@@ -132,7 +132,8 @@
 - Proxy never logs or returns real upstream secrets. An upstream's own
   JSON-RPC error message is redacted by the same rules as `error_message`
   before it reaches the key holder (PORM-195), in JSON, in an event stream
-  and on a group endpoint; the client copy is cut at 64 KiB at a value
+  and on a group endpoint, with the credential the proxy injected replaced
+  first, whatever its shape (PORM-208); the client copy is cut at 64 KiB at a value
   boundary and redacted whole within that, so nothing past the bound is
   sent, and a window with no boundary in it is kept whole, so a token
   pressed against padding with no separator can keep a fragment there as in
@@ -163,31 +164,56 @@
   array or a string) and gets no walk, because it is over the bound or does
   not parse, answers `502` the same way when its kept window holds a `\u` or
   `\/` escape, since the text rules cannot see an escaped credential. One
-  with nothing credential-shaped under that bound is relayed byte for byte.
+  with nothing credential-shaped, and none of the injected credential, under
+  that bound is relayed byte for byte.
   On a group endpoint such a body crosses only as JSON or an event stream,
   and a JSON one is redacted the same way; in any other media type the
   member's status reaches the client with no body. Two shapes stay as sent: a
   JSON-RPC error envelope whose credential sits outside `message` (its `data`
   or a sibling member), and a refusal in event-stream framing whose
   credential sits outside a JSON-RPC error's `message`, in a bare event or
-  beside one. The rules are the audit row's, so a credential too short or too
-  plain for them is not caught on this door either.
+  beside one. The rules are the audit row's, and so is the literal pass that
+  runs before them (PORM-208): the credential the proxy injected is replaced
+  on this door whatever its shape, in every piece of it of 8 bytes or more,
+  over the whole body before the cut.
 - Optional redaction of sensitive fields in AuditLog params.
-- `error_message` is redacted by pattern (PORM-72). `audit.Record` replaces
-  credential-shaped text with `[redacted]` and bounds the field at 256 bytes
-  on every row, whoever wrote it. The rules cover a `Bearer` or `Basic`
+- `error_message` is redacted by literal and by pattern (PORM-72,
+  PORM-208). `audit.Record` first replaces the credential the proxy injected
+  into the request: every piece of the header value it wrote that is 8 bytes
+  or more (each whitespace piece, each sub-piece at `=,;:"'&`, the rest of
+  the value after its first space, and the whole value when no whitespace
+  piece is that long), in the plain, URL-encoded and HTML-escaped spellings.
+  It then replaces credential-shaped text and bounds the field at 256 bytes,
+  on every row, whoever wrote it. The literal pass runs over the whole
+  message before the window cut, so a cut never leaves a fragment of the
+  injected credential; the literals reach `Record` on the call and are never
+  stored, and they apply only to the upstream's own text, never to one of
+  the proxy's sentences. The pattern rules cover a `Bearer` or `Basic`
   value, a labelled value (`X-API-Key: …`, `token=…`), a vendor prefix
   (`sk-`, `sk_`, `ghp_` and the other GitHub prefixes, `github_pat_`,
   `glpat-`, `xoxb-`, `AKIA`, `ASIA`, a JWT) and any run of base64 characters
   holding letters and two digits that is 20 or more characters with no
-  separator, or that mixes upper and lower case. It is best effort against
-  an upstream that echoes a credential in free text: a short opaque value, a
+  separator, or that mixes upper and lower case. They are best effort
+  against an upstream that echoes a credential the proxy did not inject in
+  free text: a short opaque value, a
   labelled value under 20 characters with no digit and one letter case, an
   unlabelled mixed-case key with fewer than two digits (about one in seven
   at 20 characters, one in 40 at 32), an unlabelled UUID-shaped key, a
   lowercase hyphenated value and a value with spaces are not recognised,
   and a token the upstream has encoded or split with invisible characters
-  can keep a short fragment. A host label, a hand-typed separator-free
+  can keep a short fragment. The literal pass has its own residue: a piece of
+  the injected credential under 8 bytes, or a whitespace piece under 8 bytes
+  beside a longer one; an echo with the case changed, encoded character by
+  character or with entities other than Go's five, or with the whitespace
+  of a multi-word value changed; the base64 of the token; the decoded user
+  and password of a `Basic` value stored under the `header` or `custom`
+  kind; a prefix cut with an ellipsis; a token split across two events or
+  two JSON strings or by invisible characters; one escaped inside a JSON
+  object key; one echoed on a field line the stream holder forwards as
+  framing; and a token from an earlier request echoed after an oauth
+  refresh. Every value a `custom` credential's headers hold counts as a
+  literal, so a non-secret value stored there is replaced wherever an error
+  names it. A host label, a hand-typed separator-free
   slug, a camelCase tool name holding two digits, a trace id, a container
   id or another vendor's request id of that shape is redacted too; the
   row's `upstream_id`, `tool_name` and `request_id` are the operator's
@@ -198,7 +224,8 @@
   event over 1 MiB is held to its end and rewritten there, and the stream
   ends when such an event passes 16 MiB, the bound a buffered answer already
   has. A nonconforming document that carries `result` or `method` first and
-  `error` after a member over 1 MiB is not rewritten. Rows written before
+  `error` after a member over 1 MiB is not rewritten, the injected literal
+  included. Rows written before
   this change hold the upstream's text as sent. Nothing purges them until retention
   ships (PORM-13); an operator whose upstream echoed a credential should
   rotate it at the vendor.
@@ -422,8 +449,9 @@
   `X-Powered-By`, `Via`, `Alt-Svc` and `X-Request-Id` are dropped, so a key
   holder learns neither the upstream's software nor the authorization server
   its 401 names from a response header. The response body is relayed as
-  received apart from a JSON-RPC error's message (PORM-195) and
-  credential-shaped text in a refusal that is not JSON-RPC (PORM-205), so an
+  received apart from a JSON-RPC error's message (PORM-195),
+  credential-shaped text in a refusal that is not JSON-RPC (PORM-205) and the
+  literal credential the proxy injected in either (PORM-208), so an
   upstream that names itself in an error message, a tool description or a 401
   body still does; that channel is out of scope here.
   `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`,
@@ -936,9 +964,10 @@
   request, with the same reader discovery uses, and sends a group's client that
   document as `application/json`. On a single-upstream key and a member
   endpoint the bytes are relayed as the upstream sent them, except the
-  message of a JSON-RPC error: that message has credential-shaped text
-  replaced by `[redacted]` in each event or document that carries an error
-  (PORM-195). A body with a status of `400` or above that is not a JSON-RPC
+  message of a JSON-RPC error: that message has the credential the proxy
+  injected, and credential-shaped text, replaced by `[redacted]` in each
+  event or document that carries an error and is held for the rewrite
+  (PORM-195, PORM-208). A body with a status of `400` or above that is not a JSON-RPC
   error envelope is redacted whole by the same rules (PORM-205); JSON up to
   64 KiB is decoded and scanned, and any other body, a longer JSON one
   included, is cut at 64 KiB. A rewritten document comes back compact, with
@@ -946,8 +975,9 @@
   every other event and line, and the framing around them, is unchanged. The
   audit row is judged from the original document, so an event stream
   carrying a JSON-RPC error is an `error` row there too; the row carries the
-  upstream's own `error.message`, with credential-shaped text replaced by
-  `[redacted]` and then bounded at 256 bytes, whichever framing it came in. Reading a
+  upstream's own `error.message`, with the injected credential and
+  credential-shaped text replaced by `[redacted]` and then bounded at 256
+  bytes, whichever framing it came in. Reading a
   member's answer this way runs for every member on every group call, so it is
   bounded twice: the bytes by the 16 MiB body limit every upstream response
   already had, and the events split out of a stream by a fixed 4096, past which
