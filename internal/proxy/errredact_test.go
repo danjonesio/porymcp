@@ -250,8 +250,10 @@ func TestRedactRefusal(t *testing.T) {
 		{name: "oauth_error_json", ct: "application/json", body: `{"error":"invalid_token","error_description":"Bearer ` + tok + ` is expired"}`, want: `{"error":"invalid_token","error_description":"Bearer [redacted] is expired"}`},
 		{name: "google_error_json", ct: "application/json", body: `{"error":{"code":401,"message":"no","details":"` + tok + `"}}`, want: `{"error":{"code":401,"details":"[redacted]","message":"no"}}`},
 		{name: "json_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `"}`, want: `{"detail":"invalid token [redacted]"}`},
-		{name: "json_duplicate_key", ct: "application/json", body: `{"detail":"invalid token ` + tok + `","detail":"x"}`, contains: []string{"[redacted]"}, check: mustBeJSON},
-		{name: "json_error_null_duplicate", ct: "application/json", body: `{"error":{"message":"` + tok + `"},"error":null}`, contains: []string{"[redacted]"}, check: mustBeJSON},
+		{name: "json_duplicate_key", ct: "application/json", body: `{"detail":"invalid token ` + tok + `","detail":"x"}`, want: `{"detail":"x"}`},
+		{name: "json_duplicate_key_escaped", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `","detail":"x"}`, want: `{"detail":"x"}`},
+		{name: "json_error_null_duplicate", ct: "application/json", body: `{"error":{"message":"` + tok + `"},"error":null}`, want: `{"error":null}`},
+		{name: "envelope_case_folded", ct: "application/json", body: `{"JSONRPC":"2.0","Error":"x","detail":"` + tok + `"}`, want: `{"Error":"x","JSONRPC":"2.0","detail":"[redacted]"}`},
 		{name: "json_labelled_short", ct: "application/json", body: `{"message":"unauthorized","api_key":"k9f2x7q1"}`, want: `{"message":"unauthorized","api_key":"[redacted]"}`},
 		{name: "json_escape_after_label", ct: "application/json", body: `{"api_key":"k9f2x7q1\"x"}`, wantErr: true},
 		{name: "json_clean", ct: "application/json", body: `{"message":"no"}`, same: true},
@@ -267,11 +269,12 @@ func TestRedactRefusal(t *testing.T) {
 				t.Fatalf("len=%d want 65535", len(out))
 			}
 		}},
-		{name: "long_clean_json", ct: "application/json", body: `{"pad":"` + strings.Repeat("a", 70<<10) + `"}`, check: func(t *testing.T, out []byte) {
-			if len(out) > clientMessageBytes || json.Valid(out) {
-				t.Fatalf("len=%d valid=%v, want cut and unparseable", len(out), json.Valid(out))
+		{name: "long_clean_json", ct: "application/json", body: `{"pad":"` + strings.Repeat("a ", 40<<10) + `"}`, check: func(t *testing.T, out []byte) {
+			if len(out) > clientMessageBytes || len(out) < 60<<10 || !bytes.HasPrefix(out, []byte(`{"pad":"a a`)) || json.Valid(out) {
+				t.Fatalf("len=%d valid=%v prefix=%.12q, want a readable prefix cut under the bound and unparseable", len(out), json.Valid(out), out)
 			}
 		}},
+		{name: "long_json_escaped_in_window", ct: "application/json", body: `{"detail":"invalid token ` + escapeEvery(tok, 6) + `","pad":"` + strings.Repeat("a ", 40<<10) + `"}`, wantErr: true},
 		{name: "long_json_escaped", ct: "application/json", body: `{"pad":"` + strings.Repeat("a ", 40<<10) + `","detail":"` + escapeEvery(tok, 6) + `"}`, check: func(t *testing.T, out []byte) {
 			if len(out) > clientMessageBytes {
 				t.Fatalf("len=%d over the bound", len(out))

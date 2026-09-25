@@ -166,18 +166,22 @@ func redactErrorAnswer(contentType string, body []byte) ([]byte, error) {
 var errRefusalNotRewritable = errors.New("refusal body not rewritable")
 
 // rpcErrorEnvelope reports whether body is a JSON-RPC error document: an
-// object with a jsonrpc member and a non-null error member. rpcFailed alone
-// is true for any JSON with an error member, which is the shape an OAuth
-// gateway's 401 takes, so it is not enough here.
+// object with a jsonrpc member and a non-null error member, both spelled
+// exactly, as JSON-RPC member names are. rpcFailed alone is true for any
+// JSON with an error member, which is the shape an OAuth gateway's 401
+// takes, and a struct decode would fold the case of the names, so neither
+// is enough here. The map keeps the last of duplicate keys, so an error
+// whose last value is null is not an envelope, as for the judge.
 func rpcErrorEnvelope(body []byte) bool {
-	var env struct {
-		JSONRPC *json.RawMessage `json:"jsonrpc"`
-		Error   *json.RawMessage `json:"error"`
-	}
+	var env map[string]json.RawMessage
 	if json.Unmarshal(body, &env) != nil {
 		return false
 	}
-	return env.JSONRPC != nil && env.Error != nil
+	if _, ok := env["jsonrpc"]; !ok {
+		return false
+	}
+	errMember, ok := env["error"]
+	return ok && !bytes.Equal(bytes.TrimSpace(errMember), []byte("null"))
 }
 
 // redactRefusal rewrites a refusal body (a status of 400 or more) that is
@@ -225,6 +229,12 @@ func redactRefusal(contentType string, body []byte) ([]byte, error) {
 	// Only the window plus one byte is converted: Clamp cuts at the window
 	// either way, and a 16 MiB refusal is not copied twice.
 	s := string(body[:min(len(body), clientMessageBytes+1)])
+	if len(body) > clientMessageBytes && escapedJSON(s) {
+		// A JSON body over the bound gets no walk, and the text rules cannot
+		// see a credential written with \u or \/ escapes, so a document that
+		// holds either inside the window is not scanned but refused.
+		return nil, errRefusalNotRewritable
+	}
 	r := audit.RedactBounded(s, clientMessageBytes)
 	if r == s && len(body) <= clientMessageBytes {
 		return body, nil
@@ -252,7 +262,11 @@ func redactJSONStrings(raw json.RawMessage) (json.RawMessage, bool, error) {
 		if json.Unmarshal(trimmed, &obj) != nil {
 			return raw, false, nil
 		}
-		changed := false
+		// The map keeps the last of duplicate keys, so a member shadowed by a
+		// later one is not walked and its bytes would otherwise cross. An
+		// object with fewer entries than members is re-encoded, which drops
+		// the shadowed bytes the way any decoder that keeps the last would.
+		changed := memberCount(trimmed) != len(obj)
 		for k, v := range obj {
 			patched, ok, err := redactJSONStrings(v)
 			if err != nil {
@@ -297,6 +311,38 @@ func redactJSONStrings(raw json.RawMessage) (json.RawMessage, bool, error) {
 		return out, true, nil
 	}
 	return raw, false, nil
+}
+
+// memberCount is the number of members written in a JSON object, duplicate
+// keys counted each time, or -1 when obj is not one object.
+func memberCount(obj []byte) int {
+	dec := json.NewDecoder(bytes.NewReader(obj))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return -1
+	}
+	n := 0
+	for dec.More() {
+		if _, err := dec.Token(); err != nil {
+			return -1
+		}
+		var v json.RawMessage
+		if dec.Decode(&v) != nil {
+			return -1
+		}
+		n++
+	}
+	return n
+}
+
+// escapedJSON reports whether s starts as a JSON object or array and holds
+// a \u or \/ escape, the two escapes that can split a credential into
+// pieces the text rules do not match.
+func escapedJSON(s string) bool {
+	t := strings.TrimLeft(s, " \t\r\n")
+	if t == "" || (t[0] != '{' && t[0] != '[') {
+		return false
+	}
+	return strings.Contains(t, `\u`) || strings.Contains(t, `\/`)
 }
 
 // redactUnit rewrites one SSE-framed unit: the events through walkSSE and
