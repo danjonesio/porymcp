@@ -15,11 +15,15 @@ Behaviour changes that affect a running deployment. Newest first.
   and on the stream door. The pattern rules still run after it, so a
   credential the proxy did not inject is caught as before.
 - **The replacement covers every piece of the credential of 8 bytes or
-  more.** A value under that is left to the pattern rules, so a short word
+  more.** A piece under that is left to the pattern rules, so a short word
   stored as a credential cannot blank ordinary text. The scheme word is
-  never replaced on its own: `Authorization: Bearer <token>` in an echo
-  reads `Authorization: Bearer [redacted]`, and `Bearer%20<token>` reads
-  `Bearer%20[redacted]`.
+  never replaced on its own: for a token of 8 bytes or more,
+  `Authorization: Bearer <token>` in an echo reads
+  `Authorization: Bearer [redacted]`, and `Bearer%20<token>` reads
+  `Bearer%20[redacted]`. A bearer under 8 bytes has no piece over the floor,
+  so its whole wire value `Bearer <token>` is the literal: quoted with its
+  scheme word it reads `[redacted]`, and echoed bare it is the pattern
+  rules' alone.
 - **Every value a `custom` credential's headers hold counts.** A non-secret
   header stored beside the secret is replaced wherever an error names it.
 - **A refusal body over 64 KiB is scanned whole before it is cut,** so the

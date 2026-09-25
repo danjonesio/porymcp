@@ -791,6 +791,20 @@ func TestSevenByteCredentialIsLeftToPatterns(t *testing.T) {
 	if msg != "invalid token "+short || row.ErrorMessage != "invalid token "+short {
 		t.Errorf("client message=%q row=%q, want the echo as sent", msg, row.ErrorMessage)
 	}
+
+	t.Run("echoed with its scheme word", func(t *testing.T) {
+		// The wire value "Bearer abcdefg" has no piece over the floor, so
+		// the whole value is the literal: an echo that quotes the header
+		// loses the scheme word with the token.
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: short, CallBody: errorAnswer(7, "Authorization: Bearer "+short)}, nil, nil)
+		rr := f.post(toolCall("7", "ping_tool"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+		}
+		row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+		assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", "Bearer "+short, "Authorization: [redacted]")
+		assertRedactedRowOf(t, row, "Bearer "+short, "Authorization: [redacted]")
+	})
 }
 
 // TestStreamRowKeepsProxySentences is PORM-208 security requirement 4 on
@@ -810,4 +824,23 @@ func TestStreamRowKeepsProxySentences(t *testing.T) {
 	if row.Status != models.StatusError || row.ErrorMessage != want {
 		t.Errorf("row status=%q error_message=%q, want error / %q", row.Status, row.ErrorMessage, want)
 	}
+}
+
+// TestFailClosedRowRedactsLiteral is PORM-208 security requirement 9 on
+// the fail-closed branch: a JSON refusal the refusal pass cannot rewrite is
+// refused with the fixed sentence, and the row, which took the upstream's
+// error.message before the gate, still reads the literal replaced.
+func TestFailClosedRowRedactsLiteral(t *testing.T) {
+	const lit = "abcdefghijkl"
+	// Not a JSON-RPC envelope, so the refusal pass runs; nested past
+	// maxWalkDepth, so the walk fails closed.
+	body := `{"error":{"code":1,"message":"invalid token ` + lit + `"},"deep":` + strings.Repeat("[", maxWalkDepth+8) + strings.Repeat("]", maxWalkDepth+8) + `}`
+	f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, Bearer: lit, CallCode: http.StatusUnauthorized, CallCT: "application/json", CallBody: body}, nil, nil)
+	rr := f.post(toolCall("7", "ping_tool"))
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), "upstream request failed") {
+		t.Fatalf("HTTP code=%d body=%.200s, want 502 with the fixed sentence", rr.Code, rr.Body.String())
+	}
+	assertNoLeak(t, "client body", rr.Body.String(), fragments(lit)...)
+	row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+	assertRedactedRowOf(t, row, lit, "invalid token [redacted]")
 }
