@@ -4,6 +4,25 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### An HTTP API's error answer no longer returns the credential to the key holder (PORM-204)
+
+- **An API that answers a bad token with `{"message":"invalid token
+  <token>"}` now reads `invalid token [redacted]` on the `/api/` endpoint.**
+  The relay applies the MCP door's pass to any body with a status of 400 or
+  above, whatever its media type: the injected credential first, over the
+  whole body, then the pattern rules, within the 64 KiB client bound.
+- **The status and `Content-Type` are the upstream's.** JSON of 64 KiB or
+  less stays valid JSON with every member kept. A longer body is cut at a
+  value boundary. A body that cannot be rewritten or read safely is withheld
+  under the upstream's status with `upstream error body withheld`, its
+  redacted headers kept, and the audit row reads `upstream answered N, body
+  withheld`.
+- **Response headers are redacted too.** Every header value has the
+  credential the proxy injected replaced by `[redacted]`, on every status,
+  and `Authorization` never crosses. `response_size_bytes` on this door is
+  the length the client received. A `2xx` body, a `304` and a `HEAD` answer
+  cross as before.
+
 ### The credential the proxy injected is redacted whatever its shape (PORM-208)
 
 - **An upstream that echoes the credential it was sent, in a form the

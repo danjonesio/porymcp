@@ -1278,6 +1278,7 @@ refusal. The management API's error shape is unchanged.
 | `400` | `upstream is disabled` | the key's one HTTP API upstream is disabled | `error`, no dial, as on `/mcp` |
 | `413` | `request body too large` | more than 8 MiB | `error`, no dial |
 | `429` | `rate limit exceeded`, with `Retry-After` in whole seconds | the key's `rate_limit` | `blocked` |
+| the upstream's, `400` or above | `upstream error body withheld` | the upstream's error body could not be redacted safely: JSON the rules would break, a JSON-opening body over 64 KiB or unparseable with a `\u` or `\/` escape in its first 64 KiB, JSON nested more than 32 levels, a body under a `Content-Encoding` the proxy did not decode, or UTF-16 or UTF-32 text. The upstream answered; this body is the proxy's, not the API's, and it does not mean the virtual key is wrong. The upstream's headers cross, redacted, minus the names that described its body | `error`, `upstream answered N, body withheld` |
 | `502` | `upstream request failed` | the credential could not be used, a `3xx` other than `304`, a transport failure, the 5 minute budget, an answer over 16 MiB, or a `1xx` status | `error`, with the cause on the row as on `/mcp` (`docs/03-api.md`, Upstream failures) |
 
 The MCP door's `429` does not carry `Retry-After`; its bytes are unchanged.
@@ -1314,6 +1315,25 @@ its headers and no body; every other `3xx` is a failed call (`502`) and
 nothing from it reaches the client. `Cache-Control: no-store` is on every
 answer.
 
+**An error body is redacted.** A body with a status of `400` or above has
+the credential the proxy injected, and credential-shaped text, replaced by
+`[redacted]`, whatever its media type (PORM-204): `{"message":"invalid token
+<token>"}` reaches the client as `{"message":"invalid token [redacted]"}`.
+JSON of 64 KiB or less stays valid JSON with every member kept; when a
+decoded string held the match it comes back compact with its members in
+sorted order. Any other body, and JSON over 64 KiB, is cut at 64 KiB at a
+value boundary before the rules run, with no marker, so a cut JSON body no
+longer parses. A body with nothing credential-shaped and none of the
+injected credential, of 64 KiB or less, is relayed byte for byte, and so is
+every `2xx` body. When the body changed, `ETag`, `Content-MD5`, `Digest`,
+`Content-Digest` and `Repr-Digest` are dropped. A body that cannot be
+redacted safely is withheld: the refusal table above has the row. On `HEAD`
+the upstream's `Content-Length` crosses as sent and is that of its
+unredacted body. Every response header value has the credential the proxy
+injected replaced by `[redacted]`, on every status, a header whose name
+carries it is dropped, and `Authorization` and `Proxy-Authorization` do not
+cross.
+
 **CORS** on this door is its own: `Access-Control-Allow-Methods` names the
 six verbs and `OPTIONS`, `Access-Control-Allow-Headers` is the fixed list
 `Authorization, X-Api-Key, X-Request-Id, Content-Type, Accept,
@@ -1332,8 +1352,10 @@ one string per name with secret-looking names (`token`, `key`, `api-key`,
 containing the key replaced by `[redacted]`. The request body is never
 recorded and neither is the response body. `status` is `success` below 400
 and `error` at 400 and above (`error_message` `upstream answered N`),
-`response_size_bytes` is the relayed body's length, `upstream_id` the
-upstream reached, and `last_used_at` moves as on `/mcp`. A group's
+`response_size_bytes` is the length of the body the client received (after
+redaction and any cut on a status of `400` or above, the fixed sentence's
+length when that body was withheld, and `0` on `HEAD` and `304`),
+`upstream_id` the upstream reached, and `last_used_at` moves as on `/mcp`. A group's
 `tool_filter` and a key's tool lists do not govern this door: `http_methods`
 judges the verb and nothing judges the path (PORM-147). The relay is
 buffered: a response is read whole (16 MiB, five minutes) and then written;
