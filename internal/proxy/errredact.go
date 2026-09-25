@@ -160,6 +160,145 @@ func redactErrorAnswer(contentType string, body []byte) ([]byte, error) {
 	return out, nil
 }
 
+// errRefusalNotRewritable is returned when the text pass over a JSON
+// refusal would leave it unparseable; the caller answers with the fixed
+// sentence instead of the upstream's bytes.
+var errRefusalNotRewritable = errors.New("refusal body not rewritable")
+
+// rpcErrorEnvelope reports whether body is a JSON-RPC error document: an
+// object with a jsonrpc member and a non-null error member. rpcFailed alone
+// is true for any JSON with an error member, which is the shape an OAuth
+// gateway's 401 takes, so it is not enough here.
+func rpcErrorEnvelope(body []byte) bool {
+	var env struct {
+		JSONRPC *json.RawMessage `json:"jsonrpc"`
+		Error   *json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &env) != nil {
+		return false
+	}
+	return env.JSONRPC != nil && env.Error != nil
+}
+
+// redactRefusal rewrites a refusal body (a status of 400 or more) that is
+// not a JSON-RPC error envelope, so a gateway's plain-text, HTML or JSON 401
+// never carries the injected credential to the key holder (PORM-205). A
+// JSON-RPC error envelope is left to redactErrorAnswer, so error.data stays
+// as sent. A body that reads as an event stream under an event-stream label
+// is left to redactErrorAnswer too. Valid JSON within the client bound is
+// walked with each string decoded, the way redactErrorDoc does, so an
+// escaped credential is caught, and then scanned once more as text, so a
+// labelled short value and a shadowed duplicate member are caught as well;
+// the text pass runs on the walk's output, and if it leaves the document
+// unparseable the caller fails closed. Any other body is scanned as text and
+// cut at clientMessageBytes; the cut runs before the rules, so no unscanned
+// byte crosses. A body the rules did not change comes back as body itself,
+// so a clean refusal is relayed byte for byte. Invalid UTF-8 is scanned as
+// well: under the bound the rules copy unmatched bytes as they are, so one
+// stray byte cannot switch redaction off; over the bound Clamp strips
+// invalid bytes from the kept prefix.
+func redactRefusal(contentType string, body []byte) ([]byte, error) {
+	if len(body) == 0 || rpcErrorEnvelope(body) {
+		return body, nil
+	}
+	if mcpclient.SSEFramed(contentType, body) && mcpclient.LooksLikeSSE(body) {
+		return body, nil
+	}
+	if len(body) <= clientMessageBytes && json.Valid(body) {
+		walked, changed, err := redactJSONStrings(body)
+		if err != nil {
+			return nil, err
+		}
+		if !changed {
+			walked = body
+		}
+		s := string(walked)
+		r := audit.RedactBounded(s, clientMessageBytes)
+		if r == s {
+			return walked, nil
+		}
+		if !json.Valid([]byte(r)) {
+			return nil, errRefusalNotRewritable
+		}
+		return []byte(r), nil
+	}
+	// Only the window plus one byte is converted: Clamp cuts at the window
+	// either way, and a 16 MiB refusal is not copied twice.
+	s := string(body[:min(len(body), clientMessageBytes+1)])
+	r := audit.RedactBounded(s, clientMessageBytes)
+	if r == s && len(body) <= clientMessageBytes {
+		return body, nil
+	}
+	return []byte(r), nil
+}
+
+// redactJSONStrings walks raw the way redactErrorMember does: a string leaf
+// goes through redactString, an object is decoded into
+// map[string]json.RawMessage and an array into []json.RawMessage, each value
+// recursed, and the node is re-encoded with marshalRaw only when a value
+// changed. Keys are never rewritten, so two members cannot collide. A clean
+// document comes back as raw itself. Numbers, booleans and null are the
+// upstream's bytes.
+func redactJSONStrings(raw json.RawMessage) (json.RawMessage, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw, false, nil
+	}
+	switch trimmed[0] {
+	case '"':
+		return redactString(trimmed)
+	case '{':
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(trimmed, &obj) != nil {
+			return raw, false, nil
+		}
+		changed := false
+		for k, v := range obj {
+			patched, ok, err := redactJSONStrings(v)
+			if err != nil {
+				return nil, true, err
+			}
+			if ok {
+				obj[k] = patched
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false, nil
+		}
+		out, err := marshalRaw(obj)
+		if err != nil {
+			return nil, true, err
+		}
+		return out, true, nil
+	case '[':
+		var arr []json.RawMessage
+		if json.Unmarshal(trimmed, &arr) != nil {
+			return raw, false, nil
+		}
+		changed := false
+		for i, v := range arr {
+			patched, ok, err := redactJSONStrings(v)
+			if err != nil {
+				return nil, true, err
+			}
+			if ok {
+				arr[i] = patched
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false, nil
+		}
+		out, err := marshalRaw(arr)
+		if err != nil {
+			return nil, true, err
+		}
+		return out, true, nil
+	}
+	return raw, false, nil
+}
+
 // redactUnit rewrites one SSE-framed unit: the events through walkSSE and
 // redactPayload, or, when the walk saw no data event, the whole unit as one
 // document. join is the caller's scratch for a multi-line payload, or nil.
