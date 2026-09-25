@@ -840,3 +840,20 @@ func TestBufferedStrayLineBodyReplacesLiteral(t *testing.T) {
 	}
 	assertNoLeak(t, "buffered output", string(got), fragments(lit)...)
 }
+
+// TestRefusalLiteralAcrossTheClientBound is PORM-208 security requirement 2
+// on the refusal door: the raw-text branch converts the whole body, so a
+// literal that straddles the 64 KiB edge is replaced before the cut. Under
+// the old window-plus-one slice the first eight bytes crossed.
+func TestRefusalLiteralAcrossTheClientBound(t *testing.T) {
+	const lit = "abcdefghijkl"
+	body := []byte(strings.Repeat("x", clientMessageBytes-10) + lit + " tail")
+	got, err := redactRefusal("text/plain", body, lit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoLeak(t, "refusal body", string(got), fragments(lit)...)
+	if len(got) > clientMessageBytes+len("[redacted]") {
+		t.Errorf("refusal body is %d bytes, want at most the window plus the marker", len(got))
+	}
+}
