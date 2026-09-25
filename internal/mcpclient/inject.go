@@ -174,6 +174,9 @@ func Literals(authType string, raw json.RawMessage) []string {
 	for _, name := range names {
 		for _, v := range h[name] {
 			for _, c := range literalCandidates(textproto.TrimString(v)) {
+				if len(c) < MinLiteralBytes {
+					continue // and no encoded spelling of it either
+				}
 				add(c)
 				for _, e := range encodedForms(c) {
 					add(e)

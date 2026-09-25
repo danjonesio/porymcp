@@ -126,6 +126,10 @@ func TestLiterals(t *testing.T) {
 			[]string{"Token abc1234 xyz9876", "abc1234 xyz9876"}, []string{"abc1234", "xyz9876"}, false},
 		"base64 bytes": {models.AuthBearer, `{"token":"ab+cd/ef=ghij"}`,
 			[]string{"ab+cd/ef=ghij", "ab%2Bcd%2Fef%3Dghij", "ab%2bcd%2fef%3dghij", "ab+cd%2Fef=ghij", "ab+cd%2fef=ghij", "ab+cd/ef"}, []string{"ghij"}, false},
+		// A piece under the floor gets no encoded spelling either, even
+		// when the spelling would be long enough on its own.
+		"short piece, long encoding": {models.AuthBearer, `{"token":"ab+/cd"}`,
+			[]string{"Bearer ab+/cd"}, []string{"ab%2B%2Fcd", "ab%2b%2fcd", "ab+%2Fcd", "ab+%2fcd"}, false},
 		"ampersand": {models.AuthHeader, `{"header":"X-T","value":"abc&defghijkl"}`,
 			[]string{"abc&defghijkl", "abc&amp;defghijkl", "abc%26defghijkl", "defghijkl"}, nil, false},
 	} {
