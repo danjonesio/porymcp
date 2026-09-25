@@ -658,6 +658,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		statusCode int
 		headers    http.Header
 		usedID     string
+		// literals are the values the credential this request sent writes
+		// on the wire (mcpclient.Literals), replaced before the pattern
+		// rules on the row and on the client doors (PORM-208). They are on
+		// this call only.
+		literals []string
 	)
 
 	// The one line that decides dispatch. A member endpoint never aggregates:
@@ -696,6 +701,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 		var plain json.RawMessage
 		if err == nil {
 			plain, err = h.credential(r.Context(), up)
+		}
+		if err == nil {
+			literals = mcpclient.Literals(up.AuthType, plain)
 		}
 		if err == nil && onAggregate && clientModern {
 			// Only a modern client's request changes with the member's era,
@@ -746,6 +754,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 					params: boundedParams(req.Params), start: start,
 					wantID:     strings.TrimSpace(string(req.ID)),
 					memberPath: memberPath, slug: chi.URLParam(r, SlugParam),
+					literals: literals,
 				})
 				return
 			default:
@@ -840,9 +849,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// client bound. A JSON-RPC error envelope is left to the message rewrite
 	// so error.data stays as sent.
 	if st == models.StatusError || mcpclient.SSEFramed(ct, respBody) {
-		redacted, rerr := redactErrorAnswer(ct, respBody)
+		redacted, rerr := redactErrorAnswer(ct, respBody, literals...)
 		if rerr == nil && statusCode >= 400 {
-			redacted, rerr = redactRefusal(ct, redacted)
+			redacted, rerr = redactRefusal(ct, redacted, literals...)
 		}
 		if rerr != nil {
 			// Judged an error and not rewritable: the response headers are
@@ -854,7 +863,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 			n := writeRPCError(w, http.StatusBadGateway, req.ID, -32000, "upstream request failed")
 			h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
 				usedID, models.StatusError, errMsg, start, n,
-				boundedParams(req.Params))
+				boundedParams(req.Params), literals...)
 			_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 			return
 		}
@@ -862,7 +871,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	}
 	h.finish(vk, requestID, auditMethod, truncate(tool, auditFieldBytes),
 		usedID, st, errMsg, start, len(respBody),
-		boundedParams(req.Params))
+		boundedParams(req.Params), literals...)
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 
 	copyResponseHeaders(w.Header(), headers)
@@ -1913,7 +1922,10 @@ func (h *Handler) warnDenied(upstreamID, requestID, class string) {
 	)
 }
 
-func (h *Handler) finish(vk *models.VirtualKey, requestID, method, tool, upstreamID, status, errMsg string, start time.Time, size int, params json.RawMessage) {
+// finish writes the row. literals are the values the credential the request
+// sent writes on the wire (PORM-208); they are passed only where errMsg is
+// the upstream's own text, never for one of the proxy's fixed sentences.
+func (h *Handler) finish(vk *models.VirtualKey, requestID, method, tool, upstreamID, status, errMsg string, start time.Time, size int, params json.RawMessage, literals ...string) {
 	if h.audit == nil {
 		return
 	}
@@ -1929,7 +1941,7 @@ func (h *Handler) finish(vk *models.VirtualKey, requestID, method, tool, upstrea
 		UpstreamID:        upstreamID,
 		ErrorMessage:      errMsg,
 		RequestID:         requestID,
-	})
+	}, literals...)
 }
 
 func (h *Handler) record(e models.AuditLog) {
