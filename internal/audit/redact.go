@@ -2,6 +2,7 @@ package audit
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -195,14 +196,76 @@ func valueBoundary(r rune) bool {
 	return unicode.IsSpace(r) || strings.ContainsRune(`"',;&`, r)
 }
 
-// errorText is what Record stores: the message cut to the scan window (with
-// a trailing run of credential characters dropped when the cut fired),
-// redacted, cut to ErrorMessageBytes, then cloned so a queued row never
-// keeps the upstream's body alive. It does not call Text: Scrub would move
-// exactly-pinned rows, and the invisible-character class is PORM-83's.
-func errorText(s string) string {
-	s, _ = mcpclient.Clamp(RedactBounded(s, redactWindowBytes), ErrorMessageBytes)
+// errorText is what Record stores: the injected literals replaced
+// (PORM-208), the message cut to the scan window (with a trailing run of
+// credential characters dropped when the cut fired), redacted, cut to
+// ErrorMessageBytes, then cloned so a queued row never keeps the upstream's
+// body alive. It does not call Text: Scrub would move exactly-pinned rows,
+// and the invisible-character class is PORM-83's.
+func errorText(s string, literals ...string) string {
+	s, _ = mcpclient.Clamp(RedactBoundedLiterals(s, redactWindowBytes, literals), ErrorMessageBytes)
 	return strings.Clone(s)
+}
+
+// RedactLiterals replaces every occurrence of each literal in s with
+// "[redacted]" (PORM-208). The literals are the values the proxy injected,
+// from mcpclient.Literals, so the match is exact and case-sensitive and a
+// literal inside a longer word is replaced too. Overlapping or touching
+// occurrences merge into one marker, so no fragment of a literal survives
+// where two literals share bytes, which a left-to-right replacer would
+// leave. A literal under mcpclient.MinLiteralBytes is ignored. A string with
+// no occurrence comes back as s itself, with no allocation, so a body the
+// proxy did not need to touch is passed on byte for byte.
+func RedactLiterals(s string, literals []string) string {
+	if s == "" || len(literals) == 0 {
+		return s
+	}
+	var spans [][2]int
+	for _, lit := range literals {
+		if len(lit) < mcpclient.MinLiteralBytes {
+			continue
+		}
+		for from := 0; from < len(s); {
+			i := strings.Index(s[from:], lit)
+			if i < 0 {
+				break
+			}
+			spans = append(spans, [2]int{from + i, from + i + len(lit)})
+			from += i + 1
+		}
+	}
+	if len(spans) == 0 {
+		return s
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	var b strings.Builder
+	b.Grow(len(s))
+	pos := 0
+	start, end := spans[0][0], spans[0][1]
+	for _, sp := range spans[1:] {
+		if sp[0] <= end {
+			end = max(end, sp[1])
+			continue
+		}
+		b.WriteString(s[pos:start])
+		b.WriteString(redacted)
+		pos = end
+		start, end = sp[0], sp[1]
+	}
+	b.WriteString(s[pos:start])
+	b.WriteString(redacted)
+	b.WriteString(s[end:])
+	return b.String()
+}
+
+// RedactBoundedLiterals replaces the literals in the whole of s, then
+// clamps, cuts back to a value boundary and runs the pattern rules as
+// RedactBounded does. The literal pass runs over the whole text first so
+// that no cut can split a literal and leave a fragment of it at the edge;
+// the text is at most mcpclient.MaxBodyBytes and the pass runs only on an
+// error answer. The row pipeline (errorText) and the client bound share it.
+func RedactBoundedLiterals(s string, window int, literals []string) string {
+	return RedactBounded(RedactLiterals(s, literals), window)
 }
 
 // RedactBounded clamps s to window bytes, cuts back to the last value

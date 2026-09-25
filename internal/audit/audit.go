@@ -69,7 +69,12 @@ func (l *Logger) loop() {
 	}
 }
 
-func (l *Logger) Record(e models.AuditLog) {
+// Record redacts the row and queues it for the store. literals are the
+// values the proxy injected into the request the row describes
+// (mcpclient.Literals); they are replaced in error_message before the
+// pattern rules run (PORM-208), used here and nowhere else, and never
+// carried on the row.
+func (l *Logger) Record(e models.AuditLog, literals ...string) {
 	if e.ID == "" {
 		e.ID = uuid.NewString()
 	}
@@ -77,7 +82,7 @@ func (l *Logger) Record(e models.AuditLog) {
 		e.Timestamp = time.Now().UTC()
 	}
 	e.Params = Redact(e.Params)
-	e.ErrorMessage = errorText(e.ErrorMessage)
+	e.ErrorMessage = errorText(e.ErrorMessage, literals...)
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	if l.closed {
