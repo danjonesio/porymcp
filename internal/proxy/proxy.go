@@ -670,7 +670,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// member's own names, and its Mcp-Session-Id reaches the client.
 	aggregated := onAggregate && shouldAggregate(method)
 	if aggregated {
-		respBody, statusCode, headers, usedID, err = h.aggregate(r.Context(), r, pol, upstreams, req, fields, clientModern, body)
+		respBody, statusCode, headers, usedID, literals, err = h.aggregate(r.Context(), r, pol, upstreams, req, fields, clientModern, body)
 	} else {
 		up := upstreams[0]
 		usedID = up.ID
@@ -1397,7 +1397,10 @@ const (
 // Mcp-Session-Id can reach a group client through it. A method this endpoint
 // neither answers nor refuses never gets here: serve relays it to the first
 // member and reads the answer through the same groupAnswer.
-func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, fields routingFields, clientModern bool, body []byte) ([]byte, int, http.Header, string, error) {
+// The []string is the literal set of the member whose answer is returned
+// (mcpclient.Literals, PORM-208), nil on every arm the proxy answers itself
+// or that returns no member body, so no proxy sentence is ever rewritten.
+func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol toolPolicy, ups []*models.Upstream, req rpcRequest, fields routingFields, clientModern bool, body []byte) ([]byte, int, http.Header, string, []string, error) {
 	switch req.Method {
 	case "subscriptions/listen", "tasks/get", "tasks/update":
 		// Methods the group endpoint cannot serve, refused the way the
@@ -1412,13 +1415,13 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// tasks are an extension this endpoint does not advertise. No member
 		// is contacted, so the row names none. A member endpoint relays all
 		// three to its member.
-		return answerRPC(req.ID, nil, &rpcError{Code: codeMethodNotFound, Message: msgMethodNotFound}), http.StatusNotFound, nil, "", nil
+		return answerRPC(req.ID, nil, &rpcError{Code: codeMethodNotFound, Message: msgMethodNotFound}), http.StatusNotFound, nil, "", nil, nil
 	case "notifications/initialized":
 		// Both eras of the transport say an accepted notification is a 202 with
 		// no body. Nothing is dialled for this or for initialize below, so
 		// neither row names an upstream: upstream_id is how an operator reads
 		// which credential a request presented, and none was.
-		return nil, http.StatusAccepted, nil, "", nil
+		return nil, http.StatusAccepted, nil, "", nil, nil
 	case "initialize":
 		// The handshake's own rule: the version asked for when PoryMCP speaks
 		// it, the newest handshake revision otherwise. The answer comes out of
@@ -1431,7 +1434,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			"capabilities":    groupCapabilities(),
 			"serverInfo":      mcpclient.SelfInfo(),
 		}
-		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil, nil
 	case "server/discover":
 		// The stateless era's description of this server, and it is of THIS
 		// server: a group, under PoryMCP's name, speaking the one stateless
@@ -1453,7 +1456,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			"cacheScope":        "private",
 			"_meta":             selfMeta(),
 		}
-		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil, nil
 	case "ping":
 		// Answered here in both eras, and no member is asked. The stateless
 		// revision removed ping, so a member on it would refuse a relayed one,
@@ -1463,7 +1466,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		if clientModern {
 			result["resultType"] = "complete"
 		}
-		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil, nil
 	case "tools/list":
 		active, lists, ttls := h.memberCatalogues(ctx, ups)
 		merged, _ := h.buildRoutes(active, lists)
@@ -1488,7 +1491,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			"ttlMs":      mergedTTLMs(ttls),
 			"_meta":      selfMeta(),
 		}
-		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil
+		return answerRPC(req.ID, result, nil), http.StatusOK, nil, "", nil, nil
 	case "tools/call":
 		// ok is not checked: ServeHTTP refuses a tools/call without a usable
 		// name before it gets here.
@@ -1504,7 +1507,7 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 			// gone, a member that could not be listed, or a slug belonging to no
 			// member of this group. serve answers it, so that the reply and the
 			// row are bounded there exactly as the gate's are.
-			return nil, 0, nil, "", errUnknownTool
+			return nil, 0, nil, "", nil, errUnknownTool
 		}
 		// No policy check here. ServeHTTP gated this call on the same
 		// advertised name before any upstream was contacted, so a check on
@@ -1530,20 +1533,20 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// member. The context is released as soon as the body is read.
 		plain, err := h.credential(ctx, route.Upstream)
 		if err != nil {
-			return nil, 0, nil, route.Upstream.ID, err
+			return nil, 0, nil, route.Upstream.ID, nil, err
 		}
 		callCtx, _, cancel := upstreamContext(ctx, answerBudget)
 		out, status, hdr, err := h.forwardRead(callCtx, inbound, route.Upstream, plain, rewritten, composed)
 		cancel(nil)
 		if err != nil {
-			return out, status, nil, route.Upstream.ID, err
+			return out, status, nil, route.Upstream.ID, nil, err
 		}
 		// Not completed for a member known to speak the stateless revision: it
 		// sends its own resultType, and a second decode of up to 16 MiB to
 		// change nothing is a cost on every call.
 		memberModern := known && verdict.era == mcpclient.EraModern
 		doc, media, err := h.groupAnswer(route.Upstream, "tools/call", status, rewritten, out, hdr, clientModern && !memberModern)
-		return doc, status, media, route.Upstream.ID, err
+		return doc, status, media, route.Upstream.ID, mcpclient.Literals(route.Upstream.AuthType, plain), err
 	default:
 		// Unreachable: serve calls aggregate only for a method shouldAggregate
 		// names, and every one of those has an arm above. A method that is
@@ -1552,12 +1555,12 @@ func (h *Handler) aggregate(ctx context.Context, inbound *http.Request, pol tool
 		// fails towards the old behaviour.
 		plain, err := h.credential(ctx, ups[0])
 		if err != nil {
-			return nil, 0, nil, ups[0].ID, err
+			return nil, 0, nil, ups[0].ID, nil, err
 		}
 		relayCtx, _, cancel := upstreamContext(ctx, answerBudget)
 		out, status, _, err := h.forwardRead(relayCtx, inbound, ups[0], plain, body, nil)
 		cancel(nil)
-		return out, status, nil, ups[0].ID, err
+		return out, status, nil, ups[0].ID, mcpclient.Literals(ups[0].AuthType, plain), err
 	}
 }
 
