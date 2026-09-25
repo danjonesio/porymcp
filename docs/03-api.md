@@ -1086,11 +1086,11 @@ never the admin key. The three MCP endpoints come first; the HTTP API relay
   one crosses, as the sentence above says, and it is redacted the same way.
   JSON up to 64 KiB is decoded and scanned, and comes back compact with its
   members in sorted order when a decoded string held the match; a body the
-  rules would leave unparseable, or a JSON body over 64 KiB written with `\u`
-  or `\/` escapes, answers `502` with `upstream request failed`; any other
-  body, a longer JSON one included, is cut at 64 KiB at a value boundary, so a
-  cut JSON body no longer parses; one with nothing credential-shaped under
-  that bound crosses byte for byte.
+  rules would leave unparseable, or a body that opens as JSON, gets no walk
+  (over 64 KiB, or not parsing) and holds a `\u` or `\/` escape, answers `502`
+  with `upstream request failed`; any other body, a longer JSON one included,
+  is cut at 64 KiB at a value boundary, so a cut JSON body no longer parses;
+  one with nothing credential-shaped under that bound crosses byte for byte.
 - Shared: `POST /mcp`: the same door without the id in the path; the key
   identifies the virtual key. `POST //{upstream_slug}/mcp` (the same door with
   the id left empty) is its per-member analogue, resolved against the caller's

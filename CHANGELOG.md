@@ -13,16 +13,17 @@ Behaviour changes that affect a running deployment. Newest first.
   a JSON-RPC error envelope, whatever its media type apart from an event
   stream, on a single-upstream key and a member endpoint. A binary 4xx body is
   scanned and cut like any other.
-- **A refusal with nothing credential-shaped in it and under 64 KiB is relayed
-  byte for byte.** An agent that matches on a refusal's text now sees
-  `[redacted]` where a trace id, a container id or another token-shaped run
-  stood.
+- **A refusal with nothing credential-shaped in it and under 64 KiB is
+  relayed byte for byte.** An agent that matches on a refusal's text now
+  sees `[redacted]` where a trace id, a container id or another token-shaped
+  run stood.
 - **A refusal body is at most 64 KiB.** It is cut at a value boundary before
   the rules run, so a JSON refusal over that bound no longer parses. A JSON
   refusal under it is decoded and scanned, and comes back compact with its
   members sorted when a decoded string held the match; one the rules would
-  leave unparseable, or one over the bound written with `\u` or `\/` escapes,
-  answers `502` with `upstream request failed`.
+  leave unparseable, or one that opens as JSON, gets no walk (over the bound,
+  or not parsing) and holds a `\u` or `\/` escape, answers `502` with
+  `upstream request failed`.
 - **On a group endpoint a plain-text or HTML refusal still reaches the agent as
   its status with no body.** A JSON body there that is not JSON-RPC is redacted
   as on the other endpoints.
