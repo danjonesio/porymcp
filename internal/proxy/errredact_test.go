@@ -793,3 +793,50 @@ func TestEventHolderReleasesBuffer(t *testing.T) {
 		})
 	}
 }
+
+// TestHolderReplacesLiteralAcrossReads is PORM-208 security requirement 2
+// on the stream door: an event whose data line carries the injected
+// literal, fed in two reads split inside the literal, leaves with the
+// literal replaced and no 8-byte window of it.
+func TestHolderReplacesLiteralAcrossReads(t *testing.T) {
+	const lit = "abcdefghijkl"
+	body := []byte(sseFrame(errorAnswer(7, "invalid token "+lit)))
+	cut := bytes.Index(body, []byte(lit)) + 6
+	h := eventHolder{literals: []string{lit}}
+	var got []byte
+	for _, piece := range [][]byte{body[:cut], body[cut:]} {
+		out, err := h.feed(append([]byte(nil), piece...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, out...)
+	}
+	tail, err := h.end()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, tail...)
+	if !strings.Contains(string(got), `"message":"invalid token [redacted]"`) {
+		t.Fatalf("holder output %q", got)
+	}
+	assertNoLeak(t, "holder output", string(got), fragments(lit)...)
+}
+
+// TestBufferedStrayLineBodyReplacesLiteral is PORM-208 security requirement
+// 9: a buffered body with a stray bare JSON line goes through the holder,
+// and the holder built there carries the literals too.
+func TestBufferedStrayLineBodyReplacesLiteral(t *testing.T) {
+	const lit = "abcdefghijkl"
+	body := []byte(sseFrame(errorAnswer(7, "invalid token "+lit)) + errorAnswer(8, "invalid token "+lit) + "\n")
+	if !hasStrayLine(body) {
+		t.Fatal("fixture carries no stray line")
+	}
+	got, err := redactErrorAnswer("text/event-stream", body, lit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(got), "[redacted]"); n != 2 {
+		t.Fatalf("%d markers in %q, want 2", n, got)
+	}
+	assertNoLeak(t, "buffered output", string(got), fragments(lit)...)
+}
