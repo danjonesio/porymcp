@@ -1602,6 +1602,53 @@ func TestRelayErrorBodyAcrossTheClientBound(t *testing.T) {
 	})
 }
 
+// TestRelayUnscannable is PORM-204 security requirement 4 (amendment A3):
+// the checks that send an error answer to the withheld branch because
+// neither pass could read it, including a coding hidden behind identity on
+// a second line or in a list, and a charset behind a malformed label.
+func TestRelayUnscannable(t *testing.T) {
+	cases := []struct {
+		name string
+		enc  []string
+		ct   string
+		body string
+		want bool
+	}{
+		{name: "plain", ct: "text/plain", body: "x"},
+		{name: "identity", enc: []string{"identity"}, ct: "text/plain", body: "x"},
+		{name: "gzip", enc: []string{"gzip"}, ct: "text/plain", body: "x", want: true},
+		{name: "br", enc: []string{"br"}, ct: "text/plain", body: "x", want: true},
+		{name: "identity and br in one value", enc: []string{"identity, br"}, body: "x", want: true},
+		{name: "identity then br on two lines", enc: []string{"identity", "br"}, body: "x", want: true},
+		{name: "utf-8 charset", ct: "text/plain; charset=utf-8", body: "x"},
+		{name: "UTF-16 charset", ct: "text/plain; charset=UTF-16", body: "x", want: true},
+		{name: "utf-16le charset", ct: "text/plain; charset=utf-16le", body: "x", want: true},
+		{name: "utf-32 charset", ct: "text/plain; charset=utf-32", body: "x", want: true},
+		{name: "malformed label naming utf-16", ct: "text/plain; charset=utf-16; x", body: "x", want: true},
+		{name: "duplicate charset", ct: "text/plain; charset=utf-16; charset=utf-8", body: "x", want: true},
+		{name: "utf-16 BE mark", ct: "text/plain", body: "\xfe\xffx", want: true},
+		{name: "utf-16 LE mark", ct: "text/plain", body: "\xff\xfex", want: true},
+		{name: "utf-32 BE mark", ct: "text/plain", body: "\x00\x00\xfe\xffx", want: true},
+		{name: "utf-32 LE mark", ct: "text/plain", body: "\xff\xfe\x00\x00x", want: true},
+		{name: "utf-8 mark is readable", ct: "text/plain", body: "\xef\xbb\xbfx"},
+		{name: "no label at all", body: "x"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := http.Header{}
+			for _, e := range c.enc {
+				h.Add("Content-Encoding", e)
+			}
+			if c.ct != "" {
+				h.Set("Content-Type", c.ct)
+			}
+			if got := relayUnscannable(h, []byte(c.body)); got != c.want {
+				t.Errorf("relayUnscannable = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestRelayErrorBodyWithheld is PORM-204 security requirements 4, 6, 7 and 8
 // (amendment A3): a body the pass cannot rewrite or read is withheld under
 // the upstream's status with its redacted headers, minus the names that

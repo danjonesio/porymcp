@@ -281,6 +281,34 @@ func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string
 	}
 }
 
+// relayUnscannable reports an error answer neither redaction pass can read:
+// a body still under a Content-Encoding the transport did not decode (Go
+// decodes only the gzip it asked for, and deletes the header when it does),
+// or one in UTF-16 or UTF-32, where the token's bytes are interleaved with
+// NULs (PORM-204). The charset is read from the raw label by substring
+// rather than through mime.ParseMediaType, which drops every parameter of a
+// label it cannot parse, so a malformed label cannot switch the check off.
+// Every Content-Encoding value is read and split at commas, as
+// connectionListed splits Connection, so a second line or a list cannot hide
+// a coding behind identity. The UTF-32 LE mark opens with the UTF-16 LE one,
+// so three prefixes cover the four marks.
+func relayUnscannable(headers http.Header, body []byte) bool {
+	for _, v := range headers.Values("Content-Encoding") {
+		for _, coding := range strings.Split(v, ",") {
+			if c := strings.ToLower(strings.TrimSpace(coding)); c != "" && c != "identity" {
+				return true
+			}
+		}
+	}
+	ct := strings.ToLower(headers.Get("Content-Type"))
+	if strings.Contains(ct, "utf-16") || strings.Contains(ct, "utf-32") {
+		return true
+	}
+	return bytes.HasPrefix(body, []byte{0, 0, 0xFE, 0xFF}) ||
+		bytes.HasPrefix(body, []byte{0xFF, 0xFE}) ||
+		bytes.HasPrefix(body, []byte{0xFE, 0xFF})
+}
+
 // writePlainError is the relay door's refusal body: {"error":..,"request_id":..}
 // with the statuses the MCP door uses and never a JSON-RPC envelope, because
 // the caller is an HTTP client. request_id is left out when it does not exist
@@ -296,6 +324,7 @@ func writePlainError(w http.ResponseWriter, status int, requestID, msg string) i
 		buf.Reset()
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(status)
 	n, _ := w.Write(buf.Bytes())
 	return n
@@ -554,29 +583,60 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 
-	// 9. The answer. Content-Length is the relayed body's own; a body with no
-	// upstream Content-Type is labelled octet-stream so Go's sniffer never
-	// calls it text/html on PoryMCP's origin (the MCP door's default is
-	// application/json for the same reason).
+	// 9. The answer. An error answer (a status of 400 or more) is redacted
+	// before any header is written, whatever its media type: the injected
+	// credential first, over the whole body, then the rules within the client
+	// bound, through the core the MCP doors use (redactBody, PORM-204). A body
+	// the pass cannot rewrite, or one neither pass can read, is withheld: the
+	// client gets the upstream's status and its redacted headers, minus the
+	// names that described its body, with PoryMCP's own sentence, and the row
+	// says so. sent is what the client receives and Content-Length is its
+	// length. A body with no upstream Content-Type is labelled octet-stream so
+	// Go's sniffer never calls it text/html on PoryMCP's origin (the MCP
+	// door's default is application/json for the same reason).
 	head := verb == http.MethodHead
-	copyRelayResponseHeaders(w.Header(), headers, head, literals)
 	writeBody := status != http.StatusNotModified && !head
+	sent := respBody
+	if writeBody && status >= 400 && len(respBody) > 0 {
+		red, rerr := []byte(nil), errRefusalNotRewritable
+		if !relayUnscannable(headers, respBody) {
+			red, rerr = redactBody(respBody, literals)
+		}
+		if rerr != nil {
+			copyRelayResponseHeaders(w.Header(), headers, false, literals)
+			for _, n := range rewrittenBodyHeaders {
+				w.Header().Del(n)
+			}
+			size := writePlainError(w, status, requestID, "upstream error body withheld")
+			h.finish(vk, requestID, verb, tool, up.ID, models.StatusError, "upstream answered "+strconv.Itoa(status)+", body withheld", start, size, params)
+			_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
+			return
+		}
+		sent = red
+	}
+	copyRelayResponseHeaders(w.Header(), headers, head, literals)
+	if !bytes.Equal(sent, respBody) {
+		for _, n := range rewrittenBodyHeaders {
+			w.Header().Del(n)
+		}
+	}
 	if writeBody {
-		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
-		if w.Header().Get("Content-Type") == "" && len(respBody) > 0 {
+		w.Header().Set("Content-Length", strconv.Itoa(len(sent)))
+		if w.Header().Get("Content-Type") == "" && len(sent) > 0 {
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
 	}
 	w.WriteHeader(status)
 	if writeBody {
-		_, _ = w.Write(respBody)
+		_, _ = w.Write(sent)
 	}
 
-	// 10. The row and the key's last-used stamp, as on the MCP door.
+	// 10. The row and the key's last-used stamp, as on the MCP door. The size
+	// is the bytes sent, after any redaction or cut.
 	st, errMsg := models.StatusSuccess, ""
 	if status >= 400 {
 		st, errMsg = models.StatusError, "upstream answered "+strconv.Itoa(status)
 	}
-	h.finish(vk, requestID, verb, tool, up.ID, st, errMsg, start, len(respBody), params)
+	h.finish(vk, requestID, verb, tool, up.ID, st, errMsg, start, len(sent), params)
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 }
