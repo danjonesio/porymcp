@@ -869,7 +869,7 @@ func TestHTTPRedirectRefusedNotModifiedRelayed(t *testing.T) {
 	if rr.Code != http.StatusNotModified || rr.Body.Len() != 0 || rr.Header().Get("ETag") != `"v1"` {
 		t.Fatalf("status %d body %q ETag %q", rr.Code, rr.Body.String(), rr.Header().Get("ETag"))
 	}
-	if row := g.lastRow(1); row.Status != models.StatusSuccess {
+	if row := g.lastRow(1); row.Status != models.StatusSuccess || row.ResponseSizeBytes != 0 {
 		t.Errorf("row = %+v", row)
 	}
 }
@@ -1304,5 +1304,462 @@ func TestHTTPRelayClientWentAwayIsClosedSentence(t *testing.T) {
 	}
 	if strings.Contains(row.ErrorMessage, "SECRET") || strings.Contains(row.ErrorMessage, "context canceled") {
 		t.Errorf("error_message=%q carries the URL or Go's text", row.ErrorMessage)
+	}
+}
+
+// relayToken is the stored credential of the PORM-204 relay tests: a
+// 12-byte plain bearer that no pattern rule matches (secretLike is false for
+// it), so every assertion below proves the literal pass and not the rules.
+const relayToken = "abcdefghijkl"
+
+// relayEcho is a relay fixture whose one HTTP API upstream stores relayToken
+// and answers with h.
+func relayEcho(t *testing.T, h http.HandlerFunc) *relayFixture {
+	t.Helper()
+	return newRelayFixture(t, nil, map[string]httpSpec{"beta": {Base: "/v1", Bearer: relayToken, Handler: h}}, false)
+}
+
+// sentBearer is the bearer the stub was given, read back from the request so
+// a test proves the injected value is what gets redacted.
+func sentBearer(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// assertNoHeaderLeak is assertNoLeak over every header name and value.
+func assertNoHeaderLeak(t *testing.T, h http.Header, tok string) {
+	t.Helper()
+	for name, vals := range h {
+		assertNoLeak(t, "header name "+name, name, fragments(tok)...)
+		for _, v := range vals {
+			assertNoLeak(t, "header "+name, v, fragments(tok)...)
+		}
+	}
+}
+
+// TestRelayResponseHeadersRedacted is PORM-204 security requirements 5 and 7
+// (amendment A2): every relayed response header value takes the literal pass
+// on every status, a header whose name carries the credential is dropped,
+// Authorization never crosses, and on HEAD the upstream's Content-Length is
+// copied as it is with no body and a row size of 0.
+func TestRelayResponseHeadersRedacted(t *testing.T) {
+	echo := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			sent := sentBearer(r)
+			w.Header().Set("X-Echo", "Bearer "+sent)
+			w.Header().Set("Authorization", "Bearer "+sent)
+			w.Header().Set("X-"+sent, "1")
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodHead {
+				w.Header().Set("Content-Length", "42")
+				w.WriteHeader(status)
+				return
+			}
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"login":"octocat"}`)
+		}
+	}
+	check := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := rr.Header().Get("X-Echo"); got != "Bearer [redacted]" {
+			t.Errorf("X-Echo = %q, want Bearer [redacted]", got)
+		}
+		if got := rr.Header().Get("Authorization"); got != "" {
+			t.Errorf("Authorization crossed: %q", got)
+		}
+		if got := rr.Header().Get("X-" + relayToken); got != "" {
+			t.Errorf("a header named after the credential crossed: %q", got)
+		}
+		assertNoHeaderLeak(t, rr.Header(), relayToken)
+	}
+	t.Run("a 200 answer", func(t *testing.T) {
+		f := relayEcho(t, echo(http.StatusOK))
+		rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+		if rr.Code != http.StatusOK || rr.Body.String() != `{"login":"octocat"}` {
+			t.Fatalf("status %d body %q", rr.Code, rr.Body.String())
+		}
+		check(t, rr)
+	})
+	t.Run("a HEAD answered 401", func(t *testing.T) {
+		f := relayEcho(t, echo(http.StatusUnauthorized))
+		rr := f.send(http.MethodHead, "/a1/api/user", "", nil)
+		if rr.Code != http.StatusUnauthorized || rr.Body.Len() != 0 {
+			t.Fatalf("status %d body %q, want 401 and no body", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Content-Length"); got != "42" {
+			t.Errorf("Content-Length = %q, want the upstream's 42", got)
+		}
+		check(t, rr)
+		row := f.lastRow(1)
+		if row.Status != models.StatusError || row.ErrorMessage != "upstream answered 401" || row.ResponseSizeBytes != 0 {
+			t.Errorf("row = status %q error %q size %d", row.Status, row.ErrorMessage, row.ResponseSizeBytes)
+		}
+	})
+	// Security requirement 5 on the one header that skips the pass: a HEAD
+	// Content-Length crosses only as a single value that parses as a length,
+	// because Go's HTTP/2 client leaves a non-numeric or repeated value in
+	// the header rather than rejecting it.
+	t.Run("a HEAD Content-Length crosses only as one number", func(t *testing.T) {
+		for _, c := range []struct {
+			name string
+			vals []string
+			want string
+		}{
+			{name: "one number", vals: []string{"42"}, want: "42"},
+			{name: "text", vals: []string{relayToken}, want: ""},
+			{name: "a number and text", vals: []string{"5", relayToken}, want: ""},
+			{name: "negative", vals: []string{"-1"}, want: ""},
+		} {
+			src := http.Header{"Content-Length": c.vals}
+			dst := http.Header{}
+			copyRelayResponseHeaders(dst, src, true, []string{relayToken})
+			if got := dst.Values("Content-Length"); strings.Join(got, ",") != c.want {
+				t.Errorf("%s: Content-Length = %q, want %q", c.name, got, c.want)
+			}
+		}
+	})
+	// Security requirement 6: the names that describe the upstream's body are
+	// dropped when the body was changed, and kept when it was not (the 404 in
+	// TestRelayCleanErrorBodyCrossesAsSent).
+	t.Run("a rewritten body drops the digest headers", func(t *testing.T) {
+		f := relayEcho(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("ETag", `"e"`)
+			w.Header().Set("Content-Digest", "sha-256=:abc:")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"message":"invalid token `+sentBearer(r)+`"}`)
+		})
+		rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+		if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Body.String(), "[redacted]") {
+			t.Fatalf("status %d body %q", rr.Code, rr.Body.String())
+		}
+		for _, name := range []string{"ETag", "Content-Digest"} {
+			if got := rr.Header().Get(name); got != "" {
+				t.Errorf("%s = %q survived a rewritten body", name, got)
+			}
+		}
+	})
+}
+
+// relayErrorRow asserts the row a redacted or withheld error answer leaves:
+// status error, the fixed sentence msg, and a size equal to the bytes the
+// client received (PORM-204 security requirements 7 and 8).
+func relayErrorRow(t *testing.T, f *relayFixture, rr *httptest.ResponseRecorder, msg string) {
+	t.Helper()
+	if got := rr.Header().Get("Content-Length"); got != strconv.Itoa(rr.Body.Len()) {
+		t.Errorf("Content-Length = %q, body is %d bytes", got, rr.Body.Len())
+	}
+	row := f.lastRow(1)
+	if row.Status != models.StatusError || row.ErrorMessage != msg || row.ResponseSizeBytes != rr.Body.Len() {
+		t.Errorf("row = status %q error %q size %d, want error %q size %d", row.Status, row.ErrorMessage, row.ResponseSizeBytes, msg, rr.Body.Len())
+	}
+}
+
+// TestRelayErrorBodyToClientIsRedacted is the issue's first criterion and
+// PORM-204 security requirements 1, 2, 7 and 8 (amendment A1): every 4xx and
+// 5xx body is scanned whatever its label, the injected credential reads
+// [redacted], the status and Content-Type are the upstream's, and
+// Content-Length and the row describe the bytes sent. The trace_id case pins
+// the over-redaction the issue's Risks section accepts.
+func TestRelayErrorBodyToClientIsRedacted(t *testing.T) {
+	tok := relayToken
+	traceDoc := `{"message":"Not Found","request_id":"8f3c2a1b9d7e4f60a5b3c2d1e0f98765"}`
+	cases := []struct {
+		name   string
+		status int
+		ct     string // "" means the stub sends no Content-Type at all
+		body   string
+		equals string   // the exact client body, when it is one
+		wants  []string // substrings the client body must carry
+		json   bool     // the client body must still parse
+	}{
+		{name: "json", status: 401, ct: "application/json", body: `{"message":"invalid token ` + tok + `"}`, equals: `{"message":"invalid token [redacted]"}`, json: true},
+		{name: "html", status: 401, ct: "text/html; charset=utf-8", body: `<pre>Authorization: Bearer ` + tok + `</pre>`, wants: []string{"Bearer [redacted]"}},
+		{name: "plain", status: 403, ct: "text/plain", body: "invalid token " + tok, equals: "invalid token [redacted]"},
+		{name: "problem_json", status: 401, ct: "application/problem+json", body: `{"title":"Unauthorized","detail":"token ` + tok + ` is not valid"}`, wants: []string{"[redacted]", "Unauthorized"}, json: true},
+		{name: "trace_id", status: 404, ct: "application/json", body: traceDoc, wants: []string{`"request_id":"[redacted]"`, `"message":"Not Found"`}, json: true},
+		{name: "no_label", status: 401, ct: "", body: "invalid token " + tok, equals: "invalid token [redacted]"},
+		{name: "jsonrpc_envelope", status: 400, ct: "application/json", body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"invalid key","data":"` + tok + `"}}`, wants: []string{"[redacted]", "invalid key"}, json: true},
+		{name: "event_stream", status: 401, ct: "text/event-stream", body: "data: invalid token " + tok + "\n\n", equals: "data: invalid token [redacted]\n\n"},
+		{name: "invalid_utf8", status: 401, ct: "text/plain", body: "\xff invalid token " + tok, wants: []string{"[redacted]"}},
+		{name: "octet_stream", status: 401, ct: "application/octet-stream", body: "invalid token " + tok, equals: "invalid token [redacted]"},
+		{name: "xml", status: 401, ct: "application/xml", body: "<error>invalid token " + tok + "</error>", equals: "<error>invalid token [redacted]</error>"},
+		{name: "png", status: 400, ct: "image/png", body: "\x89PNG " + tok, wants: []string{"[redacted]"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := relayEcho(t, func(w http.ResponseWriter, r *http.Request) {
+				if c.ct == "" {
+					w.Header()["Content-Type"] = nil // key present: no sniffing, nothing written
+				} else {
+					w.Header().Set("Content-Type", c.ct)
+				}
+				w.WriteHeader(c.status)
+				_, _ = io.WriteString(w, strings.ReplaceAll(c.body, tok, sentBearer(r)))
+			})
+			rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+			if rr.Code != c.status {
+				t.Fatalf("status %d body %q, want %d", rr.Code, rr.Body.String(), c.status)
+			}
+			wantCT := c.ct
+			if wantCT == "" {
+				wantCT = "application/octet-stream"
+			}
+			if got := rr.Header().Get("Content-Type"); got != wantCT {
+				t.Errorf("Content-Type = %q, want %q", got, wantCT)
+			}
+			body := rr.Body.String()
+			if c.equals != "" && body != c.equals {
+				t.Errorf("body = %q, want %q", body, c.equals)
+			}
+			for _, w := range c.wants {
+				if !strings.Contains(body, w) {
+					t.Errorf("body %q lacks %q", body, w)
+				}
+			}
+			if c.json && !json.Valid(rr.Body.Bytes()) {
+				t.Errorf("body no longer parses: %q", body)
+			}
+			assertNoLeak(t, c.name, body, fragments(tok)...)
+			relayErrorRow(t, f, rr, "upstream answered "+strconv.Itoa(c.status))
+		})
+	}
+}
+
+// TestRelayCleanErrorBodyCrossesAsSent is the issue's second criterion as
+// amended (A4) and security requirement 10: a 4xx or 5xx body of 64 KiB or
+// less with nothing credential-shaped crosses byte for byte with its digest
+// headers, and a 2xx body crosses byte for byte even when it echoes the
+// credential (PORM-87's scope).
+func TestRelayCleanErrorBodyCrossesAsSent(t *testing.T) {
+	tok := relayToken
+	cases := []struct {
+		name   string
+		status int
+		ct     string
+		body   string
+	}{
+		{name: "clean 404 json", status: 404, ct: "application/json", body: `{"message":"Not Found"}`},
+		{name: "clean 500 html", status: 500, ct: "text/html", body: "<p>Server error</p>"},
+		{name: "a 200 that echoes the token", status: 200, ct: "application/json", body: `{"echo":"Bearer ` + tok + `"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := relayEcho(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", c.ct)
+				w.Header().Set("ETag", `"e"`)
+				w.Header().Set("Content-Digest", "sha-256=:abc:")
+				w.WriteHeader(c.status)
+				_, _ = io.WriteString(w, strings.ReplaceAll(c.body, tok, sentBearer(r)))
+			})
+			rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+			if rr.Code != c.status || !bytes.Equal(rr.Body.Bytes(), []byte(c.body)) {
+				t.Fatalf("status %d body %q, want %d and %q", rr.Code, rr.Body.String(), c.status, c.body)
+			}
+			for name, want := range map[string]string{"ETag": `"e"`, "Content-Digest": "sha-256=:abc:", "Content-Length": strconv.Itoa(len(c.body))} {
+				if got := rr.Header().Get(name); got != want {
+					t.Errorf("%s = %q, want %q", name, got, want)
+				}
+			}
+			if row := f.lastRow(1); row.ResponseSizeBytes != len(c.body) {
+				t.Errorf("response_size_bytes = %d, want %d", row.ResponseSizeBytes, len(c.body))
+			}
+		})
+	}
+}
+
+// TestRelayErrorBodyAcrossTheClientBound is PORM-204 security requirements
+// 3 and 7 and amendment A4: the literal pass sees the whole body before the
+// cut, a clean body over 64 KiB is cut at a value boundary with no marker,
+// and a JSON-opening body over the bound with no escape is cut, not
+// withheld.
+func TestRelayErrorBodyAcrossTheClientBound(t *testing.T) {
+	tok := relayToken
+	t.Run("a literal straddling the cut", func(t *testing.T) {
+		f := relayEcho(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, strings.Repeat("x", clientMessageBytes-10)+sentBearer(r)+" tail")
+		})
+		rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status %d", rr.Code)
+		}
+		assertNoLeak(t, "relay body", rr.Body.String(), fragments(tok)...)
+		if rr.Body.Len() > clientMessageBytes+len("[redacted]") {
+			t.Errorf("body is %d bytes, want at most the window plus the marker", rr.Body.Len())
+		}
+		relayErrorRow(t, f, rr, "upstream answered 401")
+	})
+	t.Run("a clean body over the bound is cut at a boundary", func(t *testing.T) {
+		body := strings.Repeat("word ", 40<<10) // 200 KiB
+		f := relayEcho(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, body)
+		})
+		rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+		got := rr.Body.String()
+		if rr.Code != http.StatusUnauthorized || !strings.HasPrefix(body, got) {
+			t.Fatalf("status %d, body is not a prefix of the upstream's", rr.Code)
+		}
+		if len(got) > clientMessageBytes || len(got) == 0 || got[len(got)-1] != ' ' {
+			t.Errorf("cut body is %d bytes ending %q, want at most %d ending at a space", len(got), got[max(0, len(got)-5):], clientMessageBytes)
+		}
+		if strings.Contains(got, "[redacted]") {
+			t.Error("a clean body carries a marker")
+		}
+		relayErrorRow(t, f, rr, "upstream answered 401")
+	})
+	t.Run("a JSON opener over the bound with no escape is cut, not withheld", func(t *testing.T) {
+		f := relayEcho(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, "{"+strings.Repeat(" ", clientMessageBytes)+`"`+sentBearer(r)+`"`)
+		})
+		rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+		if rr.Code != http.StatusUnauthorized || strings.Contains(rr.Body.String(), "withheld") {
+			t.Fatalf("status %d body %q, want a cut 401", rr.Code, truncateForLog(rr.Body.Bytes()))
+		}
+		if rr.Body.Len() > clientMessageBytes || !strings.HasPrefix(rr.Body.String(), "{ ") {
+			t.Errorf("body is %d bytes opening %q, want a cut prefix of the upstream's at most %d bytes", rr.Body.Len(), truncateForLog(rr.Body.Bytes()[:min(rr.Body.Len(), 4)]), clientMessageBytes)
+		}
+		assertNoLeak(t, "relay body", rr.Body.String(), fragments(tok)...)
+		relayErrorRow(t, f, rr, "upstream answered 401")
+	})
+}
+
+// TestRelayUnscannable is PORM-204 security requirement 4 (amendment A3):
+// the checks that send an error answer to the withheld branch because
+// neither pass could read it, including a coding hidden behind identity on
+// a second line or in a list, and a charset behind a malformed label.
+func TestRelayUnscannable(t *testing.T) {
+	cases := []struct {
+		name string
+		enc  []string
+		ct   string
+		ct2  string // a second Content-Type line, when set
+		body string
+		want bool
+	}{
+		{name: "plain", ct: "text/plain", body: "x"},
+		{name: "identity", enc: []string{"identity"}, ct: "text/plain", body: "x"},
+		{name: "gzip", enc: []string{"gzip"}, ct: "text/plain", body: "x", want: true},
+		{name: "br", enc: []string{"br"}, ct: "text/plain", body: "x", want: true},
+		{name: "identity and br in one value", enc: []string{"identity, br"}, body: "x", want: true},
+		{name: "identity then br on two lines", enc: []string{"identity", "br"}, body: "x", want: true},
+		{name: "utf-8 charset", ct: "text/plain; charset=utf-8", body: "x"},
+		{name: "UTF-16 charset", ct: "text/plain; charset=UTF-16", body: "x", want: true},
+		{name: "utf-16le charset", ct: "text/plain; charset=utf-16le", body: "x", want: true},
+		{name: "utf-32 charset", ct: "text/plain; charset=utf-32", body: "x", want: true},
+		{name: "malformed label naming utf-16", ct: "text/plain; charset=utf-16; x", body: "x", want: true},
+		{name: "duplicate charset", ct: "text/plain; charset=utf-16; charset=utf-8", body: "x", want: true},
+		{name: "utf16 without the hyphen", ct: "text/plain; charset=utf16", body: "x", want: true},
+		{name: "utf_16 with an underscore", ct: "text/plain; charset=utf_16", body: "x", want: true},
+		{name: "ucs-2", ct: "text/plain; charset=ucs-2", body: "x", want: true},
+		{name: "unicode alias", ct: "text/plain; charset=unicode", body: "x", want: true},
+		{name: "unicodefffe alias", ct: "text/plain; charset=unicodeFFFE", body: "x", want: true},
+		{name: "ucs-4", ct: "text/plain; charset=ucs-4", body: "x", want: true},
+		{name: "utf-16 on a second Content-Type line", ct: "text/plain", ct2: "text/plain; charset=utf-16le", body: "x", want: true},
+		{name: "utf-16 BE mark", ct: "text/plain", body: "\xfe\xffx", want: true},
+		{name: "utf-16 LE mark", ct: "text/plain", body: "\xff\xfex", want: true},
+		{name: "utf-32 BE mark", ct: "text/plain", body: "\x00\x00\xfe\xffx", want: true},
+		{name: "utf-32 LE mark", ct: "text/plain", body: "\xff\xfe\x00\x00x", want: true},
+		{name: "utf-8 mark is readable", ct: "text/plain", body: "\xef\xbb\xbfx"},
+		{name: "no label at all", body: "x"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := http.Header{}
+			for _, e := range c.enc {
+				h.Add("Content-Encoding", e)
+			}
+			if c.ct != "" {
+				h.Set("Content-Type", c.ct)
+			}
+			if c.ct2 != "" {
+				h.Add("Content-Type", c.ct2)
+			}
+			if got := relayUnscannable(h, []byte(c.body)); got != c.want {
+				t.Errorf("relayUnscannable = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestRelayErrorBodyWithheld is PORM-204 security requirements 4, 6, 7 and 8
+// (amendment A3): a body the pass cannot rewrite or read is withheld under
+// the upstream's status with its redacted headers, minus the names that
+// described its body, and no byte of the upstream body crosses.
+func TestRelayErrorBodyWithheld(t *testing.T) {
+	tok := relayToken
+	escaped := escapeEvery(tok, 1)
+	cases := []struct {
+		name   string
+		status int
+		hdr    map[string]string
+		body   func(sent string) string
+	}{
+		{name: "escaped credential in the window of over-bound JSON", status: 429,
+			hdr: map[string]string{"Content-Type": "application/json", "Retry-After": "7", "ETag": `"x"`, "Content-Digest": "sha-256=:abc:"},
+			body: func(sent string) string {
+				return `{"m":"` + escapeEvery(sent, 1) + `","pad":"` + strings.Repeat("x", clientMessageBytes) + `"}`
+			}},
+		{name: "an encoding the transport did not decode", status: 401,
+			hdr:  map[string]string{"Content-Type": "text/plain", "Content-Encoding": "br"},
+			body: func(sent string) string { return "invalid token " + sent }},
+		{name: "a utf-16 charset", status: 401,
+			hdr:  map[string]string{"Content-Type": "text/plain; charset=utf-16"},
+			body: func(sent string) string { return "invalid token " + sent }},
+		{name: "a utf-16 byte order mark", status: 401,
+			hdr:  map[string]string{"Content-Type": "text/plain"},
+			body: func(sent string) string { return "\xff\xfeinvalid token " + sent }},
+		{name: "JSON nested past the walk depth", status: 401,
+			hdr:  map[string]string{"Content-Type": "application/json"},
+			body: func(string) string { return strings.Repeat("[", 40) + strings.Repeat("]", 40) }},
+		{name: "JSON the text pass would break", status: 401,
+			hdr:  map[string]string{"Content-Type": "application/json"},
+			body: func(string) string { return `{"api_key":"k9f2x7q1\"x"}` }}, // the json_escape_after_label row of TestRedactRefusal
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := relayEcho(t, func(w http.ResponseWriter, r *http.Request) {
+				for k, v := range c.hdr {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(c.status)
+				_, _ = io.WriteString(w, c.body(sentBearer(r)))
+			})
+			rr := f.send(http.MethodGet, "/a1/api/user", "", nil)
+			if rr.Code != c.status {
+				t.Fatalf("status %d body %q, want the upstream's %d", rr.Code, truncateForLog(rr.Body.Bytes()), c.status)
+			}
+			var got struct {
+				Error     string `json:"error"`
+				RequestID string `json:"request_id"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || got.Error != "upstream error body withheld" || got.RequestID == "" {
+				t.Fatalf("body %q, want the withheld sentence with a request id (%v)", truncateForLog(rr.Body.Bytes()), err)
+			}
+			if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			assertNoLeak(t, "withheld body", rr.Body.String(), append(fragments(tok), fragments(escaped)...)...)
+			assertNoHeaderLeak(t, rr.Header(), tok)
+			if c.hdr["Retry-After"] != "" && rr.Header().Get("Retry-After") != c.hdr["Retry-After"] {
+				t.Errorf("Retry-After = %q, want the upstream's %q", rr.Header().Get("Retry-After"), c.hdr["Retry-After"])
+			}
+			for _, name := range []string{"ETag", "Content-Digest", "Content-Encoding"} {
+				if v := rr.Header().Get(name); v != "" {
+					t.Errorf("%s = %q crossed on a withheld body", name, v)
+				}
+			}
+			relayErrorRow(t, f, rr, "upstream answered "+strconv.Itoa(c.status)+", body withheld")
+			if row := f.lastRow(1); row.RequestID != got.RequestID {
+				t.Errorf("request_id %q in the body, %q on the row", got.RequestID, row.RequestID)
+			}
+			if k, err := f.Store.GetVirtualKey(context.Background(), "a1"); err != nil || k.LastUsedAt == nil {
+				t.Errorf("a withheld answer left last_used_at unset: %v", err)
+			}
+		})
 	}
 }

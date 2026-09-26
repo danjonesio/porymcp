@@ -146,6 +146,7 @@
   the rewrite both read as two events and a browser client joins. A `result`
   and a notification are relayed as the upstream sent them (an upstream that
   echoes a credential there is PORM-87), and so is an error's `data` member.
+  On the HTTP API relay a `2xx` body is relayed as sent for the same reason.
   A body with a status of `400` or above that is not a JSON-RPC error
   envelope (an object with a `jsonrpc` member of `"2.0"` and an `error`
   member), such as a gateway's plain-text, HTML, `application/problem+json`
@@ -175,7 +176,10 @@
   beside one. The rules are the audit row's, and so is the literal pass that
   runs before them (PORM-208): the credential the proxy injected is replaced
   on this door whatever its shape, in every piece of it of 8 bytes or more,
-  over the whole body before the cut.
+  over the whole body before the cut. The HTTP API relay applies the same
+  pass to its error bodies, and the literal pass alone to every relayed
+  response header value (PORM-204), as set out under the relay bullets
+  below.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by literal and by pattern (PORM-72,
   PORM-208). `audit.Record` first replaces the credential the proxy injected
@@ -211,7 +215,15 @@
   two JSON strings or by invisible characters; one escaped inside a JSON
   object key; one echoed on a field line the stream holder forwards as
   framing; and a token from an earlier request echoed after an oauth
-  refresh. Every value a `custom` credential's headers hold counts as a
+  refresh. Escaped spellings (`\u`, `\/`) inside a body that does not open
+  as JSON, such as JSON inlined in an HTML page or an event stream, are seen
+  by neither pass on either door, and neither is a UTF-16 or UTF-32 body
+  that carries no byte order mark and no charset naming it (a labelled or
+  marked one is withheld on the HTTP API relay). `[redacted]` confirms a whole-literal
+  match of 8 bytes or more, so an upstream that echoes the key holder's own
+  input gives one audited guess per request against a short, low-entropy
+  custom header value; against a random token the guess space makes this
+  idle. Every value a `custom` credential's headers hold counts as a
   literal, so a non-secret value stored there is replaced wherever an error
   names it. A host label, a hand-typed separator-free
   slug, a camelCase tool name holding two digits, a trace id, a container
@@ -594,6 +606,32 @@
     is refused by the same `OpenRelay` that `Open` is, through the same
     client, so PORM-94's rule and the egress guard on that client's dialer
     cover this door without a second seam.
+  - An answer with a status of `400` or above has the credential the proxy
+    injected, and credential-shaped text, replaced by `[redacted]` before it
+    reaches the client, whatever its media type or encoding (PORM-204), with
+    two differences from the MCP door: a JSON-RPC error envelope is walked
+    whole, its `data` member included, and a body in event-stream framing is
+    scanned as text, because a client of this door is a plain HTTP client.
+    The rules, the 64 KiB client bound, the cut at a value boundary and the
+    residue are the MCP door's, set out under the redaction bullet above;
+    any body over 64 KiB, binary included, is cut. The status and
+    `Content-Type` are the upstream's, `Content-Length` is the length sent,
+    and `ETag`, `Content-MD5`, `Digest`, `Content-Digest` and `Repr-Digest`
+    are dropped when the body was changed. A body the pass cannot rewrite
+    (JSON the rules would break, a JSON-opening body over 64 KiB or
+    unparseable with a `\u` or `\/` escape in its first 64 KiB, or JSON
+    nested more than 32 levels), one still under a `Content-Encoding` the
+    proxy did not decode, or one in UTF-16 or UTF-32, is withheld: the
+    client receives the upstream's status and its other headers, redacted
+    and minus the five digest names above, with
+    `{"error":"upstream error body withheld","request_id":"..."}` as
+    `application/json`, and the row reads `upstream answered N, body
+    withheld`. Every relayed response header value has the injected
+    credential replaced on every status, a header whose name carries it is
+    dropped, and `Authorization` never crosses. A `2xx` body crosses as
+    sent; a `304` and a `HEAD` answer keep their shape with their headers
+    under the same pass, and on `HEAD` the upstream's `Content-Length` is
+    that of its unredacted body.
   - The relay's CORS answer is its own: the six verbs, a fixed request-header
     list with nothing reflected, five exposed names, no
     `Access-Control-Allow-Credentials`, no `Mcp-Param-*` reflection.

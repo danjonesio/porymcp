@@ -188,31 +188,43 @@ func rpcErrorEnvelope(body []byte) bool {
 	return ok && !bytes.Equal(bytes.TrimSpace(errMember), []byte("null"))
 }
 
-// redactRefusal rewrites a refusal body (a status of 400 or more) that is
-// not a JSON-RPC error envelope, so a gateway's plain-text, HTML or JSON 401
-// never carries the injected credential to the key holder (PORM-205). A
-// JSON-RPC error envelope is left to redactErrorAnswer, so error.data stays
-// as sent. A body under an event-stream label, or sniffed as one, that
-// carries a data event is left to redactErrorAnswer too; one that only opens
-// like a stream (a comment, an id: or a retry: line) and then holds plain
-// text is scanned as text. Valid JSON within the client bound is
-// walked with each string decoded, the way redactErrorDoc does, so an
-// escaped credential is caught, and then scanned once more as text, so a
-// labelled short value and a shadowed duplicate member are caught as well;
-// the text pass runs on the walk's output, and if it leaves the document
-// unparseable the caller fails closed. Any other body is scanned as text and
-// cut at clientMessageBytes; the cut runs before the rules, so no unscanned
-// byte crosses. A body the rules did not change comes back as body itself,
-// so a clean refusal is relayed byte for byte. Invalid UTF-8 is scanned as
-// well: under the bound the rules copy unmatched bytes as they are, so one
-// stray byte cannot switch redaction off; over the bound Clamp strips
-// invalid bytes from the kept prefix. literals are the values the proxy
-// injected, replaced over the whole text before any cut (PORM-208).
+// redactRefusal rewrites a refusal body (a status of 400 or more) on the MCP
+// doors, so a gateway's plain-text, HTML or JSON 401 never carries the
+// injected credential to the key holder (PORM-205). Two shapes are returned
+// as sent because redactErrorAnswer has already rewritten them on those
+// doors: a JSON-RPC error envelope (so error.data stays as the upstream
+// wrote it) and a body under an event-stream label, or sniffed as one, that
+// carries a data event. A body that only opens like a stream (a comment, an
+// id: or a retry: line) and then holds plain text goes on to redactBody with
+// every other body. literals are the values the proxy injected (PORM-208).
 func redactRefusal(contentType string, body []byte, literals ...string) ([]byte, error) {
 	if len(body) == 0 || rpcErrorEnvelope(body) {
 		return body, nil
 	}
 	if mcpclient.SSEFramed(contentType, body) && carriesEvent(body) {
+		return body, nil
+	}
+	return redactBody(body, literals)
+}
+
+// redactBody is the door-neutral part of the refusal pass. The MCP doors
+// reach it through redactRefusal; the HTTP API relay calls it directly,
+// because nothing runs before it on that door, so there a JSON-RPC envelope
+// is walked whole and an event stream is scanned as text (PORM-204). Valid
+// JSON within the client bound is walked with each string decoded, the way
+// redactErrorDoc does, so an escaped credential is caught, and then scanned
+// once more as text, so a labelled short value and a shadowed duplicate
+// member are caught as well; the text pass runs on the walk's output, and if
+// it leaves the document unparseable the caller fails closed. Any other body
+// is scanned as text and cut at clientMessageBytes; the cut runs before the
+// rules, so no unscanned byte crosses. A body the rules did not change comes
+// back as body itself, so a clean refusal is relayed byte for byte. Invalid
+// UTF-8 is scanned as well: under the bound the rules copy unmatched bytes
+// as they are, so one stray byte cannot switch redaction off; over the bound
+// Clamp strips invalid bytes from the kept prefix. literals are replaced
+// over the whole text before any cut.
+func redactBody(body []byte, literals []string) ([]byte, error) {
+	if len(body) == 0 {
 		return body, nil
 	}
 	if len(body) <= clientMessageBytes && json.Valid(body) {

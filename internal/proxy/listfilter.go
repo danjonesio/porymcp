@@ -22,6 +22,13 @@ var (
 	errUnfilterableMedia = errors.New("response media type cannot be filtered")
 )
 
+// rewrittenBodyHeaders are deleted from an answer whose body PoryMCP changed,
+// on the MCP door's filtered tools/list and on the HTTP API relay's redacted
+// or withheld error answer (PORM-204): each describes the bytes the upstream
+// sent, so on the rewritten body it would fail an integrity check or hand a
+// reader a digest of text the client never received.
+var rewrittenBodyHeaders = []string{"Etag", "Content-Digest", "Repr-Digest", "Digest", "Content-MD5"}
+
 // filterListResponse trims a forwarded tools/list answer to the tools the gate
 // would let this key call, and returns the headers that still describe the
 // body it produced.
@@ -96,11 +103,11 @@ func (h *Handler) filterListResponse(body []byte, status int, hdr http.Header, p
 	// else. These deletions are this function's own contract over the clone it
 	// returns; a tools/list is never streamed, so this is the one place its
 	// headers are shaped. The copy-back
-	// allowlist (copyResponseHeaders) excludes these four names as well; the
+	// allowlist (copyResponseHeaders) excludes these names as well; the
 	// deletion stays so a later addition to that list cannot ship a digest
 	// describing bytes the client never received. Content-Length needs no
 	// handling here: the allowlist never copies it and net/http recomputes it.
-	for _, k := range []string{"Etag", "Content-Digest", "Repr-Digest", "Digest"} {
+	for _, k := range rewrittenBodyHeaders {
 		hdr.Del(k)
 	}
 	return out, hdr

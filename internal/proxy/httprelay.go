@@ -212,7 +212,10 @@ func copyRelayRequestHeaders(dst, src http.Header, token string) {
 // the client, every value copied.
 var relayResponseDenylist = map[string]bool{
 	"content-encoding": true,
-	"set-cookie":       true, "set-cookie2": true, "www-authenticate": true, "proxy-authenticate": true,
+	// An upstream that echoes the request's credential header would hand it
+	// to the key holder (PORM-204); Proxy-Authorization is already hop-by-hop.
+	"authorization": true,
+	"set-cookie":    true, "set-cookie2": true, "www-authenticate": true, "proxy-authenticate": true,
 	"location": true, "refresh": true,
 	"content-security-policy": true, "content-security-policy-report-only": true,
 	"strict-transport-security": true, "x-frame-options": true, "x-content-type-options": true,
@@ -237,27 +240,85 @@ var relayResponseDenylist = map[string]bool{
 // after its own first value lands. Every value of a permitted name is copied
 // (Add), so nothing repeated is lost. Content-Length crosses on a HEAD answer
 // only, where the length is the point of the request; on every other answer
-// the caller sets it from the body it relays.
-func copyRelayResponseHeaders(dst, src http.Header, head bool) {
+// the caller sets it from the body it relays. Every other permitted value
+// passes through audit.RedactLiterals, and a name the same pass would change
+// is dropped, so a header that echoes the injected credential reads
+// [redacted] or does not cross (PORM-204). The name check folds case,
+// because net/http canonicalises a name (an echoed "x-<token>" arrives as
+// "X-<Token>") while the value pass is exact. The pattern rules are not run
+// on headers, because an ETag or a request id would trip the long-run rule.
+// A HEAD answer's Content-Length crosses only as one value that parses as a
+// length: Go's HTTP/2 client leaves a non-numeric or repeated value in the
+// header rather than rejecting it, and the relay must not write text there.
+func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string) {
 	protected := make(map[string]bool, len(dst))
 	for name := range dst {
 		protected[strings.ToLower(name)] = true
+	}
+	folded := make([]string, len(literals))
+	for i, l := range literals {
+		folded[i] = strings.ToLower(l)
 	}
 	listed := connectionListed(src)
 	for name, vals := range src {
 		lower := strings.ToLower(name)
 		if lower == "content-length" {
-			if !head {
-				continue
+			if head && len(vals) == 1 {
+				if _, err := strconv.ParseUint(vals[0], 10, 63); err == nil {
+					dst.Add(name, vals[0])
+				}
 			}
-		} else if mcpclient.HopByHop(name) || listed[lower] || relayResponseDenylist[lower] ||
-			protected[lower] || strings.HasPrefix(lower, "access-control-") {
+			continue
+		}
+		if mcpclient.HopByHop(name) || listed[lower] || relayResponseDenylist[lower] ||
+			protected[lower] || strings.HasPrefix(lower, "access-control-") ||
+			audit.RedactLiterals(lower, folded) != lower {
 			continue
 		}
 		for _, v := range vals {
-			dst.Add(name, v)
+			dst.Add(name, audit.RedactLiterals(v, literals))
 		}
 	}
+}
+
+// unreadableCharsets are the charset spellings that put a NUL between the
+// bytes of an ASCII token, so neither redaction pass can see it: the UTF-16
+// and UTF-32 names with a hyphen, an underscore or nothing between, the
+// UCS-2 and UCS-4 names, and the WHATWG aliases that contain "unicode"
+// (unicode, csunicode, unicodefeff, unicodefffe). Matched as substrings of
+// the lower-cased label, so an extra match only sends a body to the withheld
+// branch.
+var unreadableCharsets = []string{"utf-16", "utf_16", "utf16", "utf-32", "utf_32", "utf32", "ucs-2", "ucs2", "ucs-4", "ucs4", "unicode"}
+
+// relayUnscannable reports an error answer neither redaction pass can read:
+// a body still under a Content-Encoding the transport did not decode (Go
+// decodes only the gzip it asked for, and deletes the header when it does),
+// or one in UTF-16 or UTF-32, where the token's bytes are interleaved with
+// NULs (PORM-204). The charset is read from the raw label by substring
+// rather than through mime.ParseMediaType, which drops every parameter of a
+// label it cannot parse, so a malformed label cannot switch the check off.
+// Every Content-Encoding and Content-Type value is read, because every value
+// crosses to the client and a fetch-based client takes the last label; the
+// codings are split at commas, as connectionListed splits Connection, so a
+// second line or a list cannot hide a coding behind identity. The UTF-32 LE
+// mark opens with the UTF-16 LE one, so three prefixes cover the four marks.
+func relayUnscannable(headers http.Header, body []byte) bool {
+	for _, v := range headers.Values("Content-Encoding") {
+		for _, coding := range strings.Split(v, ",") {
+			if c := strings.ToLower(strings.TrimSpace(coding)); c != "" && c != "identity" {
+				return true
+			}
+		}
+	}
+	ct := strings.ToLower(strings.Join(headers.Values("Content-Type"), ","))
+	for _, cs := range unreadableCharsets {
+		if strings.Contains(ct, cs) {
+			return true
+		}
+	}
+	return bytes.HasPrefix(body, []byte{0, 0, 0xFE, 0xFF}) ||
+		bytes.HasPrefix(body, []byte{0xFF, 0xFE}) ||
+		bytes.HasPrefix(body, []byte{0xFE, 0xFF})
 }
 
 // writePlainError is the relay door's refusal body: {"error":..,"request_id":..}
@@ -275,6 +336,7 @@ func writePlainError(w http.ResponseWriter, status int, requestID, msg string) i
 		buf.Reset()
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(status)
 	n, _ := w.Write(buf.Bytes())
 	return n
@@ -460,6 +522,10 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 		h.finish(vk, requestID, verb, tool, up.ID, models.StatusError, err.Error(), start, size, params)
 		return
 	}
+	// The values the credential writes on the wire, for the literal pass over
+	// the answer's headers and error body (PORM-204). Never handed to finish:
+	// the row's error_message on this door is always PoryMCP's own sentence.
+	literals := mcpclient.Literals(up.AuthType, plain)
 
 	// 6, 7. The outbound request under the relay's budgets, with the joined
 	// URL assigned rather than re-parsed (so an escaped segment goes out as
@@ -529,29 +595,60 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 		return
 	}
 
-	// 9. The answer. Content-Length is the relayed body's own; a body with no
-	// upstream Content-Type is labelled octet-stream so Go's sniffer never
-	// calls it text/html on PoryMCP's origin (the MCP door's default is
-	// application/json for the same reason).
+	// 9. The answer. An error answer (a status of 400 or more) is redacted
+	// before any header is written, whatever its media type: the injected
+	// credential first, over the whole body, then the rules within the client
+	// bound, through the core the MCP doors use (redactBody, PORM-204). A body
+	// the pass cannot rewrite, or one neither pass can read, is withheld: the
+	// client gets the upstream's status and its redacted headers, minus the
+	// names that described its body, with PoryMCP's own sentence, and the row
+	// says so. sent is what the client receives and Content-Length is its
+	// length. A body with no upstream Content-Type is labelled octet-stream so
+	// Go's sniffer never calls it text/html on PoryMCP's origin (the MCP
+	// door's default is application/json for the same reason).
 	head := verb == http.MethodHead
-	copyRelayResponseHeaders(w.Header(), headers, head)
 	writeBody := status != http.StatusNotModified && !head
+	sent := respBody
+	if writeBody && status >= 400 && len(respBody) > 0 {
+		red, rerr := []byte(nil), errRefusalNotRewritable
+		if !relayUnscannable(headers, respBody) {
+			red, rerr = redactBody(respBody, literals)
+		}
+		if rerr != nil {
+			copyRelayResponseHeaders(w.Header(), headers, false, literals)
+			for _, n := range rewrittenBodyHeaders {
+				w.Header().Del(n)
+			}
+			size := writePlainError(w, status, requestID, "upstream error body withheld")
+			h.finish(vk, requestID, verb, tool, up.ID, models.StatusError, "upstream answered "+strconv.Itoa(status)+", body withheld", start, size, params)
+			_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
+			return
+		}
+		sent = red
+	}
+	copyRelayResponseHeaders(w.Header(), headers, head, literals)
+	if !bytes.Equal(sent, respBody) {
+		for _, n := range rewrittenBodyHeaders {
+			w.Header().Del(n)
+		}
+	}
 	if writeBody {
-		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
-		if w.Header().Get("Content-Type") == "" && len(respBody) > 0 {
+		w.Header().Set("Content-Length", strconv.Itoa(len(sent)))
+		if w.Header().Get("Content-Type") == "" && len(sent) > 0 {
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
 	}
 	w.WriteHeader(status)
 	if writeBody {
-		_, _ = w.Write(respBody)
+		_, _ = w.Write(sent)
 	}
 
-	// 10. The row and the key's last-used stamp, as on the MCP door.
+	// 10. The row and the key's last-used stamp, as on the MCP door. The size
+	// is the bytes sent, after any redaction or cut.
 	st, errMsg := models.StatusSuccess, ""
 	if status >= 400 {
 		st, errMsg = models.StatusError, "upstream answered "+strconv.Itoa(status)
 	}
-	h.finish(vk, requestID, verb, tool, up.ID, st, errMsg, start, len(respBody), params)
+	h.finish(vk, requestID, verb, tool, up.ID, st, errMsg, start, len(sent), params)
 	_ = h.store.TouchVirtualKey(r.Context(), vk.ID)
 }
