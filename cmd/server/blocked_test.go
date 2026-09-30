@@ -50,6 +50,9 @@ type blockStub struct {
 	srv        *httptest.Server
 	hits       atomic.Int32
 	echoHeader string
+	// echoQuery names the query parameter whose value the stub echoes
+	// instead, for a query credential (PORM-27).
+	echoQuery string
 }
 
 func newBlockStub(t *testing.T) *blockStub {
@@ -70,9 +73,12 @@ func newBlockStub(t *testing.T) *blockStub {
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"delete_repo"},{"name":"list_issues"}]}}`)
 			return
 		}
-		if s.echoHeader != "" && req.Method == "tools/call" {
+		if (s.echoHeader != "" || s.echoQuery != "") && req.Method == "tools/call" {
 			// The credential alone: a bearer rides behind its scheme word.
 			cred := strings.TrimPrefix(r.Header.Get(s.echoHeader), "Bearer ")
+			if s.echoQuery != "" {
+				cred = r.URL.Query().Get(s.echoQuery)
+			}
 			msg, _ := json.Marshal("invalid token " + cred)
 			id := string(req.ID)
 			if id == "" {
@@ -140,6 +146,8 @@ func newBlockFixture(t *testing.T, targetType, toolFilter, authType string, auth
 		for name := range authCfg.Headers {
 			stub.echoHeader = name
 		}
+	case models.AuthQuery:
+		stub.echoQuery = authCfg.Param
 	}
 
 	encKey, err := crypto.RandomKey()

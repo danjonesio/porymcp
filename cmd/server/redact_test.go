@@ -48,6 +48,9 @@ func TestLogsAPINeverReturnsTheUpstreamCredential(t *testing.T) {
 		{"api_key", models.AuthAPIKey, "sk-proj-abcdefghij1234567890ABCD", models.AuthConfig{Value: "sk-proj-abcdefghij1234567890ABCD"}},
 		{"header", models.AuthHeader, "k3y-2026-Ab12Cd34Ef56Gh78Ij90", models.AuthConfig{Header: "X-Vendor-Key", Value: "k3y-2026-Ab12Cd34Ef56Gh78Ij90"}},
 		{"custom", models.AuthCustom, "deadbeef0123456789abcdef0123456789abcdef", models.AuthConfig{Headers: map[string]string{"X-Custom-Auth": "deadbeef0123456789abcdef0123456789abcdef"}}},
+		// PORM-27: a query credential, a plain value that matches no vendor
+		// pattern, so only the literal pass can catch it.
+		{"query", models.AuthQuery, "plainquery0123456789abcdefgh", models.AuthConfig{Param: "api_key", Value: "plainquery0123456789abcdefgh"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1269,3 +1269,50 @@ func TestDiscoveryLoopbackRemedy(t *testing.T) {
 		t.Fatalf("metadata refusal reads %q; only loopback carries the remedy", meta.Error)
 	}
 }
+
+// TestDiscoverSendsQueryCredential pins PORM-27 security requirements 3
+// and 4 on discovery: every request of the handshake, the catalogue walk
+// and the teardown DELETE carries the credential as the one query
+// parameter, appended after the stored url's own parameters, and no
+// Authorization header. The era probe is the same exchange (ProbeEra reuses
+// probe.exchange) and is asserted on its own below.
+func TestDiscoverSendsQueryCredential(t *testing.T) {
+	const value = "QUERY_VALUE_MARKER_abcdefgh"
+	auth := json.RawMessage(`{"param":"api_key","value":"` + value + `"}`)
+	check := func(t *testing.T, reqs []request) {
+		t.Helper()
+		if len(reqs) == 0 {
+			t.Fatal("no request reached the upstream")
+		}
+		for _, r := range reqs {
+			if r.RawQuery != "v=1&api_key="+value {
+				t.Errorf("%s %s carried query %q", r.Method, r.RPC, r.RawQuery)
+			}
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("%s %s carried Authorization %q", r.Method, r.RPC, got)
+			}
+		}
+	}
+	f := newFixture(t)
+	up := f.upstream()
+	up.URL += "?v=1"
+	up.AuthType = models.AuthQuery
+	if got := discover(t, up, auth); !got.OK {
+		t.Fatalf("ok=false error=%q", got.Error)
+	}
+	reqs := f.requests()
+	if last := reqs[len(reqs)-1]; last.Method != http.MethodDelete {
+		t.Fatalf("last call was %s %s, want the teardown DELETE", last.Method, last.RPC)
+	}
+	check(t, reqs)
+
+	g := newFixture(t)
+	up = g.upstream()
+	up.URL += "?v=1"
+	up.AuthType = models.AuthQuery
+	hc := NewHTTPClient(Options{Timeout: time.Minute, Guard: testGuard})
+	if got := ProbeEra(t.Context(), hc, up, auth); !got.Reached {
+		t.Fatalf("era probe = %+v", got)
+	}
+	check(t, g.requests())
+}
