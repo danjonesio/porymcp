@@ -20,6 +20,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/netguard"
+	"github.com/danjonesio/porymcp/internal/redact"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/go-chi/chi/v5"
@@ -1212,7 +1213,14 @@ type memberHeaders struct {
 // inbound request: a client that could choose them would be choosing which
 // members answer. The two guards run before the era is looked up, so a member
 // the proxy must not dial is not probed either.
-func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, int, error) {
+//
+// Beside the document it returns the literals of the credential it sent
+// (mcpclient.Literals), so memberCatalogues can redact a member's own
+// message on the skip line without resolving the credential a second time,
+// which for an oauth member could refresh the token and record a second
+// credential event (PORM-196). The two returns before the credential is in
+// hand carry nil literals; those errors are PoryMCP's own sentences.
+func (h *Handler) listTools(ctx context.Context, up *models.Upstream) (doc []byte, literals []string, err error) {
 	// The whole of one member's turn, the era probe included, has the minute
 	// the client's flat timeout used to give it: a silent member costs the
 	// walk that and no more. The two guards and the credential come first:
@@ -1221,19 +1229,20 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	// the probe so the probe's connection is the one the connect timer
 	// watches.
 	if err := mcpclient.TransportError(up.Transport); err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	plain, err := h.credential(ctx, up)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
+	literals = mcpclient.Literals(up.AuthType, plain)
 	ctx, _, cancel := upstreamContext(ctx, listBudget)
 	defer cancel(nil)
 	verdict := h.memberEra(ctx, up, plain)
 	if verdict.fail != "" {
 		// A modern server that cannot be spoken to: one of mcpclient's fixed
 		// sentences, and no request. The entry expires at the retry floor.
-		return nil, 0, errors.New(verdict.fail)
+		return nil, literals, errors.New(verdict.fail)
 	}
 	modern := verdict.era == mcpclient.EraModern
 	request := listToolsRequest
@@ -1243,12 +1252,12 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, up.URL, strings.NewReader(request))
 	if err != nil {
 		// The parse error quotes the stored URL, query string and all.
-		return nil, 0, errUpstreamURL
+		return nil, literals, errUpstreamURL
 	}
 	req.Header.Set("Accept", mcpclient.AcceptMCP)
 	req.Header.Set("Content-Type", "application/json")
 	if err := mcpclient.ApplyAuth(req, up.AuthType, plain); err != nil {
-		return nil, 0, errCredentialUnreadable
+		return nil, literals, errCredentialUnreadable
 	}
 	if modern {
 		// After ApplyAuth, so a stored auth_config cannot choose either header.
@@ -1264,11 +1273,11 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	// redirect with one about an empty body.
 	resp, err := mcpclient.Open(h.client, req)
 	if err != nil {
-		return nil, 0, upstreamFailed(ctx, err, up)
+		return nil, literals, upstreamFailed(ctx, err, up)
 	}
-	body, status, hdr, err := mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
+	body, _, hdr, err := mcpclient.ReadBody(resp, mcpclient.MaxBodyBytes)
 	if err != nil {
-		return nil, status, readFailed(ctx, err)
+		return nil, literals, readFailed(ctx, err)
 	}
 	// A member answers in whichever framing its SDK defaults to, and the
 	// reference SDKs default to an event stream. The answer is reduced here
@@ -1276,11 +1285,11 @@ func (h *Handler) listTools(ctx context.Context, up *models.Upstream) ([]byte, i
 	// already has, so memberCatalogues and parseToolsList see plain JSON and
 	// this package parses no frames of its own. A failure is one of
 	// mcpclient's fixed sentences and carries no byte of the body.
-	doc, err := mcpclient.PickResponse(hdr.Get("Content-Type"), body, listToolsID)
+	doc, err = mcpclient.PickResponse(hdr.Get("Content-Type"), body, listToolsID)
 	if err != nil {
-		return nil, status, err
+		return nil, literals, err
 	}
-	return doc, status, nil
+	return doc, literals, nil
 }
 
 // upstreamTransport is a type alias, not a defined type: the identifier is
@@ -1319,16 +1328,21 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 	// it was built with is worth being loud about. A transport failure
 	// arrives as one of the closed sentences (listTools reads it into the set
 	// where the client returned it), so the line carries the same sentence
-	// the member's own row would. Still bounded, because a member's own
-	// error.message (parseToolsList) is the upstream's string; the handler
-	// is slog's JSON one, so a control byte in it is escaped and cannot
-	// start a line of its own.
-	skip := func(up *models.Upstream, err error) {
+	// the member's own row would. A member's own error.message
+	// (parseToolsList) is the upstream's string, so the line takes the audit
+	// row's pass over its whole text (PORM-196): control characters first,
+	// then the credential the catalogue request carried, then the pattern
+	// rules, then the cut to auditFieldBytes. Scrub comes first because a
+	// control byte inside an echoed credential would split the literal, and
+	// slog's JSON handler escapes the byte rather than dropping it, so the
+	// fragment would be readable in the log. PoryMCP's own sentences carry
+	// no credential and pass unchanged.
+	skip := func(up *models.Upstream, err error, literals []string) {
 		if h.log == nil {
 			return
 		}
 		h.log.Warn("group member skipped", "slug", up.Slug, "upstream_id", up.ID,
-			"err", truncate(err.Error(), auditFieldBytes))
+			"err", redact.RedactClamped(redact.Scrub(err.Error()), auditFieldBytes, literals))
 	}
 	for _, up := range ups {
 		// A 3xx is refused in mcpclient.Open, before there is a body to read,
@@ -1340,16 +1354,16 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 		// when there is no logger, and the retry floor is not a log line. Any
 		// failure to list brings the member's era entry forward to the floor,
 		// which is what lets a wrong verdict heal without a probe per call.
-		listBody, _, err := h.listTools(ctx, up)
+		listBody, literals, err := h.listTools(ctx, up)
 		if err != nil {
 			h.eras.retrySoon(up.ID)
-			skip(up, err)
+			skip(up, err, literals)
 			continue
 		}
 		tools, err := parseToolsList(listBody)
 		if err != nil {
 			h.eras.retrySoon(up.ID)
-			skip(up, err)
+			skip(up, err, literals)
 			continue
 		}
 		ttl, reported := listTTLMs(listBody)
