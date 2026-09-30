@@ -4,7 +4,7 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
-### Discovery and the group skip line no longer repeat a credential an upstream echoes (PORM-196)
+### Discovery's upstream_message and the group skip line no longer repeat a credential an upstream echoes in its error (PORM-196)
 
 - **A server that answers a wrong token with `invalid token <token>` now
   reads `invalid token [redacted]` in discovery.** `upstream_message` on both
