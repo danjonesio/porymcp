@@ -105,7 +105,8 @@ var probeBudget = 5 * time.Second
 
 // The three sentences a probe can end a discovery with. Fixed strings, in the
 // closed set TestDiscoverErrorAllowlist pins: what the upstream advertised goes
-// in supported_versions and its own words in upstream_message, never in here.
+// in supported_versions and its own words, redacted and clamped, in
+// upstream_message, never in here.
 const (
 	errNoSharedVersion    = "upstream supports no protocol version PoryMCP speaks"
 	errRoutingRefused     = "upstream refused the routing headers PoryMCP sent (-32020)"
@@ -143,7 +144,8 @@ type Probe struct {
 	Capabilities []string
 	Info         *Info
 	Fail         string
-	// Message is the server's own error.message, through sanitiseMessage.
+	// Message is the server's own error.message, scrubbed, redacted and
+	// clamped by sanitiseMessage.
 	Message string
 	// LatencyMS feeds the proxy's log line and nothing an operator's API reads.
 	LatencyMS int

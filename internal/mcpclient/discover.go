@@ -193,8 +193,8 @@ type Discovery struct {
 	// settings under them: see capabilityFamilies.
 	Capabilities []string `json:"capabilities,omitempty"`
 	Error        string   `json:"error,omitempty"`
-	// UpstreamMessage is a sanitised JSON-RPC error.message and the one place
-	// an upstream's own words are repeated. It is a separate field from Error
+	// UpstreamMessage is a JSON-RPC error.message, scrubbed, redacted and
+	// clamped, and the one place an upstream's own words are repeated. It is a separate field from Error
 	// on purpose: Error stays a closed set an operator and the dashboard can
 	// both rely on, and "the server said: token lacks the repo scope" is the
 	// failure this whole feature exists to diagnose.
@@ -747,7 +747,7 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 	if decoded {
 		out.id = strings.TrimSpace(string(env.ID))
 		if env.Error != nil {
-			out.message = sanitiseMessage(env.Error.Message)
+			out.message = sanitiseMessage(env.Error.Message, Literals(p.up.AuthType, p.auth))
 			out.code = env.Error.Code
 			out.data = env.Error.Data
 		}
@@ -1138,14 +1138,17 @@ func readCursor(raw json.RawMessage) (string, bool) {
 	return cursor, true
 }
 
-// sanitiseMessage prepares an upstream's own error.message to be shown to an
+// sanitiseMessage makes an upstream's own error.message safe to show to an
 // operator. It is the single deliberate exception to "no upstream bytes", so
-// it is scrubbed like every other upstream string and then cut to 200 bytes at
-// a rune boundary. It is rendered as text by the dashboard and labelled as the
-// server's words, never PoryMCP's.
-func sanitiseMessage(s string) string {
-	out, _ := redact.Clamp(redact.Scrub(s), maxUpstreamMessageBytes)
-	return out
+// it takes the audit row's pass (PORM-196): control characters go first, so
+// a credential split by one is seen whole; then the credential the proxy sent
+// and any credential-shaped text read [redacted]; then the text is cut to
+// maxUpstreamMessageBytes at a rune boundary. Redaction runs before the cut
+// so a credential that straddles the bound is gone before the cut. The result
+// is rendered as text by the dashboard and labelled as the server's words,
+// never PoryMCP's.
+func sanitiseMessage(s string, literals []string) string {
+	return redact.RedactClamped(redact.Scrub(s), maxUpstreamMessageBytes, literals)
 }
 
 // visibleASCII reports whether s is at most max bytes of printable ASCII

@@ -51,6 +51,10 @@ type mcpStub struct {
 	// lists tools only for a request that declares its version and method,
 	// and has no handshake (initialize falls to the 404 below).
 	modern bool
+	// echoesBearer makes initialize answer 401 with a JSON-RPC error whose
+	// message repeats the bearer the request carried, the way a server that
+	// quotes a wrong token does (PORM-196).
+	echoesBearer bool
 }
 
 type stubRequest struct {
@@ -113,6 +117,11 @@ func (s *mcpStub) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	case r.Method == http.MethodDelete:
 		w.WriteHeader(http.StatusMethodNotAllowed) // a normal answer; plenty of servers do this
+	case s.echoesBearer && rpc.Method == "initialize":
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		msg := "invalid token " + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32000, "message": msg}})
 	case rpc.Method == "initialize":
 		w.Header().Set("Mcp-Session-Id", stubSession)
 		s.result(w, map[string]any{
@@ -706,6 +715,36 @@ func TestDiscoverUnsavedPayloadSendsItsCredential(t *testing.T) {
 	// Presented upstream, never repeated back.
 	if strings.Contains(rr.Body.String(), token) {
 		t.Fatalf("the response repeats the credential: %s", rr.Body.String())
+	}
+}
+
+// TestDiscoverUnsavedRedactsEchoedCredential is PORM-196 security
+// requirement 3: on the unsaved route the literal pass takes its credential
+// from the request body, through the probe, with no work in this package,
+// so an upstream that echoes that bearer inside a JSON-RPC error hands the
+// operator "invalid token [redacted]" and no fragment of the token reaches
+// the response. The 12-byte plain bearer matches no pattern rule.
+func TestDiscoverUnsavedRedactsEchoedCredential(t *testing.T) {
+	const token = "abcdefghijkl"
+	stub := newMCPStub(t, func(s *mcpStub) { s.echoesBearer = true })
+	_, h, _ := testAPI(t)
+
+	rr := doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin", map[string]any{
+		"url":         stub.srv.URL,
+		"auth_type":   "bearer",
+		"auth_config": map[string]string{"token": token},
+	})
+	d := discovery(t, rr)
+	if d["ok"] != false {
+		t.Fatalf("discovery = %v, want the stub's refusal", d)
+	}
+	if d["upstream_message"] != "invalid token [redacted]" {
+		t.Errorf("upstream_message = %v, want %q", d["upstream_message"], "invalid token [redacted]")
+	}
+	for i := 0; i+8 <= len(token); i++ {
+		if f := token[i : i+8]; strings.Contains(rr.Body.String(), f) {
+			t.Errorf("the response carries %q of the credential: %s", f, rr.Body.String())
+		}
 	}
 }
 
