@@ -241,11 +241,12 @@ func TestSweepListsLegacyURLs(t *testing.T) {
 		t.Fatal("a url reached the report")
 	}
 	for raw, want := range map[string]bool{
-		"https://u:p@h/mcp":       true,
-		"https://u@h/mcp":         true,
-		"https://h/mcp?Api-Key=x": true,
-		"https://h/mcp?page=1":    false,
-		"http://[::1":             false,
+		"https://u:p@h/mcp":         true,
+		"https://u@h/mcp":           true,
+		"https://h/mcp?Api-Key=x":   true,
+		"https://h/mcp?x=1;token=y": true,
+		"https://h/mcp?page=1":      false,
+		"http://[::1":               false,
 	} {
 		if got := URLCarriesCredential(raw); got != want {
 			t.Errorf("URLCarriesCredential(%q) = %v, want %v", raw, got, want)
