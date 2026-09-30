@@ -1186,7 +1186,7 @@ components:
             value is exactly `{"param": "<name>", "value": "<token>"}`: `param`
             is 1 to 64 characters of `A-Z`, `a-z`, `0-9`, `.`, `_`, `~` and
             `-`, the value at most 4096 bytes, any other member is 400, and on
-            POST an absent or empty value is 400 too.
+            POST an absent, `null` or `{}` value is 400 too.
         enabled:
           type: boolean
     Discovery:

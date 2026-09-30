@@ -21,11 +21,12 @@ Behaviour changes that affect a running deployment. Newest first.
   header value is never sent as a query parameter and a stored query value
   never as a header; a change to `none` or `oauth` still empties the column.
 - **On the relay, a client parameter of the credential's name is dropped
-  before the credential is appended**, in every spelling a lenient parser
-  could read as the name, and every readable answer on a `query` row, `2xx`
-  included, has the credential's exact wire spellings replaced, so an API
-  that echoes its request URL in a pagination link hands the key holder
-  `[redacted]`.
+  before the credential is appended**, in any case, percent-encoded,
+  `;`-joined, undecodable, or NUL- or space-padded spelling; `Range` and
+  `If-Range` are not sent upstream on a `query` row; and every readable
+  answer on a `query` row, `2xx` included, has the credential's exact wire
+  spellings replaced, so an API that echoes its request URL in a pagination
+  link hands the key holder `[redacted]`.
 - **A username and password in a stored url are never sent.** The one place
   that dials clears the userinfo first, on every kind and on the OAuth
   initialize; a row that authenticated by accident through Go's

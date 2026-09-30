@@ -80,7 +80,8 @@
   the fix is the credential, never the key). Discovery refuses the same rows with `stored credential cannot be
   decrypted` / `stored credential is not usable for this auth type`, and a
   draft form whose auth type has no credential with `this auth type needs a
-  credential; add one or choose None`. An upstream with `auth_type: none`
+  credential; add one or choose None` (a `query` draft gets create's own
+  shape sentence instead, PORM-27). An upstream with `auth_type: none`
   sends nothing and is never judged by whatever sits in its column. On a
   group's aggregate endpoint an undecryptable member is skipped exactly like
   any unlistable member: its tools vanish from the merged catalogue, the
@@ -423,8 +424,11 @@
   holds no key, and `mcpclient.ApplyAuth` appends `?<param>=<value>` at send
   time on every door (the MCP proxy, a group member call, discovery, the
   HTTP relay). On the relay a client parameter of that name is dropped
-  before the credential is appended, in every spelling a lenient upstream
-  parser could read as the name, so a key holder cannot shadow it; and every
+  before the credential is appended, in any case, percent-encoded,
+  `;`-joined, undecodable, or NUL- or space-padded spelling (and no other:
+  a tab, CR or LF padding, or a parser's own renaming, is not read as the
+  name), so a key holder cannot shadow it; `Range` and `If-Range` are not
+  sent upstream on a query row, so the answer arrives whole; and every
   readable relay answer on a query row, `2xx` included, takes the literal
   pass, because an API keyed that way echoes its own request URL in
   pagination links. A query credential is more exposed on the wire than a

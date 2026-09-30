@@ -34,7 +34,7 @@ omitting `transport` or by sending `streamable-http`, and a body that echoes
 | upstream / group `description` | set | **cleared** | **cleared** |
 | upstream `url` | set, stored normalised (see Upstream URLs); `400 url must be an absolute http or https URL`, `400 url must not carry a fragment` or `400 url must not embed credentials` if not; resets the last test when it differs after normalisation | that `400` | that `400` |
 | upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value (`sse` is not one: `streamable-http` is the only transport accepted on write); resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none`. A change to or from `query` with no non-empty `auth_config` in the body is `400 changing auth_type to or from query needs a new auth_config`, except a change to `none` or `oauth`, which empties the column (PORM-27) | that `400` | that `400` |
-| upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"`. On a `query` row the value must be exactly `{"param", "value"}`: anything else is `400 auth_config for query needs param and value, and accepts nothing else`, a bad name `400 param must be 1-64 characters of A-Z, a-z, 0-9, ., _, ~ or -`, an over-long value `400 value must be at most 4096 bytes`, and a `url` that already carries the parameter `400 url already carries the query parameter the credential sets; remove it from the url` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does). The one exception is a `query` create, where `{}` and an absent `auth_config` are the shape `400` above: a `query` row is never created silently unauthenticated |
+| upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"`. On a `query` row the value must be exactly `{"param", "value"}`: anything else is `400 auth_config for query needs param and value, and accepts nothing else`, a bad name `400 param must be 1-64 characters of A-Z, a-z, 0-9, ., _, ~ or -`, an over-long value `400 value must be at most 4096 bytes`, and a `url` that already carries the parameter `400 url already carries the query parameter the credential sets; remove it from the url` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does). The one exception is a `query` create, where `{}`, `null` and an absent `auth_config` are the shape `400` above: a `query` row is never created silently unauthenticated |
 | upstream `enabled` | set | `400 enabled must be true or false` | n/a |
 | group `upstream_ids` | validated and replaced | **cleared** to `[]`: the group has no members, and every key targeting it loses its endpoints | `[]` clears |
 | group `tool_filter` | validated and replaced | **cleared** | `{}` is a valid filter that filters nothing; stored as sent |
@@ -619,7 +619,12 @@ row with nothing stored, or a stored credential that decrypts but holds nothing
 its auth type can send (a `bearer` row switched to `custom`), answers
 `stored credential is not usable for this auth type`, likewise with no request.
 On the unsaved route a draft whose auth type needs a credential it does not
-have answers `this auth type needs a credential; add one or choose None`. An
+have answers `this auth type needs a credential; add one or choose None`,
+except a `query` draft, which answers create's own shape sentence
+(`auth_config for query needs param and value, and accepts nothing else`)
+and, for a url that already carries the parameter, `url already carries the
+query parameter the credential sets; remove it from the url`, both before
+anything is dialled (PORM-27). An
 `auth_type: none` draft or row is never judged by a credential.
 
 Thirty discovery calls a minute across the deployment, and four in flight at
@@ -628,7 +633,8 @@ limiter's `Retry-After`; a fifth concurrent call is
 `429 {"error":"too many concurrent discoveries"}` with `Retry-After: 5`. The
 budget is spent before the store is read, so a flood of unknown ids costs a
 caller exactly what real ones do. Otherwise: `400` for a malformed body, a
-missing `url` or an invalid `transport`/`auth_type`; `404` for an unknown `{id}`,
+missing `url`, an invalid `transport`/`auth_type`, or on the unsaved route a
+`query` draft that breaks the shape or same-name rule above; `404` for an unknown `{id}`,
 byte-identical to `GET /upstreams/{id}`; `500` only when the store fails.
 Everything the *upstream* does is `200` with `ok: false`.
 
