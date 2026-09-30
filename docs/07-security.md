@@ -339,9 +339,11 @@
   on the `tools/list` the proxy composes itself, and on the discovery call an
   operator makes from the dashboard: no second request is made, the
   `Location` is not fetched, and nothing from the redirect response reaches the
-  client. This is not a convenience. Three of the four auth types write the real
-  credential into an ordinary header (`api_key` to `X-API-Key` by default,
-  `header`, `custom`), and Go drops `Authorization`, `Cookie`, `Cookie2` and
+  client. This is not a convenience. Three of the header-shaped auth types
+  write the real credential into an ordinary header (`api_key` to `X-API-Key`
+  by default, `header`, `custom`), `query` writes it into the request URL's
+  query string, which a redirect target would receive whole, and Go drops
+  `Authorization`, `Cookie`, `Cookie2` and
   `Www-Authenticate` only when the hostname changes (not on a subdomain, not on
   a same-host scheme downgrade) and copies every other header, the one holding
   the secret included, to the redirect target; on a `307` or `308` the client's
@@ -415,20 +417,41 @@
   (`http://mcp-server:3000` on a Docker network is the documented deployment), so
   a credential registered against one travels unencrypted, on the proxy path and
   on a discovery call alike. The dashboard says so where an operator will see
-  it; nothing refuses it. And a credential written into the URL itself,
-  `https://user:pass@host/mcp`, is still sent: `net/http` re-derives
-  `Authorization: Basic …` from the URL's userinfo at send time, *after* PoryMCP
-  has deleted any `Authorization` header of its own, so for every `auth_type`
-  except `bearer` a URL-embedded credential reaches the upstream. It is not a
-  secret PoryMCP is keeping, either: what sits in `upstreams.url` is stored and
-  shown like any other part of that URL, and is not encrypted at rest the way
-  `auth_config` is. Since PORM-79 a new URL carrying userinfo is refused on
-  create and `PATCH` (`url must not embed credentials`, on every kind); rows
-  saved before it are not rewritten, and PORM-27 owns deciding whether they
-  should be stripped or promoted into a real `auth_config`. Until it does, the
-  places one can be read back are worth knowing: `GET /api/v1/upstreams` and the dashboard
-  show the URL as stored. No audit row and no discovery `error` quotes it:
-  each names the host at most (PORM-191).
+  it; nothing refuses it. A key the upstream takes as a query parameter goes
+  in `auth_type: query` (PORM-27): the parameter name and the value are
+  sealed in `auth_config` like every other credential, the stored `url`
+  holds no key, and `mcpclient.ApplyAuth` appends `?<param>=<value>` at send
+  time on every door (the MCP proxy, a group member call, discovery, the
+  HTTP relay). On the relay a client parameter of that name is dropped
+  before the credential is appended, in every spelling a lenient upstream
+  parser could read as the name, so a key holder cannot shadow it; and every
+  readable relay answer on a query row, `2xx` included, takes the literal
+  pass, because an API keyed that way echoes its own request URL in
+  pagination links. A query credential is more exposed on the wire than a
+  header: it lands in the upstream's and any intermediary's access logs, and
+  on plain `http://` behind an egress proxy in the proxy's request line, so
+  header auth is preferred where the vendor offers it. Two gaps stay: a
+  successful MCP-door tool result is passed through unredacted, so a server
+  that echoes its own request URL reveals a query credential to the key
+  holder; and a key in the URL path is not covered. A credential written
+  into the URL's userinfo, `https://user:pass@host/mcp`, is never sent:
+  `net/http` would re-derive `Authorization: Basic …` from it at send time,
+  after PoryMCP has deleted any `Authorization` header of its own, so
+  `mcpclient`'s `open`, the one place that dials, clears the userinfo first,
+  on every kind and on the OAuth initialize too. Since PORM-79 a new URL
+  carrying userinfo is refused on create and `PATCH` (`url must not embed
+  credentials`, on every kind). A row saved before that, or one saved with a
+  key in its query string, keeps its `url` as stored: `GET /api/v1/upstreams`
+  and the dashboard show it, and the boot check names each such row by id
+  and name (never the URL) in one `upstream urls carry a credential` line.
+  An upstream saved with a key in its URL keeps that key in plain text. To
+  fix it, edit the upstream: remove the parameter from the URL, choose the
+  auth type Query parameter, and enter the same name and value. One save
+  does all three, and the upstream keeps its id, slug, keys and groups. A
+  username and password in the URL are Basic auth: store them as a header
+  credential named `Authorization` with the value `Basic` and the base64
+  pair. No audit row and no discovery `error` quotes a URL: each names the
+  host at most (PORM-191).
 - What the *client* is told about an upstream failure is deliberately flat. A
   redirect, a timeout, a refused connection and an unreadable body all answer
   `502` with the same `-32000 "upstream request failed"`, and no upstream
@@ -586,7 +609,9 @@
     by whole segments (`/v1beta` is not under `/v1`). The remainder is read
     from the escaped path, never from the router's wildcard, so what was
     checked is what is sent. An http base URL carries no query string and no
-    userinfo, refused at create, PATCH and the probe.
+    userinfo, refused at create, PATCH and the probe; a stored url that
+    still carries userinfo from before the write gate sends none of it,
+    because `open` clears it before every dial (PORM-27).
   - Inbound headers cross by denylist, because an unmodified SDK has to work:
     dropped are the hop-by-hop set and everything `Connection` lists,
     `Host`, `Content-Length`, `Expect`, the five credential names
@@ -785,7 +810,12 @@
   wrote, whose only variables are a status code, a step name and a host. An
   upstream URL is never stringified into one: Go's own `*url.Error` masks the
   password and keeps the username, the path and the whole query string, so a
-  redaction built on it would still publish a token written into a query. Tool
+  redaction built on it would still publish a token written into a query. A
+  query credential is a literal like a header value: its value, the value's
+  encoded spellings and the two wire pairs `name=value` and
+  `QueryEscape(name)=QueryEscape(value)` are all in the set the literal pass
+  replaces, and the parameter name alone never is; a pair shorter than eight
+  bytes is under the literal floor like any other short text (PORM-27). Tool
   names and descriptions are upstream-controlled text that now renders in an
   *operator's* browser rather than an agent's context, which is why the
   dashboard renders them as text and never as markup (see `docs/06-ui.md`).
