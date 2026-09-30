@@ -777,7 +777,7 @@ func TestCustomHeaderValuesAreLiterals(t *testing.T) {
 }
 
 // TestSevenByteCredentialIsLeftToPatterns is PORM-208 security requirement
-// 5: a stored value under MinLiteralBytes is not a literal, so its bare echo
+// 5: a stored value under redact.MinLiteralBytes is not a literal, so its bare echo
 // is the pattern rules' alone, which read a 7-byte plain word as prose.
 func TestSevenByteCredentialIsLeftToPatterns(t *testing.T) {
 	const short = "abcdefg"

@@ -19,6 +19,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/credential"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/redact"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
 	"github.com/go-chi/chi/v5"
@@ -224,7 +225,7 @@ func (s *Server) publicURLUsable(r *http.Request) (loopback bool, msg string) {
 		if host != "" && !loopbackHost(h) {
 			shown := "another address"
 			if mcpclient.HostSafe(host) {
-				shown, _ = mcpclient.Clamp(host, oauthHostBytes)
+				shown, _ = redact.Clamp(host, oauthHostBytes)
 			}
 			return true, "PUBLIC_URL is " + s.cfg.PublicURL + " but this request was sent to " + shown + "; set PUBLIC_URL to the address the browser uses"
 		}

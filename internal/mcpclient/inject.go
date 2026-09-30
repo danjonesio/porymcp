@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/redact"
 )
 
 // ErrNoCredential reports that an auth type other than none has nothing to
@@ -130,12 +131,6 @@ func headersFor(authType string, raw json.RawMessage) (http.Header, error) {
 	return h, nil
 }
 
-// MinLiteralBytes is the shortest injected value the proxy replaces by
-// literal match (PORM-208). A shorter value is left to the pattern rules so
-// that a credential of a few bytes cannot blank ordinary words in error
-// text. audit.RedactLiterals applies the same floor.
-const MinLiteralBytes = 8
-
 // literalDelimiters splits a whitespace piece of a header value into the
 // sub-pieces an upstream may echo on their own: a labelled value ("key=v")
 // loses its label and a cookie-style value ("sid=v;") its terminator.
@@ -147,7 +142,7 @@ const literalDelimiters = `=,;:"'&`
 // restated. Each header value is trimmed as net/http writes it, then split
 // into the pieces an echo can carry (literalCandidates), and each piece is
 // added with its URL-encoded and HTML-escaped spellings where those differ
-// (encodedForms). Pieces under MinLiteralBytes are dropped, so a scheme
+// (encodedForms). Pieces under redact.MinLiteralBytes are dropped, so a scheme
 // word such as "Bearer" is never a literal on its own and an echoed
 // "Authorization: Bearer <token>" keeps its scheme word. The result is
 // deduplicated and sorted longest first; it is nil when the kind writes
@@ -165,7 +160,7 @@ func Literals(authType string, raw json.RawMessage) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(s string) {
-		if len(s) < MinLiteralBytes || seen[s] {
+		if len(s) < redact.MinLiteralBytes || seen[s] {
 			return
 		}
 		seen[s] = true
@@ -174,7 +169,7 @@ func Literals(authType string, raw json.RawMessage) []string {
 	for _, name := range names {
 		for _, v := range h[name] {
 			for _, c := range literalCandidates(textproto.TrimString(v)) {
-				if len(c) < MinLiteralBytes {
+				if len(c) < redact.MinLiteralBytes {
 					continue // and no encoded spelling of it either
 				}
 				add(c)
@@ -197,14 +192,14 @@ func Literals(authType string, raw json.RawMessage) []string {
 // may echo: every whitespace piece, the sub-pieces of each piece split at
 // literalDelimiters, the remainder after the first whitespace run (so a
 // value "Token a b" yields "a b"), and the whole value when no whitespace
-// piece reaches MinLiteralBytes (so "abcd efgh ijkl" is a literal, and
+// piece reaches redact.MinLiteralBytes (so "abcd efgh ijkl" is a literal, and
 // "Bearer <long token>" is not, which keeps the scheme word in an echo).
-// Candidates under MinLiteralBytes are the caller's to drop.
+// Candidates under redact.MinLiteralBytes are the caller's to drop.
 func literalCandidates(v string) []string {
 	var out []string
 	long := false
 	for _, p := range strings.Fields(v) {
-		if len(p) >= MinLiteralBytes {
+		if len(p) >= redact.MinLiteralBytes {
 			long = true
 		}
 		out = append(out, p)
