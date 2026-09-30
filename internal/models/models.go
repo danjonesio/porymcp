@@ -18,6 +18,11 @@ const (
 	// obtained by the operator signing in at the vendor (PORM-139). The stored
 	// payload is OAuthTokenSet, not AuthConfig.
 	AuthOAuth = "oauth"
+	// AuthQuery is an upstream that takes its key as one query parameter
+	// (PORM-27). The stored payload is AuthConfig{Param, Value}: the parameter
+	// name and the value mcpclient.ApplyAuth appends to the URL at send time,
+	// so the stored url itself holds no credential.
+	AuthQuery = "query"
 
 	// KindMCP and KindHTTP are the two things an upstream URL can be: an MCP
 	// server reached through the /mcp doors, or a plain HTTP API relayed
@@ -139,6 +144,10 @@ type AuthConfig struct {
 	Header  string            `json:"header,omitempty"`
 	Value   string            `json:"value,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	// Param is the query parameter name for AuthQuery and nothing for the
+	// other kinds. It is its own field, not Header, so a header-shaped blob
+	// read under the query type has no name and fails closed.
+	Param string `json:"param,omitempty"`
 }
 
 // OAuthTokenSet is the decrypted credential payload for an AuthOAuth
