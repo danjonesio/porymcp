@@ -29,6 +29,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/netguard"
+	"github.com/danjonesio/porymcp/internal/redact"
 )
 
 // The four relay routes. chi's /x/* does not match /x, so the base URL is a
@@ -241,7 +242,7 @@ var relayResponseDenylist = map[string]bool{
 // (Add), so nothing repeated is lost. Content-Length crosses on a HEAD answer
 // only, where the length is the point of the request; on every other answer
 // the caller sets it from the body it relays. Every other permitted value
-// passes through audit.RedactLiterals, and a name the same pass would change
+// passes through redact.RedactLiterals, and a name the same pass would change
 // is dropped, so a header that echoes the injected credential reads
 // [redacted] or does not cross (PORM-204). The name check folds case,
 // because net/http canonicalises a name (an echoed "x-<token>" arrives as
@@ -272,11 +273,11 @@ func copyRelayResponseHeaders(dst, src http.Header, head bool, literals []string
 		}
 		if mcpclient.HopByHop(name) || listed[lower] || relayResponseDenylist[lower] ||
 			protected[lower] || strings.HasPrefix(lower, "access-control-") ||
-			audit.RedactLiterals(lower, folded) != lower {
+			redact.RedactLiterals(lower, folded) != lower {
 			continue
 		}
 		for _, v := range vals {
-			dst.Add(name, audit.RedactLiterals(v, literals))
+			dst.Add(name, redact.RedactLiterals(v, literals))
 		}
 	}
 }

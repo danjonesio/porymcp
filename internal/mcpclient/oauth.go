@@ -15,6 +15,7 @@ import (
 
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/netguard"
+	"github.com/danjonesio/porymcp/internal/redact"
 )
 
 // The OAuth client (PORM-139). Everything here carries a code, a verifier, a
@@ -669,7 +670,7 @@ func (c *Client) token(ctx context.Context, set models.OAuthTokenSet, form url.V
 			out.ExpiresIn = time.Duration(*body.ExpiresIn) * time.Second
 		}
 	}
-	if scope, _ := Clamp(Scrub(body.Scope), 1<<10); scope != "" {
+	if scope, _ := redact.Clamp(redact.Scrub(body.Scope), 1<<10); scope != "" {
 		out.Scope = scope
 	}
 	return out, nil

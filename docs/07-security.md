@@ -180,6 +180,13 @@
   pass to its error bodies, and the literal pass alone to every relayed
   response header value (PORM-204), as set out under the relay bullets
   below.
+  Discovery's `upstream_message` takes the same pass before its 200-byte cut,
+  and the `group member skipped` line in the server log is redacted by the
+  same rules over its whole text (PORM-196); PoryMCP's own sentences on it
+  carry no credential, so the literal pass leaves them as written, and the
+  pattern rules can still replace a token-shaped host label in one, as on
+  the audit row. Both scrub control characters first, so a credential split
+  by one is still seen whole.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by literal and by pattern (PORM-72,
   PORM-208). `audit.Record` first replaces the credential the proxy injected
@@ -212,7 +219,9 @@
   of a multi-word value changed; the base64 of the token; the decoded user
   and password of a `Basic` value stored under the `header` or `custom`
   kind; a prefix cut with an ellipsis; a token split across two events or
-  two JSON strings or by invisible characters; one escaped inside a JSON
+  two JSON strings or by invisible characters, or by a control byte on
+  `error_message` and on the client copy, which do not scrub first (the
+  discovery answer and the group skip line do); one escaped inside a JSON
   object key; one echoed on a field line the stream holder forwards as
   framing; and a token from an earlier request echoed after an oauth
   refresh. Escaped spellings (`\u`, `\/`) inside a body that does not open
@@ -768,7 +777,9 @@
   `last_test_ok`), never a catalogue, a tool count or a sentence the upstream
   wrote. The one deliberate exception is
   `upstream_message` (the upstream's own JSON-RPC `error.message`, single line,
-  visible characters, at most 200 bytes, in a field of its own), because "token
+  visible characters, redacted by the same rules as `error_message` with the
+  credential PoryMCP sent replaced first, whatever its shape, then at most 200
+  bytes, in a field of its own; PORM-196), because "token
   lacks the `repo` scope" is the answer the feature exists to give, and keeping
   it out of `error` is what lets `error` stay a closed set of sentences PoryMCP
   wrote, whose only variables are a status code, a step name and a host. An

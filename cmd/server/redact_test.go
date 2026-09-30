@@ -31,7 +31,7 @@ func (f *blockFixture) getLog(t *testing.T, id string) *httptest.ResponseRecorde
 
 // TestLogsAPINeverReturnsTheUpstreamCredential is PORM-72 criterion 4,
 // narrowed to token-shaped credentials (a pattern cannot see a value such as
-// REAL-APIKEY-SECRET, which TestRedactTextPatterns in internal/audit pins as
+// REAL-APIKEY-SECRET, which TestRedactTextPatterns in internal/redact pins as
 // unchanged), and security requirement 6: for each static credential kind,
 // an upstream that echoes the credential
 // it was sent produces a row that GET /api/v1/logs?status=error and

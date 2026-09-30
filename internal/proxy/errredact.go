@@ -9,8 +9,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/danjonesio/porymcp/internal/audit"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
+	"github.com/danjonesio/porymcp/internal/redact"
 )
 
 // clientMessageBytes bounds the error message a key holder receives
@@ -19,11 +19,11 @@ import (
 // 64 KiB is about 22 ms of RedactText on the request goroutine; the whole
 // 16 MiB body cap would be about 5.6 s, and an upstream that echoes the
 // request id lets the key holder choose that size. The stored row keeps its
-// own, smaller window in audit.
+// own, smaller window, redact.WindowBytes.
 const clientMessageBytes = 64 << 10
 
 // redactErrorDoc returns doc with the message of every JSON-RPC error member
-// passed through audit.RedactBoundedLiterals, with literals the values the
+// passed through redact.RedactBoundedLiterals, with literals the values the
 // proxy injected (PORM-208), and whether the bytes changed. The
 // check is rpcFailed first, the judge's own decode, which allocates nothing
 // for a result and matches keys the way the judge does; only a document
@@ -123,7 +123,7 @@ func redactString(raw json.RawMessage, lits []string) (json.RawMessage, bool, er
 	if json.Unmarshal(raw, &s) != nil {
 		return raw, false, nil
 	}
-	r := audit.RedactBoundedLiterals(s, clientMessageBytes, lits)
+	r := redact.RedactBoundedLiterals(s, clientMessageBytes, lits)
 	if r == s {
 		return raw, false, nil
 	}
@@ -236,7 +236,7 @@ func redactBody(body []byte, literals []string) ([]byte, error) {
 			walked = body
 		}
 		s := string(walked)
-		r := audit.RedactBoundedLiterals(s, clientMessageBytes, literals)
+		r := redact.RedactBoundedLiterals(s, clientMessageBytes, literals)
 		if r == s {
 			return walked, nil
 		}
@@ -258,7 +258,7 @@ func redactBody(body []byte, literals []string) ([]byte, error) {
 		// that holds either inside the window is refused instead.
 		return nil, errRefusalNotRewritable
 	}
-	r := audit.RedactBoundedLiterals(s, clientMessageBytes, literals)
+	r := redact.RedactBoundedLiterals(s, clientMessageBytes, literals)
 	if r == s && len(body) <= clientMessageBytes {
 		return body, nil
 	}

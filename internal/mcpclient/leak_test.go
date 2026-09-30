@@ -564,3 +564,88 @@ func TestRowHost(t *testing.T) {
 		}
 	}
 }
+
+// fragments is every 8-byte window of tok: a fragment of a credential in the
+// discovery answer is a leak as much as the whole is.
+func fragments(tok string) []string {
+	var out []string
+	for i := 0; i+8 <= len(tok); i++ {
+		out = append(out, tok[i:i+8])
+	}
+	return out
+}
+
+// TestDiscoverRedactsEchoedCredential is PORM-196 criterion 1 and security
+// requirements 1, 2 and 4: an upstream that echoes the bearer it was sent
+// inside a JSON-RPC error.message hands the operator "invalid token
+// [redacted]", on every step that can carry a message and on the modern
+// era's server/discover path, whether the token is whole, cut by the
+// 200-byte bound or split by a control byte. The 12-byte plain bearer
+// matches no pattern rule, so every row but the last proves the literal
+// pass; the last proves the pattern rules reach the same path.
+func TestDiscoverRedactsEchoedCredential(t *testing.T) {
+	const tok = "abcdefghijkl"
+	bearerOf := func(rq request) string {
+		return strings.TrimPrefix(rq.Header.Get("Authorization"), "Bearer ")
+	}
+	// padded puts the token at bytes 190 to 201 of the message: 176 bytes of
+	// words, then "invalid token " (14 bytes), then the 12-byte token, which
+	// straddles the 200-byte bound. A cut before the literal pass would keep
+	// ten bytes of it, and no pattern rule can see a plain 12-byte word.
+	padded := strings.Repeat("a b ", 44)
+	rows := []struct {
+		name     string
+		step     string
+		status   int
+		code     int
+		authType string
+		auth     string
+		msg      func(sent string) string
+		want     string
+	}{
+		{"initialize", stepInitialize, http.StatusOK, -32000, models.AuthBearer, `{"token":"` + tok + `"}`,
+			func(sent string) string { return "invalid token " + sent }, "invalid token [redacted]"},
+		{"initialize 401", stepInitialize, http.StatusUnauthorized, -32000, models.AuthBearer, `{"token":"` + tok + `"}`,
+			func(sent string) string { return "invalid token " + sent }, "invalid token [redacted]"},
+		{"tools/list", stepList, http.StatusOK, -32000, models.AuthBearer, `{"token":"` + tok + `"}`,
+			func(sent string) string { return "invalid token " + sent }, "invalid token [redacted]"},
+		{"server/discover", stepDiscover, http.StatusBadRequest, CodeHeaderMismatch, models.AuthBearer, `{"token":"` + tok + `"}`,
+			func(sent string) string { return "invalid token " + sent }, "invalid token [redacted]"},
+		{"cut at the bound", stepInitialize, http.StatusOK, -32000, models.AuthBearer, `{"token":"` + tok + `"}`,
+			func(sent string) string { return padded + "invalid token " + sent }, padded + "invalid token [redacted]"},
+		{"control byte", stepInitialize, http.StatusOK, -32000, models.AuthBearer, `{"token":"` + tok + `"}`,
+			func(sent string) string { return "invalid token " + sent[:4] + "\x01" + sent[4:] }, "invalid token [redacted]"},
+		{"pattern only", stepInitialize, http.StatusOK, -32000, models.AuthNone, ``,
+			func(string) string { return "invalid token ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" }, "invalid token [redacted]"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			f := newFixture(t)
+			var sent string
+			f.on[row.step] = func(w http.ResponseWriter, rq request) {
+				sent = bearerOf(rq)
+				f.writeRPCError(w, row.status, row.code, row.msg(sent))
+			}
+			up := f.upstream()
+			up.AuthType = row.authType
+			var auth json.RawMessage
+			if row.auth != "" {
+				auth = json.RawMessage(row.auth)
+			}
+			got := discover(t, up, auth)
+			if got.OK {
+				t.Fatalf("discovery succeeded; the stub's %s answer was not read", row.step)
+			}
+			if row.authType != models.AuthNone && sent != tok {
+				t.Fatalf("the stub saw bearer %q, want %q: the row does not prove the literal pass", sent, tok)
+			}
+			if got.UpstreamMessage != row.want {
+				t.Errorf("upstream_message = %q, want %q", got.UpstreamMessage, row.want)
+			}
+			if n := len(got.UpstreamMessage); n > maxUpstreamMessageBytes {
+				t.Errorf("upstream_message is %d bytes, want at most %d", n, maxUpstreamMessageBytes)
+			}
+			absent(t, marshal(t, got), fragments(tok)...)
+		})
+	}
+}

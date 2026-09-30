@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/redact"
 )
 
 // TestApplyAuthReportsEmptyCredential pins PORM-52 security requirement 3:
@@ -96,7 +97,7 @@ func TestApplyAuthCustomOverrideIsDeterministic(t *testing.T) {
 // TestLiterals is PORM-208 security requirements 1 and 5: the literal set
 // is derived from the wire form of what headersFor writes, holds every
 // piece an upstream may echo in its plain and encoded spellings, drops
-// anything under MinLiteralBytes, and never names the scheme word.
+// anything under redact.MinLiteralBytes, and never names the scheme word.
 func TestLiterals(t *testing.T) {
 	for name, tc := range map[string]struct {
 		authType string
@@ -143,8 +144,8 @@ func TestLiterals(t *testing.T) {
 			}
 			set := map[string]bool{}
 			for i, l := range got {
-				if len(l) < MinLiteralBytes {
-					t.Errorf("literal %q is under %d bytes", l, MinLiteralBytes)
+				if len(l) < redact.MinLiteralBytes {
+					t.Errorf("literal %q is under %d bytes", l, redact.MinLiteralBytes)
 				}
 				if set[l] {
 					t.Errorf("literal %q appears twice", l)

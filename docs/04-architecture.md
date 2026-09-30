@@ -35,6 +35,12 @@
   catalogue request and era probe, and the dashboard's discovery call all go
   through it, so a rule added here holds on all of them rather than on the path
   someone remembered
+- Redaction (`internal/redact`): text an upstream wrote, made safe to repeat.
+  Control characters out, a byte bound at a rune boundary, the credential the
+  proxy sent replaced whatever its shape, then credential-shaped text; one body
+  applied by the audit row, the key holder's error answer, the relay's headers,
+  discovery's `upstream_message` and the group skip line. Standard library
+  only, so the client and audit both import it.
 - Tool discovery (management plane): a real MCP handshake against one upstream,
   run for an **operator** rather than a virtual key, returning a fixed set of
   structured fields and persisting nothing
@@ -294,6 +300,7 @@ Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
 │   ├── credential/   # one answer to "can PoryMCP use this stored credential?" (proxy, API, boot)
 │   ├── mcpclient/    # the one client that carries an upstream credential
 │   ├── netguard/     # dial-time address guard on that client's transport (PORM-79)
+│   ├── redact/       # text an upstream wrote, made safe to repeat (PORM-196)
 │   ├── models/
 │   ├── store/        # SQLite / Postgres
 │   ├── audit/

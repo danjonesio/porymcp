@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/redact"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/google/uuid"
 )
@@ -36,7 +36,7 @@ const adminWriteTimeout = 5 * time.Second
 // server sends. The resource keeps its full name; only the audit row's copy
 // is cleaned.
 func Text(s string) string {
-	out, _ := mcpclient.Clamp(mcpclient.Scrub(s), AdminTextBytes)
+	out, _ := redact.Clamp(redact.Scrub(s), AdminTextBytes)
 	return out
 }
 

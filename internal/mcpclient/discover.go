@@ -11,11 +11,11 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/danjonesio/porymcp/internal/netguard"
 
 	"github.com/danjonesio/porymcp/internal/models"
+	"github.com/danjonesio/porymcp/internal/redact"
 )
 
 // What one discovery is allowed to cost.
@@ -193,8 +193,8 @@ type Discovery struct {
 	// settings under them: see capabilityFamilies.
 	Capabilities []string `json:"capabilities,omitempty"`
 	Error        string   `json:"error,omitempty"`
-	// UpstreamMessage is a sanitised JSON-RPC error.message and the one place
-	// an upstream's own words are repeated. It is a separate field from Error
+	// UpstreamMessage is a JSON-RPC error.message, scrubbed, redacted and
+	// clamped, and the one place an upstream's own words are repeated. It is a separate field from Error
 	// on purpose: Error stays a closed set an operator and the dashboard can
 	// both rely on, and "the server said: token lacks the repo scope" is the
 	// failure this whole feature exists to diagnose.
@@ -444,7 +444,7 @@ func (c *Client) Discover(ctx context.Context, up *models.Upstream, plainAuth js
 	// Scrub before Clamp on every one of these: the cap bounds the size, and
 	// the Scrub is what keeps an upstream's control characters out of an
 	// operator's terminal.
-	out.ProtocolVersion, _ = Clamp(Scrub(initResult.ProtocolVersion), maxProtocolVersionBytes)
+	out.ProtocolVersion, _ = redact.Clamp(redact.Scrub(initResult.ProtocolVersion), maxProtocolVersionBytes)
 	out.ServerInfo = boundInfo(initResult.ServerInfo)
 	// The NEGOTIATED version, not the one asked for: a strict 2025-06-18
 	// server answers 400 when the header disagrees with what it chose. It is
@@ -553,8 +553,8 @@ func boundInfo(in *Info) *Info {
 	if in == nil {
 		return nil
 	}
-	name, _ := Clamp(Scrub(in.Name), maxServerNameBytes)
-	version, _ := Clamp(Scrub(in.Version), maxServerVersionBytes)
+	name, _ := redact.Clamp(redact.Scrub(in.Name), maxServerNameBytes)
+	version, _ := redact.Clamp(redact.Scrub(in.Version), maxServerVersionBytes)
 	if name == "" && version == "" {
 		return nil
 	}
@@ -573,11 +573,11 @@ type upstreamTool struct {
 // discovered clamps one upstream entry into the shape that is returned.
 func (t upstreamTool) discovered(slug string) Tool {
 	out := Tool{Name: t.Name}
-	out.Title, _ = Clamp(Scrub(t.Title), maxTitleBytes)
-	out.Description, out.DescriptionTruncated = Clamp(Scrub(t.Description), maxDescriptionBytes)
+	out.Title, _ = redact.Clamp(redact.Scrub(t.Title), maxTitleBytes)
+	out.Description, out.DescriptionTruncated = redact.Clamp(redact.Scrub(t.Description), maxDescriptionBytes)
 	if t.Annotations != nil {
 		a := *t.Annotations
-		a.Title, _ = Clamp(Scrub(a.Title), maxTitleBytes)
+		a.Title, _ = redact.Clamp(redact.Scrub(a.Title), maxTitleBytes)
 		out.Annotations = &a
 	}
 	if slug != "" {
@@ -747,7 +747,7 @@ func (p *probe) exchange(ctx context.Context, step, body string, wantResult bool
 	if decoded {
 		out.id = strings.TrimSpace(string(env.ID))
 		if env.Error != nil {
-			out.message = sanitiseMessage(env.Error.Message)
+			out.message = sanitiseMessage(env.Error.Message, Literals(p.up.AuthType, p.auth))
 			out.code = env.Error.Code
 			out.data = env.Error.Data
 		}
@@ -1138,52 +1138,17 @@ func readCursor(raw json.RawMessage) (string, bool) {
 	return cursor, true
 }
 
-// Scrub cleans a string PoryMCP will show to an operator so that it is one
-// line of printable text: a newline, carriage return or tab becomes one space,
-// every other control character and DEL is dropped, U+FFFD is dropped (the
-// string already lost information there, and invalid UTF-8 arrives as one),
-// and the ends are trimmed.
-//
-// It has two callers. Discovery applies it to every upstream string that
-// reaches a response (a tool's description and title, the annotations' title,
-// the server's name and version, the protocol version, and the upstream's own
-// error message), because an operator reading the API with `curl | jq -r` gets
-// those bytes raw, and \x1b[31m from a server nobody at PoryMCP controls is
-// somebody else's escape sequence in an operator's terminal. The admin audit
-// trail (internal/api) applies it to the resource name and request id it
-// stores on an admin_events row, which an operator reads back the same way. A
-// tool's NAME needs none of this: models.UsableToolName already refuses every
-// one of these characters outright, because a name is an identity a rule is
-// written against. A resource's own name stays as the operator typed it; only
-// the audit row's copy is cleaned.
-//
-// It deliberately does NOT touch the invisible and bidi class, U+202E, U+200B,
-// U+FEFF, U+2066 and the rest. Those cannot escape the element they are
-// rendered in (every one carries dir="ltr") and flagging them is PORM-83's
-// job, which needs the whole run to say anything useful about it.
-func Scrub(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r == '\n' || r == '\r' || r == '\t':
-			b.WriteByte(' ')
-		case r < 0x20 || r == 0x7f || r == utf8.RuneError:
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// sanitiseMessage prepares an upstream's own error.message to be shown to an
+// sanitiseMessage makes an upstream's own error.message safe to show to an
 // operator. It is the single deliberate exception to "no upstream bytes", so
-// it is scrubbed like every other upstream string and then cut to 200 bytes at
-// a rune boundary. It is rendered as text by the dashboard and labelled as the
-// server's words, never PoryMCP's.
-func sanitiseMessage(s string) string {
-	out, _ := Clamp(Scrub(s), maxUpstreamMessageBytes)
-	return out
+// it takes the audit row's pass (PORM-196): control characters go first, so
+// a credential split by one is seen whole; then the credential the proxy sent
+// and any credential-shaped text read [redacted]; then the text is cut to
+// maxUpstreamMessageBytes at a rune boundary. Redaction runs before the cut
+// so a credential that straddles the bound is gone before the cut. The result
+// is rendered as text by the dashboard and labelled as the server's words,
+// never PoryMCP's.
+func sanitiseMessage(s string, literals []string) string {
+	return redact.RedactClamped(redact.Scrub(s), maxUpstreamMessageBytes, literals)
 }
 
 // visibleASCII reports whether s is at most max bytes of printable ASCII
@@ -1199,15 +1164,6 @@ func visibleASCII(s string, max int) bool {
 		}
 	}
 	return true
-}
-
-// Clamp cuts s to max bytes, dropping the partial rune the cut may leave, and
-// reports whether it cut anything.
-func Clamp(s string, max int) (string, bool) {
-	if len(s) <= max {
-		return s, false
-	}
-	return strings.ToValidUTF8(s[:max], ""), true
 }
 
 // latencyMS rounds to 10 ms. An operator cannot use finer than that, and the
