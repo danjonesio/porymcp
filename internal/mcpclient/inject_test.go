@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/danjonesio/porymcp/internal/models"
@@ -49,6 +50,12 @@ func TestApplyAuthReportsEmptyCredential(t *testing.T) {
 		"oauth, client only":        {models.AuthOAuth, `{"client_id":"c","client_source":"supplied"}`, true, "", ""},
 		"oauth, bearer-shaped blob": {models.AuthOAuth, `{"token":"sk"}`, true, "", ""},
 		"oauth, not json":           {models.AuthOAuth, `{"access_token":`, true, "", ""},
+		// PORM-27: a query credential writes no header at all, and a
+		// header-shaped blob under the query kind has no param.
+		"query, both":          {models.AuthQuery, `{"param":"api_key","value":"abcdefghijkl"}`, false, "", ""},
+		"query, no param":      {models.AuthQuery, `{"value":"abcdefghijkl"}`, true, "", ""},
+		"query, no value":      {models.AuthQuery, `{"param":"api_key"}`, true, "", ""},
+		"query, header-shaped": {models.AuthQuery, `{"header":"X-Key","value":"abcdefghijkl"}`, true, "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := json.RawMessage(tc.raw)
@@ -95,7 +102,7 @@ func TestApplyAuthCustomOverrideIsDeterministic(t *testing.T) {
 }
 
 // TestLiterals is PORM-208 security requirements 1 and 5: the literal set
-// is derived from the wire form of what headersFor writes, holds every
+// is derived from the wire form of what wireFor writes, holds every
 // piece an upstream may echo in its plain and encoded spellings, drops
 // anything under redact.MinLiteralBytes, and never names the scheme word.
 func TestLiterals(t *testing.T) {
@@ -133,6 +140,18 @@ func TestLiterals(t *testing.T) {
 			[]string{"Bearer ab+/cd"}, []string{"ab%2B%2Fcd", "ab%2b%2fcd", "ab+%2Fcd", "ab+%2fcd"}, false},
 		"ampersand": {models.AuthHeader, `{"header":"X-T","value":"abc&defghijkl"}`,
 			[]string{"abc&defghijkl", "abc&amp;defghijkl", "abc%26defghijkl", "defghijkl"}, nil, false},
+		// PORM-27 security requirement 6: a query credential yields its
+		// value, its encoded spellings and both wire pairs, never the name.
+		"query value and pairs": {models.AuthQuery, `{"param":"api_key","value":"ab+cd/ef=ghij"}`,
+			[]string{"ab+cd/ef=ghij", "ab%2Bcd%2Fef%3Dghij", "api_key=ab+cd/ef=ghij", "api_key=ab%2Bcd%2Fef%3Dghij", "api_key%3Dab%2Bcd%2Fef%3Dghij"},
+			[]string{"api_key"}, false},
+		// A short value is not a literal on its own, but the pair clears the
+		// floor when the name is long enough.
+		"query short value, long pair": {models.AuthQuery, `{"param":"api_key","value":"abc"}`,
+			[]string{"api_key=abc", "api_key%3Dabc"}, []string{"abc", "api_key"}, false},
+		"query pair under the floor": {models.AuthQuery, `{"param":"k","value":"abc"}`, nil, nil, true},
+		"query long name never a literal": {models.AuthQuery, `{"param":"access_token","value":"abcdefghijkl"}`,
+			[]string{"abcdefghijkl", "access_token=abcdefghijkl"}, []string{"access_token"}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := Literals(tc.authType, json.RawMessage(tc.raw))
@@ -166,5 +185,134 @@ func TestLiterals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestValidQueryParam pins PORM-27 security requirement 10: the parameter
+// name is 1 to MaxQueryParamBytes bytes of [A-Za-z0-9._~-].
+func TestValidQueryParam(t *testing.T) {
+	for name, want := range map[string]bool{
+		"":                                      false,
+		"api_key":                               true,
+		"x-y.z~w":                               true,
+		"a b":                                   false,
+		"a&b":                                   false,
+		"a=b":                                   false,
+		"a#b":                                   false,
+		"a%20b":                                 false,
+		strings.Repeat("a", MaxQueryParamBytes): true,
+		strings.Repeat("a", MaxQueryParamBytes+1): false,
+	} {
+		if got := ValidQueryParam(name); got != want {
+			t.Errorf("ValidQueryParam(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestWithQueryParam pins PORM-27 security requirement 4: every piece that
+// names the parameter is dropped, in every spelling a lenient upstream
+// parser could read as the name, every other piece keeps its bytes and
+// order, and the credential is appended once, last.
+func TestWithQueryParam(t *testing.T) {
+	const pair = "api_key=abcdefghijkl"
+	for name, tc := range map[string]struct{ in, want string }{
+		"empty":                     {"", pair},
+		"kept in order":             {"a=1&b=%20", "a=1&b=%20&" + pair},
+		"repeated key":              {"api_key=old&a=1&api_key=old2", "a=1&" + pair},
+		"percent-encoded key":       {"api%5Fkey=x&a=1", "a=1&" + pair},
+		"case folded":               {"API_KEY=x&a=1", "a=1&" + pair},
+		"no equals":                 {"api_key&a=1", "a=1&" + pair},
+		"empty piece kept":          {"a=1&&b=2", "a=1&&b=2&" + pair},
+		"semicolon sub-piece":       {"page=1;api_key=spoof&a=1", "a=1&" + pair},
+		"undecodable escape":        {"api_key%zz=x&a=1", "a=1&" + pair},
+		"nul padded":                {"api_key%00=x&a=1", "a=1&" + pair},
+		"space padded":              {"api_key+=x&a=1", "a=1&" + pair},
+		"prefix kept":               {"api_key2=x", "api_key2=x&" + pair},
+		"every piece dropped":       {"api_key=x&API_KEY=y", pair},
+		"already present, replaced": {"a=1&" + pair, "a=1&" + pair},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := withQueryParam(tc.in, "api_key", "abcdefghijkl"); got != tc.want {
+				t.Fatalf("withQueryParam(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	// A value needing encoding is escaped once, exactly as url.QueryEscape
+	// spells it.
+	if got := withQueryParam("", "api_key", "a+b/c=d&e"); got != "api_key=a%2Bb%2Fc%3Dd%26e" {
+		t.Fatalf("encoded value: %q", got)
+	}
+}
+
+// TestApplyAuthQueryAppendsParam pins PORM-27 security requirements 3 and
+// 4 on a request: the stored URL's own parameters survive byte for byte, a
+// same-named piece is replaced, the credential is the last piece, the
+// inbound virtual key is gone and no credential header is written.
+func TestApplyAuthQueryAppendsParam(t *testing.T) {
+	raw := json.RawMessage(`{"param":"api_key","value":"ab+cd"}`)
+	req, _ := http.NewRequest(http.MethodPost, "https://example.test/mcp?a=1&api_key=old&b=%20", nil)
+	req.Header.Set("Authorization", "Bearer virtual-key")
+	if err := ApplyAuth(req, models.AuthQuery, raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.RawQuery; got != "a=1&b=%20&api_key=ab%2Bcd" {
+		t.Fatalf("RawQuery = %q", got)
+	}
+	if len(req.Header) != 0 {
+		t.Fatalf("headers written: %v", req.Header)
+	}
+	if req.URL.ForceQuery {
+		t.Fatal("ForceQuery left set")
+	}
+	// PORM-27: a second call gives the same request, because the drop
+	// removes the pair the first call appended.
+	if err := ApplyAuth(req, models.AuthQuery, raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.RawQuery; got != "a=1&b=%20&api_key=ab%2Bcd" {
+		t.Fatalf("second ApplyAuth changed the query: %q", got)
+	}
+	// A stored URL with an empty query and ForceQuery set serialises with
+	// the pair alone.
+	req, _ = http.NewRequest(http.MethodPost, "https://example.test/mcp?", nil)
+	if err := ApplyAuth(req, models.AuthQuery, raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.String(); got != "https://example.test/mcp?api_key=ab%2Bcd" {
+		t.Fatalf("URL = %q", got)
+	}
+}
+
+// TestApplyAuthQueryRefusesShape pins PORM-27 security requirement 10 at
+// dial: a config the query kind cannot send is ErrNoCredential and the
+// request is untouched.
+func TestApplyAuthQueryRefusesShape(t *testing.T) {
+	long := strings.Repeat("v", MaxQueryValueBytes+1)
+	for name, raw := range map[string]string{
+		"no param":      `{"value":"abcdefghijkl"}`,
+		"no value":      `{"param":"api_key"}`,
+		"space in name": `{"param":"a b","value":"abcdefghijkl"}`,
+		"long value":    `{"param":"api_key","value":"` + long + `"}`,
+		"header-shaped": `{"header":"X-Key","value":"abcdefghijkl"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, "https://example.test/mcp?a=1", nil)
+			err := ApplyAuth(req, models.AuthQuery, json.RawMessage(raw))
+			if !errors.Is(err, ErrNoCredential) {
+				t.Fatalf("err = %v, want ErrNoCredential", err)
+			}
+			if req.URL.RawQuery != "a=1" || len(req.Header) != 0 {
+				t.Fatalf("request changed: %q %v", req.URL.RawQuery, req.Header)
+			}
+			if QueryParam(models.AuthQuery, json.RawMessage(raw)) != "" {
+				t.Fatal("QueryParam named a parameter for an unusable config")
+			}
+		})
+	}
+	if got := QueryParam(models.AuthQuery, json.RawMessage(`{"param":"api_key","value":"abcdefghijkl"}`)); got != "api_key" {
+		t.Fatalf("QueryParam = %q", got)
+	}
+	if got := QueryParam(models.AuthBearer, json.RawMessage(`{"token":"abcdefghijkl"}`)); got != "" {
+		t.Fatalf("QueryParam for bearer = %q", got)
 	}
 }
