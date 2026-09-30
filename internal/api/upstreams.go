@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -52,6 +53,29 @@ const errAuthNoneCredential = "auth_config cannot be set when auth_type is none"
 // caller that could plant a token_endpoint or a refresh_token would have the
 // proxy post a refresh token to a host no metadata discovery vetted.
 const errOAuthConfigShape = "auth_config for oauth accepts client_id and client_secret only"
+
+// The query kind's refusals (PORM-27). errQueryConfigShape is the one 400 for
+// a query auth_config that is not exactly {param, value}: absent or {} on
+// create (the row would be a silently unauthenticated upstream), a missing
+// member, or any other member (a header-shaped body is refused here, not
+// stored and read as unreadable). The two bounds are mcpclient's, so the
+// sentence and the dial-time check cannot drift apart. errURLQueryParam
+// keeps one value ever being sent for the name: the stored url may not
+// carry the parameter the credential sets. errQueryTypeChange refuses a type
+// change that would keep a stored blob and read it under another kind: a
+// header value sent as a query parameter lands in the upstream's access
+// logs, and a query value sent as a bearer is a credential nobody chose. A
+// change to none or oauth clears the blob and is not refused.
+const (
+	errQueryConfigShape = "auth_config for query needs param and value, and accepts nothing else"
+	errURLQueryParam    = "url already carries the query parameter the credential sets; remove it from the url"
+	errQueryTypeChange  = "changing auth_type to or from query needs a new auth_config"
+)
+
+var (
+	errQueryParamName   = fmt.Sprintf("param must be 1-%d characters of A-Z, a-z, 0-9, ., _, ~ or -", mcpclient.MaxQueryParamBytes)
+	errQueryValueLength = fmt.Sprintf("value must be at most %d bytes", mcpclient.MaxQueryValueBytes)
+)
 
 // The kind rules (PORM-146). errKindImmutable mirrors errSlugImmutable: a
 // key's endpoints are derived from kind, so a flipped kind would turn every
@@ -114,10 +138,19 @@ func (s *Server) presentUpstream(u *models.Upstream) upstreamPublic {
 	// credential.StatusOf, shared with credential.Status.
 	plain, err := credential.Read(s.keys, u.AuthType, u.AuthConfig)
 	out.AuthStatus = credential.StatusOf(u.AuthType, plain, err, time.Now())
+	// The hint names where the credential is sent and never what it is: the
+	// header name for the header-shaped kinds, the parameter name for query
+	// (PORM-27), under its own key so a reader of auth_hint.header never
+	// takes a query parameter for a header.
 	if err == nil && u.AuthType != models.AuthOAuth {
 		var cfg models.AuthConfig
-		if json.Unmarshal(plain, &cfg) == nil && cfg.Header != "" {
-			out.AuthHint = map[string]string{"header": cfg.Header}
+		if json.Unmarshal(plain, &cfg) == nil {
+			switch {
+			case u.AuthType == models.AuthQuery && cfg.Param != "":
+				out.AuthHint = map[string]string{"param": cfg.Param}
+			case u.AuthType != models.AuthQuery && cfg.Header != "":
+				out.AuthHint = map[string]string{"header": cfg.Header}
+			}
 		}
 	}
 	if u.AuthType == models.AuthOAuth {
@@ -181,6 +214,68 @@ func oauthClient(raw json.RawMessage) (models.OAuthTokenSet, bool) {
 		return models.OAuthTokenSet{}, false
 	}
 	return models.OAuthTokenSet{ClientID: in.ClientID, ClientSecret: in.ClientSecret, ClientSource: "supplied"}, true
+}
+
+// queryAuthRule is the shape check for a query auth_config (PORM-27), in
+// oauthClient's form: the value must be an object whose members are exactly
+// param and value, both non-empty strings, the param within
+// mcpclient.ValidQueryParam and the value within MaxQueryValueBytes. It
+// returns the pair to seal (re-marshalled, so the stored blob is the
+// canonical two-member object) or the 400 sentence. The caller decides what
+// an absent or empty value means; this never sees one.
+func queryAuthRule(raw json.RawMessage) (models.AuthConfig, string) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return models.AuthConfig{}, errQueryConfigShape
+	}
+	for k := range fields {
+		if k != "param" && k != "value" {
+			return models.AuthConfig{}, errQueryConfigShape
+		}
+	}
+	var in struct {
+		Param string `json:"param"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil || in.Param == "" || in.Value == "" {
+		return models.AuthConfig{}, errQueryConfigShape
+	}
+	if !mcpclient.ValidQueryParam(in.Param) {
+		return models.AuthConfig{}, errQueryParamName
+	}
+	if len(in.Value) > mcpclient.MaxQueryValueBytes {
+		return models.AuthConfig{}, errQueryValueLength
+	}
+	return models.AuthConfig{Param: in.Param, Value: in.Value}, ""
+}
+
+// checkQueryParamRule refuses a url whose query already carries the
+// parameter a query credential sets (PORM-27), so exactly one value is ever
+// sent for that name and no stored parameter is dropped at send time in
+// silence. It runs on the merged row, like checkUpstreamKindRules: on
+// create, on a PATCH that changes url, auth_type or auth_config, and on the
+// unsaved discover route. The pieces are read as withQueryParam reads them
+// on the way out ("&" or ";" separated, key before the first "=", decoded,
+// compared without case), so what the gate refuses is what the send would
+// have replaced. Nothing to compare (another kind, or no param) is "".
+func checkQueryParamRule(rawURL, authType, param string) string {
+	if authType != models.AuthQuery || param == "" {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	for _, piece := range strings.FieldsFunc(u.RawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		key := piece
+		if i := strings.IndexByte(piece, '='); i >= 0 {
+			key = piece[:i]
+		}
+		if dec, err := url.QueryUnescape(key); err == nil && strings.EqualFold(dec, param) {
+			return errURLQueryParam
+		}
+	}
+	return ""
 }
 
 func clientField(s string) bool {
@@ -323,6 +418,26 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rawAuth, _ = json.Marshal(set)
+	}
+	// A query row is never created without its credential (PORM-27): the
+	// acceptance criterion reads "no param name" as a 400, not a silently
+	// unauthenticated upstream, so {} and an absent auth_config are refused
+	// here where every other kind stores nothing and reads unreadable.
+	if authType == models.AuthQuery {
+		if emptyAuthConfig(rawAuth) {
+			writeError(w, http.StatusBadRequest, errQueryConfigShape)
+			return
+		}
+		cfg, msg := queryAuthRule(rawAuth)
+		if msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		if msg := checkQueryParamRule(urlNorm, authType, cfg.Param); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		rawAuth, _ = json.Marshal(cfg)
 	}
 	enc, err := s.encryptAuth(rawAuth)
 	if err != nil {
@@ -561,12 +676,30 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errAuthNoneCredential)
 		return
 	}
+	// A type change to or from query that would keep the stored blob is
+	// refused (PORM-27, errQueryTypeChange): the kinds share one column and a
+	// blob read under another kind is a credential sent where nobody chose to
+	// send it. A change that clears the blob (to none, or across oauth) is
+	// not a reinterpretation and is not refused, so a dead query credential
+	// can still be removed the documented way.
+	newCredential := in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value)
+	if typeChanged && (before.AuthType == models.AuthQuery || u.AuthType == models.AuthQuery) && !clearAuth && !acrossOAuth && !newCredential {
+		writeError(w, http.StatusBadRequest, errQueryTypeChange)
+		return
+	}
+	// queryParam is the name the merged row sends under, when it is a query
+	// row: from the body when the body carries a credential, else from the
+	// stored blob, which is opened once for the same-name rule below. A
+	// stored blob that does not open leaves it "", and the rule is skipped:
+	// the row cannot send, and the next credential write runs it.
+	var queryParam string
 	if in.AuthConfig.Has() {
 		// null keeps the stored credential. The value is write-only, so an
 		// object read back and sent again cannot carry it, and null has to mean
 		// "unchanged" rather than "remove". For oauth the value is the client
 		// identity only (errOAuthConfigShape), and writing one drops any
-		// token set: the tokens belong to the old client.
+		// token set: the tokens belong to the old client. For query the value
+		// is exactly {param, value} (errQueryConfigShape); {} still clears.
 		rawAuth := in.AuthConfig.Value
 		if u.AuthType == models.AuthOAuth && !emptyAuthConfig(rawAuth) {
 			set, ok := oauthClient(rawAuth)
@@ -575,6 +708,15 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			rawAuth, _ = json.Marshal(set)
+		}
+		if u.AuthType == models.AuthQuery && !emptyAuthConfig(rawAuth) {
+			cfg, msg := queryAuthRule(rawAuth)
+			if msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+			rawAuth, _ = json.Marshal(cfg)
+			queryParam = cfg.Param
 		}
 		enc, err := s.encryptAuth(rawAuth)
 		if err != nil {
@@ -585,6 +727,15 @@ func (s *Server) patchUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	if clearAuth {
 		u.AuthConfig = nil
+	}
+	if u.AuthType == models.AuthQuery && (in.URL.Set || typeChanged || in.AuthConfig.Has()) {
+		if queryParam == "" && before.AuthType == models.AuthQuery {
+			queryParam = mcpclient.QueryParam(before.AuthType, readStored(s, &before))
+		}
+		if msg := checkQueryParamRule(u.URL, u.AuthType, queryParam); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
 	}
 	if in.Enabled.Set {
 		if in.Enabled.Null {
@@ -666,6 +817,17 @@ func (s *Server) deleteUpstream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// readStored is the stored credential's plaintext, or nil when it does not
+// open or is not usable for its kind: credential.Read's answer with the
+// error dropped, for a caller that only needs a field off the plaintext.
+func readStored(s *Server, u *models.Upstream) json.RawMessage {
+	plain, err := credential.Read(s.keys, u.AuthType, u.AuthConfig)
+	if err != nil {
+		return nil
+	}
+	return plain
+}
+
 // upstreamURL is the write gate on a "url": the form to store and, when it
 // is refused, the 400 to answer. The syntax check is mcpclient's own
 // (CheckTarget), so the write path and the outbound path give one answer
@@ -674,8 +836,10 @@ func (s *Server) deleteUpstream(w http.ResponseWriter, r *http.Request) {
 // "localhost" and was stored happily before this. A fragment and embedded
 // credentials each get their own sentence; every other refusal reads as the
 // one rule. The userinfo rule lives here and not in CheckTarget because
-// CheckTarget also runs on stored rows at dial time, and a row saved before
-// this rule is PORM-27's to redact, not this gate's to refuse.
+// CheckTarget also runs on stored rows at dial time. A row saved before this
+// rule keeps its url as stored: mcpclient's open clears the userinfo before
+// every dial, the boot check names the row by id, and the operator's edit is
+// the fix (PORM-27).
 //
 // Syntax only, and deliberately so: where the host resolves is checked when
 // PoryMCP connects, by internal/netguard on the transport, because a check
@@ -760,7 +924,7 @@ func validTransport(v string) bool {
 
 func validAuthType(v string) bool {
 	switch v {
-	case models.AuthNone, models.AuthBearer, models.AuthHeader, models.AuthAPIKey, models.AuthCustom, models.AuthOAuth:
+	case models.AuthNone, models.AuthBearer, models.AuthHeader, models.AuthAPIKey, models.AuthCustom, models.AuthOAuth, models.AuthQuery:
 		return true
 	}
 	return false

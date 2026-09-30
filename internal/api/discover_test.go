@@ -1265,3 +1265,35 @@ func TestDiscoverRefusedDial(t *testing.T) {
 		t.Fatalf("the loopback stub saw %d requests", n)
 	}
 }
+
+// TestDiscoverUnsavedQueryRules pins PORM-27 on the unsaved route: the
+// Discover button answers what Create would (the shape sentence for a
+// missing credential, the same-name refusal for a url that carries the
+// parameter) and dials nothing in either case.
+func TestDiscoverUnsavedQueryRules(t *testing.T) {
+	stub := newMCPStub(t)
+	_, h, _ := testAPI(t)
+	for name, tc := range map[string]struct {
+		body map[string]any
+		want string
+	}{
+		"no credential":    {map[string]any{"url": stub.srv.URL, "auth_type": "query"}, errQueryConfigShape},
+		"empty credential": {map[string]any{"url": stub.srv.URL, "auth_type": "query", "auth_config": map[string]string{}}, errQueryConfigShape},
+		"param in the url": {map[string]any{"url": stub.srv.URL + "/mcp?api_key=1", "auth_type": "query", "auth_config": map[string]string{"param": "api_key", "value": "abcdefghijkl"}}, errURLQueryParam},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin", tc.body)
+			if rr.Code != http.StatusBadRequest || jsonObject(t, rr)["error"] != tc.want {
+				t.Fatalf("%d %s", rr.Code, rr.Body.String())
+			}
+			if n := len(stub.requests()); n != 0 {
+				t.Fatalf("%d requests reached the upstream", n)
+			}
+		})
+	}
+	rr := doJSON(t, h, http.MethodPost, "/upstreams/discover", "test-admin",
+		map[string]any{"url": stub.srv.URL, "auth_type": "query", "auth_config": map[string]string{"param": "api_key", "value": "abcdefghijkl"}})
+	if d := discovery(t, rr); d["ok"] != true {
+		t.Fatalf("discovery with a query credential: %v", d)
+	}
+}
