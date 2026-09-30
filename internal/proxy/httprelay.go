@@ -557,6 +557,15 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	req.Host = target.Host
 	req.ContentLength = int64(len(body))
 	copyRelayRequestHeaders(req.Header, r.Header, a.token)
+	if up.AuthType == models.AuthQuery {
+		// The literal pass over a query row's answer needs the whole answer:
+		// a key holder who could ask for byte ranges could split the wire
+		// pair across two chunks that each carry no literal and join them.
+		// So on this kind the request goes out without Range and If-Range,
+		// and the upstream answers whole (PORM-27).
+		req.Header.Del("Range")
+		req.Header.Del("If-Range")
+	}
 	if err := mcpclient.TransportError(up.Transport); err != nil {
 		cancel(nil)
 		size := writePlainError(w, http.StatusBadGateway, requestID, "upstream request failed")
