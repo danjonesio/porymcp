@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/danjonesio/porymcp/internal/crypto"
+	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/store"
 )
@@ -272,5 +274,55 @@ func TestRekeyVerifiesRoundTrip(t *testing.T) {
 	next, err := rekeyRewriter(k, k.Seal)([]store.RekeyRow{{ID: "u1", Name: "A", Stored: legacy}})
 	if err != nil || len(next) != 1 || !crypto.IsV1(next[0]) {
 		t.Fatalf("the real sealer: next=%v err=%v", next, err)
+	}
+}
+
+// TestRekeyCoversQueryCredential pins PORM-27 on rotation: a query row
+// sealed under the previous key is rewritten under the new one, opens to
+// the same {param, value}, and still yields the query pair ApplyAuth would
+// send, so the rotation changes nothing the upstream receives.
+func TestRekeyCoversQueryCredential(t *testing.T) {
+	old, cur := mustKey(t), mustKey(t)
+	path := filepath.Join(t.TempDir(), "rekey-query.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const plain = `{"param":"api_key","value":"old-` + rekeySecret + `"}`
+	now := time.Now().UTC()
+	if err := st.CreateUpstream(context.Background(), &models.Upstream{
+		ID: "q1", Name: "Query", Slug: "query", URL: "https://example.test/mcp", Transport: models.TransportStreamableHTTP,
+		AuthType: models.AuthQuery, AuthConfig: []byte(sealUnder(t, old, plain)), Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rekeyEnv(t, path, cur, old)
+	var out bytes.Buffer
+	if code := rekey(&out); code != 0 {
+		t.Fatalf("exit %d: %s", code, out.String())
+	}
+	if rec := rekeyRecord(t, &out, "rekey complete"); rec["rewritten"] != float64(1) {
+		t.Fatalf("counts: %v", rec)
+	}
+	got := rawColumn(t, path, "q1")
+	if !strings.HasPrefix(got, "v1:"+crypto.Fingerprint(cur)+":") {
+		t.Fatalf("column = %q, want a v1 value under the new key", got)
+	}
+	reopened, _, err := crypto.NewKeyring(cur, nil).Open(got)
+	if err != nil || string(reopened) != plain {
+		t.Fatalf("reopened = %s (%v), want %s", reopened, err, plain)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://example.test/mcp", nil)
+	if err := mcpclient.ApplyAuth(req, models.AuthQuery, reopened); err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.RawQuery != "api_key=old-"+rekeySecret {
+		t.Fatalf("query after rekey = %q", req.URL.RawQuery)
+	}
+	if strings.Contains(out.String(), rekeySecret) {
+		t.Fatal("the plaintext reached the rekey output")
 	}
 }

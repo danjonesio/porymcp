@@ -22,7 +22,10 @@ Represents a real MCP server, or a plain HTTP API (PORM-146).
   serves, trailing slash included. It must be an absolute `http` or `https` URL
   with a host, no fragment and no embedded credentials (`mcpclient.CheckTarget`
   plus the write gate's userinfo rule), so a stored value is one PoryMCP
-  can dial; anything else is `400`, and the stored form is the parsed URL as
+  can dial; on a `query` row it may not carry the parameter the credential
+  sets (`400 url already carries the query parameter the credential sets;
+  remove it from the url`, checked on the merged row whenever `url`,
+  `auth_type` or `auth_config` changes); anything else is `400`, and the stored form is the parsed URL as
   `url.Parse` re-serialises it (scheme lower-cased, unescaped path characters
   percent-encoded, an empty fragment dropped). Whether that host *should* be dialled
   (loopback, link-local, cloud metadata) is decided as the connection is
@@ -55,11 +58,16 @@ Represents a real MCP server, or a plain HTTP API (PORM-146).
   request routed to such a row and discovery reports it as not implemented,
   and the row is repaired by a `PATCH` sending `streamable-http`. Nothing
   rewrites the stored value.
-- `auth_type`: `"none"` | `"bearer"` | `"header"` | `"api_key"` | `"custom"` | `"oauth"`.
+- `auth_type`: `"none"` | `"bearer"` | `"header"` | `"api_key"` | `"custom"` | `"query"` | `"oauth"`.
   `oauth` is refused on an `http` row, on create and on `PATCH`
   (`400 oauth is not available on an HTTP API upstream`), because the connect
-  flow's first step is an MCP `initialize` to the URL.
-- `auth_config` (JSON): e.g. `{"header": "Authorization", "value": "Bearer sk-..."}`.
+  flow's first step is an MCP `initialize` to the URL. `query` (PORM-27) is
+  a key the upstream takes as one query parameter, appended to the URL at
+  send time; the stored `url` holds no key.
+- `auth_config` (JSON): e.g. `{"header": "Authorization", "value": "Bearer sk-..."}`,
+  or for `query` exactly `{"param": "api_key", "value": "<token>"}`: `param`
+  is 1 to 64 characters of `A-Z`, `a-z`, `0-9`, `.`, `_`, `~` and `-`, the
+  value at most 4096 bytes, and any other member is refused.
   For `oauth` the stored value is the token set PoryMCP obtained by the
   operator signing in at the vendor (PORM-139): `access_token`,
   `refresh_token`, `expires_at` (UTC, from PoryMCP's own clock),
@@ -109,7 +117,14 @@ columns alone: a refresh is not an edit), by a refresh the vendor refused
 (the `refresh_token` member is dropped so the row reads `expired` once the
 access token lapses), by `POST /upstreams/{id}/oauth/revoke`, which empties
 it, and by `rekey`, and by nothing else. An object with no members (`{}`, what
-the dashboard sends for a blank box) stores nothing. An `auth_type: none` row
+the dashboard sends for a blank box) stores nothing, except on a `query`
+create, where `{}` and an absent `auth_config` are refused (`400 auth_config
+for query needs param and value, and accepts nothing else`): a `query` row is
+never created without its credential. A `PATCH` that changes the auth type
+to or from `query` and carries no non-empty `auth_config` is refused
+(`400 changing auth_type to or from query needs a new auth_config`), so a
+stored blob is never read under another kind; a change to `none` or
+`oauth`, which empties the column, is not refused (PORM-27). An `auth_type: none` row
 may still hold a value, whether an earlier build wrote it or a `PATCH` carried
 `auth_config` alone to a `none` row: nothing reads it, `rekey` does not re-wrap
 it, and a `PATCH` naming `auth_type: none` removes it.

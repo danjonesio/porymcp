@@ -344,13 +344,16 @@ func writePlainError(w http.ResponseWriter, status int, requestID, msg string) i
 }
 
 // relayParams is a relay row's params: the query redacted by name
-// (audit.RedactQuery, both name sets) and then by value (any value carrying
-// the presented virtual key), the client's Content-Type bounded, and the
-// request body's size. The body itself is never recorded. When the query
-// alone exceeds the params bound it is replaced by the size marker
-// boundedParams uses, so the other two members survive.
-func relayParams(q url.Values, token, contentType string, requestBytes int) json.RawMessage {
-	query := audit.RedactQuery(q)
+// (audit.RedactQuery, both name sets plus secretNames, the query
+// credential's configured parameter on a query row, PORM-27) and then by
+// value (any value carrying the presented virtual key), the client's
+// Content-Type bounded, and the request body's size. The body itself is
+// never recorded. When the query alone exceeds the params bound it is
+// replaced by the size marker boundedParams uses, so the other two members
+// survive. The query recorded is the client's own; the credential is
+// appended to the outbound URL after this and never enters params.
+func relayParams(q url.Values, token, contentType string, requestBytes int, secretNames ...string) json.RawMessage {
+	query := audit.RedactQuery(q, secretNames...)
 	if token != "" {
 		// A key can arrive as a parameter's value, as its name, or inside
 		// the Content-Type; each is replaced, never stored. A name holding
@@ -527,6 +530,15 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// the answer's headers and error body (PORM-204). Never handed to finish:
 	// the row's error_message on this door is always PoryMCP's own sentence.
 	literals := mcpclient.Literals(up.AuthType, plain)
+	// On a query row the client's own value under the credential's parameter
+	// is redacted in params too (PORM-27): it is the key holder's input, not
+	// the stored credential, but it is a value under a name the operator
+	// chose for a secret. The two refusal rows above were written before the
+	// credential was read and carry no name; nothing reaches them but the
+	// two name sets.
+	if name := mcpclient.QueryParam(up.AuthType, plain); name != "" {
+		params = relayParams(r.URL.Query(), a.token, r.Header.Get("Content-Type"), len(body), name)
+	}
 
 	// 6, 7. The outbound request under the relay's budgets, with the joined
 	// URL assigned rather than re-parsed (so an escaped segment goes out as
@@ -545,6 +557,15 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	req.Host = target.Host
 	req.ContentLength = int64(len(body))
 	copyRelayRequestHeaders(req.Header, r.Header, a.token)
+	if up.AuthType == models.AuthQuery {
+		// The literal pass over a query row's answer needs the whole answer:
+		// a key holder who could ask for byte ranges could split the wire
+		// pair across two chunks that each carry no literal and join them.
+		// So on this kind the request goes out without Range and If-Range,
+		// and the upstream answers whole (PORM-27).
+		req.Header.Del("Range")
+		req.Header.Del("If-Range")
+	}
 	if err := mcpclient.TransportError(up.Transport); err != nil {
 		cancel(nil)
 		size := writePlainError(w, http.StatusBadGateway, requestID, "upstream request failed")
@@ -626,6 +647,18 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 			return
 		}
 		sent = red
+	} else if writeBody && up.AuthType == models.AuthQuery && len(respBody) > 0 && !relayUnscannable(headers, respBody) {
+		// A query credential rides in the request URL, and an API that takes
+		// its key that way echoes its own request URL in ordinary answers:
+		// pagination links, self links. So on a query row every readable
+		// answer gets the literal pass (PORM-27), and only that: the exact
+		// wire spellings replaced over the whole body, no clamp, no pattern
+		// rules and no withholding, because a 2xx body is the product and
+		// not a refusal. An unscannable answer passes through as it always
+		// has; the relay drops Accept-Encoding upstream, so the transport
+		// hands back decoded bytes and that case needs an upstream that
+		// compresses unasked.
+		sent = []byte(redact.RedactLiterals(string(respBody), literals))
 	}
 	copyRelayResponseHeaders(w.Header(), headers, head, literals)
 	if !bytes.Equal(sent, respBody) {

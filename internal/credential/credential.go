@@ -15,8 +15,11 @@ package credential
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
+	"strings"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/audit"
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
@@ -146,8 +149,10 @@ func Expired(authType string, plain json.RawMessage, now time.Time) bool {
 const maxListed = 20
 
 // Report is what Sweep learned about every upstream, as counts and names,
-// never a value. Rows with auth_type none are skipped entirely: they need no
-// credential, so they are never counted and never degrade anything.
+// never a value. Rows with auth_type none are skipped for every count but
+// the legacy-url lists: they need no credential, so they never degrade
+// anything, but a none row can still carry a credential in its url
+// (PORM-27) and is named for that.
 type Report struct {
 	// Credentials is the number of rows that need a credential and hold a
 	// stored blob, the rows an ephemeral key would make unreadable.
@@ -173,6 +178,42 @@ type Report struct {
 	// UnreadableIDs and UnreadableNames list the unreadable rows.
 	UnreadableIDs, UnreadableNames []string
 	UnreadableNotListed            int
+	// LegacyURLIDs and LegacyURLNames list the rows whose stored url still
+	// carries a credential PoryMCP does not encrypt (PORM-27): userinfo, or a
+	// query parameter whose name audit.SecretQueryName accepts. Such a row
+	// was saved before the write gate refused userinfo or before the query
+	// kind existed; its fix is an edit, and the boot line says so. This is
+	// read off the plaintext url and needs no key, so it is filled on every
+	// boot, none rows included. The url itself never reaches the report.
+	LegacyURLIDs, LegacyURLNames []string
+	LegacyURLNotListed           int
+}
+
+// URLCarriesCredential reports whether a stored url carries a credential in
+// its own text: userinfo, or a query parameter named like one. The query is
+// split on "&" and ";" and each key decoded on its own, rather than through
+// url.Values, because ParseQuery drops any pair that holds ";" and the send
+// path and the write gate both read ";" as a separator. A url that does not
+// parse counts as clean; the write gate has already refused it and the
+// proxy cannot dial it.
+func URLCarriesCredential(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.User != nil {
+		return true
+	}
+	for _, piece := range strings.FieldsFunc(u.RawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		key := piece
+		if i := strings.IndexByte(piece, '='); i >= 0 {
+			key = piece[:i]
+		}
+		if dec, err := url.QueryUnescape(key); err == nil && audit.SecretQueryName(dec) {
+			return true
+		}
+	}
+	return false
 }
 
 // Sweep classifies every upstream once. Each plaintext is dropped as soon as
@@ -182,6 +223,14 @@ func Sweep(k crypto.Keyring, ups []models.Upstream) Report {
 	current := k.Fingerprint()
 	for i := range ups {
 		u := &ups[i]
+		if URLCarriesCredential(u.URL) {
+			if len(r.LegacyURLIDs) < maxListed {
+				r.LegacyURLIDs = append(r.LegacyURLIDs, u.ID)
+				r.LegacyURLNames = append(r.LegacyURLNames, u.Name)
+			} else {
+				r.LegacyURLNotListed++
+			}
+		}
 		if u.AuthType == models.AuthNone || u.AuthType == "" {
 			continue
 		}

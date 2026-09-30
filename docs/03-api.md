@@ -33,8 +33,8 @@ omitting `transport` or by sending `streamable-http`, and a body that echoes
 | upstream `slug` | equal to the stored slug: no-op; anything else: `400 slug cannot be changed after create` | same `400` | same `400` |
 | upstream / group `description` | set | **cleared** | **cleared** |
 | upstream `url` | set, stored normalised (see Upstream URLs); `400 url must be an absolute http or https URL`, `400 url must not carry a fragment` or `400 url must not embed credentials` if not; resets the last test when it differs after normalisation | that `400` | that `400` |
-| upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value (`sse` is not one: `streamable-http` is the only transport accepted on write); resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none` | that `400` | that `400` |
-| upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does) |
+| upstream `transport`, `auth_type` | set; `400 invalid transport` / `400 invalid auth_type` if not an allowed value (`sse` is not one: `streamable-http` is the only transport accepted on write); resets the last test when it differs. `auth_type: "none"` also removes the stored credential (the column is emptied and `auth_configured` reads `false`) and resets the last test when one was stored; a credential sent beside it is `400 auth_config cannot be set when auth_type is none`. A change to or from `query` with no non-empty `auth_config` in the body is `400 changing auth_type to or from query needs a new auth_config`, except a change to `none` or `oauth`, which empties the column (PORM-27) | that `400` | that `400` |
+| upstream `auth_config` | replaces the stored credential; resets the last test; `400 auth_config cannot be set when auth_type is none` when the same request names `auth_type: "none"`. On a `query` row the value must be exactly `{"param", "value"}`: anything else is `400 auth_config for query needs param and value, and accepts nothing else`, a bad name `400 param must be 1-64 characters of A-Z, a-z, 0-9, ., _, ~ or -`, an over-long value `400 value must be at most 4096 bytes`, and a `url` that already carries the parameter `400 url already carries the query parameter the credential sets; remove it from the url` | **kept**: the value is write-only, so an object read back and sent again cannot carry it; `null` therefore means unchanged, unless the same request names `auth_type: "none"`, which removes the stored credential (see Removing a credential) | `{}` stores nothing: an object with no members is no credential, on create and on patch alike, so the column is emptied, the row reads `auth_configured: false` and, on a type other than `none`, `unreadable`, and the proxy stops authenticating; a client that did not change the credential omits the key (the dashboard's edit dialog does). The one exception is a `query` create, where `{}`, `null` and an absent `auth_config` are the shape `400` above: a `query` row is never created silently unauthenticated |
 | upstream `enabled` | set | `400 enabled must be true or false` | n/a |
 | group `upstream_ids` | validated and replaced | **cleared** to `[]`: the group has no members, and every key targeting it loses its endpoints | `[]` clears |
 | group `tool_filter` | validated and replaced | **cleared** | `{}` is a valid filter that filters nothing; stored as sent |
@@ -243,7 +243,12 @@ credential sent beside `auth_type: "none"`, on create (an omitted `auth_type`
 defaults to `none`) or on patch, answers
 `400 {"error":"auth_config cannot be set when auth_type is none"}` and nothing
 is written. A credential sent alone to a row stored as `none` is stored, as
-before, and is not sent until the type changes. The removal is a row update,
+before, and is not sent until the type changes. From a `query` row the two
+moves that need no `auth_config` are `none` and `oauth`, which empty the
+column; any other change of type to or from `query` needs a new
+`auth_config` (`400 changing auth_type to or from query needs a new
+auth_config`), so a stored blob is never read under another kind (PORM-27).
+The removal is a row update,
 not an erasure of the database file, its write-ahead log or backups (see
 `docs/07-security.md`).
 
@@ -256,8 +261,15 @@ three sentences:
 `file:` or `ftp:` scheme, a scheme-relative `//host/mcp`, a scheme with no
 host), `url must not carry a fragment` (`https://host/mcp#frag`) and
 `url must not embed credentials` (`https://user:pw@host/mcp`, on every kind
-since PORM-79; rows saved before it are PORM-27's), so a URL PoryMCP could
+since PORM-79; a row saved before it keeps its url as stored, sends none of
+the userinfo because the dial clears it, is named at boot by id and name,
+and is fixed by one edit), so a URL PoryMCP could
 never connect to is refused where it is typed rather than where it is used.
+On a `query` row one more rule runs on the merged row, whenever `url`,
+`auth_type` or `auth_config` changes: the url may not already carry the
+parameter the credential sets (`url already carries the query parameter the
+credential sets; remove it from the url`), so one value is ever sent for the
+name and no stored parameter is dropped in silence (PORM-27).
 The syntax check is the one discovery applies before it opens a socket
 (`mcpclient.CheckTarget`). The stored value is the URL as `url.Parse`
 re-serialises it: the scheme lower-cased, unescaped path characters
@@ -331,7 +343,12 @@ follow `kind`, checked on create, on `PATCH` against the merged row, and on
 answers `201` with `"kind":"http"`, `"test_path":"/user"` and the other
 fields as on any upstream. The stored credential is presented to the base URL
 exactly as an MCP credential is: `bearer` as `Authorization: Bearer`,
-`api_key` as `X-API-Key`, `header` and `custom` in the named header.
+`api_key` as `X-API-Key`, `header` and `custom` in the named header, and
+`query` appended as `?<param>=<value>` after the caller's own query, with
+any caller parameter of that name dropped first (PORM-27). On a `query` row
+every readable answer, `2xx` included, takes the literal pass, so an API
+that echoes its own request URL in a pagination link hands the key holder
+`[redacted]` in its place.
 
 ### Discovering an upstream's tools
 
@@ -602,7 +619,12 @@ row with nothing stored, or a stored credential that decrypts but holds nothing
 its auth type can send (a `bearer` row switched to `custom`), answers
 `stored credential is not usable for this auth type`, likewise with no request.
 On the unsaved route a draft whose auth type needs a credential it does not
-have answers `this auth type needs a credential; add one or choose None`. An
+have answers `this auth type needs a credential; add one or choose None`,
+except a `query` draft, which answers create's own shape sentence
+(`auth_config for query needs param and value, and accepts nothing else`)
+and, for a url that already carries the parameter, `url already carries the
+query parameter the credential sets; remove it from the url`, both before
+anything is dialled (PORM-27). An
 `auth_type: none` draft or row is never judged by a credential.
 
 Thirty discovery calls a minute across the deployment, and four in flight at
@@ -611,7 +633,8 @@ limiter's `Retry-After`; a fifth concurrent call is
 `429 {"error":"too many concurrent discoveries"}` with `Retry-After: 5`. The
 budget is spent before the store is read, so a flood of unknown ids costs a
 caller exactly what real ones do. Otherwise: `400` for a malformed body, a
-missing `url` or an invalid `transport`/`auth_type`; `404` for an unknown `{id}`,
+missing `url`, an invalid `transport`/`auth_type`, or on the unsaved route a
+`query` draft that breaks the shape or same-name rule above; `404` for an unknown `{id}`,
 byte-identical to `GET /upstreams/{id}`; `500` only when the store fails.
 Everything the *upstream* does is `200` with `ok: false`.
 
@@ -675,7 +698,8 @@ next call renews it. An `oauth` row that is not yet connected reads
 and `false` otherwise; the `oauth` object's `expires_at: null` is what says
 "not connected". Invariants: `auth_status` is `"none"` iff `auth_type` is `"none"`,
 whatever the dashboard stored; `auth_hint` is present only when `ok` and
-never on an `oauth` row; `oauth` is present only on an `oauth` row whose
+never on an `oauth` row, and carries `header` on a header-shaped row or
+`param` on a `query` row (PORM-27); `oauth` is present only on an `oauth` row whose
 stored value is absent or opens;
 `auth_configured` keeps its meaning (a blob is stored) and is independent: a
 `bearer` upstream with no credential yet reads `auth_configured: false,

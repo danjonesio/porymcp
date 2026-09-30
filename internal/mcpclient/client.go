@@ -150,7 +150,19 @@ func OpenRelay(hc *http.Client, req *http.Request) (*http.Response, error) {
 
 // open is the one place in the tree that calls Do on a client carrying a
 // credential; Open and OpenRelay are its two entry points.
+//
+// Userinfo is cleared before the dial (PORM-27): net/http derives an
+// Authorization: Basic header from req.URL.User whenever no Authorization
+// header is set, and ApplyAuth deletes that header first, so a row stored
+// with user:password in its URL before the write gate refused it would send
+// the password on every kind but bearer, and on the OAuth initialize, which
+// never passes through ApplyAuth. Only ApplyAuth writes a credential. This
+// writes through the caller's URL; every door builds its URL fresh per
+// request, so nothing else observes the change. See docs/07-security.md.
 func open(hc *http.Client, req *http.Request, allow304 bool) (*http.Response, error) {
+	if req.URL != nil {
+		req.URL.User = nil
+	}
 	resp, err := hc.Do(req)
 	if err != nil {
 		// A refusal by the address guard comes back as the bare value: Do

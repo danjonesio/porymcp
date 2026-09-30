@@ -4,6 +4,39 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### A new upstream can take its key as a query parameter, stored encrypted and never shown (PORM-27)
+
+- **A new auth type, `query`.** `auth_config` is `{"param": "api_key",
+  "value": "<token>"}`, sealed like every credential; the stored `url`
+  holds no key, `auth_hint` names the parameter under `param`, and every
+  door (the MCP proxy, a group member call, discovery, the HTTP relay)
+  appends `?<param>=<value>` at send time. The dashboard offers Query
+  parameter with a Parameter name box and a Parameter value box.
+- **A `query` row's url may not carry the parameter the credential sets.**
+  `400 url already carries the query parameter the credential sets; remove
+  it from the url`, on create, on any PATCH that changes url, auth_type or
+  auth_config, and on the unsaved discover route.
+- **A change of auth type to or from `query` needs a new credential.** `400
+  changing auth_type to or from query needs a new auth_config`, so a stored
+  header value is never sent as a query parameter and a stored query value
+  never as a header; a change to `none` or `oauth` still empties the column.
+- **On the relay, a client parameter of the credential's name is dropped
+  before the credential is appended**, in any case, percent-encoded,
+  `;`-joined, undecodable, or NUL- or space-padded spelling (the request
+  body is relayed as sent); `Range` and
+  `If-Range` are not sent upstream on a `query` row; and every readable
+  answer on a `query` row, `2xx` included, has the credential's exact wire
+  spellings replaced, so an API that echoes its request URL in a pagination
+  link hands the key holder `[redacted]`.
+- **A username and password in a stored url are never sent.** The one place
+  that dials clears the userinfo first, on every kind and on the OAuth
+  initialize; a row that authenticated by accident through Go's
+  `Authorization: Basic` stops doing so.
+- **Rows saved earlier with a key in their url keep it until edited** and
+  are named at boot, by id and name, in one `upstream urls carry a
+  credential` line. The fix is one edit: remove the key from the url, choose
+  Query parameter, enter the name and value.
+
 ### Discovery's upstream_message and the group skip line no longer repeat a credential an upstream echoes in its error (PORM-196)
 
 - **A server that answers a wrong token with `invalid token <token>` now

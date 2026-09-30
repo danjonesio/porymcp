@@ -39,6 +39,9 @@ type httpSpec struct {
 	TestPath string
 	// Bearer is the stored credential; "" stores auth_type none.
 	Bearer string
+	// QueryParam and QueryValue, when both set, store a query credential
+	// (PORM-27) instead: auth_type query with {param, value}.
+	QueryParam, QueryValue string
 	// Kind is the stored kind column; "" means models.KindHTTP. A test writes
 	// "grpc" or "HTTP" to build the hand-edited row the doors must not serve.
 	Kind string
@@ -151,6 +154,14 @@ func newRelayFixture(t testing.TB, mcp map[string]upstreamSpec, apis map[string]
 				t.Fatal(err)
 			}
 			up.AuthType = models.AuthBearer
+			up.AuthConfig = []byte(enc)
+		}
+		if spec.QueryParam != "" && spec.QueryValue != "" {
+			enc, err := base.H.keys.Seal([]byte(`{"param":"` + spec.QueryParam + `","value":"` + spec.QueryValue + `"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			up.AuthType = models.AuthQuery
 			up.AuthConfig = []byte(enc)
 		}
 		if err := base.Store.CreateUpstream(ctx, up); err != nil {
@@ -1761,5 +1772,137 @@ func TestRelayErrorBodyWithheld(t *testing.T) {
 				t.Errorf("a withheld answer left last_used_at unset: %v", err)
 			}
 		})
+	}
+}
+
+// TestRelayQueryParamRedactedInAudit pins PORM-27 security requirement 12:
+// a key holder's own value under the credential's parameter name is
+// redacted in params.query, while the stored credential never enters
+// params at all (the recorded query is the client's, before ApplyAuth).
+func TestRelayQueryParamRedactedInAudit(t *testing.T) {
+	const value = "STORED_QUERY_VALUE_abcdefgh"
+	f := newRelayFixture(t, nil, map[string]httpSpec{"beta": {Base: "/v1", QueryParam: "appid", QueryValue: value}}, false)
+	rr := f.send(http.MethodGet, "/a1/api/items?appid=CLIENT_VALUE&page=2", "", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	row := f.lastRow(1)
+	var params struct {
+		Query map[string]string `json:"query"`
+	}
+	if err := json.Unmarshal(row.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params.Query["appid"] != "[redacted]" || params.Query["page"] != "2" {
+		t.Fatalf("params.query = %v", params.Query)
+	}
+	if strings.Contains(string(row.Params), "CLIENT_VALUE") || strings.Contains(string(row.Params), value) {
+		t.Fatalf("a value reached the row: %s", row.Params)
+	}
+}
+
+// TestRelay2xxBodyRedactedForQueryType pins PORM-27 security requirement
+// 11: on a query row a readable 2xx body gets the literal pass and only
+// that (no clamp, no pattern rules, no withholding), a bearer row's body is
+// untouched, and an unscannable 2xx passes through as success.
+func TestRelay2xxBodyRedactedForQueryType(t *testing.T) {
+	const value = "STORED_QUERY_VALUE_abcdefgh"
+	pair := "api_key=" + value
+	filler := strings.Repeat("x", 70<<10) // past the 64 KiB error-answer clamp
+	echo := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"filler":"`+filler+`","id":"0123456789abcdef0123456789abcdef01234567","token":"abcdefghijklmnopqrstuvwxyz","next":"https://api.example/v1/items?page=3&`+pair+`"}`)
+	}
+	f := newRelayFixture(t, nil, map[string]httpSpec{
+		"q": {Base: "/v1", QueryParam: "api_key", QueryValue: value, Handler: echo},
+	}, false)
+	rr := f.send(http.MethodGet, "/a1/api/items", "", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, value) {
+		t.Fatal("the credential reached the key holder")
+	}
+	if !strings.Contains(body, `"next":"https://api.example/v1/items?page=3&[redacted]"`) {
+		t.Fatalf("the pair was not replaced whole: %s", body[len(body)-200:])
+	}
+	// Only the literal changed: the filler is whole (no clamp), the id and
+	// the token-shaped field are untouched (no pattern rules).
+	if !strings.Contains(body, filler) || !strings.Contains(body, `"id":"0123456789abcdef0123456789abcdef01234567"`) || !strings.Contains(body, `"token":"abcdefghijklmnopqrstuvwxyz"`) {
+		t.Fatal("the pass changed more than the literal")
+	}
+	if got := rr.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
+		t.Fatalf("Content-Length %q for %d bytes", got, len(body))
+	}
+	if row := f.lastRow(1); row.Status != models.StatusSuccess || row.ResponseSizeBytes != len(body) {
+		t.Fatalf("row = %+v", row)
+	}
+
+	// The same body from a bearer row is byte-identical to what the stub
+	// wrote: the pass runs for the query kind only.
+	g := newRelayFixture(t, nil, map[string]httpSpec{"b": {Base: "/v1", Bearer: "stored-token-42", Handler: echo}}, false)
+	rr = g.send(http.MethodGet, "/a1/api/items", "", nil)
+	stubBody := httptest.NewRecorder()
+	echo(stubBody, httptest.NewRequest(http.MethodGet, "/v1/items", nil))
+	if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), stubBody.Body.Bytes()) {
+		t.Fatalf("bearer row: %d, body differs from the stub's", rr.Code)
+	}
+
+	// A 2xx under a Content-Encoding the transport did not decode is
+	// unscannable (relayUnscannable reads the label, not the bytes) and
+	// passes through unchanged as a success.
+	png := append([]byte{0x89, 'P', 'N', 'G', 0, 0, 0}, []byte(pair)...)
+	h := newRelayFixture(t, nil, map[string]httpSpec{"q": {Base: "/v1", QueryParam: "api_key", QueryValue: value,
+		Handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Content-Encoding", "br")
+			_, _ = w.Write(png)
+		}}}, false)
+	rr = h.send(http.MethodGet, "/a1/api/img", "", nil)
+	if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), png) {
+		t.Fatalf("unscannable 2xx: %d %q", rr.Code, rr.Body.Bytes())
+	}
+	if row := h.lastRow(1); row.Status != models.StatusSuccess {
+		t.Fatalf("row = %+v", row)
+	}
+
+	// A plain binary body with no encoding label is scanned like any other:
+	// without a literal it passes byte for byte, and with one the literal
+	// is replaced, because relayUnscannable does not sniff bytes.
+	clean := []byte{0x89, 'P', 'N', 'G', 0, 0, 0, 1, 2, 3}
+	i := newRelayFixture(t, nil, map[string]httpSpec{"q": {Base: "/v1", QueryParam: "api_key", QueryValue: value,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			if r.URL.Path == "/v1/leak" {
+				_, _ = w.Write(png)
+				return
+			}
+			_, _ = w.Write(clean)
+		}}}, false)
+	rr = i.send(http.MethodGet, "/a1/api/img", "", nil)
+	if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), clean) {
+		t.Fatalf("plain binary 2xx: %d %q", rr.Code, rr.Body.Bytes())
+	}
+	rr = i.send(http.MethodGet, "/a1/api/leak", "", nil)
+	if rr.Code != http.StatusOK || bytes.Contains(rr.Body.Bytes(), []byte(value)) || !bytes.Contains(rr.Body.Bytes(), []byte("[redacted]")) {
+		t.Fatalf("plain binary 2xx with a literal: %d %q", rr.Code, rr.Body.Bytes())
+	}
+
+	// A key holder cannot split the pass with byte ranges: on a query row
+	// Range and If-Range never reach the upstream, and a bearer row keeps
+	// them as before.
+	j := newRelayFixture(t, nil, map[string]httpSpec{"q": {Base: "/v1", QueryParam: "api_key", QueryValue: value}}, false)
+	rr = j.send(http.MethodGet, "/a1/api/items", "", map[string]string{"Range": "bytes=0-9", "If-Range": `"v1"`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ranged request on a query row: %d", rr.Code)
+	}
+	if up := j.APIs["q"].requests(); len(up) != 1 || up[0].Header.Get("Range") != "" || up[0].Header.Get("If-Range") != "" {
+		t.Fatalf("Range reached a query upstream: %+v", up)
+	}
+	k := newRelayFixture(t, nil, map[string]httpSpec{"b": {Base: "/v1", Bearer: "stored-token-42"}}, false)
+	k.send(http.MethodGet, "/a1/api/items", "", map[string]string{"Range": "bytes=0-9"})
+	if up := k.APIs["b"].requests(); len(up) != 1 || up[0].Header.Get("Range") != "bytes=0-9" {
+		t.Fatalf("Range did not reach a bearer upstream: %+v", up)
 	}
 }

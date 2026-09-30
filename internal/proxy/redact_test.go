@@ -684,9 +684,10 @@ func TestShortCredentialNeverReachesReader(t *testing.T) {
 }
 
 // TestLiteralRedactionPerKind is PORM-208's scope: every credential kind
-// headersFor writes reaches the literal pass. Each kind stores a 12-byte
+// wireFor writes reaches the literal pass. Each kind stores a 12-byte
 // plain value the upstream echoes in its JSON-RPC error on the single key,
-// and the stub's last request shows the kind's own header carried it.
+// and the stub's last request shows the kind's own header (or, for the
+// query kind, PORM-27, its own query parameter) carried it.
 func TestLiteralRedactionPerKind(t *testing.T) {
 	const lit = "abcdefghijkl"
 	msg := "invalid token " + lit
@@ -738,6 +739,24 @@ func TestLiteralRedactionPerKind(t *testing.T) {
 			Resource: u.URL,
 		})
 		check(t, f, "Authorization", "Bearer "+lit)
+	})
+	t.Run("query", func(t *testing.T) {
+		f := newSingleFixture(t, upstreamSpec{Tools: []string{"ping_tool"}, AuthType: models.AuthQuery,
+			AuthConfig: models.AuthConfig{Param: "api_key", Value: lit}, CallBody: errorAnswer(7, msg)}, nil, nil)
+		rr := f.post(toolCall("7", "ping_tool"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP code=%d want 200; body=%.200s", rr.Code, rr.Body.String())
+		}
+		reqs := f.requestsTo("solo")
+		if len(reqs) == 0 {
+			t.Fatal("the upstream saw no request")
+		}
+		if got := reqs[len(reqs)-1].RawQuery; got != "api_key="+lit {
+			t.Fatalf("upstream saw query %q, want api_key=%s", got, lit)
+		}
+		row := f.waitAudit(models.LogFilter{Tool: "ping_tool"})[0]
+		assertRedactedAnswerOf(t, rr.Body.Bytes(), "7", lit, want)
+		assertRedactedRowOf(t, row, lit, want)
 	})
 }
 

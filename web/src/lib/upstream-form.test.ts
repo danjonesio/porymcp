@@ -7,6 +7,7 @@ import {
   CONNECTION_FIELDS,
   DEFAULT_HEADER,
   KIND_LABELS,
+  PARAM_PATTERN,
   TRANSPORT_LABELS,
   applyKindChange,
   authConfigFrom,
@@ -22,6 +23,7 @@ import {
   editCredentialDescription,
   formFromUpstream,
   headerRequired,
+  paramRequired,
   removeCredentialDescription,
   upstreamCreateBody,
   upstreamPatchBody,
@@ -64,8 +66,9 @@ function edit(before: Upstream, over: Partial<UpstreamForm> = {}): UpstreamForm 
 
 // Security requirement 2, AC2: a blank credential box never rewrites the stored credential.
 test('upstreamPatchBody: omits auth_config when the credential box is blank, for every auth type', () => {
-  for (const auth_type of ['bearer', 'header', 'api_key', 'custom', 'none']) {
-    const before = up({ auth_type, auth_hint: auth_type === 'bearer' || auth_type === 'none' ? undefined : { header: 'X' } })
+  for (const auth_type of ['bearer', 'header', 'api_key', 'custom', 'query', 'none']) {
+    const hint = auth_type === 'bearer' || auth_type === 'none' ? undefined : auth_type === 'query' ? { param: 'k' } : { header: 'X' }
+    const before = up({ auth_type, auth_hint: hint })
     const body = upstreamPatchBody(before, edit(before, { name: 'Renamed' }))
     assert.equal('auth_config' in body, false, auth_type)
     assert.deepEqual(body, { name: 'Renamed' }, auth_type)
@@ -163,6 +166,7 @@ test('blankUpstreamForm: equals the initial state the Add dialog has always had,
     auth_type: 'none',
     token: '',
     header: DEFAULT_HEADER,
+    param: '',
     value: '',
     client_id: '',
     client_secret: '',
@@ -432,7 +436,7 @@ test('credentialRequired: never for an oauth target, still for a switch away fro
 })
 
 test('authConfigFrom: an oauth client goes with its id, alone or with a secret, never as a secret alone and never as {}-with-keys', () => {
-  const base = { auth_type: 'oauth', token: '', header: '', value: '' }
+  const base = { auth_type: 'oauth', token: '', header: '', param: '', value: '' }
   assert.deepEqual(authConfigFrom({ ...base, client_id: '', client_secret: '' }), {})
   assert.deepEqual(authConfigFrom({ ...base, client_id: ' mine ', client_secret: '' }), { client_id: 'mine' })
   assert.deepEqual(authConfigFrom({ ...base, client_id: 'mine', client_secret: 's' }), { client_id: 'mine', client_secret: 's' })
@@ -574,4 +578,87 @@ test('upstreamPatchBody never sends kind and sends test_path when it changed on 
   assert.deepEqual(cleared, { test_path: '' })
   const mcp = up()
   assert.equal('test_path' in upstreamPatchBody(mcp, { ...formFromUpstream(mcp), test_path: '/x' }), false)
+})
+
+// PORM-27: the query kind in the dialog.
+function queryUp(over: Partial<Upstream> = {}): Upstream {
+  return up({ auth_type: 'query', auth_hint: { param: 'api_key' }, ...over })
+}
+
+test('PARAM_PATTERN compiles under the v flag and matches the server rule', () => {
+  const re = new RegExp('^(?:' + PARAM_PATTERN + ')$', 'v')
+  assert.equal(re.test('api_key'), true)
+  assert.equal(re.test('x-y.z~w'), true)
+  assert.equal(re.test('a b'), false)
+  assert.equal(re.test('a&b'), false)
+  assert.equal(re.test(''), false)
+})
+
+test('AUTH_TYPE_LABELS: offers Query parameter', () => {
+  assert.equal(AUTH_TYPE_LABELS.query, 'Query parameter')
+})
+
+test('CONNECTION_FIELDS: the parameter name resets the Discover panel', () => {
+  assert.ok((CONNECTION_FIELDS as readonly string[]).includes('param'))
+})
+
+test('authConfigFrom: a query credential goes as {param, value}, and as {} with no value', () => {
+  const f = { ...blankUpstreamForm(), auth_type: 'query', param: 'api_key', value: 'v' }
+  assert.deepEqual(authConfigFrom(f), { param: 'api_key', value: 'v' })
+  assert.deepEqual(authConfigFrom({ ...f, value: '' }), {})
+  assert.equal('header' in authConfigFrom(f), false)
+})
+
+test('formFromUpstream: param comes from auth_hint.param and is empty without it', () => {
+  assert.equal(formFromUpstream(queryUp()).param, 'api_key')
+  assert.equal(formFromUpstream(queryUp({ auth_hint: undefined, auth_status: 'unreadable' })).param, '')
+  assert.equal(formFromUpstream(queryUp()).header, '')
+})
+
+test('upstreamPatchBody: trims the parameter name and never emits an auth_config whose param is blank after trimming', () => {
+  const before = queryUp()
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { param: ' api_key ', value: 'v' })), {
+    auth_config: { param: 'api_key', value: 'v' },
+  })
+  assert.deepEqual(upstreamPatchBody(before, edit(before, { param: '  ', value: 'v' })), {})
+})
+
+test('credentialTyped and credentialRequired: the query kind reads the value, and a parameter rename needs it again', () => {
+  const before = queryUp()
+  assert.equal(credentialTyped(edit(before)), false)
+  assert.equal(credentialTyped(edit(before, { value: 'v' })), true)
+  assert.equal(credentialRequired(before, edit(before)), false)
+  assert.equal(credentialRequired(before, edit(before, { param: 'token' })), true)
+  assert.equal(credentialRequired(before, edit(before, { param: ' api_key ' })), false)
+  // A type change into or out of query forces re-entry: the server refuses it without a credential.
+  const h = up({ auth_type: 'header', auth_hint: { header: 'X' } })
+  assert.equal(credentialRequired(h, edit(h, { auth_type: 'query' })), true)
+  assert.equal(credentialRequired(before, edit(before, { auth_type: 'header' })), true)
+})
+
+test('paramRequired: true once a value is typed or a re-entry is forced, false for other kinds', () => {
+  const before = queryUp({ auth_status: 'unreadable', auth_hint: undefined })
+  assert.equal(paramRequired(before, edit(before, { value: 'v' })), true)
+  assert.equal(paramRequired(before, edit(before, { name: 'Renamed' })), false)
+  assert.equal(paramRequired(undefined, { ...blankUpstreamForm(), auth_type: 'query', value: 'v' }), true)
+  assert.equal(paramRequired(undefined, { ...blankUpstreamForm(), auth_type: 'header', value: 'v' }), false)
+})
+
+test('credentialHelp and editCredentialDescription: the query sentences name the parameter', () => {
+  const before = queryUp()
+  assert.equal(
+    credentialHelp(before, edit(before)),
+    'Leave blank to keep the stored credential. It currently sends the api_key query parameter. A value here replaces it.'
+  )
+  assert.equal(
+    editCredentialDescription(before, edit(before, { param: 'token' })),
+    'The parameter name is stored inside the credential. Enter the value again to change the name.'
+  )
+  const broken = queryUp({ auth_status: 'unreadable', auth_hint: undefined })
+  assert.equal(
+    credentialHelp(broken, edit(broken)),
+    'No usable credential is stored for this auth type. Enter one, or this upstream cannot authenticate. The parameter name is stored with it, so enter that too.'
+  )
+  const none = up({ auth_type: 'none', auth_hint: undefined })
+  assert.equal(editCredentialDescription(none, edit(none, { auth_type: 'query' })), 'Enter the credential for Query parameter.')
 })

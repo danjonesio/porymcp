@@ -375,3 +375,198 @@ func TestHealthDoesNotListUpstreams(t *testing.T) {
 		t.Fatalf("/stats listed upstreams %d times, want 1", n)
 	}
 }
+
+// queryBody is the create body for a query upstream (PORM-27).
+func queryBody(param, value string) map[string]any {
+	return map[string]any{"auth_type": "query", "auth_config": map[string]string{"param": param, "value": value}}
+}
+
+// TestCreateUpstreamQueryAuth covers PORM-27 security requirements 1 and 2:
+// a query credential is sealed as the canonical {param, value} object, the
+// list never returns the value or an auth_config key, auth_hint names the
+// parameter under its own key, and the row reads ok.
+func TestCreateUpstreamQueryAuth(t *testing.T) {
+	s, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	const value = "QUERY_VALUE_MARKER_abcdefgh"
+	rr, up := newUpstream(t, h, upstreamBody("Docs", queryBody("api_key", value)))
+	if up == nil {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), value) {
+		t.Fatalf("the create answer carries the value: %s", rr.Body.String())
+	}
+	id := up["id"].(string)
+	got := upstreamsByID(t, h)
+	row := got[id]
+	if row["auth_status"] != "ok" || row["auth_configured"] != true || row["url"] != "https://example.com/mcp" {
+		t.Fatalf("row = %v", row)
+	}
+	if _, has := row["auth_config"]; has {
+		t.Fatalf("auth_config leaked: %v", row)
+	}
+	hint, _ := row["auth_hint"].(map[string]any)
+	if hint["param"] != "api_key" || len(hint) != 1 {
+		t.Fatalf("auth_hint = %v, want {param: api_key}", row["auth_hint"])
+	}
+	plain, _, err := s.keys.Open(rawAuth(t, path, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(plain) != `{"value":"`+value+`","param":"api_key"}` && string(plain) != `{"param":"api_key","value":"`+value+`"}` {
+		t.Fatalf("stored blob = %s, want the canonical two-member object", plain)
+	}
+}
+
+// TestQueryAuthConfigRules covers PORM-27 security requirements 9 and 10 on
+// the write path: the shape and bound sentences on create and PATCH, and the
+// type-change refusal with its none and oauth exemptions.
+func TestQueryAuthConfigRules(t *testing.T) {
+	_, h, _, path := testAPIStoreFile(t, "http://localhost:8080")
+	long := strings.Repeat("v", mcpclient.MaxQueryValueBytes+1)
+	for name, tc := range map[string]struct {
+		config any
+		want   string
+	}{
+		"missing param":  {map[string]string{"value": "abcdefghijkl"}, errQueryConfigShape},
+		"missing value":  {map[string]string{"param": "api_key"}, errQueryConfigShape},
+		"empty object":   {map[string]string{}, errQueryConfigShape},
+		"absent":         {nil, errQueryConfigShape},
+		"extra header":   {map[string]string{"header": "X", "param": "p", "value": "v"}, errQueryConfigShape},
+		"upper-case key": {map[string]string{"PARAM": "p", "value": "v"}, errQueryConfigShape},
+		"non-object":     {"abc", errQueryConfigShape},
+		"array":          {[]string{"a"}, errQueryConfigShape},
+		"bad name":       {map[string]string{"param": "a b", "value": "v"}, errQueryParamName},
+		"long value":     {map[string]string{"param": "api_key", "value": long}, errQueryValueLength},
+	} {
+		t.Run("create "+name, func(t *testing.T) {
+			body := upstreamBody("Q", map[string]any{"auth_type": "query"})
+			if tc.config != nil {
+				body["auth_config"] = tc.config
+			}
+			rr, up := newUpstream(t, h, body)
+			if rr.Code != http.StatusBadRequest || up != nil {
+				t.Fatalf("%d %s", rr.Code, rr.Body.String())
+			}
+			if m := jsonObject(t, rr); m["error"] != tc.want {
+				t.Fatalf("error %q, want %q", m["error"], tc.want)
+			}
+		})
+	}
+	// The sentences state mcpclient's bounds, so the two cannot drift.
+	if !strings.Contains(errQueryParamName, "64") || !strings.Contains(errQueryValueLength, "4096") {
+		t.Fatalf("bounds not stated: %q %q", errQueryParamName, errQueryValueLength)
+	}
+
+	// PATCH: the type-change refusal and its exemptions.
+	bearer, _ := mustUpstream(t, h, "Bearer", map[string]any{"auth_type": "bearer", "auth_config": map[string]string{"token": "abcdefghijkl"}})
+	rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+bearer, "test-admin", map[string]any{"auth_type": "query"})
+	if rr.Code != http.StatusBadRequest || jsonObject(t, rr)["error"] != errQueryTypeChange {
+		t.Fatalf("bearer to query with no config: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+bearer, "test-admin", map[string]any{"auth_type": "query", "auth_config": map[string]string{}})
+	if rr.Code != http.StatusBadRequest || jsonObject(t, rr)["error"] != errQueryTypeChange {
+		t.Fatalf("bearer to query with {}: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+bearer, "test-admin", queryBody("api_key", "abcdefghijkl"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer to query with a config: %d %s", rr.Code, rr.Body.String())
+	}
+	query := bearer // the row is a query row now
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", map[string]any{"auth_type": "header"})
+	if rr.Code != http.StatusBadRequest || jsonObject(t, rr)["error"] != errQueryTypeChange {
+		t.Fatalf("query to header with no config: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", map[string]any{"auth_config": map[string]string{"param": "", "value": "v"}})
+	if rr.Code != http.StatusBadRequest || jsonObject(t, rr)["error"] != errQueryConfigShape {
+		t.Fatalf("blank param on a query row: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", map[string]any{"auth_config": nil})
+	if rr.Code != http.StatusOK || jsonObject(t, rr)["auth_status"] != "ok" {
+		t.Fatalf("null keeps the credential: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", map[string]any{"auth_type": "header", "auth_config": map[string]string{"header": "X-Token", "value": "abcdefghijkl"}})
+	if rr.Code != http.StatusOK || jsonObject(t, rr)["auth_status"] != "ok" {
+		t.Fatalf("query to header with a config: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", queryBody("api_key", "abcdefghijkl"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("back to query: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", map[string]any{"auth_config": map[string]string{}})
+	if rr.Code != http.StatusOK || jsonObject(t, rr)["auth_status"] != "unreadable" || rawAuth(t, path, query) != "" {
+		t.Fatalf("{} clears on a query row (PORM-120): %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", queryBody("api_key", "abcdefghijkl"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("query again: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", map[string]any{"auth_type": "oauth"})
+	if rr.Code != http.StatusOK || jsonObject(t, rr)["auth_configured"] != false {
+		t.Fatalf("query to oauth with no config clears: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", queryBody("api_key", "abcdefghijkl"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("oauth to query with a config: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+query, "test-admin", map[string]any{"auth_type": "none"})
+	if rr.Code != http.StatusOK || jsonObject(t, rr)["auth_status"] != "none" || rawAuth(t, path, query) != "" {
+		t.Fatalf("query to none with no config clears: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestQueryRowRefusesURLWithParam covers PORM-27 security requirement 8: a
+// query row's url may not carry the parameter the credential sets, whichever
+// of url, auth_type or auth_config the request changes.
+func TestQueryRowRefusesURLWithParam(t *testing.T) {
+	_, h, _ := testAPI(t)
+	rr, up := newUpstream(t, h, upstreamBody("Q", merge(queryBody("api_key", "abcdefghijkl"), map[string]any{"url": "https://h/mcp?api_key=1"})))
+	if rr.Code != http.StatusBadRequest || up != nil || jsonObject(t, rr)["error"] != errURLQueryParam {
+		t.Fatalf("create with the param in the url: %d %s", rr.Code, rr.Body.String())
+	}
+	_, up = newUpstream(t, h, upstreamBody("Q", merge(queryBody("api_key", "abcdefghijkl"), map[string]any{"url": "https://h/mcp?page=1"})))
+	if up == nil {
+		t.Fatal("create with another parameter refused")
+	}
+	id := up["id"].(string)
+	for name, body := range map[string]map[string]any{
+		"url gains the param, case folded": {"url": "https://h/mcp?page=1&API_KEY=1"},
+		"url gains it after a semicolon":   {"url": "https://h/mcp?page=1;api_key=1"},
+		// The spellings the send drops are the spellings the gate refuses.
+		"url gains it NUL padded":                {"url": "https://h/mcp?page=1&api_key%00=1"},
+		"url gains it space padded":              {"url": "https://h/mcp?page=1&api_key+=1"},
+		"url gains an undecodable key":           {"url": "https://h/mcp?page=1&q%zz=1"},
+		"config renames onto a stored parameter": {"auth_config": map[string]string{"param": "page", "value": "abcdefghijkl"}},
+	} {
+		rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", body)
+		if rr.Code != http.StatusBadRequest || jsonObject(t, rr)["error"] != errURLQueryParam {
+			t.Fatalf("%s: %d %s", name, rr.Code, rr.Body.String())
+		}
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", map[string]any{"url": "https://h/mcp?page=2"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("url with another parameter: %d %s", rr.Code, rr.Body.String())
+	}
+	// A legacy row that carries the key in its url and is switched to the
+	// query kind without editing the url is refused, so the key cannot stay
+	// in the url column while the row reads as fixed.
+	legacy, _ := mustUpstream(t, h, "Legacy", map[string]any{"url": "https://h/mcp?api_key=OLD_VALUE"})
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+legacy, "test-admin", queryBody("api_key", "abcdefghijkl"))
+	if rr.Code != http.StatusBadRequest || jsonObject(t, rr)["error"] != errURLQueryParam {
+		t.Fatalf("legacy row to query without a url edit: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, h, http.MethodPatch, "/upstreams/"+legacy, "test-admin", merge(queryBody("api_key", "abcdefghijkl"), map[string]any{"url": "https://h/mcp"}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("legacy row fixed in one PATCH: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func merge(a, b map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}

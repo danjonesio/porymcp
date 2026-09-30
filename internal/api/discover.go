@@ -145,6 +145,27 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	// The query rules run here as on create (PORM-27), so the Discover
+	// button answers what Create would: the shape sentence for a missing or
+	// malformed credential, not preflight's, and the same-name refusal
+	// before anything is dialled.
+	rawAuth := in.AuthConfig.Value
+	if authType == models.AuthQuery {
+		if emptyAuthConfig(rawAuth) {
+			writeError(w, http.StatusBadRequest, errQueryConfigShape)
+			return
+		}
+		cfg, msg := queryAuthRule(rawAuth)
+		if msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		if msg := checkQueryParamRule(target, authType, cfg.Param); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		rawAuth, _ = json.Marshal(cfg)
+	}
 	// No slug is derived. createUpstream walks candidates and de-duplicates,
 	// so an upstream previewed as "github" may well be stored as "github-2",
 	// and an operator who copied "github__search" out of this panel into a
@@ -162,7 +183,7 @@ func (s *Server) discoverUnsaved(w http.ResponseWriter, r *http.Request) {
 	// handed straight to the client: never encrypted, never stored, and never
 	// echoed back, Discovery has no field that could hold it. A null is
 	// forwarded as no credential, not as the four bytes "null".
-	s.runDiscovery(w, r, u, in.AuthConfig.Value, unsavedPayload)
+	s.runDiscovery(w, r, u, rawAuth, unsavedPayload)
 }
 
 // savedUpstream and unsavedPayload say whether runDiscovery has a stored row to

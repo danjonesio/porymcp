@@ -147,21 +147,22 @@ func TestRekeyUpstreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	createUpstream(t, s, "r1", models.AuthBearer, legacy)                              // legacy under current: rewritten
-	createUpstream(t, s, "r2", models.AuthBearer, sealWith(t, old, `{"token":"old"}`)) // v1 under previous: rewritten
-	createUpstream(t, s, "r3", models.AuthBearer, sealWith(t, cur, `{"token":"cur"}`)) // v1 under current: already current
-	createUpstream(t, s, "r4", models.AuthNone, sealWith(t, old, `{}`))                // none: not a credential, untouched
-	createUpstream(t, s, "r5", models.AuthAPIKey, "")                                  // needs one, has none: no_credential
+	createUpstream(t, s, "r1", models.AuthBearer, legacy)                                               // legacy under current: rewritten
+	createUpstream(t, s, "r2", models.AuthBearer, sealWith(t, old, `{"token":"old"}`))                  // v1 under previous: rewritten
+	createUpstream(t, s, "r3", models.AuthBearer, sealWith(t, cur, `{"token":"cur"}`))                  // v1 under current: already current
+	createUpstream(t, s, "r4", models.AuthNone, sealWith(t, old, `{}`))                                 // none: not a credential, untouched
+	createUpstream(t, s, "r5", models.AuthAPIKey, "")                                                   // needs one, has none: no_credential
+	createUpstream(t, s, "r6", models.AuthQuery, sealWith(t, old, `{"param":"api_key","value":"old"}`)) // query under previous (PORM-27): rewritten
 	before3, before4 := storedAuth(t, s, "r3"), storedAuth(t, s, "r4")
 
 	sum, err := s.RekeyUpstreams(ctx, k.Fingerprint(), rekeyWith(t, k))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (RekeySummary{Rewritten: 2, AlreadyCurrent: 1, NoCredential: 1}); sum != want {
+	if want := (RekeySummary{Rewritten: 3, AlreadyCurrent: 1, NoCredential: 1}); sum != want {
 		t.Fatalf("summary = %+v, want %+v", sum, want)
 	}
-	for _, id := range []string{"r1", "r2"} {
+	for _, id := range []string{"r1", "r2", "r6"} {
 		got := storedAuth(t, s, id)
 		if !strings.HasPrefix(got, "v1:"+k.Fingerprint()+":") {
 			t.Errorf("%s = %q, want a v1 value under the current key", id, got)
@@ -185,7 +186,7 @@ func TestRekeyUpstreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (RekeySummary{Rewritten: 0, AlreadyCurrent: 3, NoCredential: 1, PreviousFingerprint: k.Fingerprint()}); again != want {
+	if want := (RekeySummary{Rewritten: 0, AlreadyCurrent: 4, NoCredential: 1, PreviousFingerprint: k.Fingerprint()}); again != want {
 		t.Fatalf("second run = %+v, want %+v", again, want)
 	}
 }

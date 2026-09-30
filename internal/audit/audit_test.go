@@ -82,6 +82,26 @@ func TestRedactQuery(t *testing.T) {
 	if RedactQuery(nil) == nil {
 		t.Fatal("nil query must give an empty map, not nil")
 	}
+	// PORM-27 security requirement 12: an extra name (the relay's configured
+	// query parameter) is redacted like the two sets, under the same
+	// normalisation, and the exported predicate agrees with the sets.
+	extra, _ := url.ParseQuery("appid=clientvalue&App-Id=other&page=3&app_id+=padded&app_id%00=nul")
+	got = RedactQuery(extra, "app_id")
+	if got["appid"] != "clientvalue" || got["App-Id"] != "[redacted]" || got["page"] != "3" || got["app_id "] != "[redacted]" || got["app_id\x00"] != "[redacted]" {
+		t.Fatalf("extra name, case folded and padded: %v", got)
+	}
+	got = RedactQuery(extra, "appid")
+	if got["appid"] != "[redacted]" || got["app_id "] != "padded" {
+		t.Fatalf("extra name exact: %v", got)
+	}
+	for name, want := range map[string]bool{"Api-Key": true, "TOKEN": true, "page": false, "": false} {
+		if SecretQueryName(name) != want {
+			t.Errorf("SecretQueryName(%q) = %v, want %v", name, !want, want)
+		}
+	}
+	if !QueryCarriesSecret(url.Values{"page": {"1"}, "token": {"x"}}) || QueryCarriesSecret(url.Values{"page": {"1"}}) {
+		t.Fatal("QueryCarriesSecret disagrees with SecretQueryName")
+	}
 }
 
 // countingStore is the real store with its inserts counted and, when delay is

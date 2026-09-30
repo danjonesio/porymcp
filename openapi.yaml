@@ -94,7 +94,10 @@ paths:
             on `kind` `http`, `oauth is not available on an HTTP API upstream`,
             a base URL with a query string or userinfo, or a `test_path` that
             breaks its rules; on `kind` `mcp`, a non-empty `test_path`
-            (`test_path applies to an HTTP API upstream`)
+            (`test_path applies to an HTTP API upstream`); on `auth_type`
+            `query`, an `auth_config` that is not exactly `{param, value}`
+            (absent and `{}` included), a `param` outside its rule, a value
+            over 4096 bytes, or a url that already carries the parameter
         "409":
           description: Slug already taken, or no unique slug could be derived
   /upstreams/discover:
@@ -146,7 +149,9 @@ paths:
             payload, which is discovered by the saved route once connected;
             the kind rules POST /upstreams applies (`invalid kind`, a
             `test_path` on an mcp payload, oauth or a base URL with a query
-            string or userinfo on an http one).
+            string or userinfo on an http one); the query rules POST
+            /upstreams applies (the `{param, value}` shape and a url that
+            already carries the parameter).
         "429":
           $ref: "#/components/responses/DiscoveryRateLimited"
   /upstreams/{id}/discover:
@@ -380,7 +385,12 @@ paths:
         A changed `test_path` resets both too. `kind` cannot change: a
         different value is 400 `kind cannot be changed`, the stored value is a
         no-op. The kind rules (oauth, a base URL with a query string or
-        userinfo, `test_path` on an mcp row) are checked on the merged row.
+        userinfo, `test_path` on an mcp row) are checked on the merged row,
+        and so are the query rules (PORM-27): a `query` row's url may not
+        carry the parameter the credential sets, whichever of url, auth_type
+        or auth_config the body changes, and a change of auth_type to or from
+        `query` with no non-empty auth_config is refused, except to `none` or
+        `oauth`, which empty the column.
       requestBody:
         required: true
         content:
@@ -397,8 +407,9 @@ paths:
         "400":
           description: >-
             Invalid field, slug or kind differs from the stored value, a
-            credential sent beside `auth_type` `none`, or a kind rule broken
-            on the merged row
+            credential sent beside `auth_type` `none`, a kind or query rule
+            broken on the merged row, or a change of auth_type to or from
+            `query` with no new auth_config
         "503":
           description: >-
             `upstream is busy; try again`: a write on an `oauth` row takes the
@@ -1016,11 +1027,12 @@ components:
             with a PATCH sending `streamable-http`.
         auth_type:
           type: string
-          enum: [none, bearer, header, api_key, custom, oauth]
+          enum: [none, bearer, header, api_key, custom, query, oauth]
           description: >-
             How the stored credential is presented to the upstream. `oauth`
             (PORM-139): a token set obtained by the operator signing in at the
-            vendor and renewed by PoryMCP.
+            vendor and renewed by PoryMCP. `query` (PORM-27): one query
+            parameter appended to the URL at send time.
         auth_configured:
           type: boolean
           description: Whether a credential is stored for this upstream. Never the credential itself.
@@ -1042,7 +1054,9 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Names the header the credential is sent in. Never the credential.
+          description: >-
+            Names the header or the query parameter the credential is sent in,
+            under `header` or `param`. Never the credential.
         enabled:
           type: boolean
           description: Whether virtual keys may reach it. A disabled upstream is still discoverable.
@@ -1153,20 +1167,26 @@ components:
             `streamable-http` (PORM-28).
         auth_type:
           type: string
-          enum: [none, bearer, header, api_key, custom, oauth]
+          enum: [none, bearer, header, api_key, custom, query, oauth]
           description: >-
             On PATCH, `none` also removes the stored credential. On POST and
             PATCH a credential sent beside `none` is 400. A change into or out
             of `oauth` with no auth_config in the body removes the stored
             value, and so does a URL change on an `oauth` row; an auth_config
-            carried in the same body is stored instead.
+            carried in the same body is stored instead. A change to or from
+            `query` with no non-empty auth_config is 400, except to `none` or
+            `oauth` (PORM-27).
         auth_config:
           type: [object, "null"]
           description: >-
             Write-only. A value replaces the stored credential; an object with
             no members stores nothing; `null` leaves it unchanged, on PATCH and
             on POST alike (on POST that means no credential). A credential sent
-            beside `auth_type` `none` is refused with 400.
+            beside `auth_type` `none` is refused with 400. For `query` the
+            value is exactly `{"param": "<name>", "value": "<token>"}`: `param`
+            is 1 to 64 characters of `A-Z`, `a-z`, `0-9`, `.`, `_`, `~` and
+            `-`, the value at most 4096 bytes, any other member is 400, and on
+            POST an absent, `null` or `{}` value is 400 too.
         enabled:
           type: boolean
     Discovery:

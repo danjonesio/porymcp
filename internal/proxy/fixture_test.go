@@ -120,6 +120,7 @@ type upstreamSpec struct {
 // one it copied off the client.
 type recordedRequest struct {
 	HTTPMethod string
+	RawQuery   string
 	Header     http.Header
 	Body       []byte
 	RPCMethod  string
@@ -237,6 +238,7 @@ func (s *stub) bump(r *http.Request, body []byte, method, tool string) {
 	s.total++
 	s.reqs = append(s.reqs, recordedRequest{
 		HTTPMethod: r.Method,
+		RawQuery:   r.URL.RawQuery,
 		Header:     r.Header.Clone(),
 		Body:       append([]byte(nil), body...),
 		RPCMethod:  method,

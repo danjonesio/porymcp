@@ -27,7 +27,9 @@ var (
 // or withheld error answer (PORM-204): each describes the bytes the upstream
 // sent, so on the rewritten body it would fail an integrity check or hand a
 // reader a digest of text the client never received.
-var rewrittenBodyHeaders = []string{"Etag", "Content-Digest", "Repr-Digest", "Digest", "Content-MD5"}
+// Content-Range joins them (PORM-27): a rewritten body is no longer the
+// byte range the upstream described.
+var rewrittenBodyHeaders = []string{"Etag", "Content-Digest", "Repr-Digest", "Digest", "Content-MD5", "Content-Range"}
 
 // filterListResponse trims a forwarded tools/list answer to the tools the gate
 // would let this key call, and returns the headers that still describe the

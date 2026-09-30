@@ -229,3 +229,28 @@ func TestFailedCarriesKind(t *testing.T) {
 		t.Fatalf("kind absent from %s", raw)
 	}
 }
+
+// TestProbeSendsQueryCredential pins PORM-27 security requirement 3 on the
+// http-kind probe: the one GET to the base joined with the test path
+// carries the credential as its query parameter and no Authorization.
+func TestProbeSendsQueryCredential(t *testing.T) {
+	stub := newAPIStub(t)
+	c := New(testGuard)
+	up := httpUpstream(stub.srv.URL+"/v1", "/user")
+	up.AuthType = models.AuthQuery
+	d := c.Probe(context.Background(), up, json.RawMessage(`{"param":"api_key","value":"QUERY_VALUE_MARKER"}`))
+	if !d.OK {
+		t.Fatalf("d = %+v", d)
+	}
+	reqs := stub.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests, want 1", len(reqs))
+	}
+	r := reqs[0]
+	if r.URL.Path != "/v1/user" || r.URL.RawQuery != "api_key=QUERY_VALUE_MARKER" {
+		t.Errorf("probe went to %s?%s", r.URL.Path, r.URL.RawQuery)
+	}
+	if got := r.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q", got)
+	}
+}
