@@ -20,6 +20,8 @@ export type UpstreamForm = {
   auth_type: string
   token: string
   header: string
+  /** The query parameter name of a query credential (PORM-27). Blank on Add; seeded from `auth_hint.param` on Edit. */
+  param: string
   value: string
   /**
    * The optional client identity of an oauth upstream (PORM-139): what the
@@ -46,7 +48,17 @@ export type UpstreamForm = {
  * was. Name, slug and description are not here: they only change previewed tool
  * names, which recompute on render.
  */
-export const CONNECTION_FIELDS = ['kind', 'url', 'transport', 'test_path', 'auth_type', 'token', 'header', 'value'] as const
+export const CONNECTION_FIELDS = ['kind', 'url', 'transport', 'test_path', 'auth_type', 'token', 'header', 'param', 'value'] as const
+
+/**
+ * The characters a query parameter name may hold, as the `pattern` attribute
+ * of the Parameter name box and the same rule the server applies
+ * (mcpclient.ValidQueryParam). Browsers compile `pattern` with the `v` flag,
+ * under which an unescaped trailing `-` in a class is a syntax error and an
+ * invalid pattern is ignored in silence, so the test pins that this one
+ * compiles.
+ */
+export const PARAM_PATTERN = '[A-Za-z0-9._~\\-]+'
 
 /** The header name the Add dialog starts with. PORM-39 changes it here and nowhere else. */
 export const DEFAULT_HEADER = 'Authorization'
@@ -87,6 +99,7 @@ export const AUTH_TYPE_LABELS: Record<string, string> = {
   bearer: 'Bearer',
   header: 'Header',
   api_key: 'API key',
+  query: 'Query parameter',
   custom: 'Custom',
   oauth: 'OAuth',
 }
@@ -110,6 +123,11 @@ export function headerShaped(authType: string): boolean {
   return authType === 'header' || authType === 'api_key' || authType === 'custom'
 }
 
+/** The auth type whose credential is a query parameter name and a value (PORM-27). */
+export function queryShaped(authType: string): boolean {
+  return authType === 'query'
+}
+
 /** The Add dialog's initial state. */
 export function blankUpstreamForm(): UpstreamForm {
   return {
@@ -123,6 +141,7 @@ export function blankUpstreamForm(): UpstreamForm {
     auth_type: 'none',
     token: '',
     header: DEFAULT_HEADER,
+    param: '',
     value: '',
     client_id: '',
     client_secret: '',
@@ -154,6 +173,7 @@ export function formFromUpstream(u: Upstream): UpstreamForm {
     auth_type: u.auth_type,
     token: '',
     header: u.auth_hint?.header ?? '',
+    param: u.auth_hint?.param ?? '',
     value: '',
     client_id: '',
     client_secret: '',
@@ -171,12 +191,16 @@ export function formFromUpstream(u: Upstream): UpstreamForm {
  * the stored value.
  */
 export function authConfigFrom(
-  form: Pick<UpstreamForm, 'auth_type' | 'token' | 'header' | 'value' | 'client_id' | 'client_secret'>,
+  form: Pick<UpstreamForm, 'auth_type' | 'token' | 'header' | 'param' | 'value' | 'client_id' | 'client_secret'>,
 ): Record<string, string> {
   const auth_config: Record<string, string> = {}
   if (form.auth_type === 'bearer' && form.token) auth_config.token = form.token
   if (headerShaped(form.auth_type) && form.value) {
     auth_config.header = form.header
+    auth_config.value = form.value
+  }
+  if (queryShaped(form.auth_type) && form.value) {
+    auth_config.param = form.param
     auth_config.value = form.value
   }
   // An oauth client goes only when an id was typed: the server refuses a
@@ -195,7 +219,7 @@ export function authConfigFrom(
  */
 export function credentialTyped(f: Pick<UpstreamForm, 'auth_type' | 'token' | 'value' | 'client_id'>): boolean {
   if (f.auth_type === 'bearer') return f.token.trim() !== ''
-  if (headerShaped(f.auth_type)) return f.value.trim() !== ''
+  if (headerShaped(f.auth_type) || queryShaped(f.auth_type)) return f.value.trim() !== ''
   if (f.auth_type === 'oauth') return f.client_id.trim() !== ''
   return false
 }
@@ -274,6 +298,13 @@ export function upstreamPatchBody(before: Upstream, f: UpstreamForm): Record<str
       if (header === '') return body
       auth_config.header = header
     }
+    // The same rule for a query parameter name (PORM-27): the server refuses
+    // a blank one, but a name of spaces must never leave the browser either.
+    if ('param' in auth_config) {
+      const param = auth_config.param.trim()
+      if (param === '') return body
+      auth_config.param = param
+    }
     body.auth_config = auth_config
   }
   return body
@@ -281,11 +312,14 @@ export function upstreamPatchBody(before: Upstream, f: UpstreamForm): Record<str
 
 /**
  * Whether the Edit dialog must have a credential before it can save. Two cases.
- * The auth type changed to one that needs a credential: the server would accept
- * the new type over the old blob and the row would read unreadable, with no 400
- * to stop it. Or the header name changed on a header-shaped type: the name is
+ * The auth type changed to one that needs a credential: for most types the
+ * server would accept the new type over the old blob and the row would read
+ * unreadable, with no 400 to stop it; a change to or from query is refused by
+ * the server without a new credential (PORM-27), and this keeps the dialog
+ * from ever sending that request. Or the header name changed on a
+ * header-shaped type, or the parameter name on a query type: the name is
  * sealed inside the credential, so it cannot change without the value. The
- * header is compared against the seeded value, not the raw hint, so a row whose
+ * name is compared against the seeded value, not the raw hint, so a row whose
  * hint is absent can be renamed without re-entering anything.
  *
  * header, api_key and custom share one stored shape, so switching between them
@@ -302,6 +336,7 @@ export function credentialRequired(before: Upstream, f: UpstreamForm): boolean {
   if (f.auth_type === 'oauth') return false
   if (f.auth_type !== before.auth_type) return f.auth_type !== 'none'
   if (headerShaped(f.auth_type)) return f.header.trim() !== formFromUpstream(before).header
+  if (queryShaped(f.auth_type)) return f.param.trim() !== formFromUpstream(before).param
   return false
 }
 
@@ -309,7 +344,7 @@ export function credentialRequired(before: Upstream, f: UpstreamForm): boolean {
  * Whether the header-name box must be filled: whenever a credential is about to
  * be sent for a header-shaped type. The proxy sends nothing for `header` and
  * `custom` with an empty header name and silently substitutes X-API-Key for
- * `api_key` (internal/mcpclient/inject.go, headersFor), so a body with an empty
+ * `api_key` (internal/mcpclient/inject.go, wireFor), so a body with an empty
  * name must never leave the browser. Undefined `before` is the Add dialog.
  */
 export function headerRequired(before: Upstream | undefined, f: UpstreamForm): boolean {
@@ -317,7 +352,30 @@ export function headerRequired(before: Upstream | undefined, f: UpstreamForm): b
   return credentialTyped(f) || (before !== undefined && credentialRequired(before, f))
 }
 
+/**
+ * Whether the parameter-name box must be filled: whenever a credential is
+ * about to be sent for the query type (PORM-27). The server refuses a query
+ * auth_config with no param, and the name is sealed inside the credential,
+ * so a body with an empty name must never leave the browser.
+ */
+export function paramRequired(before: Upstream | undefined, f: UpstreamForm): boolean {
+  if (!queryShaped(f.auth_type)) return false
+  return credentialTyped(f) || (before !== undefined && credentialRequired(before, f))
+}
+
 const HEADER_SUFFIX = ' The header name is stored with it, so enter that too.'
+const PARAM_SUFFIX = ' The parameter name is stored with it, so enter that too.'
+
+/**
+ * The sentence appended to a broken-state help text for a type whose name is
+ * sealed inside the credential: the header suffix, the query-parameter
+ * suffix, or nothing.
+ */
+function credentialNameSuffix(authType: string): string {
+  if (headerShaped(authType)) return HEADER_SUFFIX
+  if (queryShaped(authType)) return PARAM_SUFFIX
+  return ''
+}
 
 /**
  * The helper text under the credential box in the Edit dialog when nothing
@@ -329,7 +387,7 @@ const HEADER_SUFFIX = ' The header name is stored with it, so enter that too.'
  */
 export function credentialHelp(before: Upstream, f: UpstreamForm): string {
   if (f.auth_type === 'oauth') return oauthDescription(before)
-  const suffix = headerShaped(f.auth_type) ? HEADER_SUFFIX : ''
+  const suffix = credentialNameSuffix(f.auth_type)
   const state = authState(before)
   if (state.tone === 'broken') {
     if (before.auth_status === 'undecryptable') {
@@ -340,8 +398,15 @@ export function credentialHelp(before: Upstream, f: UpstreamForm): string {
     }
     return 'No usable credential is stored for this auth type. Enter one, or this upstream cannot authenticate.' + suffix
   }
+  // One template with the noun, so the header and query sentences cannot
+  // drift apart: the hint carries one key or the other, never both.
   const header = before.auth_hint?.header
-  if (header) return `Leave blank to keep the stored credential. It currently sends the ${header} header. A value here replaces it.`
+  const param = before.auth_hint?.param
+  const name = header ?? param
+  if (name) {
+    const noun = header ? 'header' : 'query parameter'
+    return `Leave blank to keep the stored credential. It currently sends the ${name} ${noun}. A value here replaces it.`
+  }
   return 'Leave blank to keep the stored credential. A value here replaces it.'
 }
 
@@ -367,6 +432,9 @@ export function editCredentialDescription(before: Upstream, f: UpstreamForm): st
       return before.auth_type === 'none'
         ? `Enter the credential for ${label}.`
         : `Changing the auth type changes what PoryMCP sends. Enter the credential for ${label} to save.`
+    }
+    if (queryShaped(f.auth_type)) {
+      return 'The parameter name is stored inside the credential. Enter the value again to change the name.'
     }
     return 'The header name is stored inside the credential. Enter the value again to change the name.'
   }

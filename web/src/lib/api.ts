@@ -94,14 +94,16 @@ export type Upstream = {
    */
   auth_status: string
   /**
-   * The header name the stored credential sends, and only the name
-   * (internal/api/upstreams.go presentUpstream). Present only when the blob
-   * decrypts and the auth type carries a header, so absent for bearer, for
-   * none, and for every undecryptable or unreadable row. Typed as this one
-   * key so nothing widens the one field that carries decrypted material to
-   * the browser.
+   * Where the stored credential is sent, and only that: the header name for
+   * the header-shaped types, or the query parameter name for the query type
+   * (internal/api/upstreams.go presentUpstream, PORM-27), under its own key
+   * so a reader of `header` never takes a parameter for a header. Present
+   * only when the blob decrypts and the auth type carries a name, so absent
+   * for bearer, for none, and for every undecryptable or unreadable row.
+   * Typed as these two keys so nothing widens the one field that carries
+   * decrypted material to the browser.
    */
-  auth_hint?: { header?: string }
+  auth_hint?: { header?: string; param?: string }
   /**
    * Present on an oauth row whose stored blob is absent or opens (PORM-139).
    * `expires_at` null means not connected. Never a token, a secret, an

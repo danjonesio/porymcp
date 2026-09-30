@@ -16,6 +16,7 @@ import {
   AUTH_TYPE_LABELS,
   CLIENT_SECRET_ALONE,
   KIND_LABELS,
+  PARAM_PATTERN,
   TRANSPORT_LABELS,
   applyKindChange,
   clearStoredDescription,
@@ -24,6 +25,8 @@ import {
   editCredentialDescription,
   headerRequired,
   headerShaped,
+  paramRequired,
+  queryShaped,
   removeCredentialDescription,
   urlChangeDescription,
   type UpstreamForm,
@@ -51,14 +54,20 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
   const row = mode === 'edit' ? before : undefined
   const isHTTP = form.kind === 'http'
   const isHeader = headerShaped(form.auth_type)
+  const isQuery = queryShaped(form.auth_type)
   // credentialRequired forces re-entry on any auth type change, including between
   // header, api_key and custom, which share one stored shape. That is the issue's
   // deliberate default (PORM-2), not a server requirement: see the helper's comment.
   const credRequired = row ? credentialRequired(row, form) : false
   const hdrRequired = headerRequired(row, form)
+  const prmRequired = paramRequired(row, form)
 
   function credentialDescription(): string | null {
-    if (!row) return form.auth_type === 'bearer' ? 'Stored encrypted. It will not be shown after save.' : null
+    if (!row) {
+      if (form.auth_type === 'bearer') return 'Stored encrypted. It will not be shown after save.'
+      if (isQuery) return 'Stored encrypted. PoryMCP adds it to the URL on every request. It is not shown after save.'
+      return null
+    }
     return editCredentialDescription(row, form)
   }
 
@@ -136,6 +145,9 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
               Requests to the key&apos;s endpoint are sent here with the stored credential. The path after /api/ is
               appended.
             </Description>
+          ) : null}
+          {isQuery && !row ? (
+            <Description>Enter the URL without the key. PoryMCP adds the parameter when it connects.</Description>
           ) : null}
           {urlNote ? <Description>{urlNote}</Description> : null}
           {plainHTTP ? <Description>{PLAIN_HTTP_NOTE}</Description> : null}
@@ -339,6 +351,44 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
               value={form.value}
               autoComplete="new-password"
               required={credRequired}
+              onChange={(e) => onChange({ value: e.target.value })}
+            />
+            {credentialNote ? <Description>{credentialNote}</Description> : null}
+          </Field>
+        </>
+      ) : null}
+      {isQuery ? (
+        // The query kind's pair (PORM-27), in the place of the header pair:
+        // the name is not secret and is seeded from auth_hint on Edit; the
+        // value is a password box that starts empty, and on Add it is
+        // required because the server refuses a query row with no
+        // credential.
+        <>
+          <Field>
+            <Label>Parameter name</Label>
+            <Input
+              name="param"
+              value={form.param}
+              autoComplete="off"
+              placeholder="api_key"
+              required={prmRequired}
+              pattern={PARAM_PATTERN}
+              maxLength={64}
+              onChange={(e) => onChange({ param: e.target.value })}
+            />
+            <Description>
+              The name the server&apos;s documentation gives for the key in its URL, such as api_key. Letters, digits
+              and . _ ~ - only.
+            </Description>
+          </Field>
+          <Field>
+            <Label>Parameter value</Label>
+            <Input
+              type="password"
+              name="value"
+              value={form.value}
+              autoComplete="new-password"
+              required={row ? credRequired : true}
               onChange={(e) => onChange({ value: e.target.value })}
             />
             {credentialNote ? <Description>{credentialNote}</Description> : null}
