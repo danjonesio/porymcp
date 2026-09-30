@@ -183,8 +183,10 @@
   Discovery's `upstream_message` takes the same pass before its 200-byte cut,
   and the `group member skipped` line in the server log is redacted by the
   same rules over its whole text (PORM-196); PoryMCP's own sentences on it
-  carry no credential and pass unchanged. Both scrub control characters
-  first, so a credential split by one is still seen whole.
+  carry no credential, so the literal pass leaves them as written, and the
+  pattern rules can still replace a token-shaped host label in one, as on
+  the audit row. Both scrub control characters first, so a credential split
+  by one is still seen whole.
 - Optional redaction of sensitive fields in AuditLog params.
 - `error_message` is redacted by literal and by pattern (PORM-72,
   PORM-208). `audit.Record` first replaces the credential the proxy injected

@@ -1336,7 +1336,9 @@ func (h *Handler) memberCatalogues(ctx context.Context, ups []*models.Upstream) 
 	// control byte inside an echoed credential would split the literal, and
 	// slog's JSON handler escapes the byte rather than dropping it, so the
 	// fragment would be readable in the log. PoryMCP's own sentences carry
-	// no credential and pass unchanged.
+	// no credential, so the literal pass leaves them as written; the pattern
+	// rules can still replace a token-shaped host label in one, as on the
+	// audit row.
 	skip := func(up *models.Upstream, err error, literals []string) {
 		if h.log == nil {
 			return
