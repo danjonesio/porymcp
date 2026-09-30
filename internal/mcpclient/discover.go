@@ -1005,8 +1005,10 @@ func CheckTarget(u *url.URL) error {
 // RawQuery and the base's would be dropped or merged in an order nobody
 // chose; and no userinfo, because Go's transport turns URL userinfo into an
 // Authorization: Basic header on a request that carries none, which the
-// probe of a none-auth upstream would then send. PORM-27 owns the wider rule
-// for credentials in stored URLs; this refuses new ones on this kind.
+// probe of a none-auth upstream would then send. A credential in a stored
+// URL of any kind is never sent (open clears userinfo, PORM-27), the boot
+// check names such rows, and the query kind is where a key that belongs in
+// the URL goes; this refuses new ones on this kind.
 func CheckHTTPBase(u *url.URL) error {
 	if err := CheckTarget(u); err != nil {
 		return err

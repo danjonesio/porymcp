@@ -288,7 +288,7 @@ export function upstreamPatchBody(before: Upstream, f: UpstreamForm): Record<str
   if (credentialTyped(f)) {
     // The header name is trimmed here and not in authConfigFrom, which the
     // create body reproduces byte for byte. A name that is blank after the trim
-    // never goes: the proxy would accept it (headersFor gates on != "") and then
+    // never goes: the proxy would accept it (wireFor gates on != "") and then
     // fail every call on a field name of spaces, with the old ciphertext gone.
     // The input's `pattern` refuses it first; this is the guarantee the test
     // pins if that ever changes.
