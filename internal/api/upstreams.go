@@ -384,7 +384,7 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 	// (PORM-120). An omitted auth_type took the default above, so the same
 	// refusal covers a create that sends only a credential. The unsaved
 	// POST /upstreams/discover route is not guarded: it persists nothing and
-	// headersFor ignores the credential for none.
+	// wireFor ignores the credential for none.
 	if authType == models.AuthNone && in.AuthConfig.Has() && !emptyAuthConfig(in.AuthConfig.Value) {
 		writeError(w, http.StatusBadRequest, errAuthNoneCredential)
 		return
