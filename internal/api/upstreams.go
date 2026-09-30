@@ -254,10 +254,10 @@ func queryAuthRule(raw json.RawMessage) (models.AuthConfig, string) {
 // sent for that name and no stored parameter is dropped at send time in
 // silence. It runs on the merged row, like checkUpstreamKindRules: on
 // create, on a PATCH that changes url, auth_type or auth_config, and on the
-// unsaved discover route. The pieces are read as withQueryParam reads them
-// on the way out ("&" or ";" separated, key before the first "=", decoded,
-// compared without case), so what the gate refuses is what the send would
-// have replaced. Nothing to compare (another kind, or no param) is "".
+// unsaved discover route. Each "&" piece is judged by the send's own
+// predicate (mcpclient.NamesQueryParam), so what the gate refuses is exactly
+// what ApplyAuth would have dropped, padded and undecodable spellings
+// included. Nothing to compare (another kind, or no param) is "".
 func checkQueryParamRule(rawURL, authType, param string) string {
 	if authType != models.AuthQuery || param == "" {
 		return ""
@@ -266,12 +266,8 @@ func checkQueryParamRule(rawURL, authType, param string) string {
 	if err != nil {
 		return ""
 	}
-	for _, piece := range strings.FieldsFunc(u.RawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
-		key := piece
-		if i := strings.IndexByte(piece, '='); i >= 0 {
-			key = piece[:i]
-		}
-		if dec, err := url.QueryUnescape(key); err == nil && strings.EqualFold(dec, param) {
+	for _, piece := range strings.Split(u.RawQuery, "&") {
+		if mcpclient.NamesQueryParam(piece, param) {
 			return errURLQueryParam
 		}
 	}

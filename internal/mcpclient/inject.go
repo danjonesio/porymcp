@@ -202,8 +202,8 @@ func wireFor(authType string, raw json.RawMessage) (wire, error) {
 }
 
 // withQueryParam rebuilds rawQuery so that exactly one piece carries name.
-// It splits rawQuery on "&" and drops every piece pieceNames says names the
-// parameter; every other piece, empty ones included, keeps its bytes and its
+// It splits rawQuery on "&" and drops every piece NamesQueryParam says names
+// the parameter; every other piece, empty ones included, keeps its bytes and its
 // order, and url.QueryEscape(name)+"="+url.QueryEscape(value) is appended
 // last. It never calls url.Values.Encode, which would re-sort and re-encode
 // the stored URL's own parameters and the relay client's. Dropping before
@@ -214,7 +214,7 @@ func withQueryParam(rawQuery, name, value string) string {
 	var kept []string
 	if rawQuery != "" {
 		for _, piece := range strings.Split(rawQuery, "&") {
-			if !pieceNames(piece, name) {
+			if !NamesQueryParam(piece, name) {
 				kept = append(kept, piece)
 			}
 		}
@@ -223,15 +223,19 @@ func withQueryParam(rawQuery, name, value string) string {
 	return strings.Join(kept, "&")
 }
 
-// pieceNames reports whether one "&" piece of a query names the parameter,
-// read the way a lenient upstream parser might: each ";"-separated sub-piece
-// is a candidate (some stacks still split on ";"), its key is the text before
-// the first "=" or the whole sub-piece, a key url.QueryUnescape cannot decode
-// counts as a match (a lenient decoder may read it as the name), and a decoded
-// key is cut at the first NUL and trimmed of ASCII space before a
-// case-insensitive comparison, because stacks that truncate at NUL, trim, or
-// fold case would otherwise read a padded spelling as the name.
-func pieceNames(piece, name string) bool {
+// NamesQueryParam reports whether one "&" piece of a query names the
+// parameter, read the way a lenient upstream parser might: each ";"-separated
+// sub-piece is a candidate (some stacks still split on ";"), its key is the
+// text before the first "=" or the whole sub-piece, a key url.QueryUnescape
+// cannot decode counts as a match (a lenient decoder may read it as the
+// name), and a decoded key is cut at the first NUL and trimmed of ASCII space
+// before a case-insensitive comparison, because stacks that truncate at NUL,
+// trim, or fold case would otherwise read a padded spelling as the name. That
+// is the whole list: a tab, CR or LF padding and a parser's own renaming
+// (PHP's "." to "_") are not read as the name. It is exported so the write
+// gate (internal/api, checkQueryParamRule) refuses exactly what the send
+// would drop, and the two cannot drift apart.
+func NamesQueryParam(piece, name string) bool {
 	for _, sub := range strings.Split(piece, ";") {
 		key := sub
 		if i := strings.IndexByte(sub, '='); i >= 0 {

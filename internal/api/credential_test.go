@@ -529,8 +529,12 @@ func TestQueryRowRefusesURLWithParam(t *testing.T) {
 	}
 	id := up["id"].(string)
 	for name, body := range map[string]map[string]any{
-		"url gains the param, case folded":       {"url": "https://h/mcp?page=1&API_KEY=1"},
-		"url gains it after a semicolon":         {"url": "https://h/mcp?page=1;api_key=1"},
+		"url gains the param, case folded": {"url": "https://h/mcp?page=1&API_KEY=1"},
+		"url gains it after a semicolon":   {"url": "https://h/mcp?page=1;api_key=1"},
+		// The spellings the send drops are the spellings the gate refuses.
+		"url gains it NUL padded":                {"url": "https://h/mcp?page=1&api_key%00=1"},
+		"url gains it space padded":              {"url": "https://h/mcp?page=1&api_key+=1"},
+		"url gains an undecodable key":           {"url": "https://h/mcp?page=1&q%zz=1"},
 		"config renames onto a stored parameter": {"auth_config": map[string]string{"param": "page", "value": "abcdefghijkl"}},
 	} {
 		rr := doJSON(t, h, http.MethodPatch, "/upstreams/"+id, "test-admin", body)
