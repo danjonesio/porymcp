@@ -494,3 +494,46 @@ func TestTransportFailureNamesClass(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenStripsUserinfo pins PORM-27 security requirement 5: a URL that
+// carries user:password reaches the upstream with no Basic header, on every
+// kind, because open clears the userinfo before net/http can derive one.
+// Under bearer, only the bearer arrives.
+func TestOpenStripsUserinfo(t *testing.T) {
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Store(r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := NewHTTPClient(Options{Timeout: 5 * time.Second, Guard: testGuard})
+	for name, tc := range map[string]struct {
+		authType, raw, want string
+	}{
+		"none":   {"none", "", ""},
+		"bearer": {"bearer", `{"token":"abcdefghijkl"}`, "Bearer abcdefghijkl"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			u, _ := url.Parse(srv.URL + "/mcp")
+			u.User = url.UserPassword("legacy", "PASSWORD_MARKER")
+			req, err := http.NewRequest(http.MethodPost, u.String(), strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyAuth(req, tc.authType, []byte(tc.raw)); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := Open(client, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if got.Load().(string) != tc.want {
+				t.Fatalf("Authorization at the upstream = %q, want %q", got.Load(), tc.want)
+			}
+			if req.URL.User != nil {
+				t.Fatal("userinfo left on the request URL")
+			}
+		})
+	}
+}
