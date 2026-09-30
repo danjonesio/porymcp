@@ -371,7 +371,7 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
               value={form.param}
               autoComplete="off"
               placeholder="api_key"
-              required={prmRequired}
+              required={row ? prmRequired : true}
               pattern={PARAM_PATTERN}
               maxLength={64}
               onChange={(e) => onChange({ param: e.target.value })}
