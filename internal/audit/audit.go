@@ -228,8 +228,16 @@ func RedactQuery(q url.Values, extra ...string) map[string]string {
 	out := make(map[string]string, len(q))
 	for name, vals := range q {
 		secret := SecretQueryName(name)
+		// The extra name is compared the way the send drops it (cut at the
+		// first NUL, trimmed of ASCII space, case folded), so a padded
+		// spelling the upstream never sees is not recorded in clear either.
+		norm := name
+		if i := strings.IndexByte(norm, 0); i >= 0 {
+			norm = norm[:i]
+		}
+		norm = strings.ReplaceAll(strings.Trim(norm, " "), "-", "_")
 		for _, e := range extra {
-			if e != "" && strings.EqualFold(strings.ReplaceAll(name, "-", "_"), strings.ReplaceAll(e, "-", "_")) {
+			if e != "" && strings.EqualFold(norm, strings.ReplaceAll(e, "-", "_")) {
 				secret = true
 			}
 		}
