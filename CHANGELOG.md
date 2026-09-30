@@ -4,6 +4,19 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Discovery and the group skip line no longer repeat a credential an upstream echoes (PORM-196)
+
+- **A server that answers a wrong token with `invalid token <token>` now
+  reads `invalid token [redacted]` in discovery.** `upstream_message` on both
+  discover routes, and so the Tools panel, takes the same pass as an audit
+  row's `error_message`: the credential PoryMCP sent first, whatever its
+  shape, then the pattern rules, then the 200-byte bound.
+- **The `group member skipped` line in the server log is redacted the same
+  way.** A member whose `tools/list` fails with its own error message is
+  logged with the credential and any credential-shaped text replaced.
+- **An id that looks like a token can read `[redacted]` too.** The rules are
+  the audit row's, and they over-redact in the same places.
+
 ### An HTTP API's error answer no longer returns the credential to the key holder (PORM-204)
 
 - **An API that answers a bad token with `{"message":"invalid token

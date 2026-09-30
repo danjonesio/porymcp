@@ -514,8 +514,8 @@ headers PoryMCP sent (-32020)`, and `upstream requires a client capability
 PoryMCP does not offer (-32021)`. Every other outcome of the probe has no
 sentence of its own: it falls through to the handshake, which reports in the
 words it always used. `upstream_message` carries the upstream's
-own JSON-RPC `error.message`, single line, visible characters, at most 200
-bytes, and it is a separate field precisely so that `error` stays a string
+own JSON-RPC `error.message`, single line, visible characters, redacted, at
+most 200 bytes, and it is a separate field precisely so that `error` stays a string
 PoryMCP wrote: "token lacks the `repo` scope" is the answer an operator came
 for, but it is the upstream talking. `latency_ms` is the whole handshake,
 rounded to 10 ms, the era probe included: enough to tell a slow server from a
@@ -526,7 +526,12 @@ a legacy server `protocol_version` and `server_info` are what came back from
 `upstream_message`) has its control characters scrubbed before it is clamped: a
 newline or a tab becomes a space, and any other C0 character, `DEL` or U+FFFD is
 dropped, so a `curl … | jq -r` cannot be handed an escape sequence by an
-upstream. Invisible and bidirectional marks are not stripped yet: that is
+upstream. `upstream_message` is then redacted by the same rules as an audit
+row's `error_message` before it is clamped: the credential PoryMCP sent is
+replaced first, whatever its shape, then credential-shaped text, so `invalid
+token <token>` reads `invalid token [redacted]`. A message that is all token
+reads `[redacted]`, and so can an id that only looks like one. Invisible and
+bidirectional marks are not stripped yet: that is
 PORM-83.
 
 `tools` is always an array, never `null` and never omitted, and `tool_count` is
@@ -1695,7 +1700,8 @@ writes no audit row: the member is skipped, its tools are absent from the
 merged catalogue, and the client's own call succeeds on the members that
 answered. The skip is written to the server log as `group member skipped`,
 naming the member's slug and its upstream id. The `err` field carries the same
-sentence the member's own row would. Call the member's own
+sentence the member's own row would, and a member's own JSON-RPC error
+message on that line is redacted as on its row. Call the member's own
 `/{virtual_key_id}/{upstream_slug}/mcp` endpoint to get the `502` and the row.
 A `tools/call` the aggregate does route to a redirecting member is not blind:
 that one answers `502` and writes a row naming the member's `upstream_id`. A

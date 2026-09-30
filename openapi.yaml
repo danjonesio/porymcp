@@ -1242,7 +1242,10 @@ components:
           type: string
           description: >-
             The upstream's own JSON-RPC error.message when it sent one: single
-            line, visible characters, at most 200 bytes. It has a field of its
+            line, visible characters, redacted by the same rules as an audit
+            row's error_message, then at most 200 bytes. The credential PoryMCP
+            sent and any credential-shaped text read [redacted]. It has a field
+            of its
             own so that `error` stays a string PoryMCP wrote: "token lacks the
             repo scope" is the answer an operator came for, but it is the
             upstream talking.
