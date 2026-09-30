@@ -298,20 +298,21 @@ func TestRedactClamped(t *testing.T) {
 		in := strings.Repeat("w ", 125) + lit + strings.Repeat(" z", 19)
 		got := RedactClamped(in, 256, []string{lit})
 		assertNoFragment(t, "clamped value", got, lit)
-		if len(got) > 256 {
-			t.Errorf("clamped value is %d bytes, want at most 256", len(got))
-		}
-		if !strings.HasPrefix(got, "w w w") {
-			t.Errorf("clamped value = %q, want the text's own words first", got)
+		// The exact tail, because the six bytes a wrong order would keep
+		// are under the fragment sweep's floor: the marker replaces the
+		// whole literal first and the cut then lands inside the marker.
+		if want := strings.Repeat("w ", 125) + "[redac"; got != want {
+			t.Errorf("RedactClamped = %q, want %q", got, want)
 		}
 	})
 	t.Run("marker longer than the value is still bounded", func(t *testing.T) {
 		// "Bearer abc123def" is 16 bytes and its 9-byte value, which
 		// secretLike accepts for its digits, becomes the 10-byte marker:
-		// the text grows by one byte and the cut still lands at max.
-		got := RedactClamped("Bearer abc123def", 12, nil)
-		if got != "Bearer [reda" {
-			t.Errorf("RedactClamped = %q, want %q", got, "Bearer [reda")
+		// the text grows to 17 bytes, and the cut, which comes last, lands
+		// at max. A pass with no final cut returns 17 bytes.
+		got := RedactClamped("Bearer abc123def", 16, nil)
+		if got != "Bearer [redacted" {
+			t.Errorf("RedactClamped = %q, want %q", got, "Bearer [redacted")
 		}
 	})
 	t.Run("short text is whole", func(t *testing.T) {
