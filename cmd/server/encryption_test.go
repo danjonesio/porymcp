@@ -46,6 +46,21 @@ type bootRow struct {
 // optional pre-existing fingerprint, capturing the log as decoded records.
 func boot(t *testing.T, cfg *config.Config, stored string, rows []bootRow) (verdict string, err error, records []map[string]any, storedAfter string) {
 	t.Helper()
+	var ups []models.Upstream
+	for _, r := range rows {
+		var raw []byte
+		if r.stored != "" {
+			raw = []byte(r.stored)
+		}
+		ups = append(ups, models.Upstream{ID: r.id, Name: r.name, URL: "https://example.test/" + r.id, AuthType: r.authType, AuthConfig: raw})
+	}
+	return bootUpstreams(t, cfg, stored, ups)
+}
+
+// bootUpstreams is boot over whole rows, for a case that needs a url of its
+// own (PORM-27). Slug, transport, enabled and the timestamps are filled in.
+func bootUpstreams(t *testing.T, cfg *config.Config, stored string, ups []models.Upstream) (verdict string, err error, records []map[string]any, storedAfter string) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "boot.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -53,15 +68,10 @@ func boot(t *testing.T, cfg *config.Config, stored string, rows []bootRow) (verd
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 	now := time.Now().UTC()
-	for _, r := range rows {
-		var raw []byte
-		if r.stored != "" {
-			raw = []byte(r.stored)
-		}
-		if err := st.CreateUpstream(ctx, &models.Upstream{
-			ID: r.id, Name: r.name, Slug: r.id, URL: "https://example.test/" + r.id, Transport: models.TransportStreamableHTTP,
-			AuthType: r.authType, AuthConfig: raw, Enabled: true, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
+	for i := range ups {
+		u := ups[i]
+		u.Slug, u.Transport, u.Enabled, u.CreatedAt, u.UpdatedAt = u.ID, models.TransportStreamableHTTP, true, now, now
+		if err := st.CreateUpstream(ctx, &u); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -403,5 +413,56 @@ func TestUnknownSubcommandExits2(t *testing.T) {
 	}
 	if _, handled := dispatch([]string{"porymcp"}, &out, &errOut); handled {
 		t.Fatal("a bare invocation must start the server")
+	}
+}
+
+// TestBootWarnsURLCarriesCredential pins PORM-27 security requirement 13:
+// rows whose stored url carries userinfo or a credential-shaped query
+// parameter are named at boot by id and name in one Warn, the url and its
+// secrets never reach the log, a clean row is not named, and the line still
+// fires on a boot under an ephemeral key.
+func TestBootWarnsURLCarriesCredential(t *testing.T) {
+	cur := mustKey(t)
+	rows := []models.Upstream{
+		{ID: "u1", Name: "Userinfo", URL: "https://legacy:BOOT_PASSWORD_MARKER@h.example/mcp", AuthType: models.AuthNone},
+		{ID: "u2", Name: "Query", URL: "https://h.example/mcp?token=BOOT_TOKEN_MARKER", AuthType: models.AuthBearer, AuthConfig: []byte(sealUnder(t, cur, `{"token":"abcdefghijkl"}`))},
+		{ID: "u3", Name: "Clean", URL: "https://h.example/mcp?page=1", AuthType: models.AuthNone},
+	}
+	verdict, err, records, _ := bootUpstreams(t, &config.Config{EncryptionKey: cur}, "", rows)
+	if err != nil || verdict != webutil.EncryptionOK {
+		t.Fatalf("verdict=%q err=%v", verdict, err)
+	}
+	warns := recordsAt(records, "WARN")
+	if len(warns) != 1 {
+		t.Fatalf("want exactly one Warn record, got %d: %s", len(warns), msgs(warns))
+	}
+	w := warns[0]
+	if !strings.Contains(w["msg"].(string), "carry a credential") {
+		t.Errorf("msg = %q", w["msg"])
+	}
+	if fmtAny(w["upstream_ids"]) != "u1 u2" || fmtAny(w["upstream_names"]) != "Userinfo Query" || w["not_listed"] != float64(0) {
+		t.Errorf("ids=%v names=%v not_listed=%v", w["upstream_ids"], w["upstream_names"], w["not_listed"])
+	}
+	var all []string
+	for _, r := range records {
+		for k, v := range r {
+			all = append(all, k, fmtAny(v))
+		}
+	}
+	joined := strings.Join(all, " ")
+	for _, forbidden := range []string{"BOOT_PASSWORD_MARKER", "BOOT_TOKEN_MARKER", "h.example", "legacy:", "token="} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("log carries %q: %v", forbidden, records)
+		}
+	}
+
+	// An ephemeral key returns early, after the line: a none row with
+	// userinfo is still named.
+	_, err, records, _ = bootUpstreams(t, &config.Config{EncryptionKey: mustKey(t), EphemeralEnc: true}, "", rows[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warns := recordsAt(records, "WARN"); len(warns) != 1 || fmtAny(warns[0]["upstream_ids"]) != "u1" {
+		t.Fatalf("ephemeral boot: %s", msgs(recordsAt(records, "WARN")))
 	}
 }

@@ -43,7 +43,10 @@ import (
 //
 // Ids and names reach the log; urls and decrypted bytes never do. The stored
 // fingerprint is operator-writable text and is validated before it is
-// compared or logged.
+// compared or logged. The legacy-url line (PORM-27) is logged straight after
+// the sweep and before either early return, so a boot under an ephemeral key
+// or a key mismatch still names the rows whose stored url carries a
+// credential; it needs no key to read.
 func checkEncryption(ctx context.Context, st *store.SQLStore, cfg *config.Config, log *slog.Logger) (string, error) {
 	ups, err := st.ListUpstreams(ctx)
 	if err != nil {
@@ -51,6 +54,11 @@ func checkEncryption(ctx context.Context, st *store.SQLStore, cfg *config.Config
 	}
 	keys := cfg.Keyring()
 	rep := credential.Sweep(keys, ups)
+
+	if len(rep.LegacyURLIDs) > 0 {
+		log.Warn("upstream urls carry a credential PoryMCP does not encrypt; edit each upstream to remove it from the url and store it as the upstream's credential",
+			"upstream_ids", rep.LegacyURLIDs, "upstream_names", rep.LegacyURLNames, "not_listed", rep.LegacyURLNotListed)
+	}
 
 	if err := cfg.CheckEphemeralKey(rep.Credentials); err != nil {
 		return "", err
