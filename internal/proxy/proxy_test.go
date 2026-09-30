@@ -783,3 +783,62 @@ func TestUpstreamURLNotUsableIsClosedSentence(t *testing.T) {
 		assertNoLeak(t, "server log", logs.String())
 	})
 }
+
+// TestGroupMemberSkippedRedactsEchoedCredential is PORM-196 criterion 2 and
+// security requirements 5 and 6: a group member that answers tools/list with
+// a JSON-RPC error repeating the bearer it was sent is skipped with a line
+// whose err reads "invalid token [redacted]", whether the answer is JSON or
+// an event stream and whether the token is whole or split by a control byte,
+// and no fragment of the token reaches the server log. The literals come
+// from the credential the catalogue request carried, so the 12-byte plain
+// bearer, which no pattern rule matches, proves the literal pass.
+func TestGroupMemberSkippedRedactsEchoedCredential(t *testing.T) {
+	const sse = "text/event-stream"
+	echo := func(mangle func(string) string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if rpcMethodOf(r) == "tools/list" {
+				tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				// Marshalled, not errorAnswer's %q: a control byte must
+				// cross as the JSON escape \u0001, which %q does not write.
+				doc, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1,
+					"error": map[string]any{"code": -32000, "message": "invalid token " + mangle(tok)}})
+				_, _ = w.Write(doc)
+				return
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+		}
+	}
+	cases := []struct {
+		name string
+		beta upstreamSpec
+	}{
+		{"json", upstreamSpec{Bearer: relayToken, Handler: echo(func(s string) string { return s })}},
+		{"control byte", upstreamSpec{Bearer: relayToken, Handler: echo(func(s string) string { return s[:4] + "\x01" + s[4:] })}},
+		{"sse", upstreamSpec{Bearer: relayToken, ListCT: sse, RawList: sseFrame(errorAnswer(1, "invalid token "+relayToken))}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, map[string]upstreamSpec{
+				"alpha": {Tools: []string{"search_docs"}},
+				"beta":  c.beta,
+			}, true, nil, nil, nil)
+			logs := captureLogs(f)
+			rr := f.post(listRequest)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTTP code=%d want 200: %s", rr.Code, rr.Body.String())
+			}
+			if got, want := strings.Join(listedNames(t, rr.Body.Bytes()), ","), "alpha__search_docs"; got != want {
+				t.Errorf("listed %q want %q", got, want)
+			}
+			w := skipWarnings(t, logs)
+			if len(w) != 1 {
+				t.Fatalf("%d skip warnings, want exactly 1: %s", len(w), logs.String())
+			}
+			if got, _ := w[0]["err"].(string); got != "invalid token [redacted]" {
+				t.Errorf("skip err=%q, want %q", got, "invalid token [redacted]")
+			}
+			assertNoLeak(t, "server log", logs.String(), fragments(relayToken)...)
+		})
+	}
+}
