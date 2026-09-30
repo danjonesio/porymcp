@@ -427,8 +427,11 @@
   before the credential is appended, in any case, percent-encoded,
   `;`-joined, undecodable, or NUL- or space-padded spelling (and no other:
   a tab, CR or LF padding, or a parser's own renaming, is not read as the
-  name), so a key holder cannot shadow it; `Range` and `If-Range` are not
-  sent upstream on a query row, so the answer arrives whole; and every
+  name), so a key holder cannot shadow it in those spellings; the request
+  body is relayed as sent and never rewritten, so an upstream that reads a
+  form-encoded body before its query could still take a key holder's value
+  under the name, though never learn the stored one; `Range` and `If-Range`
+  are not sent upstream on a query row, so the answer arrives whole; and every
   readable relay answer on a query row, `2xx` included, takes the literal
   pass, because an API keyed that way echoes its own request URL in
   pagination links. A query credential is more exposed on the wire than a
@@ -437,7 +440,12 @@
   header auth is preferred where the vendor offers it. Two gaps stay: a
   successful MCP-door tool result is passed through unredacted, so a server
   that echoes its own request URL reveals a query credential to the key
-  holder; and a key in the URL path is not covered. A credential written
+  holder; a key in the URL path is not covered; and the two relay rows
+  written before the credential is read (a request carrying the virtual
+  key, a body over the cap) record the key holder's own query with only the
+  two audit name sets redacted, so a value the key holder sent under a
+  parameter name that is not credential-shaped lands on those two rows in
+  clear. A credential written
   into the URL's userinfo, `https://user:pass@host/mcp`, is never sent:
   `net/http` would re-derive `Authorization: Basic …` from it at send time,
   after PoryMCP has deleted any `Authorization` header of its own, so
