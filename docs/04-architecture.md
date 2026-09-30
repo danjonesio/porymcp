@@ -39,8 +39,8 @@
   Control characters out, a byte bound at a rune boundary, the credential the
   proxy sent replaced whatever its shape, then credential-shaped text; one body
   applied by the audit row, the key holder's error answer, the relay's headers,
-  discovery and the group skip line. Standard library only, so the client and
-  audit both import it.
+  discovery's `upstream_message` and the group skip line. Standard library
+  only, so the client and audit both import it.
 - Tool discovery (management plane): a real MCP handshake against one upstream,
   run for an **operator** rather than a virtual key, returning a fixed set of
   structured fields and persisting nothing
