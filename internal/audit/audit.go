@@ -193,20 +193,47 @@ var queryOnlySecretKeys = map[string]struct{}{
 	"x_goog_credential":    {},
 }
 
+// SecretQueryName reports whether a query parameter name is one the two
+// name sets call a credential: the name is lower-cased with "-" read as "_"
+// and looked up in secretKeys and queryOnlySecretKeys. It is the one
+// definition of "credential-shaped query name" in the tree, shared by
+// RedactQuery and by the boot sweep's legacy-URL report (PORM-27).
+func SecretQueryName(name string) bool {
+	norm := strings.ReplaceAll(strings.ToLower(name), "-", "_")
+	_, a := secretKeys[norm]
+	_, b := queryOnlySecretKeys[norm]
+	return a || b
+}
+
+// QueryCarriesSecret reports whether any name in q satisfies SecretQueryName.
+func QueryCarriesSecret(q url.Values) bool {
+	for name := range q {
+		if SecretQueryName(name) {
+			return true
+		}
+	}
+	return false
+}
+
 // RedactQuery turns a relayed request's query string into the object the
 // relay door records under params.query: one string per name, repeated
 // values joined with ",", and a value replaced by "[redacted]" when its name
-// is in secretKeys or queryOnlySecretKeys. Values are strings, never arrays,
-// because redactValue (which Record still runs over the whole row) replaces
-// only a string under a secret name; an array of secrets would pass it in
-// clear.
-func RedactQuery(q url.Values) map[string]string {
+// is in secretKeys or queryOnlySecretKeys, or is one of extra, compared with
+// the same normalisation (the relay passes a query credential's configured
+// parameter name, PORM-27, so a key holder's own value under that name is
+// never recorded). Values are strings, never arrays, because redactValue
+// (which Record still runs over the whole row) replaces only a string under
+// a secret name; an array of secrets would pass it in clear.
+func RedactQuery(q url.Values, extra ...string) map[string]string {
 	out := make(map[string]string, len(q))
 	for name, vals := range q {
-		norm := strings.ReplaceAll(strings.ToLower(name), "-", "_")
-		_, a := secretKeys[norm]
-		_, b := queryOnlySecretKeys[norm]
-		if a || b {
+		secret := SecretQueryName(name)
+		for _, e := range extra {
+			if e != "" && strings.EqualFold(strings.ReplaceAll(name, "-", "_"), strings.ReplaceAll(e, "-", "_")) {
+				secret = true
+			}
+		}
+		if secret {
 			out[name] = redact.Redacted
 			continue
 		}

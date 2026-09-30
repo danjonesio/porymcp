@@ -15,8 +15,10 @@ package credential
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"time"
 
+	"github.com/danjonesio/porymcp/internal/audit"
 	"github.com/danjonesio/porymcp/internal/crypto"
 	"github.com/danjonesio/porymcp/internal/mcpclient"
 	"github.com/danjonesio/porymcp/internal/models"
@@ -173,6 +175,27 @@ type Report struct {
 	// UnreadableIDs and UnreadableNames list the unreadable rows.
 	UnreadableIDs, UnreadableNames []string
 	UnreadableNotListed            int
+	// LegacyURLIDs and LegacyURLNames list the rows whose stored url still
+	// carries a credential PoryMCP does not encrypt (PORM-27): userinfo, or a
+	// query parameter whose name audit.SecretQueryName accepts. Such a row
+	// was saved before the write gate refused userinfo or before the query
+	// kind existed; its fix is an edit, and the boot line says so. This is
+	// read off the plaintext url and needs no key, so it is filled on every
+	// boot, none rows included. The url itself never reaches the report.
+	LegacyURLIDs, LegacyURLNames []string
+	LegacyURLNotListed           int
+}
+
+// URLCarriesCredential reports whether a stored url carries a credential in
+// its own text: userinfo, or a query parameter named like one. A url that
+// does not parse counts as clean; the write gate has already refused it and
+// the proxy cannot dial it.
+func URLCarriesCredential(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.User != nil || audit.QueryCarriesSecret(u.Query())
 }
 
 // Sweep classifies every upstream once. Each plaintext is dropped as soon as
@@ -182,6 +205,14 @@ func Sweep(k crypto.Keyring, ups []models.Upstream) Report {
 	current := k.Fingerprint()
 	for i := range ups {
 		u := &ups[i]
+		if URLCarriesCredential(u.URL) {
+			if len(r.LegacyURLIDs) < maxListed {
+				r.LegacyURLIDs = append(r.LegacyURLIDs, u.ID)
+				r.LegacyURLNames = append(r.LegacyURLNames, u.Name)
+			} else {
+				r.LegacyURLNotListed++
+			}
+		}
 		if u.AuthType == models.AuthNone || u.AuthType == "" {
 			continue
 		}

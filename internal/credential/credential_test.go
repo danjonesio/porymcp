@@ -220,3 +220,44 @@ func TestSweepCountsAndNames(t *testing.T) {
 		t.Errorf("cap: Undecryptable=%d listed=%d NotListed=%d", r.Undecryptable, len(r.IDs), r.NotListed)
 	}
 }
+
+// TestSweepListsLegacyURLs pins PORM-27 security requirement 13: rows whose
+// stored url carries userinfo or a credential-shaped query parameter are
+// listed by id and name on every boot, none rows included, bounded like the
+// other lists, and the url itself never reaches the report.
+func TestSweepListsLegacyURLs(t *testing.T) {
+	k, _ := keyring(t, 0)
+	ups := []models.Upstream{
+		{ID: "u1", Name: "Userinfo", URL: "https://legacy:PASSWORD_MARKER@h.example/mcp", AuthType: models.AuthNone},
+		{ID: "q1", Name: "Query", URL: "https://h.example/mcp?token=TOKEN_MARKER&x=1", AuthType: models.AuthBearer, AuthConfig: seal(t, k, `{"token":"abcdefghijkl"}`)},
+		{ID: "ok1", Name: "Clean", URL: "https://h.example/mcp?page=1", AuthType: models.AuthNone},
+		{ID: "bad1", Name: "Unparsable", URL: "http://[::1", AuthType: models.AuthNone},
+	}
+	r := Sweep(k, ups)
+	if fmt.Sprint(r.LegacyURLIDs) != "[u1 q1]" || fmt.Sprint(r.LegacyURLNames) != "[Userinfo Query]" || r.LegacyURLNotListed != 0 {
+		t.Errorf("LegacyURLIDs=%v LegacyURLNames=%v NotListed=%d", r.LegacyURLIDs, r.LegacyURLNames, r.LegacyURLNotListed)
+	}
+	if rep := fmt.Sprintf("%+v", r); strings.Contains(rep, "PASSWORD_MARKER") || strings.Contains(rep, "TOKEN_MARKER") || strings.Contains(rep, "h.example") {
+		t.Fatal("a url reached the report")
+	}
+	for raw, want := range map[string]bool{
+		"https://u:p@h/mcp":       true,
+		"https://u@h/mcp":         true,
+		"https://h/mcp?Api-Key=x": true,
+		"https://h/mcp?page=1":    false,
+		"http://[::1":             false,
+	} {
+		if got := URLCarriesCredential(raw); got != want {
+			t.Errorf("URLCarriesCredential(%q) = %v, want %v", raw, got, want)
+		}
+	}
+	// The cap: 25 legacy rows list 20 and count 5 as not listed.
+	var many []models.Upstream
+	for i := 0; i < 25; i++ {
+		many = append(many, models.Upstream{ID: fmt.Sprint("u", i), Name: fmt.Sprint("U", i), URL: "https://h/mcp?api_key=x", AuthType: models.AuthNone})
+	}
+	r = Sweep(k, many)
+	if len(r.LegacyURLIDs) != 20 || r.LegacyURLNotListed != 5 {
+		t.Errorf("cap: listed=%d NotListed=%d", len(r.LegacyURLIDs), r.LegacyURLNotListed)
+	}
+}
