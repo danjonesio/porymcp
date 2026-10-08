@@ -322,6 +322,7 @@ export default function UpstreamsPage() {
     return api<{ upstreams: Upstream[] }>('/upstreams').then(show).catch(() => {})
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load runs once on mount; load and show call only state setters, which React keeps stable.
   useEffect(load, [])
 
   /**
