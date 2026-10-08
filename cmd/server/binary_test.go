@@ -893,3 +893,103 @@ func TestBinaryProxiesACall(t *testing.T) {
 		t.Errorf("audit row: method=%q upstream_id=%q virtual_key_id=%q, want tools/list, %q, %q", row.Method, row.UpstreamID, row.VirtualKeyID, upID, keyID)
 	}
 }
+
+// TestBinaryHealthcheckSubcommand pins PORM-158's healthcheck criterion:
+// "porymcp healthcheck" against the bound address exits 0 while the server
+// runs and 1 once it has stopped.
+func TestBinaryHealthcheckSubcommand(t *testing.T) {
+	skipUnlessBinary(t)
+	p := startBinary(t, baseEnv(t))
+	if code := p.runHealthcheck(t, p.addr); code != 0 {
+		t.Fatalf("healthcheck while running: exit %d, want 0", code)
+	}
+	if code := p.stop(t, 12*time.Second); code != 0 {
+		t.Fatalf("SIGTERM: exit %d, want 0", code)
+	}
+	if code := p.runHealthcheck(t, p.addr); code != 1 {
+		t.Fatalf("healthcheck after stop: exit %d, want 1", code)
+	}
+}
+
+// TestBinaryStopsOnSIGTERM pins PORM-158's shutdown criterion: exit 0
+// within 12 seconds of SIGTERM with no panic on either stream. Its restart
+// subtest then proves the same data directory opens under the same key and
+// still holds the row (an addition to the issue), and drain_on_sigterm is
+// the issue's PORM-36 assertion, written and skipped until PORM-36 lands.
+func TestBinaryStopsOnSIGTERM(t *testing.T) {
+	skipUnlessBinary(t)
+	// The environment is built on the parent so its data directory outlives
+	// the subtests that share it.
+	env := baseEnv(t, "UPSTREAM_ALLOW_LOOPBACK", "1")
+	var upID, plaintext string
+
+	t.Run("exits_zero", func(t *testing.T) {
+		stub := newBlockStub(t)
+		p := startBinary(t, env)
+		p.secretWindowed("stub credential", stubToken)
+		p.requireGuard(t, true)
+		var keyID string
+		upID, keyID, plaintext = stubUpstream(t, p, stub)
+		if status, _ := p.mcp(t, keyID, plaintext, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`); status != http.StatusOK {
+			t.Fatalf("tools/list: status %d", status)
+		}
+		p.waitRows(t, "status="+models.StatusSuccess, 1)
+		start := time.Now()
+		code := p.stop(t, 12*time.Second)
+		if took := time.Since(start); code != 0 || took > 12*time.Second {
+			t.Fatalf("SIGTERM: exit %d after %v, want 0 within 12s", code, took)
+		}
+		for _, s := range []struct{ name, text string }{{"stdout", p.stdout.String()}, {"stderr", p.stderr.String()}} {
+			if strings.Contains(s.text, "panic:") {
+				t.Errorf("%s contains a panic", s.name)
+			}
+		}
+	})
+
+	t.Run("restart_opens_the_stored_credential_and_sees_the_row", func(t *testing.T) {
+		if upID == "" {
+			t.Skip("the first run did not complete")
+		}
+		again := baseEnv(t,
+			"ADMIN_API_KEY", envValue(env, "ADMIN_API_KEY"),
+			"ENCRYPTION_KEY", envValue(env, "ENCRYPTION_KEY"),
+			"DATA_DIR", envValue(env, "DATA_DIR"))
+		p := startBinary(t, again,
+			secret{label: "stub credential", value: stubToken, windowed: true},
+			secret{label: "virtual key", value: plaintext})
+		p.requireGuard(t, false)
+		p.requireLine(t, "encryption key verified")
+		status, body := p.request(t, http.MethodGet, "/health", nil, "")
+		if status != http.StatusOK || !bytes.Contains(body, []byte(`"encryption":"ok"`)) {
+			t.Fatalf("/health after restart: status %d, body %s", status, body)
+		}
+		rows := p.waitRows(t, "status="+models.StatusSuccess, 1)
+		if rows[0].UpstreamID != upID {
+			t.Errorf("row after restart: upstream_id %q, want %q", rows[0].UpstreamID, upID)
+		}
+	})
+
+	t.Run("drain_on_sigterm", func(t *testing.T) {
+		t.Skip("PORM-36: a row queued at SIGTERM is not yet guaranteed to be written")
+		stub := newBlockStub(t)
+		fresh := baseEnv(t, "UPSTREAM_ALLOW_LOOPBACK", "1")
+		p := startBinary(t, fresh)
+		p.secretWindowed("stub credential", stubToken)
+		_, keyID, key := stubUpstream(t, p, stub)
+		if status, _ := p.mcp(t, keyID, key, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`); status != http.StatusOK {
+			t.Fatalf("tools/list: status %d", status)
+		}
+		// No wait for the row: the drain on SIGTERM is what is under test.
+		if code := p.stop(t, 12*time.Second); code != 0 {
+			t.Fatalf("SIGTERM: exit %d, want 0", code)
+		}
+		again := baseEnv(t,
+			"ADMIN_API_KEY", envValue(fresh, "ADMIN_API_KEY"),
+			"ENCRYPTION_KEY", envValue(fresh, "ENCRYPTION_KEY"),
+			"DATA_DIR", envValue(fresh, "DATA_DIR"))
+		q := startBinary(t, again,
+			secret{label: "stub credential", value: stubToken, windowed: true},
+			secret{label: "virtual key", value: key})
+		q.waitRows(t, "status="+models.StatusSuccess, 1)
+	})
+}
