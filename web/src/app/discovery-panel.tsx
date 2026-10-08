@@ -131,6 +131,7 @@ export function ReportedList({ label, items }: { label: string; items: string[] 
           says nothing about which one a screen reader has reached. */}
       <ul role="list" aria-label={label} className="mt-2 flex flex-wrap gap-2">
         {items.map((item, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the items are plain strings the upstream reported, which may repeat, and the whole list is replaced on every change, so the position is the identity.
           <li key={index} className="max-w-full min-w-0">
             <Badge color="zinc" dir="ltr" className="max-w-full break-all">
               {item}
@@ -414,13 +415,13 @@ export function DiscoveryPanel({
                   role="list"
                   className="divide-y divide-zinc-950/5 sm:max-h-96 sm:overflow-y-auto dark:divide-white/5"
                 >
-                  {result.tools.map((tool, index) => {
+                  {result.tools.map((tool) => {
                     // The server's own value when it sent one (saved route); the
                     // dialog's preview otherwise.
                     const scoped = tool.scoped_name || scopedToolName(slug, tool.name)
                     return (
                       <ToolRow
-                        key={index}
+                        key={tool.name}
                         tool={tool}
                         scoped={scoped}
                         clamped={!expanded}

@@ -181,7 +181,7 @@ function MemberBlock({
                 aria-label={`Tools on ${member.name}`}
                 className="divide-y divide-zinc-950/5 dark:divide-white/5"
               >
-                {shown.map((tool, index) => {
+                {shown.map((tool) => {
                   // The exact string a tick writes and unticking removes. State is
                   // keyed on it, never on the rendered text: two names can look
                   // alike and still be different entries.
@@ -198,7 +198,7 @@ function MemberBlock({
                   if (rowNotes) notes.push(...rowNotes(member.slug, tool.name))
                   return (
                     <ToolRow
-                      key={index}
+                      key={tool.name}
                       tool={tool}
                       scoped={entry}
                       clamped

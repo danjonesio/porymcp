@@ -55,15 +55,13 @@
 #     lane to move it is the drift named above.
 #
 # Held back, on purpose, each by an ignore entry in its lane:
-#   - npm: typescript 7 and above, and eslint 10 and above, because the lint
-#     stack inside eslint-config-next refuses both. These are version
-#     ranges, and a version range also holds back a security update whose
-#     every fixed version is inside it (dependabot-core ignore_condition.rb,
-#     read 2026-09-22); the alert still shows on the Security tab, and make
-#     web-audit fails at high or critical on push (the web job) and weekly
-#     (.github/workflows/audit.yml, Mondays, against main).
-#     Both are build and lint tools; no code from them ships in web/out or
-#     the image.
+#   - npm: nothing since PORM-214 (2026-10-08). The typescript 7 and eslint 10
+#     ignores existed because the lint stack inside eslint-config-next
+#     refused both; the dashboard now lints with Biome and carries neither
+#     package. A version-range ignore also holds back a security update
+#     whose every fixed version is inside it (dependabot-core
+#     ignore_condition.rb, read 2026-09-22), so a new ignore here needs the
+#     failure and the condition for lifting it beside the entry.
 #   - docker: every node major, because a Node major moves web/.nvmrc, the
 #     Dockerfile and the web/out rebuild together and is made by hand
 #     (docs/08-docker.md). The lane still evaluates node and can offer a
@@ -124,25 +122,13 @@ updates:
         patterns: ["*"]
 
   # Version lane on a deploying path, by the decision in the header: the
-  # lockfile builds the dashboard in the image. Two majors are held back by
-  # the ignore entries below.
+  # lockfile builds the dashboard in the image. No major is held back; the
+  # header says what an ignore entry here must carry.
   - package-ecosystem: "npm"
     directory: "/web"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5
-    ignore:
-      # typescript-eslint inside eslint-config-next refuses TS 7.0, so make
-      # web-lint throws (PR #25, 2026-09-21). Lift when eslint-config-next
-      # ships a typescript-eslint that accepts it (typescript-eslint issue
-      # 10940).
-      - dependency-name: "typescript"
-        versions: [">=7"]
-      # ESLint 10 calls scopeManager.addGlobals, which the bundled parser
-      # lacks, and three bundled plugins accept ESLint up to 9 (PR #25,
-      # 2026-09-21). Lift when eslint-config-next supports ESLint 10.
-      - dependency-name: "eslint"
-        versions: [">=10"]
     groups:
       npm-versions:
         applies-to: version-updates

@@ -28,6 +28,7 @@ What each one needs:
 - `make web` (`next build`) rewrites most of the paths under `web/out`, the tracked export the Go binary embeds. Commit that churn when the dashboard itself changed or when the toolchain that produces the export changed (a Next or Node bump), and build it with the Node major in `web/.nvmrc` (`nvm use`). No CI step diffs `web/out`, because `next build` output is not byte-reproducible; a pull request that edits `web/src` without rebuilding the export passes CI, and `go run` and `make build` then embed the stale export until someone rebuilds it. The published image is unaffected: its own web stage rebuilds the export.
 - `npm ci` reproduces the lockfile, which is what CI and the Dockerfile do. `npm install` is for changing dependencies: run `npm ci` first, then `npm install --save-exact <package>@<version>`, because without `node_modules` npm writes unrelated optional entries into the lockfile and without `--save-exact` it turns the exact pins into caret ranges. Never edit `package-lock.json` by hand. The `--no-audit` on those installs skips only the audit npm would run during the install; `make web-audit` is the check.
 - `make web-typecheck` runs after `make web` because the build writes `web/next-env.d.ts`, which is git-ignored and is what declares the CSS module imports.
+- `make web-lint` runs Biome over `web/src` from `web/biome.jsonc`; there is no ESLint in the tree (docs/06-ui.md, Linting).
 
 ## Branches and pull requests
 

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  // The dashboard's lint tool since PORM-214 (the decision is PORM-47's lint
+  // half). Lint only: the formatter and assists stay off so this change
+  // touches no source file for style.
+  "files": {
+    // src only, and not the stylesheet: Tailwind's directives are not CSS
+    // Biome parses, and tailwindcss checks that file itself.
+    "includes": ["src/**", "!src/styles/**"]
+  },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "useHookAtTopLevel": "error",
+        "useExhaustiveDependencies": {
+          "level": "error",
+          "options": {
+            // A dependency listed to re-run an effect on purpose (a hydration
+            // re-render, a form error sequence) is a choice the comment beside
+            // it explains; the previous linter allowed it too. A missing
+            // dependency stays an error.
+            "reportUnnecessaryDependencies": false
+          }
+        }
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "error",
+        "noDangerouslySetInnerHtmlWithChildren": "error"
+      },
+      "a11y": {
+        // role="list" on a ul is deliberate: Safari drops list semantics
+        // from a list styled without markers, and the role restores them.
+        "noRedundantRoles": "off"
+      },
+      "style": {
+        // String concatenation is not a defect.
+        "useTemplate": "off"
+      }
+    }
+  }
+}
