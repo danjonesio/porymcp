@@ -736,3 +736,79 @@ func (p *proc) runHealthcheck(t *testing.T, addr string) int {
 	p.mark("healthcheck exit " + fmt.Sprint(code))
 	return code
 }
+
+// guardDefaultMsg and the two fields below are the shipped guard record the
+// CI docker job greps for; every serving case that leaves the loopback
+// variable unset asserts it here instead.
+const guardDefaultMsg = "upstream guard"
+
+// requireGuard asserts the "upstream guard" record carries allow_loopback.
+func (p *proc) requireGuard(t *testing.T, allowLoopback bool) {
+	t.Helper()
+	rec := p.requireLine(t, guardDefaultMsg)
+	if rec["allow_loopback"] != allowLoopback || rec["deny_private"] != false {
+		t.Errorf("upstream guard record: allow_loopback=%v deny_private=%v, want %v and false", rec["allow_loopback"], rec["deny_private"], allowLoopback)
+	}
+}
+
+// TestBinaryServes pins PORM-158's first criteria at process level: the
+// startup log, /health, the embedded dashboard at /, one management route
+// refusing and accepting the admin key, and the shipped guard defaults (the
+// CI docker job's grep moved into a test). The cleanup's hygiene check then
+// requires porymcp.db under DATA_DIR, which proves DATA_DIR was honoured.
+func TestBinaryServes(t *testing.T) {
+	skipUnlessBinary(t)
+	p := startBinary(t, baseEnv(t))
+
+	t.Run("startup_log", func(t *testing.T) {
+		p.requireGuard(t, false)
+		if rec := p.requireLine(t, "serving dashboard"); rec["root"] != "embedded" {
+			t.Errorf("serving dashboard root=%v, want embedded", rec["root"])
+		}
+		p.requireLine(t, "encryption key verified")
+	})
+	t.Run("health", func(t *testing.T) {
+		status, body := p.request(t, http.MethodGet, "/health", nil, "")
+		if status != http.StatusOK {
+			t.Fatalf("/health: status %d, body %s", status, body)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("/health: %v", err)
+		}
+		for _, field := range []string{"status", "scheme_enforced", "trusted_proxies", "encryption"} {
+			if _, ok := raw[field]; !ok {
+				t.Errorf("/health: no %q field in %s", field, body)
+			}
+		}
+		if raw["status"] != "ok" || raw["encryption"] != "ok" {
+			t.Errorf("/health: status=%v encryption=%v, want ok and ok", raw["status"], raw["encryption"])
+		}
+	})
+	t.Run("dashboard", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+p.addr+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := p.tr.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+			t.Fatalf("/: status %d, content-type %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		if !bytes.Contains(body, []byte("<title>PoryMCP</title>")) {
+			t.Errorf("/: no <title>PoryMCP</title> in %d bytes", len(body))
+		}
+	})
+	t.Run("management_route", func(t *testing.T) {
+		if status, _ := p.request(t, http.MethodGet, "/api/v1/upstreams", nil, ""); status != http.StatusUnauthorized {
+			t.Errorf("GET /api/v1/upstreams without a bearer: status %d, want 401", status)
+		}
+		p.admin(t, http.MethodGet, "/api/v1/upstreams", "", http.StatusOK)
+	})
+}
