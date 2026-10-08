@@ -89,17 +89,29 @@ func main() {
 	// drains the queue before the process exits (PORM-5).
 	srv.RegisterOnShutdown(stopStreams)
 
+	// The handler is registered before the listener exists, so a SIGTERM
+	// that arrives the instant the listening line is read is always caught.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	// Bound here, after the router is complete and before the goroutine, so
+	// the listening line names the address the kernel gave
+	// (LISTEN_ADDR=127.0.0.1:0 is usable) and a bind failure never logs
+	// "listening". os.Exit skips the defers; nothing has been served and the
+	// audit queue is empty, so there is nothing to drain.
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		log.Error("server", "err", err)
+		os.Exit(1)
+	}
 	go func() {
 		// tls is a boolean on purpose, cert paths must not appear in logs.
-		log.Info("porymcp listening", "addr", cfg.ListenAddr, "public_url", cfg.PublicURL, "tls", cfg.TLSEnabled())
-		if err := serve(srv, cfg); err != nil && err != http.ErrServerClosed {
+		log.Info("porymcp listening", "addr", ln.Addr().String(), "public_url", cfg.PublicURL, "tls", cfg.TLSEnabled())
+		if err := serve(srv, ln, cfg); err != nil && err != http.ErrServerClosed {
 			log.Error("server", "err", err)
 			os.Exit(1)
 		}
 	}()
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -461,11 +473,13 @@ func newHTTPServer(cfg *config.Config, handler http.Handler) *http.Server {
 	return srv
 }
 
-func serve(srv *http.Server, cfg *config.Config) error {
+// serve runs the server on a listener main already bound. ServeTLS clones
+// srv.TLSConfig, so the TLS 1.2 minimum from newHTTPServer holds.
+func serve(srv *http.Server, ln net.Listener, cfg *config.Config) error {
 	if cfg.TLSEnabled() {
-		return srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		return srv.ServeTLS(ln, cfg.TLSCertFile, cfg.TLSKeyFile)
 	}
-	return srv.ListenAndServe()
+	return srv.Serve(ln)
 }
 
 // newRouter assembles the router that ships: middleware, the management API
