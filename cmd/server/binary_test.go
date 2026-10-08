@@ -215,7 +215,10 @@ func newProc(t *testing.T, env []string, extra ...secret) *proc {
 		done:   make(chan struct{}),
 	}
 	p.registerSecrets(env)
-	p.secrets = append(p.secrets, extra...)
+	for _, s := range extra {
+		p.secrets = append(p.secrets, s)
+		p.addKeyForms(s.label, s.value)
+	}
 	cmd := exec.Command(binaryPath(t))
 	cmd.Env = env
 	cmd.Dir = t.TempDir()
@@ -256,18 +259,25 @@ func (p *proc) registerSecrets(env []string) {
 			return
 		}
 		p.secret(label, v)
-		raw, err := hex.DecodeString(v)
-		if err != nil || len(raw) != 32 {
-			return
-		}
-		p.secret(label+" (upper-case hex)", strings.ToUpper(v))
-		p.secret(label+" (base64)", base64.StdEncoding.EncodeToString(raw))
+		p.addKeyForms(label, v)
 	}
 	add("admin key", p.adminKey)
 	add("encryption key", envValue(env, "ENCRYPTION_KEY"))
 	for _, prev := range strings.Split(envValue(env, "ENCRYPTION_KEY_PREVIOUS"), ",") {
 		add("previous encryption key", strings.TrimSpace(prev))
 	}
+}
+
+// addKeyForms registers the upper-case hex and standard base64 spellings of
+// a value that is 64 hex characters, so a key passed from an earlier run is
+// scanned in the same three forms as one read from the env.
+func (p *proc) addKeyForms(label, v string) {
+	raw, err := hex.DecodeString(v)
+	if err != nil || len(raw) != 32 {
+		return
+	}
+	p.secret(label+" (upper-case hex)", strings.ToUpper(v))
+	p.secret(label+" (base64)", base64.StdEncoding.EncodeToString(raw))
 }
 
 // startBinary starts the server and waits for the listening record. The
@@ -349,21 +359,35 @@ func (p *proc) exited() bool {
 	}
 }
 
-// records decodes stdout only. While the child runs, the text is the buffer
-// up to its last newline, so a record the copy goroutine has half-written is
-// never decoded; after it exits, the whole buffer. stderr is never decoded:
-// a panic or a race report is not JSON.
+// records decodes stdout only. Whether the child has exited is decided
+// before the buffer is read: while it runs, the text is the buffer up to its
+// last newline, so a record the copy goroutine has half-written is never
+// decoded; once it has exited the buffer is complete. stderr is never
+// decoded: a panic or a race report is not JSON. A stdout line that is not
+// JSON fails the case with the line redacted.
 func (p *proc) records(t *testing.T) []map[string]any {
 	t.Helper()
+	exited := p.exited()
 	text := p.stdout.String()
-	if !p.exited() {
+	if !exited {
 		i := strings.LastIndex(text, "\n")
 		if i < 0 {
 			return nil
 		}
 		text = text[:i+1]
 	}
-	return decodeLogRecords(t, bytes.NewBufferString(text))
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("stdout line is not a JSON record: %s", p.redact(line))
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 // find returns the records whose msg equals msg.
@@ -424,6 +448,13 @@ func (p *proc) waitFor(t *testing.T, what string, pred func(map[string]any) bool
 // for every registered secret.
 func (p *proc) request(t *testing.T, method, path string, hdr http.Header, body string) (int, []byte) {
 	t.Helper()
+	status, b, _ := p.requestHeader(t, method, path, hdr, body)
+	return status, b
+}
+
+// requestHeader is request with the response header as well.
+func (p *proc) requestHeader(t *testing.T, method, path string, hdr http.Header, body string) (int, []byte, http.Header) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, "http://"+p.addr+path, strings.NewReader(body))
@@ -448,7 +479,7 @@ func (p *proc) request(t *testing.T, method, path string, hdr http.Header, body 
 			t.Errorf("response body for %s %s contains the %s", method, path, s.label)
 		}
 	}
-	return resp.StatusCode, b
+	return resp.StatusCode, b, resp.Header
 }
 
 // admin sends a management request with the admin key and requires want.
@@ -497,6 +528,12 @@ func (p *proc) waitRows(t *testing.T, query string, want int) []models.AuditLog 
 	hdr := http.Header{"Authorization": {"Bearer " + p.adminKey}}
 	for {
 		status, b := p.request(t, http.MethodGet, "/api/v1/logs?"+query, hdr, "")
+		if status != http.StatusOK {
+			t.Fatalf("GET /api/v1/logs?%s: status %d, body %s", query, status, p.redact(string(b)))
+		}
+		if !json.Valid(b) {
+			t.Fatalf("GET /api/v1/logs?%s: body is not JSON: %s", query, p.redact(string(b)))
+		}
 		rows := decodeLogsBytes(t, status, b)
 		if len(rows) >= want {
 			p.mark("rows seen")
@@ -772,7 +809,7 @@ func TestBinaryServes(t *testing.T) {
 	t.Run("health", func(t *testing.T) {
 		status, body := p.request(t, http.MethodGet, "/health", nil, "")
 		if status != http.StatusOK {
-			t.Fatalf("/health: status %d, body %s", status, body)
+			t.Fatalf("/health: status %d, body %s", status, p.redact(string(body)))
 		}
 		var raw map[string]any
 		if err := json.Unmarshal(body, &raw); err != nil {
@@ -780,7 +817,7 @@ func TestBinaryServes(t *testing.T) {
 		}
 		for _, field := range []string{"status", "scheme_enforced", "trusted_proxies", "encryption"} {
 			if _, ok := raw[field]; !ok {
-				t.Errorf("/health: no %q field in %s", field, body)
+				t.Errorf("/health: no %q field in %s", field, p.redact(string(body)))
 			}
 		}
 		if raw["status"] != "ok" || raw["encryption"] != "ok" {
@@ -788,20 +825,9 @@ func TestBinaryServes(t *testing.T) {
 		}
 	})
 	t.Run("dashboard", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+p.addr+"/", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := p.tr.RoundTrip(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
-			t.Fatalf("/: status %d, content-type %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+		status, body, hdr := p.requestHeader(t, http.MethodGet, "/", nil, "")
+		if status != http.StatusOK || !strings.HasPrefix(hdr.Get("Content-Type"), "text/html") {
+			t.Fatalf("/: status %d, content-type %q", status, hdr.Get("Content-Type"))
 		}
 		if !bytes.Contains(body, []byte("<title>PoryMCP</title>")) {
 			t.Errorf("/: no <title>PoryMCP</title> in %d bytes", len(body))
@@ -902,6 +928,7 @@ func TestBinaryProxiesACall(t *testing.T) {
 func TestBinaryHealthcheckSubcommand(t *testing.T) {
 	skipUnlessBinary(t)
 	p := startBinary(t, baseEnv(t))
+	p.requireGuard(t, false)
 	if code := p.runHealthcheck(t, p.addr); code != 0 {
 		t.Fatalf("healthcheck while running: exit %d, want 0", code)
 	}
@@ -929,6 +956,7 @@ func TestBinaryStopsOnSIGTERM(t *testing.T) {
 		stub := newBlockStub(t)
 		p := startBinary(t, env)
 		p.secretWindowed("stub credential", stubToken)
+		p.requireLine(t, loopbackWarn)
 		p.requireGuard(t, true)
 		var keyID string
 		upID, keyID, plaintext = stubUpstream(t, p, stub)
@@ -958,12 +986,13 @@ func TestBinaryStopsOnSIGTERM(t *testing.T) {
 			"DATA_DIR", envValue(env, "DATA_DIR"))
 		p := startBinary(t, again,
 			secret{label: "stub credential", value: stubToken, windowed: true},
-			secret{label: "virtual key", value: plaintext})
+			secret{label: "virtual key", value: plaintext},
+			secret{label: "virtual key (upper-case hex body)", value: strings.ToUpper(strings.TrimPrefix(plaintext, "pory_"))})
 		p.requireGuard(t, false)
 		p.requireLine(t, "encryption key verified")
 		status, body := p.request(t, http.MethodGet, "/health", nil, "")
 		if status != http.StatusOK || !bytes.Contains(body, []byte(`"encryption":"ok"`)) {
-			t.Fatalf("/health after restart: status %d, body %s", status, body)
+			t.Fatalf("/health after restart: status %d, body %s", status, p.redact(string(body)))
 		}
 		rows := p.waitRows(t, "status="+models.StatusSuccess, 1)
 		if rows[0].UpstreamID != upID {
@@ -977,6 +1006,8 @@ func TestBinaryStopsOnSIGTERM(t *testing.T) {
 		fresh := baseEnv(t, "UPSTREAM_ALLOW_LOOPBACK", "1")
 		p := startBinary(t, fresh)
 		p.secretWindowed("stub credential", stubToken)
+		p.requireLine(t, loopbackWarn)
+		p.requireGuard(t, true)
 		_, keyID, key := stubUpstream(t, p, stub)
 		if status, _ := p.mcp(t, keyID, key, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`); status != http.StatusOK {
 			t.Fatalf("tools/list: status %d", status)
@@ -991,7 +1022,8 @@ func TestBinaryStopsOnSIGTERM(t *testing.T) {
 			"DATA_DIR", envValue(fresh, "DATA_DIR"))
 		q := startBinary(t, again,
 			secret{label: "stub credential", value: stubToken, windowed: true},
-			secret{label: "virtual key", value: key})
+			secret{label: "virtual key", value: key},
+			secret{label: "virtual key (upper-case hex body)", value: strings.ToUpper(strings.TrimPrefix(key, "pory_"))})
 		q.waitRows(t, "status="+models.StatusSuccess, 1)
 	})
 }
@@ -1035,6 +1067,7 @@ func TestBinaryRefusesBadStarts(t *testing.T) {
 	t.Run("no_key_against_a_stored_credential", func(t *testing.T) {
 		first := baseEnv(t)
 		p := startBinary(t, first)
+		p.requireGuard(t, false)
 		p.secretWindowed("stub credential", stubToken)
 		// A documentation-range address: create checks the URL's syntax and
 		// never dials it.
@@ -1103,6 +1136,7 @@ func TestBinaryGeneratesMissingKeys(t *testing.T) {
 	const adminWarn = "ADMIN_API_KEY was not set; generated a random admin key for this process only"
 	const encWarn = "ENCRYPTION_KEY was not set; generated an ephemeral key. Upstream secrets will not survive a restart."
 	p := startBinary(t, baseEnv(t, "ADMIN_API_KEY", "", "ENCRYPTION_KEY", ""))
+	p.requireGuard(t, false)
 
 	rec := p.requireLine(t, adminWarn)
 	key, _ := rec["admin_api_key"].(string)
