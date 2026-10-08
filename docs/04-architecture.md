@@ -270,6 +270,14 @@ DEBUG line (slug, upstream id, era, `reached`, latency) shows it as
 `/{virtual_key_id}/{upstream_slug}/mcp` route, relay the client's own request
 and never list, so they are never probed.
 
+## Testing
+
+Three levels, each in a named place.
+
+1. Unit and handler tests live in every package. In `cmd/server` they build the router with `newRouter` and drive it in-process through the fixtures in `blocked_test.go`, `stream_test.go` and `encryption_test.go`.
+2. Process-level tests live in `cmd/server/binary_test.go`. They build the server binary once, on first use, into a temporary directory, and start it as a child process with an environment of its own, a temporary data directory and `LISTEN_ADDR=127.0.0.1:0`. One run proves the listening line and `/health`, a management call, a proxied call through a virtual key to a stub upstream with the credential injected and never the virtual key, the audit row behind it through `GET /api/v1/logs`, the embedded dashboard at `/`, the `healthcheck` subcommand's exit codes, exit 0 on SIGTERM, a restart on the same data directory, six bad starts that each exit 1 naming their cause, and that no captured line, response body or data file holds a key or the stub credential. They do not cover TLS, Postgres, `rekey`, a browser, or the audit drain at SIGTERM (PORM-36). They run under `make test` with no Node, Docker or network, are skipped under `go test -short`, and are Unix only.
+3. An opt-in run against a real MCP server (PORM-57) is planned and not yet in the tree.
+
 ## Tech stack (recommended)
 
 The language is Go (preferred: a single static binary with low resource use).
