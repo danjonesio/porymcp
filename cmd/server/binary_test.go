@@ -812,3 +812,84 @@ func TestBinaryServes(t *testing.T) {
 		p.admin(t, http.MethodGet, "/api/v1/upstreams", "", http.StatusOK)
 	})
 }
+
+const (
+	stubToken    = "stub-bearer-not-real"
+	loopbackWarn = "UPSTREAM_ALLOW_LOOPBACK is set; upstreams on loopback addresses are allowed"
+)
+
+// stubUpstream registers the stub as a bearer upstream and mints one
+// virtual key bound to it. The plaintext joins the hygiene secrets, so no
+// later line, body or data file may carry it. It returns the upstream id,
+// the key id and the plaintext.
+func stubUpstream(t *testing.T, p *proc, stub *blockStub) (upID, keyID, plaintext string) {
+	t.Helper()
+	up := p.admin(t, http.MethodPost, "/api/v1/upstreams",
+		`{"name":"stub","url":"`+stub.srv.URL+`/mcp","auth_type":"bearer","auth_config":{"token":"`+stubToken+`"}}`, http.StatusCreated)
+	upID, _ = up["id"].(string)
+	key := p.admin(t, http.MethodPost, "/api/v1/virtual-keys", `{"name":"bot","target_id":"`+upID+`"}`, http.StatusCreated)
+	keyID, _ = key["id"].(string)
+	plaintext, _ = key["api_key"].(string)
+	if upID == "" || keyID == "" || plaintext == "" {
+		t.Fatalf("create: upstream id %q, key id %q, plaintext of %d bytes", upID, keyID, len(plaintext))
+	}
+	p.secret("virtual key", plaintext)
+	p.secret("virtual key (upper-case hex body)", strings.ToUpper(strings.TrimPrefix(plaintext, "pory_")))
+	return upID, keyID, plaintext
+}
+
+// TestBinaryProxiesACall pins PORM-158's third criterion: the stub upstream
+// receives the upstream credential and never the virtual key, the client
+// sees the tool list, and GET /api/v1/logs shows the row.
+func TestBinaryProxiesACall(t *testing.T) {
+	skipUnlessBinary(t)
+	stub := newBlockStub(t)
+	p := startBinary(t, baseEnv(t, "UPSTREAM_ALLOW_LOOPBACK", "1"))
+	p.secretWindowed("stub credential", stubToken)
+	p.requireLine(t, loopbackWarn)
+	p.requireGuard(t, true)
+
+	upID, keyID, plaintext := stubUpstream(t, p, stub)
+	status, body := p.mcp(t, keyID, plaintext, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if status != http.StatusOK {
+		t.Fatalf("tools/list through the proxy: status %d, body %s", status, p.redact(string(body)))
+	}
+	for _, tool := range []string{"delete_repo", "list_issues"} {
+		if !bytes.Contains(body, []byte(tool)) {
+			t.Errorf("tools/list answer lacks %q: %s", tool, p.redact(string(body)))
+		}
+	}
+
+	seen := stub.requests()
+	if len(seen) != 1 {
+		t.Fatalf("the stub saw %d requests, want 1", len(seen))
+	}
+	got := seen[0]
+	if auth := got.header.Get("Authorization"); auth != "Bearer "+stubToken {
+		t.Errorf("the stub saw Authorization %q, want the upstream credential", p.redact(auth))
+	}
+	if _, ok := got.header["X-Api-Key"]; ok {
+		t.Errorf("the stub saw an X-Api-Key header")
+	}
+	for _, needle := range []string{plaintext, strings.ToUpper(strings.TrimPrefix(plaintext, "pory_"))} {
+		for name, vals := range got.header {
+			for _, v := range vals {
+				if strings.Contains(v, needle) {
+					t.Errorf("the stub saw the virtual key in header %s", name)
+				}
+			}
+		}
+		if strings.Contains(got.uri, needle) {
+			t.Errorf("the stub saw the virtual key in the request URI")
+		}
+		if bytes.Contains(got.body, []byte(needle)) {
+			t.Errorf("the stub saw the virtual key in the body")
+		}
+	}
+
+	rows := p.waitRows(t, "status="+models.StatusSuccess, 1)
+	row := rows[0]
+	if row.Method != "tools/list" || row.UpstreamID != upID || row.VirtualKeyID != keyID {
+		t.Errorf("audit row: method=%q upstream_id=%q virtual_key_id=%q, want tools/list, %q, %q", row.Method, row.UpstreamID, row.VirtualKeyID, upID, keyID)
+	}
+}
