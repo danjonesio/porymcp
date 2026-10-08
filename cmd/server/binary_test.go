@@ -227,7 +227,13 @@ func newProc(t *testing.T, env []string, extra ...secret) *proc {
 	cmd.WaitDelay = 2 * time.Second
 	p.cmd = cmd
 	t.Cleanup(func() { p.checkHygiene(t) })
-	t.Cleanup(func() { p.stop(t, cleanupStop) })
+	t.Cleanup(func() {
+		// A child that served must exit 0 at the end of its case. Under the
+		// race detector a detected race is exit 66, caught here.
+		if code := p.stop(t, cleanupStop); p.addr != "" && code != 0 {
+			t.Errorf("exit %d at cleanup, want 0\n%s", code, p.dump())
+		}
+	})
 	p.started = time.Now()
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
@@ -935,8 +941,14 @@ func TestBinaryHealthcheckSubcommand(t *testing.T) {
 	if code := p.stop(t, 12*time.Second); code != 0 {
 		t.Fatalf("SIGTERM: exit %d, want 0", code)
 	}
+	// A refused connection answers in milliseconds; the subcommand's own
+	// client timeout is 2 s, so a slow 1 would be a different failure.
+	start := time.Now()
 	if code := p.runHealthcheck(t, p.addr); code != 1 {
 		t.Fatalf("healthcheck after stop: exit %d, want 1", code)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("healthcheck after stop took %v, want a refused connection", took)
 	}
 }
 
@@ -1069,10 +1081,9 @@ func TestBinaryRefusesBadStarts(t *testing.T) {
 		p := startBinary(t, first)
 		p.requireGuard(t, false)
 		p.secretWindowed("stub credential", stubToken)
-		// A documentation-range address: create checks the URL's syntax and
-		// never dials it.
+		// Create checks the URL's syntax and never dials it.
 		p.admin(t, http.MethodPost, "/api/v1/upstreams",
-			`{"name":"stored","url":"http://198.51.100.9/mcp","auth_type":"bearer","auth_config":{"token":"`+stubToken+`"}}`, http.StatusCreated)
+			`{"name":"stored","url":"http://127.0.0.1:9/mcp","auth_type":"bearer","auth_config":{"token":"`+stubToken+`"}}`, http.StatusCreated)
 		if code := p.stop(t, 12*time.Second); code != 0 {
 			t.Fatalf("first run: exit %d, want 0", code)
 		}

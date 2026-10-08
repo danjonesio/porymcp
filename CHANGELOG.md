@@ -12,8 +12,9 @@ Behaviour changes that affect a running deployment. Newest first.
   grep for `"addr":":8080"` no longer matches.
 - **The line is written only once the socket is bound.** A bind failure
   logs `server` with the cause and exits 1, with no listening line.
-- **Port 0 is valid.** The kernel picks a free port and the listening line
-  reports it.
+- **Port 0 is valid outside a container.** The kernel picks a free port and
+  the listening line reports it. The image keeps `:8080`, because its
+  healthcheck probes the port in `LISTEN_ADDR`.
 
 ### A new upstream can take its key as a query parameter, stored encrypted and never shown (PORM-27)
 
