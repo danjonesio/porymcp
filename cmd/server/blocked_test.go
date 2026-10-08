@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,6 +54,26 @@ type blockStub struct {
 	// echoQuery names the query parameter whose value the stub echoes
 	// instead, for a query credential (PORM-27).
 	echoQuery string
+	// seen records every request as it arrived, for the process-level tests
+	// (PORM-158) that assert which credential reached the upstream. It is
+	// written in the same handler entry that bumps hits, so the two counts
+	// always agree.
+	mu   sync.Mutex
+	seen []seenRequest
+}
+
+// seenRequest is one request as the stub received it.
+type seenRequest struct {
+	header http.Header
+	uri    string
+	body   []byte
+}
+
+// requests returns a copy of every request the stub has seen.
+func (s *blockStub) requests() []seenRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]seenRequest(nil), s.seen...)
 }
 
 func newBlockStub(t *testing.T) *blockStub {
@@ -61,6 +82,9 @@ func newBlockStub(t *testing.T) *blockStub {
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
 		body, _ := io.ReadAll(r.Body)
+		s.mu.Lock()
+		s.seen = append(s.seen, seenRequest{header: r.Header.Clone(), uri: r.RequestURI, body: body})
+		s.mu.Unlock()
 		var req struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
@@ -269,14 +293,22 @@ func (f *blockFixture) queryLogs(t *testing.T, query, admin string) *httptest.Re
 // renaming it should break this test rather than quietly return nothing.
 func decodeLogs(t *testing.T, rr *httptest.ResponseRecorder) []models.AuditLog {
 	t.Helper()
-	if rr.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/logs: status %d, body %s", rr.Code, rr.Body.String())
+	return decodeLogsBytes(t, rr.Code, rr.Body.Bytes())
+}
+
+// decodeLogsBytes is the envelope decoder the in-process fixture above and
+// the process harness in binary_test.go share, so the field name is pinned
+// in one place.
+func decodeLogsBytes(t *testing.T, status int, body []byte) []models.AuditLog {
+	t.Helper()
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/logs: status %d, body %s", status, body)
 	}
 	var env struct {
 		Logs []models.AuditLog `json:"logs"`
 	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
-		t.Fatalf("GET /api/v1/logs: body %s is not the list envelope: %v", rr.Body.String(), err)
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("GET /api/v1/logs: body %s is not the list envelope: %v", body, err)
 	}
 	return env.Logs
 }
