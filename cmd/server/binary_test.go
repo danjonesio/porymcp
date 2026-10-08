@@ -537,10 +537,10 @@ func (p *proc) waitRows(t *testing.T, query string, want int) []models.AuditLog 
 		if status != http.StatusOK {
 			t.Fatalf("GET /api/v1/logs?%s: status %d, body %s", query, status, p.redact(string(b)))
 		}
-		if !json.Valid(b) {
-			t.Fatalf("GET /api/v1/logs?%s: body is not JSON: %s", query, p.redact(string(b)))
-		}
-		rows := decodeLogsBytes(t, status, b)
+		// Decoded from the redacted text, so the shared decoder's own
+		// failure message never prints a secret. The rows this harness
+		// asserts on carry ids and names, never a credential.
+		rows := decodeLogsBytes(t, status, []byte(p.redact(string(b))))
 		if len(rows) >= want {
 			p.mark("rows seen")
 			return rows
