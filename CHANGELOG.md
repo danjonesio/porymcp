@@ -4,6 +4,17 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The listening log line reports the bound address and is logged only after the bind (PORM-158)
+
+- **`addr` on `porymcp listening` is now the address the kernel bound**, for
+  example `[::]:8080` for the default `:8080`, or `0.0.0.0:8080` where IPv6
+  is unavailable, and `127.0.0.1:41873` for `LISTEN_ADDR=127.0.0.1:0`. A
+  grep for `"addr":":8080"` no longer matches.
+- **The line is written only once the socket is bound.** A bind failure
+  logs `server` with the cause and exits 1, with no listening line.
+- **Port 0 is valid.** The kernel picks a free port and the listening line
+  reports it.
+
 ### A new upstream can take its key as a query parameter, stored encrypted and never shown (PORM-27)
 
 - **A new auth type, `query`.** `auth_config` is `{"param": "api_key",
