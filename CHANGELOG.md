@@ -4,6 +4,10 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The Go toolchain moves to 1.26.9 and the build image to Go 1.27.2 (PORM-215)
+
+- **Twelve standard-library advisories cleared.** `go.mod` pins `toolchain go1.26.9`, which fixes the twelve findings `govulncheck` reported against go1.26.8 (eight in `net/http`, two in `html/template`, one each in `crypto/tls` and `net/textproto`). The `golang:1.27-alpine` build image digest moves from Go 1.27.1 to Go 1.27.2, the release that carries the same fixes, so the published image is built on a patched compiler.
+
 ### The listening log line reports the bound address and is logged only after the bind (PORM-158)
 
 - **`addr` on `porymcp listening` is now the address the kernel bound**, for
