@@ -40,10 +40,10 @@ tmp="$(mktemp -d)"
 PASSES=0
 FAILS=0
 section=""
-section_start=0
 req_n=0
 run_start=$SECONDS
 finished=""
+interrupted=""
 
 # Every JSON step runs in python3 from this one file; curl makes every HTTP
 # call, because the edge in front of a deployment refuses urllib's agent.
@@ -334,8 +334,8 @@ PY
 py() { python3 "$tmp/smoke.py" "$@"; }
 
 say() {
+  checkpoint
   section="$1"
-  section_start=$SECONDS
   echo "== $1 =="
 }
 
@@ -391,6 +391,12 @@ req() {
   : > "$tmp/hdr"
   code="$(curl "${args[@]}" "$@" "$url" 2> "$tmp/curlerr")" || code=000
   echo "$code" > "$tmp/code"
+  case "$url" in
+    # A create answers before its id is recorded; create and mint call
+    # checkpoint themselves once it is.
+    */api/v1/upstreams|*/api/v1/groups|*/api/v1/virtual-keys) ;;
+    *) checkpoint ;;
+  esac
 }
 
 code() { cat "$tmp/code"; }
@@ -495,13 +501,21 @@ before=""
 since=""
 last_rid=""
 
-# count_all prints the lengths of the three lists.
+# count_all prints the lengths of the three lists, or an unreadable marker
+# and a non-zero status when any list did not answer 200, so two failed
+# reads can never compare equal.
 count_all() {
-  local u g k
-  api GET /api/v1/upstreams; u="$(py len "$tmp/body" upstreams)"
-  api GET /api/v1/groups; g="$(py len "$tmp/body" groups)"
-  api GET /api/v1/virtual-keys; k="$(py len "$tmp/body" virtual_keys)"
-  echo "upstreams $u, groups $g, keys $k"
+  local r n out=""
+  for r in upstreams groups virtual-keys; do
+    api GET "/api/v1/$r"
+    if [ "$(code)" != 200 ]; then
+      echo "unreadable: $r answered $(code)"
+      return 1
+    fi
+    n="$(py len "$tmp/body" "${r//-/_}")"
+    out="$out${out:+, }${r/virtual-keys/keys} $n"
+  done
+  echo "$out"
 }
 
 # expect STATUS UPSTREAM TOOL records what the audit row for the last
@@ -519,9 +533,11 @@ create() {
   id="$(jget "$tmp/body" id)"
   if [ "$(code)" = 201 ] && [ -n "$id" ]; then
     printf -v "$4" '%s' "$id"
+    checkpoint
     pass "$1 created"
     return 0
   fi
+  checkpoint
   fail "$1 created" "status $(code)" "$tmp/body"
   return 1
 }
@@ -535,8 +551,10 @@ mint() {
   if [ "$(code)" = 201 ] && [ -n "$id" ]; then
     printf -v "k$3" '%s' "$id"
     : > "$tmp/ids.k$3"
+    checkpoint
     return 0
   fi
+  checkpoint
   fail "$1 minted" "status $(code)" "$tmp/body"
   return 1
 }
@@ -674,7 +692,10 @@ full_teardown() {
     pass "keys, group and upstreams deleted"
   fi
   local after
-  after="$(count_all)"
+  if ! after="$(count_all)"; then
+    fail "counts match the start" "$after"
+    return 1
+  fi
   if [ "$after" = "$before" ]; then
     pass "counts match the start ($after)"
   else
@@ -689,7 +710,11 @@ run_full() {
   BEARER_SHA="$(sha "Bearer $BEARER")"
   QVALUE_SHA="$(sha "$QVALUE")"
   since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  before="$(count_all)"
+  if ! before="$(count_all)"; then
+    fail "the three lists are readable before the run" "$before"
+    before=""
+    return 1
+  fi
   local slug_mcp="smoke_mcp_$sfx" slug_http="smoke_api_$sfx" slug_grp="smoke_grp_$sfx"
   create "mcp upstream" /api/v1/upstreams "$(py body "name=$slug_mcp" "slug=$slug_mcp" kind=mcp "url=$STUB_URL/mcp" transport=streamable-http auth_type=bearer "auth_config=@{\"token\":\"$BEARER\"}")" up_mcp || return
   create "http upstream" /api/v1/upstreams "$(py body "name=$slug_http" "slug=$slug_http" kind=http "url=$STUB_URL/v1" test_path=/ok auth_type=query "auth_config=@{\"param\":\"api_key\",\"value\":\"$QVALUE\"}")" up_http || return
@@ -778,13 +803,23 @@ run_full() {
   wait_blocked "$(cat "$tmp/ids.revoked")" "$tmp/rows.blocked"
   api GET /api/v1/admin-events
   cp "$tmp/body" "$tmp/admin_events"
-  local line
+  # The audit program's status and line count are checked, so a crash can
+  # never leave this section empty on a green run.
+  local audit_status=0 line lines=0
+  py audit "$tmp" "$(cat "$tmp/ids.revoked")" > "$tmp/audit.out" 2> "$tmp/audit.err" || audit_status=$?
+  if [ "$audit_status" -ne 0 ]; then
+    fail "the audit program ran" "exit $audit_status" "$tmp/audit.err"
+  fi
   while IFS= read -r line; do
+    lines=$((lines + 1))
     case "$line" in
       PASS\ *) pass "${line#PASS }" ;;
       FAIL\ *) line="${line#FAIL }"; fail "${line%%: *}" "${line#*: }" ;;
     esac
-  done < <(py audit "$tmp" "$(cat "$tmp/ids.revoked")")
+  done < "$tmp/audit.out"
+  if [ "$lines" -ne 8 ]; then
+    fail "the audit program reported every assertion" "$lines of 8 lines"
+  fi
 }
 
 # teardown runs once, on every exit path: the full section's deletes, the
@@ -796,6 +831,9 @@ teardown() {
   fi
   finished=1
   trap - EXIT INT TERM
+  # The deferred interrupt has done its work by now: it is cleared so the
+  # checkpoints inside the deletes below run them to the end.
+  interrupted=""
   full_teardown
   echo "smoke: $PASSES passed, $FAILS failed in $((SECONDS - run_start))s"
   rm -rf "$tmp"
@@ -804,8 +842,18 @@ teardown() {
   fi
   exit "$status"
 }
+# An interrupt is deferred, not acted on: the trap records it and
+# checkpoint exits once the id of whatever was being created has been
+# recorded, so a SIGINT between a create and its record cannot leave a
+# resource behind. The exit status is the signal's own (130 or 143).
 trap teardown EXIT
-trap 'exit 130' INT TERM
+trap 'interrupted=130' INT
+trap 'interrupted=143' TERM
+checkpoint() {
+  if [ -n "$interrupted" ]; then
+    exit "$interrupted"
+  fi
+}
 
 # Input validation, before any request.
 if ! base_parts="$(py validate SMOKE_BASE "$SMOKE_BASE")"; then
