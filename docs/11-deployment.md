@@ -282,6 +282,14 @@ public interface.
 curl -sS http://127.0.0.1:8080/health
 ```
 
+`SMOKE_EXPECT_EDGE=1 SMOKE_BASE=https://<your host> scripts/smoke.sh` runs
+the same confirmation from a shell with no key: `/health` must be 200 with
+`status` `ok`, `scheme_enforced` true and `trusted_proxies` above zero, and
+`/` must serve the dashboard title. With `SMOKE_VIRTUAL_KEY` set it also
+runs one handshake and `tools/list` through the shared `/mcp` door, which
+reaches the real upstream behind that key. It exits 1 and prints the body
+on a 426, a 3xx or a 5xx.
+
 The egress guard's effective settings are on the startup line, not on
 `/health` (which needs no key). The line is logged at `info`: with
 `LOG_LEVEL` at `warn` or `error` it is absent, and its absence says nothing

@@ -272,11 +272,14 @@ and never list, so they are never probed.
 
 ## Testing
 
-Three levels, each in a named place.
+Four levels, each in a named place.
 
 1. Unit and handler tests live in every package. In `cmd/server` they build the router with `newRouter` and drive it in-process through the fixtures in `blocked_test.go`, `stream_test.go` and `encryption_test.go`.
 2. Process-level tests live in `cmd/server/binary_test.go`. They build the server binary once, on first use, into a temporary directory, and start it as a child process with an environment of its own, a temporary data directory and `LISTEN_ADDR=127.0.0.1:0`. One run proves the listening line and `/health`, a management call, a proxied call through a virtual key to a stub upstream with the credential injected and never the virtual key, the audit row behind it through `GET /api/v1/logs`, the embedded dashboard at `/`, the `healthcheck` subcommand's exit codes, exit 0 on SIGTERM, a restart on the same data directory, six bad starts that each exit 1 naming their cause, and that no captured line, response body or data file holds a key or the stub credential. They do not cover TLS, Postgres, `rekey`, a browser, or the audit drain at SIGTERM (PORM-36). They run under `make test` with no Node, Docker or network, are skipped under `go test -short`, and are Unix only.
-3. An opt-in run against a real MCP server (PORM-57) is planned and not yet in the tree.
+3. The image level is `scripts/smoke.sh`, run by the CI `docker` job against the built `porymcp:ci` container with the echo upstream in `scripts/echostub` started on the runner. One run registers an MCP upstream with a bearer, an HTTP upstream with a query credential and a group of both, mints three keys, drives the single, shared, group and member MCP doors and the HTTP relay, revokes a key, and reads the audit rows and admin events back: the stub saw the stored credential and never a virtual key, a 401 body that echoed the credential reached the client redacted, every request has one row, and no row carries a secret. It then deletes what it made and compares the counts with the start. `make smoke` runs it locally against a built binary. It does not cover TLS, Postgres, a browser or a real MCP server.
+4. The deployment level is the same script with `SMOKE_EXPECT_EDGE=1` and no admin key, run from a machine the instance admits after a redeploy: `/health` with `scheme_enforced` and `trusted_proxies`, the served title, and, with `SMOKE_VIRTUAL_KEY`, one handshake and `tools/list` through the shared `/mcp` door.
+
+An opt-in run against a real MCP server (PORM-57) is planned and not yet in the tree.
 
 ## Tech stack (recommended)
 
