@@ -739,10 +739,18 @@ run_full() {
   mcp_door "mcp single" "$SMOKE_BASE/$k1/mcp" "$tmp/hdr.k1" "$tmp/ids.k1" echo 1 yes
 
   say "mcp shared"
-  if handshake "$SMOKE_BASE/mcp" "$tmp/hdr.k1" "$tmp/ids.k1" "mcp shared" 1 1 && [ "$hs_version" = 2025-11-25 ]; then
+  shared_ok=""
+  if handshake "$SMOKE_BASE/mcp" "$tmp/hdr.k1" "$tmp/ids.k1" "mcp shared" 1 1; then
     echo "$(tail -n 2 "$tmp/ids.k1" | head -n 1) success yes -" >> "$tmp/expect"
     echo "$(tail -n 1 "$tmp/ids.k1") success yes -" >> "$tmp/expect"
-    pass "initialize on /mcp with the bearer answers protocolVersion 2025-11-25 and a session"
+    if [ "$hs_version" = 2025-11-25 ]; then
+      shared_ok=1
+      pass "initialize on /mcp with the bearer answers protocolVersion 2025-11-25 and a session"
+    else
+      fail "initialize on /mcp with the bearer answers protocolVersion 2025-11-25 and a session" "got $hs_version"
+    fi
+  fi
+  if [ -n "$shared_ok" ]; then
     rpc "$SMOKE_BASE/mcp" "$tmp/hdr.k1" "$(rpc_body 2 tools/list)" "$tmp/ids.k1" "$hs_session" "$hs_version"
     expect success yes -
     if [ "$(code)" = 200 ] && py has_tool "$tmp/body" echo 2; then
