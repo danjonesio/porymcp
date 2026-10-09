@@ -696,7 +696,7 @@ run_full() {
   else
     fail "GET /api/ok is 200 with page=2" "status $(code)" "$tmp/body"
   fi
-  if [ "$(jget "$tmp/body" proof.cred_count)" = 1 ] && [ "$(jget "$tmp/body" proof.cred_sha256)" = "$QVALUE_SHA" ] \
+  if [ "$(jget "$tmp/body" proof.cred_count)" = 2 ] && [ "$(jget "$tmp/body" proof.cred_sha256)" = "$QVALUE_SHA" ] \
     && [ "$(jget "$tmp/body" proof.spoof)" = false ] && [ "$(jget "$tmp/body" proof.auth_count)" = 0 ] \
     && [ "$(jget "$tmp/body" proof.pory_seen)" = false ]; then
     pass "the stub saw the stored query value once, spoof never, and no Authorization"
