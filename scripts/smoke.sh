@@ -299,6 +299,8 @@ def main():
     elif cmd == 'record_key':
         # record_key BODY HDRFILE SECRETS: the plaintext goes to the header
         # file and the secrets list, never to stdout; the id is printed.
+        # Under Actions it is also registered as a mask through descriptor
+        # 3 when that is open (see mask in the shell).
         d = pick(read(sys.argv[2]), None) or {}
         key = d.get('api_key') if isinstance(d, dict) else None
         if isinstance(key, str) and key:
@@ -306,6 +308,11 @@ def main():
                 f.write('Authorization: Bearer %s\n' % key)
             with open(sys.argv[4], 'a') as f:
                 f.write(key + '\n')
+            if os.environ.get('GITHUB_ACTIONS') == 'true':
+                try:
+                    os.write(3, ('::add-mask::%s\n' % key).encode())
+                except OSError:
+                    pass
         print(d.get('id') or '' if isinstance(d, dict) else '')
     elif cmd == 'audit':
         audit(sys.argv[2], sys.argv[3])
@@ -341,6 +348,17 @@ fail() {
   fi
   if [ -n "${3:-}" ] && [ -s "$3" ]; then
     py scrub "$tmp" < "$3" | sed 's/^/| /'
+  fi
+}
+
+# mask VALUE: under Actions, registers VALUE with the runner as a mask
+# through file descriptor 3, which the CI step points at its own stdout
+# while it captures the script's output. The value never goes to stdout or
+# stderr, so the captured output stays free of it. With no descriptor 3
+# open, nothing is written.
+mask() {
+  if [ "${GITHUB_ACTIONS:-}" = true ] && [ -n "$1" ] && { true >&3; } 2>/dev/null; then
+    echo "::add-mask::$1" >&3
   fi
 }
 
@@ -811,10 +829,12 @@ fi
 if [ -n "$ADMIN_API_KEY" ]; then
   printf 'Authorization: Bearer %s\n' "$ADMIN_API_KEY" > "$tmp/hdr.admin"
   printf '%s\n' "$ADMIN_API_KEY" >> "$tmp/secrets"
+  mask "$ADMIN_API_KEY"
 fi
 if [ -n "$SMOKE_VIRTUAL_KEY" ]; then
   printf 'Authorization: Bearer %s\n' "$SMOKE_VIRTUAL_KEY" > "$tmp/hdr.deploy"
   printf '%s\n' "$SMOKE_VIRTUAL_KEY" >> "$tmp/secrets"
+  mask "$SMOKE_VIRTUAL_KEY"
 fi
 sfx="$(py suffix)"
 

@@ -113,11 +113,13 @@ jobs:
           cache-to: type=gha,scope=amd64,mode=max
       # Both keys are set, so the server never logs a generated admin key.
       # They are minted here, live for this one container, and are not
-      # secrets. Nothing in this step echoes them and set -x is never used;
-      # the smoke script does not mask them either, because a mask line
-      # carries the value and the grep below would flag it. The script runs
-      # in this step because the admin key lives in this shell: GITHUB_ENV
-      # would print it in a later step's header.
+      # secrets. Nothing in this step echoes them and set -x is never used.
+      # The smoke script registers the admin key and each minted key as a
+      # mask through file descriptor 3, which this step points at its own
+      # stdout, so the mask lines reach the runner and never the captured
+      # output the grep below reads. The script runs in this step because
+      # the admin key lives in this shell: GITHUB_ENV would print it in a
+      # later step's header.
       - name: The image starts, answers /health, serves the dashboard and passes the smoke script
         shell: bash
         timeout-minutes: 5
@@ -130,6 +132,7 @@ jobs:
           # host-gateway resolves to inside the container, and nowhere else.
           # Its log is read only by the greps below and the failure step.
           gw="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
+          [ -n "$gw" ]
           "$RUNNER_TEMP/echostub" -addr "$gw:8098" > "$RUNNER_TEMP/echostub.log" 2>&1 &
           stub_pid=$!
           trap 'kill "$stub_pid" 2>/dev/null || true' EXIT
@@ -163,8 +166,8 @@ jobs:
           # credentials are smokeplain followed by alpha or bravo; the regex
           # is written so the step's own text never matches it.
           smoke_status=0
-          STUB_URL=http://host.docker.internal:8098 SMOKE_BASE=http://localhost:8080 bash scripts/smoke.sh > "$RUNNER_TEMP/smoke.out" 2>&1 || smoke_status=$?
-          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/smoke.out" || grep -qF "$ADMIN_API_KEY" "$RUNNER_TEMP/smoke.out"; then
+          STUB_URL=http://host.docker.internal:8098 SMOKE_BASE=http://localhost:8080 bash scripts/smoke.sh 3>&1 > "$RUNNER_TEMP/smoke.out" 2>&1 || smoke_status=$?
+          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/smoke.out" || grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/smoke.out"; then
             echo 'the smoke output carries a stored credential or a key'
             exit 1
           fi
@@ -190,13 +193,15 @@ jobs:
             exit 1
           fi
           exit "$smoke_status"
-      # Both logs pass through a filter that withholds key shapes and the
-      # stored literals, so the one case where a key reached a log never
-      # publishes it.
+      # Both logs pass through a filter that withholds virtual key shapes,
+      # the stored literals and any 64-hex value (the shape of both keys
+      # minted above), so the one case where a key reached a log never
+      # publishes it. The live log is read, not the file captured above,
+      # which a failure earlier in the step would leave stale.
       - name: Container and stub logs
         if: failure()
         run: |
-          { docker logs porymcp-ci 2>&1; echo '--- echostub'; cat "$RUNNER_TEMP/echostub.log" 2>/dev/null; } | grep -v admin_api_key | sed -E 's/pory_[0-9a-f]{16,}/pory_<withheld>/g; s/smokeplain(alpha|bravo)/<withheld>/g' || true
+          { docker logs porymcp-ci 2>&1; echo '--- echostub'; cat "$RUNNER_TEMP/echostub.log" 2>/dev/null; } | grep -v admin_api_key | sed -E 's/pory_[0-9a-f]{16,}/pory_<withheld>/g; s/smokeplain(alpha|bravo)/<withheld>/g; s/[0-9a-f]{64}/<withheld>/g' || true
       - name: Remove the container
         if: always()
         run: docker rm -f porymcp-ci || true
