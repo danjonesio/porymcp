@@ -125,11 +125,15 @@ jobs:
           grep -qF '"msg":"upstream guard","allow_loopback":false,"deny_private":false' "$RUNNER_TEMP/porymcp.log"
           curl -fsS -o "$RUNNER_TEMP/index.html" -w '%{http_code} %{content_type}\n' http://localhost:8080/ | grep -q '^200 text/html'
           grep -q '<title>PoryMCP</title>' "$RUNNER_TEMP/index.html"
-          if docker logs porymcp-ci 2>&1 | grep -q admin_api_key; then
+          # The log is captured once and grepped from the file: grep -q on a
+          # pipe exits at the first match, docker logs can then die of
+          # SIGPIPE, and under pipefail the if reads a match as no match.
+          docker logs porymcp-ci > "$RUNNER_TEMP/porymcp.log" 2>&1
+          if grep -q admin_api_key "$RUNNER_TEMP/porymcp.log"; then
             echo 'the container log carries an admin key field'
             exit 1
           fi
-          if docker logs porymcp-ci 2>&1 | grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY"; then
+          if grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/porymcp.log"; then
             echo 'the container log carries a key value'
             exit 1
           fi
