@@ -416,13 +416,16 @@ rpc_body() {
 INIT_PARAMS='{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}'
 NOTIFY='{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
-# handshake URL HDRFILE IDFILE LABEL: initialize and the notification on one
-# door. Leaves the session in $hs_session and the version in $hs_version.
-# A door that answers no session (the group door) passes with both empty.
+# handshake URL HDRFILE IDFILE LABEL [REQUIRE_SESSION] [SEND_VERSION]:
+# initialize and the notification on one door. Leaves the session in
+# $hs_session and the version in $hs_version. REQUIRE_SESSION makes a
+# missing Mcp-Session-Id a FAIL; SEND_VERSION puts the answered version on
+# the notification. The group door answers no session and gets neither
+# header, as its own requests say nothing about a member.
 hs_session=""
 hs_version=""
 handshake() {
-  local url="$1" hdrfile="$2" idfile="$3" label="$4" require_session="${5:-}"
+  local url="$1" hdrfile="$2" idfile="$3" label="$4" require_session="${5:-}" send_version="${6:-}"
   hs_session=""
   hs_version=""
   rpc "$url" "$hdrfile" "$(rpc_body 1 initialize "$INIT_PARAMS")" "$idfile"
@@ -432,15 +435,24 @@ handshake() {
   fi
   hs_version="$(jget "$tmp/body" result.protocolVersion 1)"
   hs_session="$(py header_value "$tmp/hdr" Mcp-Session-Id)"
-  if [ -z "$hs_version" ]; then
-    fail "$label initialize" "no protocolVersion in the answer" "$tmp/body"
-    return 1
-  fi
+  case "$hs_version" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+    *)
+      # Only a date-shaped version is ever printed on a PASS line.
+      hs_version=""
+      fail "$label initialize" "protocolVersion is missing or not date-shaped" "$tmp/body"
+      return 1
+      ;;
+  esac
   if [ -n "$require_session" ] && [ -z "$hs_session" ]; then
     fail "$label initialize" "no Mcp-Session-Id in the answer"
     return 1
   fi
-  rpc "$url" "$hdrfile" "$NOTIFY" "$idfile" "$hs_session" "$hs_version"
+  local v=""
+  if [ -n "$send_version" ]; then
+    v="$hs_version"
+  fi
+  rpc "$url" "$hdrfile" "$NOTIFY" "$idfile" "$hs_session" "$v"
   case "$(code)" in
     200|202|204) ;;
     *) fail "$label notifications/initialized" "status $(code)" "$tmp/body"; return 1 ;;
@@ -528,14 +540,26 @@ proof_checks() {
   fi
 }
 
-# mcp_door LABEL URL HDRFILE IDFILE TOOL REQUIRE_SESSION: handshake, list,
-# call on one MCP door. The handshake rows and the list row are recorded
-# with UPSTREAM as the caller says; the call row always names one.
+# mcp_door LABEL URL HDRFILE IDFILE TOOL STUB UPSTREAM: handshake, list and
+# call on one MCP door. STUB set means the door forwards to the stub: a
+# session is required, protocolVersion must be 2025-11-25 and both headers
+# are sent after initialize. STUB empty is the group door: no session, no
+# version header, nothing asserted about the version beyond its shape. The
+# handshake rows and the list row are recorded with UPSTREAM as the caller
+# says; the call row always names one.
 mcp_door() {
   local label="$1" url="$2" hdrfile="$3" idfile="$4" tool="$5" require="$6" upstream="$7"
   say "$label"
-  if ! handshake "$url" "$hdrfile" "$idfile" "$label" "$require"; then
+  if ! handshake "$url" "$hdrfile" "$idfile" "$label" "$require" "$require"; then
     return 1
+  fi
+  if [ -n "$require" ] && [ "$hs_version" != 2025-11-25 ]; then
+    fail "$label initialize answers protocolVersion 2025-11-25" "got $hs_version"
+    return 1
+  fi
+  local v=""
+  if [ -n "$require" ]; then
+    v="$hs_version"
   fi
   # handshake sent two requests: initialize, then the notification.
   local init_rid notify_rid
@@ -548,7 +572,7 @@ mcp_door() {
   else
     pass "initialize answers protocolVersion $hs_version"
   fi
-  rpc "$url" "$hdrfile" "$(rpc_body 2 tools/list)" "$idfile" "$hs_session" "$hs_version"
+  rpc "$url" "$hdrfile" "$(rpc_body 2 tools/list)" "$idfile" "$hs_session" "$v"
   expect success "$upstream" -
   if [ "$(code)" = 200 ] && py has_tool "$tmp/body" "$tool" 2; then
     pass "tools/list carries $tool"
@@ -556,7 +580,7 @@ mcp_door() {
     fail "tools/list carries $tool" "status $(code)" "$tmp/body"
   fi
   local msg="smoke-$sfx"
-  rpc "$url" "$hdrfile" "$(rpc_body 3 tools/call "{\"name\":\"$tool\",\"arguments\":{\"message\":\"$msg\"}}")" "$idfile" "$hs_session" "$hs_version"
+  rpc "$url" "$hdrfile" "$(rpc_body 3 tools/call "{\"name\":\"$tool\",\"arguments\":{\"message\":\"$msg\"}}")" "$idfile" "$hs_session" "$v"
   expect success yes "$tool"
   if [ "$(code)" != 200 ]; then
     fail "tools/call $tool is 200" "status $(code)" "$tmp/body"
@@ -667,10 +691,10 @@ run_full() {
   mcp_door "mcp single" "$SMOKE_BASE/$k1/mcp" "$tmp/hdr.k1" "$tmp/ids.k1" echo 1 yes
 
   say "mcp shared"
-  if handshake "$SMOKE_BASE/mcp" "$tmp/hdr.k1" "$tmp/ids.k1" "mcp shared" 1; then
+  if handshake "$SMOKE_BASE/mcp" "$tmp/hdr.k1" "$tmp/ids.k1" "mcp shared" 1 1 && [ "$hs_version" = 2025-11-25 ]; then
     echo "$(tail -n 2 "$tmp/ids.k1" | head -n 1) success yes -" >> "$tmp/expect"
     echo "$(tail -n 1 "$tmp/ids.k1") success yes -" >> "$tmp/expect"
-    pass "initialize on /mcp with the bearer answers a session"
+    pass "initialize on /mcp with the bearer answers protocolVersion 2025-11-25 and a session"
     rpc "$SMOKE_BASE/mcp" "$tmp/hdr.k1" "$(rpc_body 2 tools/list)" "$tmp/ids.k1" "$hs_session" "$hs_version"
     expect success yes -
     if [ "$(code)" = 200 ] && py has_tool "$tmp/body" echo 2; then
@@ -829,7 +853,7 @@ fi
 if [ -n "$SMOKE_VIRTUAL_KEY" ]; then
   say "deploy key"
   : > "$tmp/ids.deploy"
-  if handshake "$SMOKE_BASE/mcp" "$tmp/hdr.deploy" "$tmp/ids.deploy" "deploy key"; then
+  if handshake "$SMOKE_BASE/mcp" "$tmp/hdr.deploy" "$tmp/ids.deploy" "deploy key" "" 1; then
     pass "initialize on /mcp answers protocolVersion $hs_version"
     rpc "$SMOKE_BASE/mcp" "$tmp/hdr.deploy" "$(rpc_body 2 tools/list)" "$tmp/ids.deploy" "$hs_session" "$hs_version"
     n="$(py tool_count "$tmp/body" 2)"
