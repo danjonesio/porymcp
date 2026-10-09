@@ -277,6 +277,14 @@ def main():
             k, v = kv.split('=', 1)
             obj[k] = json.loads(v[1:]) if v.startswith('@') else v
         print(json.dumps(obj))
+    elif cmd == 'rpc':
+        # rpc ID METHOD [PARAMS]: a JSON-RPC request; a numeric id stays a
+        # number, PARAMS is itself JSON.
+        rid = int(sys.argv[2]) if sys.argv[2].isdigit() else sys.argv[2]
+        obj = {'jsonrpc': '2.0', 'id': rid, 'method': sys.argv[3]}
+        if len(sys.argv) > 4:
+            obj['params'] = json.loads(sys.argv[4])
+        print(json.dumps(obj))
     elif cmd == 'suffix':
         import secrets as s
         print(s.token_hex(3))
@@ -368,7 +376,9 @@ mask() {
 req() {
   local method="$1" url="$2" hdrfile="${3:-}" json="${4:-}" maxtime="${5:-20}"
   shift 5 2>/dev/null || shift $#
-  local -a args=(-sS --connect-timeout 5 --max-time "$maxtime" -o "$tmp/body" -D "$tmp/hdr" -w '%{http_code}' -X "$method")
+  # -q first: curl then reads no curlrc, so a user's verbose, location or
+  # trace setting cannot reach a run.
+  local -a args=(-q -sS --connect-timeout 5 --max-time "$maxtime" -o "$tmp/body" -D "$tmp/hdr" -w '%{http_code}' -X "$method")
   if [ -n "$hdrfile" ]; then
     args+=(--header @"$hdrfile")
   fi
@@ -422,17 +432,12 @@ relay() {
 jget() { py jget "$@"; }
 sha() { py sha "$1"; }
 
-rpc_body() {
-  # rpc_body ID METHOD [PARAMS-JSON]
-  if [ -n "${3:-}" ]; then
-    printf '{"jsonrpc":"2.0","id":%s,"method":"%s","params":%s}' "$1" "$2" "$3"
-  else
-    printf '{"jsonrpc":"2.0","id":%s,"method":"%s"}' "$1" "$2"
-  fi
-}
+# rpc_body ID METHOD [PARAMS-JSON]: one JSON-RPC envelope, built by
+# json.dumps like every other body the script sends.
+rpc_body() { py rpc "$@"; }
 
-INIT_PARAMS='{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}'
-NOTIFY='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+INIT_PARAMS="$(py body protocolVersion=2025-11-25 'capabilities=@{}' "clientInfo=@$(py body name=smoke version=0)")"
+NOTIFY="$(py body jsonrpc=2.0 method=notifications/initialized)"
 
 # handshake URL HDRFILE IDFILE LABEL [REQUIRE_SESSION] [SEND_VERSION]:
 # initialize and the notification on one door. Leaves the session in
@@ -598,7 +603,7 @@ mcp_door() {
     fail "tools/list carries $tool" "status $(code)" "$tmp/body"
   fi
   local msg="smoke-$sfx"
-  rpc "$url" "$hdrfile" "$(rpc_body 3 tools/call "{\"name\":\"$tool\",\"arguments\":{\"message\":\"$msg\"}}")" "$idfile" "$hs_session" "$v"
+  rpc "$url" "$hdrfile" "$(rpc_body 3 tools/call "$(py body "name=$tool" "arguments=@$(py body "message=$msg")")")" "$idfile" "$hs_session" "$v"
   expect success yes "$tool"
   if [ "$(code)" != 200 ]; then
     fail "tools/call $tool is 200" "status $(code)" "$tmp/body"
