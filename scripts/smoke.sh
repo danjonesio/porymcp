@@ -306,8 +306,6 @@ def main():
                 f.write('Authorization: Bearer %s\n' % key)
             with open(sys.argv[4], 'a') as f:
                 f.write(key + '\n')
-            if os.environ.get('GITHUB_ACTIONS') == 'true':
-                sys.stderr.write('::add-mask::%s\n' % key)
         print(d.get('id') or '' if isinstance(d, dict) else '')
     elif cmd == 'audit':
         audit(sys.argv[2], sys.argv[3])
@@ -343,12 +341,6 @@ fail() {
   fi
   if [ -n "${3:-}" ] && [ -s "$3" ]; then
     py scrub "$tmp" < "$3" | sed 's/^/| /'
-  fi
-}
-
-mask() {
-  if [ "${GITHUB_ACTIONS:-}" = true ] && [ -n "$1" ]; then
-    echo "::add-mask::$1"
   fi
 }
 
@@ -795,12 +787,10 @@ fi
 if [ -n "$ADMIN_API_KEY" ]; then
   printf 'Authorization: Bearer %s\n' "$ADMIN_API_KEY" > "$tmp/hdr.admin"
   printf '%s\n' "$ADMIN_API_KEY" >> "$tmp/secrets"
-  mask "$ADMIN_API_KEY"
 fi
 if [ -n "$SMOKE_VIRTUAL_KEY" ]; then
   printf 'Authorization: Bearer %s\n' "$SMOKE_VIRTUAL_KEY" > "$tmp/hdr.deploy"
   printf '%s\n' "$SMOKE_VIRTUAL_KEY" >> "$tmp/secrets"
-  mask "$SMOKE_VIRTUAL_KEY"
 fi
 sfx="$(py suffix)"
 

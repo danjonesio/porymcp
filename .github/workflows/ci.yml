@@ -113,10 +113,11 @@ jobs:
           cache-to: type=gha,scope=amd64,mode=max
       # Both keys are set, so the server never logs a generated admin key.
       # They are minted here, live for this one container, and are not
-      # secrets. Nothing in this step echoes them, set -x is never used, and
-      # the smoke script masks them under Actions as a second line. The
-      # script runs in this step because the admin key lives in this shell:
-      # GITHUB_ENV would print it in a later step's header.
+      # secrets. Nothing in this step echoes them and set -x is never used;
+      # the smoke script does not mask them either, because a mask line
+      # carries the value and the grep below would flag it. The script runs
+      # in this step because the admin key lives in this shell: GITHUB_ENV
+      # would print it in a later step's header.
       - name: The image starts, answers /health, serves the dashboard and passes the smoke script
         shell: bash
         timeout-minutes: 5
@@ -157,8 +158,8 @@ jobs:
           grep -q '<title>PoryMCP</title>' "$RUNNER_TEMP/index.html"
           # The smoke script (PORM-213): two upstreams, a group, three keys,
           # the four MCP doors, the relay, a revoke and the audit rows. Its
-          # output is checked before it is printed, because add-mask would
-          # hide a leak from any later read of the job log. The stored
+          # output is checked before it is printed, so a leak never reaches
+          # the job log and a later read of the log proves nothing. The stored
           # credentials are smokeplain followed by alpha or bravo; the regex
           # is written so the step's own text never matches it.
           smoke_status=0
