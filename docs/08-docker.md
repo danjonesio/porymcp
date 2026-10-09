@@ -27,7 +27,7 @@ docker buildx imagetools inspect node:22-alpine --format '{{.Manifest.Digest}}'
 docker buildx imagetools inspect node:22-alpine@sha256:<digest>   # lists linux/amd64 and linux/arm64
 ```
 
-An index digest resolves per platform. The digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned: the two build stages run on the builder's own architecture, so an amd64 manifest pinned there builds on the amd64 CI runners and is only noticed on an arm64 machine. The runtime base resolves per target, so the same mistake there fails the `docker` job's arm64 build. The `docker` job builds and smoke-tests the new pin on the pull request.
+An index digest resolves per platform. The digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned: the two build stages run on the builder's own architecture, so an amd64 manifest pinned there builds on the amd64 CI runners and is only noticed on an arm64 machine. The runtime base resolves per target, so the same mistake there fails the `docker` job's arm64 build. The `docker` job builds and smoke-tests the new pin on the pull request: it starts the echo upstream from `scripts/echostub` on the runner and runs `scripts/smoke.sh` against the container (upstreams, keys, the MCP doors, the HTTP relay, a revoke and the audit rows), with the script's output checked for key values before it is printed.
 
 The `golang` digest and the `toolchain` line in `go.mod` move in one commit, with the version string in `README.md`, `docs/04-architecture.md` and this file, because the image never downloads a toolchain. A Node major move also changes `web/.nvmrc` (`TestNodeMajorConsistent` fails otherwise) and needs the `web/out` rebuild that `CONTRIBUTING.md` describes. A digest refresh under the same tag needs neither.
 
@@ -57,6 +57,7 @@ Each tag is one index carrying `linux/amd64` and `linux/arm64`. `docker buildx i
 - Subcommands: `/porymcp healthcheck` (above) and `/porymcp rekey`, which re-encrypts every stored credential under the current `ENCRYPTION_KEY` after a rotation (`docs/11-deployment.md` §12). Any other first argument prints a usage line and exits `2`, so a mistyped `rekey` never starts a second server on the live database.
 - Simple `docker compose up --build` experience once `.env` holds `ADMIN_API_KEY` and `ENCRYPTION_KEY` (see First run)
 - TLS / reverse proxy: `docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build` (Caddy in front; see `docs/11-deployment.md`; needs the same `.env`)
+- `make smoke` runs `scripts/smoke.sh` against a running instance (`CONTRIBUTING.md` has the recipe). Against the compose stack the echo stub binds the compose network's gateway, read with `docker inspect` from the running container, because a stub on the host's loopback is unreachable from inside a container; the server then needs no loopback flag.
 
 ## Postgres (local development only)
 

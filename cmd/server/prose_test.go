@@ -113,8 +113,10 @@ var wordCheckExempt = map[string]bool{
 }
 
 // proseFile reports whether the gate scans a tracked path: the text and
-// source extensions, plus the extensionless files people read. web/out is
-// the minified export, checked by hand in the PR instead. LICENSE has no
+// source extensions, plus the extensionless files people read. A shell
+// script is scanned whole, like a workflow file: its PASS and FAIL lines
+// and its comments are what an operator reads (PORM-213). web/out is the
+// minified export, checked by hand in the PR instead. LICENSE has no
 // matching extension or basename and is not scanned.
 func proseFile(p string) bool {
 	if strings.HasPrefix(p, "web/out/") {
@@ -125,7 +127,7 @@ func proseFile(p string) bool {
 		return true
 	}
 	switch path.Ext(p) {
-	case ".md", ".yaml", ".yml", ".go", ".ts", ".tsx", ".css", ".mjs":
+	case ".md", ".yaml", ".yml", ".go", ".ts", ".tsx", ".css", ".mjs", ".sh":
 		return true
 	}
 	return false
@@ -395,7 +397,7 @@ func TestCheckFile_WordExemptFile(t *testing.T) {
 // Extensionless files people read are scanned by basename; the export and
 // the third-party licence are not.
 func TestProseFile(t *testing.T) {
-	for _, p := range []string{"README.md", "NOTICE", "Dockerfile", "web/next.config.mjs", "docs/x.md", "internal/a/b.go", "web/src/a.tsx", "openapi.yaml", ".env.example"} {
+	for _, p := range []string{"README.md", "NOTICE", "Dockerfile", "web/next.config.mjs", "docs/x.md", "internal/a/b.go", "web/src/a.tsx", "openapi.yaml", ".env.example", "scripts/smoke.sh"} {
 		if !proseFile(p) {
 			t.Errorf("proseFile(%q) = false, want true", p)
 		}

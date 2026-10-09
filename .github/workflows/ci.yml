@@ -88,6 +88,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The same pin as the go job, so Dependabot moves both together. The
+      # module cache is not restored: the stub is standard library only.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      # The echo upstream the smoke script registers (scripts/echostub). It
+      # is built outside the tree: .gitignore ignores a binary named porymcp
+      # at any path, and nothing from the runner's checkout is committed.
+      - name: Build the echo stub
+        run: go build -o "$RUNNER_TEMP/echostub" ./scripts/echostub
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # One cache scope per platform, so the publish job below reads both
       # instead of the last writer's.
@@ -102,15 +113,38 @@ jobs:
           cache-to: type=gha,scope=amd64,mode=max
       # Both keys are set, so the server never logs a generated admin key.
       # They are minted here, live for this one container, and are not
-      # secrets. Nothing in this step echoes them, and set -x is never used.
-      - name: The image starts, answers /health and serves the dashboard
+      # secrets. Nothing in this step echoes them and set -x is never used.
+      # The smoke script registers the admin key and each minted key as a
+      # mask through file descriptor 3, which this step points at its own
+      # stdout, so the mask lines reach the runner and never the captured
+      # output the grep below reads. The script runs in this step because
+      # the admin key lives in this shell: GITHUB_ENV would print it in a
+      # later step's header.
+      - name: The image starts, answers /health, serves the dashboard and passes the smoke script
         shell: bash
+        timeout-minutes: 5
         run: |
           ADMIN_API_KEY="$(openssl rand -hex 32)"
           ENCRYPTION_KEY="$(openssl rand -hex 32)"
           [ -n "$ADMIN_API_KEY" ] && [ -n "$ENCRYPTION_KEY" ]
           export ADMIN_API_KEY ENCRYPTION_KEY
-          docker run -d --name porymcp-ci -p 8080:8080 -e ADMIN_API_KEY -e ENCRYPTION_KEY porymcp:ci
+          # The echo stub listens on the bridge gateway, which is what
+          # host-gateway resolves to inside the container, and nowhere else.
+          # Its log is read only by the greps below and the failure step.
+          gw="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
+          [ -n "$gw" ]
+          "$RUNNER_TEMP/echostub" -addr "$gw:8098" > "$RUNNER_TEMP/echostub.log" 2>&1 &
+          stub_pid=$!
+          trap 'kill "$stub_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 10); do
+            if curl -s -o /dev/null --max-time 1 "http://$gw:8098/v1/ok"; then
+              stub=yes
+              break
+            fi
+            sleep 1
+          done
+          [ "${stub:-}" = yes ]
+          docker run -d --name porymcp-ci -p 8080:8080 --add-host=host.docker.internal:host-gateway -e ADMIN_API_KEY -e ENCRYPTION_KEY porymcp:ci
           for _ in $(seq 1 30); do
             if curl -fs http://localhost:8080/health 2>/dev/null | grep -q '"status":"ok"'; then
               ok=yes
@@ -125,17 +159,49 @@ jobs:
           grep -qF '"msg":"upstream guard","allow_loopback":false,"deny_private":false' "$RUNNER_TEMP/porymcp.log"
           curl -fsS -o "$RUNNER_TEMP/index.html" -w '%{http_code} %{content_type}\n' http://localhost:8080/ | grep -q '^200 text/html'
           grep -q '<title>PoryMCP</title>' "$RUNNER_TEMP/index.html"
-          if docker logs porymcp-ci 2>&1 | grep -q admin_api_key; then
+          # The smoke script (PORM-213): two upstreams, a group, three keys,
+          # the four MCP doors, the relay, a revoke and the audit rows. Its
+          # output is checked before it is printed, so a leak never reaches
+          # the job log and a later read of the log proves nothing. The stored
+          # credentials are smokeplain followed by alpha or bravo; the regex
+          # is written so the step's own text never matches it.
+          smoke_status=0
+          STUB_URL=http://host.docker.internal:8098 SMOKE_BASE=http://localhost:8080 bash scripts/smoke.sh 3>&1 > "$RUNNER_TEMP/smoke.out" 2>&1 || smoke_status=$?
+          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/smoke.out" || grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/smoke.out"; then
+            echo 'the smoke output carries a stored credential or a key'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/smoke.out"
+          # The log is captured once and grepped from the file: grep -q on a
+          # pipe exits at the first match, docker logs can then die of
+          # SIGPIPE, and under pipefail the if reads a match as no match.
+          docker logs porymcp-ci > "$RUNNER_TEMP/porymcp.log" 2>&1
+          if grep -q admin_api_key "$RUNNER_TEMP/porymcp.log"; then
             echo 'the container log carries an admin key field'
             exit 1
           fi
-          if docker logs porymcp-ci 2>&1 | grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY"; then
+          if grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/porymcp.log"; then
             echo 'the container log carries a key value'
             exit 1
           fi
-      - name: Container log
+          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/porymcp.log"; then
+            echo 'the container log carries a stored credential or a virtual key'
+            exit 1
+          fi
+          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/echostub.log"; then
+            echo 'the stub log carries a stored credential or a virtual key'
+            exit 1
+          fi
+          exit "$smoke_status"
+      # Both logs pass through a filter that withholds virtual key shapes,
+      # the stored literals and any 64-hex value (the shape of both keys
+      # minted above), so the one case where a key reached a log never
+      # publishes it. The live log is read, not the file captured above,
+      # which a failure earlier in the step would leave stale.
+      - name: Container and stub logs
         if: failure()
-        run: docker logs porymcp-ci 2>&1 | grep -v admin_api_key || true
+        run: |
+          { docker logs porymcp-ci 2>&1; echo '--- echostub'; cat "$RUNNER_TEMP/echostub.log" 2>/dev/null; } | grep -v admin_api_key | sed -E 's/pory_[0-9a-f]{16,}/pory_<withheld>/g; s/smokeplain(alpha|bravo)/<withheld>/g; s/[0-9a-f]{64}/<withheld>/g' || true
       - name: Remove the container
         if: always()
         run: docker rm -f porymcp-ci || true
