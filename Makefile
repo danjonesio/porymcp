@@ -4,17 +4,17 @@ dev:
 	go run ./cmd/server
 
 test:
-	go test ./cmd/... ./internal/... ./web
+	go test ./cmd/... ./internal/... ./scripts/... ./web
 
 test-race:
-	go test -race ./cmd/... ./internal/... ./web
+	go test -race ./cmd/... ./internal/... ./scripts/... ./web
 
 vet:
-	go vet ./cmd/... ./internal/... ./web
+	go vet ./cmd/... ./internal/... ./scripts/... ./web
 	@files="$$(git ls-files '*.go' 2>/dev/null)"; [ -n "$$files" ] || files="./cmd ./internal ./web"; unformatted="$$(gofmt -l $$files)"; if [ -n "$$unformatted" ]; then echo "gofmt -l: $$unformatted"; exit 1; fi
 
 vuln:
-	go tool govulncheck ./cmd/... ./internal/... ./web
+	go tool govulncheck ./cmd/... ./internal/... ./scripts/... ./web
 
 tidy:
 	go mod tidy
