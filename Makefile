@@ -1,4 +1,4 @@
-.PHONY: dev test test-race vet vuln web web-dev web-test web-lint web-typecheck web-audit build tidy smoke
+.PHONY: dev test test-race vet vuln web web-dev web-test web-lint web-typecheck web-audit web-e2e build tidy smoke
 
 dev:
 	go run ./cmd/server
@@ -45,3 +45,11 @@ build: web
 # STUB_URL and the SMOKE_* inputs from the environment it inherits.
 smoke:
 	@bash scripts/smoke.sh
+
+# web-e2e runs the browser suite (web/e2e) against a binary scripts/web-e2e.sh
+# starts on free loopback ports. It has no prerequisite because npm ci must
+# come before make build on a fresh checkout; the recipe names no key.
+web-e2e:
+	@[ -d web/node_modules ] || (cd web && npm ci --no-audit --no-fund)
+	@$(MAKE) build
+	@bash scripts/web-e2e.sh
