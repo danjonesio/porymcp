@@ -81,17 +81,48 @@ test('proxy rows for the run key appear and the filters narrow them; admin activ
   await page.goto('/logs/')
   await expect(page.getByRole('heading', { name: 'Logs', exact: true })).toBeVisible()
   const proxyTable = page.getByRole('table').filter({ has: page.getByRole('columnheader', { name: 'Latency', exact: true }) })
-  await page.getByLabel('Virtual key', { exact: true }).selectOption({ label: keyName })
-  await expect(proxyTable.getByRole('row').filter({ hasText: 'tools/list' })).toHaveCount(1)
-  await expect(proxyTable.getByRole('row').filter({ hasText: 'initialize' })).toHaveCount(1)
-  await page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
-  await expect(proxyTable.getByRole('row').filter({ hasText: 'tools/list' })).toHaveCount(1)
-  await expect(proxyTable.getByRole('row').filter({ hasText: 'initialize' })).toHaveCount(1)
-  await page.getByLabel('Method', { exact: true }).fill('tools/call')
+  const rows = (text: string) => proxyTable.getByRole('row').filter({ hasText: text })
+  // Every filter change refetches with no sequence guard
+  // (web/src/app/(app)/logs/page.tsx:27-43), so each change waits for its
+  // own answer before the table is read, and each filter is shown to remove
+  // a row that was there before it.
+  const filtered = async (answer: (url: string) => boolean, change: () => Promise<unknown>) => {
+    const res = page.waitForResponse((r) => r.url().includes('/api/v1/logs?') && answer(r.url()))
+    await change()
+    await res
+  }
+  // The refused call's row carries no key, so the key filter must drop it.
+  await expect(rows('blocked')).not.toHaveCount(0)
+  await filtered(
+    (u) => u.includes(`virtual_key_id=${k.id}`),
+    () => page.getByLabel('Virtual key', { exact: true }).selectOption({ label: keyName })
+  )
+  await expect(rows('tools/list')).toHaveCount(1)
+  await expect(rows('initialize')).toHaveCount(1)
+  await expect(rows('blocked')).toHaveCount(0)
+  await filtered(
+    (u) => u.includes('status=error'),
+    () => page.getByLabel('Status', { exact: true }).selectOption({ label: 'Error' })
+  )
   // web/src/app/(app)/logs/page.tsx:98
   await expect(page.getByText('No matching log entries.', { exact: true })).toBeVisible()
-  await page.getByLabel('Method', { exact: true }).fill('')
-  await proxyTable.getByRole('row').filter({ hasText: 'tools/list' }).click()
+  await filtered(
+    (u) => u.includes('status=success'),
+    () => page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+  )
+  await expect(rows('tools/list')).toHaveCount(1)
+  await expect(rows('initialize')).toHaveCount(1)
+  await filtered(
+    (u) => u.includes('method='),
+    () => page.getByLabel('Method', { exact: true }).fill('tools/call')
+  )
+  await expect(page.getByText('No matching log entries.', { exact: true })).toBeVisible()
+  await filtered(
+    (u) => u.includes('status=success') && !u.includes('method='),
+    () => page.getByLabel('Method', { exact: true }).fill('')
+  )
+  await expect(rows('tools/list')).toHaveCount(1)
+  await rows('tools/list').click()
   await expect(page.getByRole('heading', { name: 'Log detail', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Log detail', exact: true })).toBeHidden()
