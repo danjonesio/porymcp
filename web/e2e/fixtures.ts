@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { expect, test as base } from '@playwright/test'
+import { expect, type Locator, type Page, test as base } from '@playwright/test'
 import { deriveSlug } from '../src/lib/slug.ts'
 import { remove } from './api.ts'
 
@@ -19,6 +19,19 @@ export type Counts = { prefix: string; upstreams: number; groups: number; virtua
 export const STUB_URL = (process.env.STUB_URL ?? '').replace(/\/$/, '')
 
 export const slugOf = (name: string) => deriveSlug(name)
+
+// Row action buttons share their names across rows, so every action is
+// found inside the row that carries the run's unique name. A substring match
+// is safe because no run name is a prefix of another, and it still matches a
+// Name cell that carries a badge beside the name.
+export const rowNamed = (page: Page, name: string): Locator => page.getByRole('row').filter({ hasText: name })
+
+// Headless UI gives an Alert a boxless role=dialog wrapper that role queries
+// read as hidden, so its buttons are found under the wrapper that holds the
+// Alert's title. The wrapper is a portal sibling, never a descendant of the
+// dialog that opened it.
+export const alertTitled = (page: Page, title: string): Locator =>
+  page.locator('[role="dialog"]', { has: page.getByRole('heading', { name: title, exact: true }) })
 
 // Every row a test creates is recorded here the moment its id is known. The
 // fixture deletes what is left when the test ends, pass or fail, keys first
