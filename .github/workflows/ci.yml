@@ -99,6 +99,33 @@ jobs:
       # at any path, and nothing from the runner's checkout is committed.
       - name: Build the echo stub
         run: go build -o "$RUNNER_TEMP/echostub" ./scripts/echostub
+      # Node for the browser suite (web/e2e, PORM-157), at the web job's pin
+      # so Dependabot moves both together; the npm cache is the one the web
+      # job saves under the lockfile's hash. These steps sit before the image
+      # build so a broken install fails before the slow part.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install the dashboard's dependencies
+        timeout-minutes: 3
+        run: cd web && npm ci --ignore-scripts --no-audit --no-fund
+      # The browser cache is keyed on the installed Playwright version and has
+      # no fallback key: another version's browser is dead weight that would
+      # be saved again under the new key. A bump misses once, then hits.
+      - name: Read the Playwright version
+        id: pwv
+        run: echo "version=$(node -p "require('./web/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pwv.outputs.version }}
+      # The headless shell is all a headless run needs. On a cache hit the
+      # download is skipped; the apt libraries are installed on every run.
+      - name: Install the Chromium headless shell
+        timeout-minutes: 5
+        run: cd web && npx --no-install playwright install --with-deps --only-shell chromium
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # One cache scope per platform, so the publish job below reads both
       # instead of the last writer's.
@@ -119,10 +146,14 @@ jobs:
       # stdout, so the mask lines reach the runner and never the captured
       # output the grep below reads. The script runs in this step because
       # the admin key lives in this shell: GITHUB_ENV would print it in a
-      # later step's header.
-      - name: The image starts, answers /health, serves the dashboard and passes the smoke script
+      # later step's header. The browser suite (PORM-157) runs here after
+      # the smoke script for the same reason, against the same container and
+      # stub, and its report is moved to the upload path only after
+      # scripts/e2e-scrub.sh has withheld every key form and checked the
+      # result.
+      - name: The image starts, answers /health, serves the dashboard, passes the smoke script and the browser suite
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           ADMIN_API_KEY="$(openssl rand -hex 32)"
           ENCRYPTION_KEY="$(openssl rand -hex 32)"
@@ -184,15 +215,61 @@ jobs:
             echo 'the container log carries a key value'
             exit 1
           fi
-          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/porymcp.log"; then
+          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/porymcp.log"; then
             echo 'the container log carries a stored credential or a virtual key'
             exit 1
           fi
-          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/echostub.log"; then
+          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/echostub.log"; then
             echo 'the stub log carries a stored credential or a virtual key'
             exit 1
           fi
-          exit "$smoke_status"
+          [ "$smoke_status" -eq 0 ] || exit "$smoke_status"
+          # The browser suite's scrub self-test runs first, while the keys are
+          # exported, so the check that gates the upload is proven able to see
+          # a key at every layer of a report.
+          bash scripts/e2e-scrub.sh --self-test
+          e2e_status=0
+          (cd web && PORYMCP_BASE_URL=http://localhost:8080 STUB_URL=http://host.docker.internal:8098 PLAYWRIGHT_NO_COPY_PROMPT=1 npm run e2e) > "$RUNNER_TEMP/e2e.raw" 2>&1 || e2e_status=$?
+          # A failing Settings assertion prints the first 12 characters of the
+          # admin key; they are withheld before the grep, which then sees what
+          # would be printed. The stored credential words are not grepped in
+          # this output: a failing fill on the bearer field prints them, and a
+          # hit would hide an ordinary failure. They are grepped in the logs.
+          sed "s/${ADMIN_API_KEY:0:12}/<withheld>/g" "$RUNNER_TEMP/e2e.raw" > "$RUNNER_TEMP/e2e.out"
+          if grep -qE 'pory_[0-9a-f]{16,}' "$RUNNER_TEMP/e2e.out" || grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/e2e.out"; then
+            echo 'the browser suite output carries a key'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/e2e.out"
+          docker logs porymcp-ci > "$RUNNER_TEMP/porymcp.log" 2>&1
+          if grep -q admin_api_key "$RUNNER_TEMP/porymcp.log"; then
+            echo 'the container log carries an admin key field'
+            exit 1
+          fi
+          if grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/porymcp.log"; then
+            echo 'the container log carries a key value'
+            exit 1
+          fi
+          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/porymcp.log"; then
+            echo 'the container log carries a stored credential or a virtual key'
+            exit 1
+          fi
+          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/echostub.log"; then
+            echo 'the stub log carries a stored credential or a virtual key'
+            exit 1
+          fi
+          # On a red suite the report is scrubbed and moved to the upload path
+          # only when the scrub's check finds nothing; otherwise it stays on
+          # this ephemeral runner and nothing uploads.
+          if [ "$e2e_status" -ne 0 ] && [ -d web/playwright-report ]; then
+            if bash scripts/e2e-scrub.sh web/playwright-report web/test-results; then
+              mv web/playwright-report "$RUNNER_TEMP/playwright-report"
+              echo 'the browser report is the playwright-report artefact on this run (npx playwright show-report <dir>); the test-results paths above stayed on the runner'
+            else
+              echo 'the browser report was not kept'
+            fi
+          fi
+          exit "$e2e_status"
       # Both logs pass through a filter that withholds virtual key shapes,
       # the stored literals and any 64-hex value (the shape of both keys
       # minted above), so the one case where a key reached a log never
@@ -201,10 +278,22 @@ jobs:
       - name: Container and stub logs
         if: failure()
         run: |
-          { docker logs porymcp-ci 2>&1; echo '--- echostub'; cat "$RUNNER_TEMP/echostub.log" 2>/dev/null; } | grep -v admin_api_key | sed -E 's/pory_[0-9a-f]{16,}/pory_<withheld>/g; s/smokeplain(alpha|bravo)/<withheld>/g; s/[0-9a-f]{64}/<withheld>/g' || true
+          { docker logs porymcp-ci 2>&1; echo '--- echostub'; cat "$RUNNER_TEMP/echostub.log" 2>/dev/null; } | grep -v admin_api_key | sed -E 's/pory_[0-9a-f]{16,}/pory_<withheld>/g; s/(smokeplain|e2eplain)(alpha|bravo)/<withheld>/g; s/[0-9a-f]{64}/<withheld>/g' || true
       - name: Remove the container
         if: always()
         run: docker rm -f porymcp-ci || true
+      # The browser suite's report, present only when the main step moved it
+      # here after the scrub withheld every key form and its check found
+      # nothing. A green run skips this step; a red smoke, a scrub hit or a
+      # timeout leaves no directory, so nothing uploads then either.
+      - name: Upload the browser suite's report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: ${{ runner.temp }}/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
       # The build stage cross-compiles by argument. Extract the arm64 image and
       # check the binary really is arm64, which a manifest cannot show: buildx
       # stamps the platform from the request, not from the artefact.

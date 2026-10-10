@@ -94,7 +94,7 @@ cd web && npm ci && npm run build
 # then restart the Go server (or `npm run dev` on :3000 while the API stays on :8080)
 ```
 
-`make test` covers auth, key verification, store CRUD, management API, proxy credential injection and the tracked-file guards. Use the target rather than `go test ./...`: once `npm ci` has run, `./...` also reaches a Go file shipped inside `web/node_modules`. `make web-test` (`cd web && npm test`) covers the dashboard's client-snippet generation. [CONTRIBUTING.md](CONTRIBUTING.md) lists every check CI runs and the order to run them in.
+`make test` covers auth, key verification, store CRUD, management API, proxy credential injection and the tracked-file guards. Use the target rather than `go test ./...`: once `npm ci` has run, `./...` also reaches a Go file shipped inside `web/node_modules`. `make web-test` (`cd web && npm test`) covers the dashboard's client-snippet generation, and `make web-e2e` drives the dashboard in Chromium through the flows a person uses first: sign in, an upstream, a group with a tool filter, a virtual key, a revoke, the Logs filters and Settings (docs/06-ui.md, Browser tests). [CONTRIBUTING.md](CONTRIBUTING.md) lists every check CI runs and the order to run them in.
 
 ## Core concepts
 

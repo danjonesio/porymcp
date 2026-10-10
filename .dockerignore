@@ -12,3 +12,9 @@ web/.next
 !.env.example
 # Built by the web stage inside the image; never ship the tracked copy.
 web/out
+# The browser suite and its output: the image's next build must not type-check
+# the specs, and a local report holds the run's keys.
+web/e2e
+web/playwright.config.ts
+web/playwright-report
+web/test-results
