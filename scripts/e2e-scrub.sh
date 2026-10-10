@@ -228,7 +228,8 @@ write_patterns() {
 
 # unzip where it exists (the CI runner has it), else bsdtar, else python's own
 # zipfile command line; the first two share no code with the rewrite, the last
-# shares the library and not the rewrite's code.
+# shares the library and not the rewrite's code. A zip the tool cannot open is
+# a failure, never a pass: its bytes would stay compressed and unseen.
 extract_zip() {
   mkdir -p "$2"
   if command -v unzip >/dev/null 2>&1; then
@@ -238,37 +239,43 @@ extract_zip() {
   else
     python3 -m zipfile -e "$1" "$2" 2>/dev/null
   fi
-  return 0
 }
 
 # Copies a directory and opens every layer with tools other than the rewrite:
 # the base64 template with base64 -d, every zip (nested ones too) with
-# extract_zip.
+# extract_zip. Returns 1 when a zip could not be opened or one is still
+# unopened after the passes, so the check fails closed.
 extract_all() {
-  local src="$1" out="$2" pass z
+  local src="$1" out="$2" pass
   mkdir -p "$out"
   cp -r "$src"/. "$out"/ 2>/dev/null || return 0
+  rm -f "$tmp/extract.failed"
   find "$out" -name index.html -type f | while IFS= read -r f; do
-    grep -o 'id="playwrightReportBase64">data:application/zip;base64,[A-Za-z0-9+/=]*' "$f" 2>/dev/null |
-      sed 's/^.*base64,//' | base64 -d > "$f.report.zip" 2>/dev/null || true
+    if grep -q 'id="playwrightReportBase64">data:application/zip;base64,' "$f" 2>/dev/null; then
+      grep -o 'id="playwrightReportBase64">data:application/zip;base64,[A-Za-z0-9+/=]*' "$f" |
+        sed 's/^.*base64,//' | base64 -d > "$f.report.zip" 2>/dev/null || touch "$tmp/extract.failed"
+    fi
   done
   for pass in 1 2 3 4; do
     find "$out" -name '*.zip' -type f | while IFS= read -r z; do
-      extract_zip "$z" "$z.d"
+      extract_zip "$z" "$z.d" || touch "$tmp/extract.failed"
       mv "$z" "$z.opened"
     done
     [ -n "$(find "$out" -name '*.zip' -type f | head -n 1)" ] || break
   done
+  [ -z "$(find "$out" -name '*.zip' -type f | head -n 1)" ] || return 1
+  [ ! -e "$tmp/extract.failed" ] || return 1
+  return 0
 }
 
-# Returns 1 when any decoded byte still carries a key form, a pory_ shape or
-# one of the stored-credential words.
+# Returns 1 when a layer could not be opened or any decoded byte still carries
+# a key form, a pory_ shape or one of the stored-credential words.
 check() {
   local x="$tmp/check"
   rm -rf "$x"
   mkdir -p "$x"
-  extract_all "$1" "$x/report"
-  [ -d "$2" ] && extract_all "$2" "$x/results"
+  extract_all "$1" "$x/report" || return 1
+  if [ -d "$2" ]; then extract_all "$2" "$x/results" || return 1; fi
   if grep -rqF -f "$tmp/fixed" "$x" 2>/dev/null; then return 1; fi
   if grep -rqE 'pory_[0-9a-f]{16,}|(smokeplain|e2eplain)(alpha|bravo)' "$x" 2>/dev/null; then return 1; fi
   return 0
