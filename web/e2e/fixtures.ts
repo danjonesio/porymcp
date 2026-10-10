@@ -21,10 +21,13 @@ export const STUB_URL = (process.env.STUB_URL ?? '').replace(/\/$/, '')
 export const slugOf = (name: string) => deriveSlug(name)
 
 // Row action buttons share their names across rows, so every action is
-// found inside the row that carries the run's unique name. A substring match
-// is safe because no run name is a prefix of another, and it still matches a
-// Name cell that carries a badge beside the name.
-export const rowNamed = (page: Page, name: string): Locator => page.getByRole('row').filter({ hasText: name })
+// found inside the row whose first cell, the Name cell, holds the run's
+// unique name. The match is on that cell's text, not the whole row's: a key
+// row's Target cell names its upstream too. A substring match on the cell is
+// safe because no run name contains another, and it still matches a Name
+// cell that carries a badge beside the name.
+export const rowNamed = (page: Page, name: string): Locator =>
+  page.getByRole('row').filter({ has: page.locator('td:first-of-type', { hasText: name }) })
 
 // Headless UI gives an Alert a boxless role=dialog wrapper that role queries
 // read as hidden, so its buttons are found under the wrapper that holds the

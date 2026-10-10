@@ -35,7 +35,7 @@ test('a group of two upstreams with an allow filter validates entries and the fo
     .check()
   await expect(create).toBeDisabled()
   // The sentence renders as the empty note and as the blocked line
-  // (web/src/app/tool-filter-fields.tsx:104, groups/page.tsx:383).
+  // (web/src/app/tool-filter-fields.tsx:104, groups/page.tsx:381).
   await expect(page.getByText(ZERO_ENTRIES, { exact: true })).toHaveCount(2)
 
   const entry = page.getByLabel('Add a tool by name', { exact: true })
