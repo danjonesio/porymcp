@@ -6,8 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "biome lint src",
-    "test": "node --test 'src/lib/*.test.ts'"
+    "lint": "biome lint src e2e playwright.config.ts",
+    "test": "node --test 'src/lib/*.test.ts'",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@headlessui/react": "^2.2.10",
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@playwright/test": "1.64.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^26.6.4",
     "@types/react": "19.3.0",

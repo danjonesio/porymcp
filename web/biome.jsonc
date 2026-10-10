@@ -4,9 +4,10 @@
   // half). Lint only: the formatter and assists stay off so this change
   // touches no source file for style.
   "files": {
-    // src only, and not the stylesheet: Tailwind's directives are not CSS
-    // Biome parses, and tailwindcss checks that file itself.
-    "includes": ["src/**", "!src/styles/**"]
+    // src, the browser specs and their config, and not the stylesheet:
+    // Tailwind's directives are not CSS Biome parses, and tailwindcss checks
+    // that file itself.
+    "includes": ["src/**", "!src/styles/**", "e2e/**", "playwright.config.ts"]
   },
   "formatter": { "enabled": false },
   "assist": { "enabled": false },
@@ -41,5 +42,24 @@
         "useTemplate": "off"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["e2e/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            // A console call in a spec could print a key into the CI log.
+            "noConsole": "error"
+          },
+          "correctness": {
+            // Playwright reads a fixture's dependencies from the destructuring
+            // of its first parameter and requires the object pattern even when
+            // it is empty.
+            "noEmptyPattern": "off"
+          }
+        }
+      }
+    }
+  ]
 }
