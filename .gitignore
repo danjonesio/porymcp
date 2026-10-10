@@ -24,6 +24,10 @@ porymcp
 node_modules/
 web/.next/
 web/next-env.d.ts
+# Playwright writes the browser suite's report and traces here; a trace holds
+# the run's keys, so neither directory is ever committed.
+web/playwright-report/
+web/test-results/
 
 # OS / editor
 .DS_Store

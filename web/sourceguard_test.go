@@ -76,7 +76,7 @@ func TestNoKitReferences(t *testing.T) {
 	// docs/plans/, .agents/ and .claude/ are git-ignored working directories
 	// that are not part of the published tree; they are skipped so the guard
 	// still passes in a working copy that has them.
-	skip := []string{".git", "bin", "docs/plans", ".agents", ".claude", "web/node_modules", "web/.next", "web/sourceguard_test.go"}
+	skip := []string{".git", "bin", "docs/plans", ".agents", ".claude", "web/node_modules", "web/.next", "web/playwright-report", "web/test-results", "web/sourceguard_test.go"}
 	forEachSource(t, "..", nil, skip, func(path string, src []byte) {
 		rel, _ := filepath.Rel("..", path)
 		rel = filepath.ToSlash(rel)
