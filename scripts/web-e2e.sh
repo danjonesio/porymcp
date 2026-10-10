@@ -37,7 +37,7 @@ for tool in go node npm npx curl openssl python3; do
 done
 [ -d web/node_modules ] || (cd web && npm ci --no-audit --no-fund) || exit 1
 [ -x bin/porymcp ] || { echo 'FAIL input: bin/porymcp is missing; run make build' >&2; exit 1; }
-# The headless shell Playwright 1.64 runs; a no-op once it is in the cache.
+# The headless shell Playwright runs; a no-op once it is in the cache.
 # Its Linux libraries are a one-time root install: npx playwright install-deps chromium.
 (cd web && npx --no-install playwright install --only-shell chromium) || exit 1
 
