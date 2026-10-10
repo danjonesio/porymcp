@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import type { Group, Upstream, VirtualKey } from '../src/lib/api.ts'
 
 // The management API as the specs call it from Node, for setup and for the
@@ -45,15 +46,20 @@ export async function count(path: ListPath): Promise<number> {
   return (await listRows(path)).length
 }
 
-// The id of a row the UI has just created, polled for a few seconds, so a spec
+// The id of a row the UI has just created, polled with expect.poll, so a spec
 // records it before any assertion that could fail and leave the row behind.
 export async function waitForRow(path: ListPath, name: string): Promise<string> {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const row = (await listRows(path)).find((r) => r.name === name)
-    if (row) return row.id
-    await new Promise((r) => setTimeout(r, 250))
-  }
-  throw new Error(`the created row is not listed under /${path}`)
+  let id = ''
+  await expect
+    .poll(
+      async () => {
+        id = (await listRows(path)).find((r) => r.name === name)?.id ?? ''
+        return id
+      },
+      { message: `the created row is listed under /${path}`, timeout: 10_000 }
+    )
+    .not.toBe('')
+  return id
 }
 
 export function createUpstream(body: Record<string, unknown>): Promise<Upstream> {
