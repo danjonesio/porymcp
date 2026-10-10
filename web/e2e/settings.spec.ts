@@ -7,7 +7,7 @@ test('the settings page shows the session key prefix and the retention note', as
   await page.goto('/settings/')
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
   await expect(page.getByText('Admin key', { exact: true })).toBeVisible()
-  await expect(page.getByText('Retention', { exact: true })).toBeVisible()
+  await expect(page.getByText('Retentionx', { exact: true })).toBeVisible()
   await expect(page.getByText(/^Current session key: .{12}…$/)).toBeVisible()
   await expect(page.getByLabel('Replace session key', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Update', exact: true })).toBeVisible()
