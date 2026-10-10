@@ -62,6 +62,10 @@ def key_forms():
             continue
         kb = k.encode()
         forms += [kb, kb.upper(), base64.b64encode(kb)]
+        if re.fullmatch(r'[0-9a-f]{64}', k):
+            # The 32 bytes the hex spells, as Go's JSON writes a []byte key
+            # (addKeyForms in cmd/server/binary_test.go).
+            forms.append(base64.b64encode(bytes.fromhex(k)))
     if ADMIN:
         forms.append(ADMIN[:12].encode())
     # Longest first, so a whole key is withheld before its own prefix is.
@@ -171,35 +175,49 @@ def zip_bytes(entries):
     return out.getvalue()
 
 
-def build_selftest(report, results):
-    # A throwaway report that carries the keys at every layer a real one can:
-    # the base64 template, a trace's after event, a resource, a nested zip and
-    # a plain file.
+def build_selftest(report, results, layer):
+    # A throwaway report that carries the keys in one layer a real one can
+    # hold (template, datazip, nested, unnamed, results) or in all of them
+    # plus a plain file (all). One layer at a time is what proves the check
+    # opens that layer: a key in a plain file would satisfy it on its own.
     admin = ADMIN.encode()
     enc = (ENC or ADMIN).encode()
+    rawb64 = base64.b64encode(bytes.fromhex(ADMIN)).decode() if re.fullmatch(r'[0-9a-f]{64}', ADMIN) else ''
     fake_key = b'pory_' + b'ab' * 32
     trace = b'\n'.join([
-        json.dumps({'type': 'after', 'callId': 'c1', 'result': {'k': ADMIN, 'v': ENC or ADMIN}}).encode(),
+        json.dumps({'type': 'after', 'callId': 'c1', 'result': {'k': ADMIN, 'v': ENC or ADMIN, 'r': rawb64}}).encode(),
         b'{"type":"log","message":"e2eplainalpha"}',
         json.dumps({'type': 'action', 'title': 'Fill "%s"' % ADMIN}).encode(),
     ]) + b'\n'
     inner = zip_bytes([('trace.trace', trace), ('trace.network', b'{"h":"Bearer %s"}\n' % admin),
                        ('resources/' + '0' * 40, fake_key + b' ' + base64.b64encode(admin))])
     nested = zip_bytes([('inner.zip', inner)])
-    report_zip = zip_bytes([('report.json', json.dumps({'title': 'Fill "%s"' % ADMIN, 'b64': base64.b64encode(admin).decode()}).encode())])
+    report_zip = zip_bytes([('report.json', json.dumps(
+        {'title': 'Fill "%s"' % ADMIN, 'b64': base64.b64encode(admin).decode(), 'raw': rawb64}).encode())])
+    empty_zip = zip_bytes([('report.json', b'{}')])
     os.makedirs(os.path.join(report, 'data'), exist_ok=True)
+    os.makedirs(os.path.join(results, 'x'), exist_ok=True)
+    template = report_zip if layer in ('template', 'all') else empty_zip
+    tail = b'<p>' + enc.upper() + b'</p>' if layer == 'all' else b''
     with open(os.path.join(report, 'index.html'), 'wb') as f:
         f.write(b'<html><template id="playwrightReportBase64">data:application/zip;base64,' +
-                base64.b64encode(report_zip) + b'</template><p>' + enc.upper() + b'</p></html>')
-    with open(os.path.join(report, 'data', '1' * 40 + '.zip'), 'wb') as f:
-        f.write(inner)
-    with open(os.path.join(report, 'data', '2' * 40 + '.zip'), 'wb') as f:
-        f.write(nested)
-    os.makedirs(os.path.join(results, 'x'), exist_ok=True)
-    with open(os.path.join(results, 'x', 'trace.zip'), 'wb') as f:
-        f.write(inner)
-    with open(os.path.join(results, 'x', 'error-context.md'), 'wb') as f:
-        f.write(b'# error\n' + admin + b'\n')
+                base64.b64encode(template) + b'</template>' + tail + b'</html>')
+    if layer in ('datazip', 'all'):
+        with open(os.path.join(report, 'data', '1' * 40 + '.zip'), 'wb') as f:
+            f.write(inner)
+    if layer in ('nested', 'all'):
+        with open(os.path.join(report, 'data', '2' * 40 + '.zip'), 'wb') as f:
+            f.write(nested)
+    if layer in ('unnamed', 'all'):
+        # A zip under a name that does not end in .zip, as an attachment can be.
+        with open(os.path.join(report, 'data', '3' * 40), 'wb') as f:
+            f.write(inner)
+    if layer in ('results', 'all'):
+        with open(os.path.join(results, 'x', 'trace.zip'), 'wb') as f:
+            f.write(inner)
+    if layer == 'all':
+        with open(os.path.join(results, 'x', 'error-context.md'), 'wb') as f:
+            f.write(b'# error\n' + admin + b'\n')
 
 
 try:
@@ -209,7 +227,7 @@ try:
     elif mode == 'valid':
         valid(dirs)
     elif mode == 'build-selftest':
-        build_selftest(dirs[0], dirs[1])
+        build_selftest(dirs[0], dirs[1], dirs[2])
     else:
         raise ValueError('unknown mode')
 except Exception:
@@ -217,12 +235,42 @@ except Exception:
     sys.exit(1)
 PY
 
-# The fixed strings the check greps for: each key raw, upper-case and base64.
+# The base64 of the 32 bytes a 64-hex key spells, computed without the
+# rewrite's code where a tool for it exists; the key travels on stdin, never
+# on a command line.
+raw_b64() {
+  if command -v basenc >/dev/null 2>&1; then
+    printf '%s' "$1" | tr 'a-f' 'A-F' | basenc --base16 -d | base64 -w0
+  elif command -v xxd >/dev/null 2>&1; then
+    printf '%s' "$1" | xxd -r -p | base64 -w0
+  else
+    printf '%s' "$1" | python3 -c 'import base64,sys;sys.stdout.write(base64.b64encode(bytes.fromhex(sys.stdin.read())).decode())'
+  fi
+}
+
+# The fixed strings the check greps for: each key raw, upper-case, base64 of
+# the hex text and, for a 64-hex key, base64 of its bytes.
 write_patterns() {
   : > "$tmp/fixed"
   for k in "$ADMIN_API_KEY" "$ENCRYPTION_KEY"; do
     [ -n "$k" ] || continue
     printf '%s\n' "$k" "$(printf '%s' "$k" | tr 'a-f' 'A-F')" "$(printf '%s' "$k" | base64 -w0)" >> "$tmp/fixed"
+    if printf '%s' "$k" | grep -qE '^[0-9a-f]{64}$'; then
+      printf '%s\n' "$(raw_b64 "$k")" >> "$tmp/fixed"
+    fi
+  done
+}
+
+# A file that starts with the zip signature, whatever its name.
+is_zip_file() {
+  [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "504b0304" ]
+}
+
+# Every zip under a directory that has not been opened yet, found by its
+# bytes, not its name: an attachment can be a zip under any name.
+unopened_zips() {
+  find "$1" -type f ! -name '*.opened' -print0 | while IFS= read -r -d '' f; do
+    is_zip_file "$f" && printf '%s\n' "$f"
   done
 }
 
@@ -246,9 +294,9 @@ extract_zip() {
 # extract_zip. Returns 1 when a zip could not be opened or one is still
 # unopened after the passes, so the check fails closed.
 extract_all() {
-  local src="$1" out="$2" pass
+  local src="$1" out="$2" pass f found
   mkdir -p "$out"
-  cp -r "$src"/. "$out"/ 2>/dev/null || return 0
+  cp -r "$src"/. "$out"/ 2>/dev/null || return 1
   rm -f "$tmp/extract.failed"
   find "$out" -name index.html -type f | while IFS= read -r f; do
     if grep -q 'id="playwrightReportBase64">data:application/zip;base64,' "$f" 2>/dev/null; then
@@ -256,14 +304,16 @@ extract_all() {
         sed 's/^.*base64,//' | base64 -d > "$f.report.zip" 2>/dev/null || touch "$tmp/extract.failed"
     fi
   done
-  for pass in 1 2 3 4; do
-    find "$out" -name '*.zip' -type f | while IFS= read -r z; do
-      extract_zip "$z" "$z.d" || touch "$tmp/extract.failed"
-      mv "$z" "$z.opened"
-    done
-    [ -n "$(find "$out" -name '*.zip' -type f | head -n 1)" ] || break
+  for pass in 1 2 3 4 5 6 7 8; do
+    found=
+    while IFS= read -r f; do
+      found=yes
+      extract_zip "$f" "$f.d" || touch "$tmp/extract.failed"
+      mv "$f" "$f.opened"
+    done < <(unopened_zips "$out")
+    [ -n "$found" ] || break
   done
-  [ -z "$(find "$out" -name '*.zip' -type f | head -n 1)" ] || return 1
+  [ -z "$(unopened_zips "$out" | head -n 1)" ] || return 1
   [ ! -e "$tmp/extract.failed" ] || return 1
   return 0
 }
@@ -292,9 +342,20 @@ scrub() {
 }
 
 self_test() {
-  local report="$tmp/st/report" results="$tmp/st/results" counts
-  python3 "$tmp/scrub.py" build-selftest "$report" "$results" || { echo 'self-test: could not build the report'; return 1; }
+  local report="$tmp/st/report" results="$tmp/st/results" counts layer
   write_patterns
+  # One layer at a time: the check must refuse a key it can reach only by
+  # decoding that layer, with no plain-file plant to find instead.
+  for layer in template datazip nested unnamed results; do
+    rm -rf "$tmp/st"
+    python3 "$tmp/scrub.py" build-selftest "$report" "$results" "$layer" || { echo 'self-test: could not build the report'; return 1; }
+    if check "$report" "$results"; then
+      echo "self-test: the check missed a planted key in the $layer layer"
+      return 1
+    fi
+  done
+  rm -rf "$tmp/st"
+  python3 "$tmp/scrub.py" build-selftest "$report" "$results" all || { echo 'self-test: could not build the report'; return 1; }
   if check "$report" "$results"; then
     echo 'self-test: the check missed a planted key'
     return 1
