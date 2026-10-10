@@ -264,6 +264,7 @@ jobs:
           if [ "$e2e_status" -ne 0 ] && [ -d web/playwright-report ]; then
             if bash scripts/e2e-scrub.sh web/playwright-report web/test-results; then
               mv web/playwright-report "$RUNNER_TEMP/playwright-report"
+              echo 'the browser report is the playwright-report artefact on this run (npx playwright show-report <dir>); the test-results paths above stayed on the runner'
             else
               echo 'the browser report was not kept'
             fi
