@@ -645,45 +645,64 @@ func TestCreateUpstreamUnslugifiableName(t *testing.T) {
 	}
 }
 
+// raceDerivedCreates sends n concurrent derived-slug creates of GitHub and
+// returns each one's status, slug and body, read after every goroutine is done
+// so no assertion runs inside one.
+func raceDerivedCreates(t *testing.T, h http.Handler, n int) (codes []int, slugs, bodies []string) {
+	t.Helper()
+	codes = make([]int, n)
+	slugs = make([]string, n)
+	bodies = make([]string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("GitHub", nil))
+			codes[i] = rr.Code
+			bodies[i] = strings.TrimSpace(rr.Body.String())
+			var up map[string]any
+			if json.Unmarshal(rr.Body.Bytes(), &up) == nil {
+				slugs[i], _ = up["slug"].(string)
+			}
+		}(i)
+	}
+	wg.Wait()
+	return codes, slugs, bodies
+}
+
 // TestCreateUpstreamSlugRace covers the branch createUpstreamDerivedSlug exists
-// for. SetMaxOpenConns(1) (sqlstore.go) largely serialises SQLite writes, so this
-// is a regression guard on the retry path rather than a tight-window race prover,
-// it would still catch a version that surfaced a lost race as a 500.
+// for. SQLite runs on one connection and database/sql hands it to a random
+// waiter, so the creates' probes and inserts interleave in a shuffled order and
+// a create can lose to every other one. With n creates a create loses at most
+// n-1 races, so for n up to maxLostSlugRaces+1 every create succeeds and the n
+// slugs are exactly the first n candidates, under any scheduler (PORM-67). The
+// 500 past the budget is proven by TestCreateUpstreamDerivedSlugBudget.
 func TestCreateUpstreamSlugRace(t *testing.T) {
 	const n = 8
 
-	t.Run("derived", func(t *testing.T) {
+	// derived checks that k racing creates all answer 201 and take exactly
+	// the first k candidates.
+	derived := func(t *testing.T, k int) {
+		t.Helper()
 		_, h, _ := testAPI(t)
-		codes := make([]int, n)
-		slugs := make([]string, n)
-		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("GitHub", nil))
-				codes[i] = rr.Code
-				var up map[string]any
-				if json.Unmarshal(rr.Body.Bytes(), &up) == nil {
-					slugs[i], _ = up["slug"].(string)
-				}
-			}(i)
-		}
-		wg.Wait()
-		seen := map[string]bool{}
+		codes, slugs, bodies := raceDerivedCreates(t, h, k)
 		for i, c := range codes {
 			if c != http.StatusCreated {
-				t.Fatalf("goroutine %d: code = %d slug=%q", i, c, slugs[i])
+				t.Fatalf("goroutine %d: code = %d body %s", i, c, bodies[i])
 			}
-			if slugs[i] == "" {
-				t.Fatalf("goroutine %d returned no slug", i)
-			}
-			if seen[slugs[i]] {
-				t.Fatalf("duplicate slug %q", slugs[i])
-			}
-			seen[slugs[i]] = true
 		}
-	})
+		got := slices.Clone(slugs)
+		slices.Sort(got)
+		want := models.SlugCandidatesN("GitHub", k)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Fatalf("slugs = %v, want %v", got, want)
+		}
+	}
+
+	t.Run("derived", func(t *testing.T) { derived(t, n) })
+	t.Run("derived at the budget", func(t *testing.T) { derived(t, maxLostSlugRaces+1) })
 
 	t.Run("explicit", func(t *testing.T) {
 		_, h, _ := testAPI(t)
