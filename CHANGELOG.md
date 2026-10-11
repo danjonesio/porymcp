@@ -4,6 +4,20 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Upstreams created at the same time with one name each get their own slug (PORM-67)
+
+- **A burst of creates with no `slug` answers `201` for each.** When several
+  `POST /api/v1/upstreams` whose names derive one slug ran at once, a create
+  whose insert was refused six times answered
+  `409 {"error":"slug is already taken"}` for a slug it never sent, and the
+  Add upstream dialog showed that sentence. Each create now moves on to the
+  next free candidate (`github`, `github-2`, and so on).
+- **Past 16 refused inserts a create answers `500 {"error":"internal error"}`**
+  and the server log carries one `ERROR` line with the request id. The cap
+  bounds the inserts one create makes if another store error is ever read as
+  a slug conflict. A supplied slug that is taken still answers `409`, and so
+  does a name whose 50 derived candidates are all taken.
+
 ### The Go toolchain moves to 1.26.9 and the build image to Go 1.27.2 (PORM-215)
 
 - **Twelve standard-library advisories cleared.** `go.mod` pins `toolchain go1.26.9`, which fixes the twelve findings `govulncheck` reported against go1.26.8 (eight in `net/http`, two in `html/template`, one each in `crypto/tls` and `net/textproto`). The `golang:1.27-alpine` build image digest moves from Go 1.27.1 to Go 1.27.2, the release that carries the same fixes, so the published image is built on a patched compiler.
