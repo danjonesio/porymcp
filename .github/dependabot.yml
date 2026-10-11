@@ -4,21 +4,22 @@
 # openapi.yaml, the paths the Dockerfile copies, because the publish job in
 # .github/workflows/ci.yml runs on every push to main and pushes
 # ghcr.io/danjonesio/porymcp:edge and :sha-<short>. Nothing else goes live on
-# its own: the Coolify dev instance pulls edge only when Dan presses Redeploy,
-# and README.md tells production to pin a digest.
+# its own: a deployment that follows edge is redeployed by hand, and README.md
+# tells production to pin a digest.
 # No for .github/workflows/ and the compose files, which the image never
 # contains.
 #
-# Every entry is a version lane, on Dan's decision of 2026-09-15 ("whichever
-# is most thorough") and on PORM-42, which asks for version updates on all
-# four ecosystems so the digest pins move deliberately. The standard's default
-# for a deploying path is security-only; the reasons for going wider are that
-# a merge republishes edge from whatever sources it changed while the deploy
-# itself is a hand press, and that a pin nothing watches is the drift PORM-42
-# exists to stop. Monthly rather than PORM-42's weekly: the default-branch
-# ruleset requires an up-to-date branch, so every open PR rebases after every
-# merge, and fewer grouped PRs cost fewer CI runs. Each lane carries two
-# groups, so a bump month is one PR and an advisory wave is one PR.
+# Every entry is a version lane, on the maintainer's decision of 2026-09-15
+# ("whichever is most thorough") and on PORM-42, which asks for version
+# updates on all four ecosystems so the digest pins move deliberately. The
+# standard's default for a deploying path is security-only; the reasons for
+# going wider are that a merge republishes edge from whatever sources it
+# changed while the deploy itself is a hand press, and that a pin nothing
+# watches is the drift PORM-42 exists to stop. Monthly rather than PORM-42's
+# weekly: the default-branch ruleset requires an up-to-date branch, so every
+# open PR rebases after every merge, and fewer grouped PRs cost fewer CI runs.
+# Each lane carries two groups, so a bump month is one PR and an advisory wave
+# is one PR.
 #
 # github-actions (/): version lane. Every uses: line in .github/workflows is
 # SHA-pinned (grep -rEho 'uses: [^ ]+@[0-9a-f]{40}'), so nothing moves them
