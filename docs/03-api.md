@@ -299,9 +299,16 @@ value is derived from the name and de-duplicated (`github_enterprise`, then
 `github_enterprise-2`). Supplied, it is lowercased and trimmed, and must match
 `^[a-z0-9]([a-z0-9_-]{0,38}[a-z0-9])?$` with no repeated separator (`__`, `--`,
 `-_`, `_-`), must not be UUID-shaped, and must not be `mcp`, `api`, `health` or
-`metrics`. Otherwise `400`. A slug already in use returns `409`. If every
-derived candidate is taken (50 upstreams sharing one name), `POST` returns `409`
-asking for an explicit slug.
+`metrics`. Otherwise `400`. A supplied slug already in use returns
+`409 {"error":"slug is already taken"}`. A derived slug never gets that answer:
+creates that run at the same time with names deriving the same slug each take
+the next free candidate (`github`, `github-2`, `github-3`). A create that has
+more than 16 inserts refused this way returns `500 {"error":"internal error"}`
+and logs one `ERROR` line with its request id (the `X-Request-Id` it sent, if
+any); that takes 18 or more creates at once taking slugs from the same list, or
+a store error read as a slug conflict. If every derived candidate is taken
+(`github` through `github-50` all in use), `POST` returns
+`409 {"error":"could not derive a unique slug; supply one explicitly"}`.
 
 `slug` is fixed at create. `PATCH /upstreams/{id}` rejects a different `slug`
 with `400`; sending the current value (lowercased and trimmed first, as on

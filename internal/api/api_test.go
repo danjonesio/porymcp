@@ -25,6 +25,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/netguard"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/danjonesio/porymcp/internal/webutil"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
@@ -644,45 +645,64 @@ func TestCreateUpstreamUnslugifiableName(t *testing.T) {
 	}
 }
 
+// raceDerivedCreates sends n concurrent derived-slug creates of GitHub and
+// returns each one's status, slug and body, read after every goroutine is done
+// so no assertion runs inside one.
+func raceDerivedCreates(t *testing.T, h http.Handler, n int) (codes []int, slugs, bodies []string) {
+	t.Helper()
+	codes = make([]int, n)
+	slugs = make([]string, n)
+	bodies = make([]string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("GitHub", nil))
+			codes[i] = rr.Code
+			bodies[i] = strings.TrimSpace(rr.Body.String())
+			var up map[string]any
+			if json.Unmarshal(rr.Body.Bytes(), &up) == nil {
+				slugs[i], _ = up["slug"].(string)
+			}
+		}(i)
+	}
+	wg.Wait()
+	return codes, slugs, bodies
+}
+
 // TestCreateUpstreamSlugRace covers the branch createUpstreamDerivedSlug exists
-// for. SetMaxOpenConns(1) (sqlstore.go) largely serialises SQLite writes, so this
-// is a regression guard on the retry path rather than a tight-window race prover,
-// it would still catch a version that surfaced a lost race as a 500.
+// for. SQLite runs on one connection and database/sql hands it to a random
+// waiter, so the creates' probes and inserts interleave in a shuffled order and
+// a create can lose to every other one. With n creates a create loses at most
+// n-1 races, so for n up to maxLostSlugRaces+1 every create succeeds and the n
+// slugs are exactly the first n candidates, under any scheduler (PORM-67). The
+// 500 past the budget is proven by TestCreateUpstreamDerivedSlugBudget.
 func TestCreateUpstreamSlugRace(t *testing.T) {
 	const n = 8
 
-	t.Run("derived", func(t *testing.T) {
+	// derived checks that k racing creates all answer 201 and take exactly
+	// the first k candidates.
+	derived := func(t *testing.T, k int) {
+		t.Helper()
 		_, h, _ := testAPI(t)
-		codes := make([]int, n)
-		slugs := make([]string, n)
-		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("GitHub", nil))
-				codes[i] = rr.Code
-				var up map[string]any
-				if json.Unmarshal(rr.Body.Bytes(), &up) == nil {
-					slugs[i], _ = up["slug"].(string)
-				}
-			}(i)
-		}
-		wg.Wait()
-		seen := map[string]bool{}
+		codes, slugs, bodies := raceDerivedCreates(t, h, k)
 		for i, c := range codes {
 			if c != http.StatusCreated {
-				t.Fatalf("goroutine %d: code = %d slug=%q", i, c, slugs[i])
+				t.Fatalf("goroutine %d: code = %d body %s", i, c, bodies[i])
 			}
-			if slugs[i] == "" {
-				t.Fatalf("goroutine %d returned no slug", i)
-			}
-			if seen[slugs[i]] {
-				t.Fatalf("duplicate slug %q", slugs[i])
-			}
-			seen[slugs[i]] = true
 		}
-	})
+		got := slices.Clone(slugs)
+		slices.Sort(got)
+		want := models.SlugCandidatesN("GitHub", k)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Fatalf("slugs = %v, want %v", got, want)
+		}
+	}
+
+	t.Run("derived", func(t *testing.T) { derived(t, n) })
+	t.Run("derived at the budget", func(t *testing.T) { derived(t, maxLostSlugRaces+1) })
 
 	t.Run("explicit", func(t *testing.T) {
 		_, h, _ := testAPI(t)
@@ -712,6 +732,136 @@ func TestCreateUpstreamSlugRace(t *testing.T) {
 			t.Fatalf("got %d 201s for the same explicit slug, want exactly 1", created)
 		}
 	})
+}
+
+// budgetServer is a server whose store reports every slug free to the derived
+// walk's probe, so seeded rows make the real unique index refuse each insert in
+// turn. Each caller gets its own store, so no row crosses between sub-tests.
+func budgetServer(t *testing.T) (*Server, http.Handler, *store.SQLStore, *flakyStore) {
+	t.Helper()
+	f := &flakyStore{blindProbe: true}
+	s, h, st, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store {
+		f.Store = st
+		return f
+	})
+	return s, h, st, f
+}
+
+// TestCreateUpstreamDerivedSlugBudget pins maxLostSlugRaces from both sides
+// (PORM-67). Seeding k candidates and blinding the probe gives the walk exactly
+// k inserts refused by the real unique index: 16 refusals are tolerated and the
+// 17th candidate is created, while 17 refusals end the walk with a 500 and one
+// ERROR line carrying the request id and a count, never the name or a slug
+// (PORM-67 security requirements 1 to 6). The name is a distinctive canary so
+// the leak assertion cannot pass by accident.
+func TestCreateUpstreamDerivedSlugBudget(t *testing.T) {
+	const name = "Payroll Vendor"
+
+	type outcome struct {
+		rr      *httptest.ResponseRecorder
+		logs    *bytes.Buffer
+		st      *store.SQLStore
+		creates int32 // CreateUpstream calls the derived create made
+		events  int   // upstream.create events before the derived create
+	}
+	// run seeds k candidates as explicit slugs, then sends one derived create
+	// through the RequestID middleware cmd/server mounts in front of Routes().
+	run := func(t *testing.T, k int) outcome {
+		t.Helper()
+		s, h, st, f := budgetServer(t)
+		for _, c := range models.SlugCandidatesN(name, k) {
+			mustUpstream(t, h, name, map[string]any{"slug": c})
+		}
+		before := f.creates.Load()
+		events := len(eventsFor(adminEvents(t, st), models.ActionUpstreamCreate))
+		logs := &bytes.Buffer{}
+		s.log = slog.New(slog.NewJSONHandler(logs, nil))
+		req := createReq(upstreamBody(name, nil))
+		req.Header.Set("X-Request-Id", "porm67-budget")
+		rr := serve(middleware.RequestID(h), req)
+		return outcome{rr: rr, logs: logs, st: st, creates: f.creates.Load() - before, events: events}
+	}
+
+	t.Run("within budget", func(t *testing.T) {
+		o := run(t, maxLostSlugRaces)
+		if o.rr.Code != http.StatusCreated {
+			t.Fatalf("code = %d body %s after %d creates", o.rr.Code, strings.TrimSpace(o.rr.Body.String()), o.creates)
+		}
+		var up map[string]any
+		if err := json.Unmarshal(o.rr.Body.Bytes(), &up); err != nil {
+			t.Fatal(err)
+		}
+		if want := models.SlugCandidates(name)[maxLostSlugRaces]; up["slug"] != want {
+			t.Fatalf("slug = %v, want %s", up["slug"], want)
+		}
+		if o.creates != maxLostSlugRaces+1 {
+			t.Fatalf("CreateUpstream called %d times, want %d", o.creates, maxLostSlugRaces+1)
+		}
+		if o.logs.Len() != 0 {
+			t.Fatalf("a create within the budget logged:\n%s", o.logs)
+		}
+	})
+
+	t.Run("budget spent", func(t *testing.T) {
+		o := run(t, maxLostSlugRaces+1)
+		if o.rr.Code != http.StatusInternalServerError {
+			t.Fatalf("code = %d body %s after %d creates", o.rr.Code, strings.TrimSpace(o.rr.Body.String()), o.creates)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(o.rr.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]any{"error": "internal error"}; !reflect.DeepEqual(body, want) {
+			t.Fatalf("body = %v, want %v", body, want)
+		}
+		if o.creates != maxLostSlugRaces+1 {
+			t.Fatalf("CreateUpstream called %d times, want %d", o.creates, maxLostSlugRaces+1)
+		}
+		ups, err := o.st.ListUpstreams(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ups) != maxLostSlugRaces+1 {
+			t.Fatalf("%d upstreams after the 500, want the %d seeded", len(ups), maxLostSlugRaces+1)
+		}
+		if got := len(eventsFor(adminEvents(t, o.st), models.ActionUpstreamCreate)); got != o.events {
+			t.Fatalf("upstream.create events = %d after the 500, want %d", got, o.events)
+		}
+		lines := strings.Split(strings.TrimSpace(o.logs.String()), "\n")
+		if len(lines) != 1 || lines[0] == "" {
+			t.Fatalf("want exactly one log line, got:\n%s", o.logs)
+		}
+		var line map[string]any
+		if err := json.Unmarshal([]byte(lines[0]), &line); err != nil {
+			t.Fatalf("log line is not JSON: %v: %s", err, lines[0])
+		}
+		wantErr := fmt.Sprintf("%d inserts refused as slug conflicts: %s", maxLostSlugRaces+1, errSlugRacesLost)
+		if line["level"] != "ERROR" || line["msg"] != "upstream create gave up on a derived slug" ||
+			line["request_id"] != "porm67-budget" || line["err"] != wantErr {
+			t.Fatalf("log line = %v, want ERROR, the fixed message, request_id porm67-budget and err %q", line, wantErr)
+		}
+		for _, leak := range []string{name, models.DeriveSlug(name), "example.com"} {
+			if strings.Contains(o.logs.String(), leak) {
+				t.Fatalf("log carries %q: %s", leak, o.logs)
+			}
+		}
+	})
+}
+
+// TestCreateUpstreamSlugsExhaustedIs409 pins the answer PORM-67 keeps: when
+// every derived candidate holds a row the caller can fix the create by
+// supplying a slug, so it is a 409 with that advice, never the budget's 500.
+func TestCreateUpstreamSlugsExhaustedIs409(t *testing.T) {
+	_, h, _ := testAPI(t)
+	for _, c := range models.SlugCandidates("GitHub") {
+		mustUpstream(t, h, "GitHub", map[string]any{"slug": c})
+	}
+	rr := doJSON(t, h, http.MethodPost, "/upstreams", "test-admin", upstreamBody("GitHub", nil))
+	var body map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if rr.Code != http.StatusConflict || body["error"] != "could not derive a unique slug; supply one explicitly" {
+		t.Fatalf("code = %d body %s, want 409 asking for an explicit slug", rr.Code, strings.TrimSpace(rr.Body.String()))
+	}
 }
 
 // refusedURLs are the shapes an upstream URL must not take, each with the

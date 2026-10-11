@@ -16,6 +16,7 @@ import (
 	"github.com/danjonesio/porymcp/internal/models"
 	"github.com/danjonesio/porymcp/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
@@ -97,8 +98,28 @@ const maxClientFieldBytes = 1 << 10
 
 // errSlugsExhausted means every derived candidate was taken. Kept distinct from
 // store.ErrConflict so the caller gets an actionable message about a slug it
-// never supplied, rather than "slug is already taken".
+// never supplied, rather than "slug is already taken". It is the one
+// derived-slug failure that answers 409: the caller fixes it by supplying a slug.
 var errSlugsExhausted = errors.New("slug candidates exhausted")
+
+// maxLostSlugRaces bounds the inserts one derived-slug create may have refused
+// as slug conflicts. Each refusal is a candidate another create committed
+// first, and the walk never revisits one, so with n creates at once whose names
+// derive the same slug (GitHub and github count together, and so does every
+// name that derives up) a create is refused at most n-1 times: 16 lets 17
+// succeed. The cap bounds the damage when an error that is not a slug
+// collision is read as one: on Postgres a primary-key collision, which repeats
+// on every retry because the id is minted once, and on either driver a second
+// unique index on upstreams. The walk then stops after 17 refused inserts,
+// where the candidates alone allow 50; on SQLite every one of them holds the
+// connection SetMaxOpenConns(1) shares with the proxy data plane.
+const maxLostSlugRaces = 16
+
+// errSlugRacesLost means a derived-slug create had more than maxLostSlugRaces
+// inserts refused as slug conflicts. It wraps neither errSlugsExhausted nor
+// store.ErrConflict: those answer 409, a state the caller fixes by supplying a
+// slug, and this one is answered 500 and logged.
+var errSlugRacesLost = errors.New("derived slug conflict budget spent")
 
 type upstreamPublic struct {
 	models.Upstream
@@ -467,6 +488,10 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		switch {
+		case errors.Is(err, errSlugRacesLost):
+			s.log.Error("upstream create gave up on a derived slug",
+				"request_id", middleware.GetReqID(r.Context()), "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
 		case errors.Is(err, errSlugsExhausted):
 			writeError(w, http.StatusConflict, "could not derive a unique slug; supply one explicitly")
 		case errors.Is(err, store.ErrConflict):
@@ -495,9 +520,6 @@ func (s *Server) createUpstream(w http.ResponseWriter, r *http.Request) {
 // on upstreams, and uniqueViolation excludes SQLite's PRIMARYKEY code. Adding a
 // second unique index to upstreams means revisiting this loop.
 func (s *Server) createUpstreamDerivedSlug(ctx context.Context, u *models.Upstream) error {
-	// Lost races are budgeted separately from the candidate walk, so a wrong
-	// assumption above cannot turn one create into 50 failed inserts on the
-	// connection SetMaxOpenConns(1) shares with the proxy data plane.
 	lost := 0
 	for _, candidate := range models.SlugCandidates(u.Name) {
 		if _, err := s.store.GetUpstreamBySlug(ctx, candidate); err == nil {
@@ -508,8 +530,8 @@ func (s *Server) createUpstreamDerivedSlug(ctx context.Context, u *models.Upstre
 		u.Slug = candidate
 		err := s.store.CreateUpstream(ctx, u)
 		if errors.Is(err, store.ErrConflict) {
-			if lost++; lost > 5 {
-				return err
+			if lost++; lost > maxLostSlugRaces {
+				return fmt.Errorf("%d inserts refused as slug conflicts: %w", lost, errSlugRacesLost)
 			}
 			continue // lost the race; try the next suffix
 		}

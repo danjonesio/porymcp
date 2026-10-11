@@ -764,12 +764,19 @@ func TestAdminEventRejectedRequestRecordsNothing(t *testing.T) {
 	}
 }
 
-// flakyStore wraps the real store to fail, panic or cancel at one call: the
-// seam the recorder tests need, through testAPIWrappedStore.
+// flakyStore wraps the real store to fail, panic, cancel or probe blind at one
+// call: the seam the recorder and slug-budget tests need, through
+// testAPIWrappedStore.
 type flakyStore struct {
 	store.Store
 	insertErr   error
 	insertPanic bool
+	// blindProbe, when set, makes GetUpstreamBySlug report every slug free, so
+	// the derived walk sends each candidate to an insert and the real unique
+	// index does the refusing.
+	blindProbe bool
+	// creates counts CreateUpstream calls, refused ones included.
+	creates atomic.Int32
 	// cancel, when set, is called after a successful CreateUpstream, standing
 	// in for a client that disconnected once its change had committed.
 	cancel context.CancelFunc
@@ -788,7 +795,15 @@ func (f *flakyStore) InsertAdminEvent(ctx context.Context, e *models.AdminEvent)
 	return f.Store.InsertAdminEvent(ctx, e)
 }
 
+func (f *flakyStore) GetUpstreamBySlug(ctx context.Context, slug string) (*models.Upstream, error) {
+	if f.blindProbe {
+		return nil, store.ErrNotFound
+	}
+	return f.Store.GetUpstreamBySlug(ctx, slug)
+}
+
 func (f *flakyStore) CreateUpstream(ctx context.Context, u *models.Upstream) error {
+	f.creates.Add(1)
 	err := f.Store.CreateUpstream(ctx, u)
 	if f.cancel != nil {
 		f.cancel()
