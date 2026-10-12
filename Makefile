@@ -3,9 +3,16 @@
 dev:
 	go run ./cmd/server
 
-test:
+# test is the local loop: the dashboard unit tests (web-test), then the Go
+# suites. The unit tests import only Node's built-ins and each other, which the
+# web job proves on every run by running them before npm ci, so they need Node
+# (web/.nvmrc) and no install. CI runs the halves in separate jobs: test-race
+# in the go job, web-test in the web job.
+test: web-test
 	go test ./cmd/... ./internal/... ./scripts/... ./web
 
+# test-race is the Go suites under the race detector, Go only, as the go job
+# in .github/workflows/ci.yml runs them.
 test-race:
 	go test -race ./cmd/... ./internal/... ./scripts/... ./web
 
@@ -22,7 +29,11 @@ tidy:
 web-dev:
 	cd web && npm run dev
 
+# web-test runs the dashboard unit tests with node --test, which strips the
+# types itself from Node 22.18. The first line names the release web/.nvmrc
+# asks for when the installed Node cannot, instead of a stack trace.
 web-test:
+	@node -e 'process.exit(process.features.typescript ? 0 : 1)' 2>/dev/null || { echo "web-test needs a Node that strips types: use the release in web/.nvmrc (nvm use)" >&2; exit 1; }
 	cd web && npm test
 
 web-lint:
