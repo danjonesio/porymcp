@@ -26,7 +26,8 @@
         "required_status_checks": [
           { "context": "go" },
           { "context": "web" },
-          { "context": "docker" }
+          { "context": "docker" },
+          { "context": "docker-arm64" }
         ]
       }
     }
