@@ -23,6 +23,9 @@ test('the right key opens the overview and sign out returns to the login page', 
   await page.getByLabel('Admin API key', { exact: true }).fill(process.env.ADMIN_API_KEY ?? '')
   await page.getByRole('button', { name: 'Open dashboard', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible()
+  // PROOF BRANCH ONLY (PORM-156): a deliberate failure after sign in, so the
+  // report carries a trace with the admin key in it for the scrub to withhold.
+  expect(1, 'a deliberate failure on the proof branch').toBe(2)
   const main = page.getByRole('main')
   for (const title of ['Active virtual keys', 'Calls today', 'Upstreams', 'Error rate']) {
     await expect(main.getByText(title, { exact: true })).toBeVisible()
