@@ -267,136 +267,15 @@ jobs:
         if: always()
         run: docker rm -f porymcp-ci || true
 
+  # PROOF BRANCH ONLY (PORM-156): publish is a stub that can push nothing,
+  # gated on the two image jobs only, so a dispatch shows whether a red
+  # docker-arm64 keeps it from running.
   publish:
-    needs: [go, web, docker, docker-arm64]
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [docker, docker-arm64]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     permissions:
       contents: read
-      packages: write
-    # The index digest, for the verify job to pull by. Not a secret.
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        env:
-          # The default annotates per-platform manifests only. The registry
-          # reads the index for a multi-platform image, so annotate both.
-          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
-        with:
-          # Derived from the repository, so the published path cannot drift
-          # from the owner named in go.mod and the README. A tag with a hyphen
-          # (a release candidate) is published under its own name only.
-          images: ghcr.io/${{ github.repository }}
-          flavor: latest=false
-          tags: |
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=short,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      # Provenance stays at mode=min. mode=max would publish the whole build
-      # definition, build arguments included, so no build argument may ever
-      # carry a secret.
-      - id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: mode=min
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: |
-            type=gha,scope=amd64
-            type=gha,scope=arm64
-      # This proves the index shape. The verify job pulls the index by this
-      # digest and runs it on each platform.
-      - name: The published index lists both platforms
-        shell: bash
-        env:
-          IMAGE: ghcr.io/${{ github.repository }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'the build gave no digest'; exit 1; }
-          docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee "$RUNNER_TEMP/index.txt"
-          grep -q 'linux/amd64' "$RUNNER_TEMP/index.txt"
-          grep -q 'linux/arm64' "$RUNNER_TEMP/index.txt"
-          echo "Published \`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
-
-  # The published index pulled by digest with no credential and run through
-  # the same image checks, once on each platform. This is the first run of
-  # the bytes publish pushed. It is a signal after publish, not a gate: by
-  # the time it runs the tags have moved, and a red verify means the next
-  # patch tag (docs/13-releasing.md). The pull uses an empty client config
-  # and the job holds no login, no secret and no packages permission, so a
-  # private package fails the pull.
-  verify:
-    name: verify (${{ matrix.arch }})
-    needs: publish
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    env:
-      REPO: ghcr.io/${{ github.repository }}
-      DIGEST: ${{ needs.publish.outputs.digest }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-      - name: Build the echo stub
-        run: go build -o "$RUNNER_TEMP/echostub" ./scripts/echostub
-      # The same line in the docker-arm64 job.
-      - name: The file command is installed
-        timeout-minutes: 3
-        run: command -v file >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends file; }
-      - name: Pull the published index by digest with no credential
-        shell: bash
-        timeout-minutes: 5
-        run: |
-          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'publish gave no digest'; exit 1; }
-          export DOCKER_CONFIG="$RUNNER_TEMP/anon-docker"
-          mkdir -p "$DOCKER_CONFIG"
-          echo '{}' > "$DOCKER_CONFIG/config.json"
-          echo "pulling with an empty client config at $DOCKER_CONFIG (no registry login in this job)"
-          docker pull "$REPO@$DIGEST"
-          docker image inspect --format '{{json .RepoDigests}}' "$REPO@$DIGEST" | grep -qF "$REPO@$DIGEST"
-      - name: The published image starts, answers /health, serves the dashboard and passes the smoke script
-        shell: bash
-        timeout-minutes: 10
-        env:
-          IMAGE_CHECK_REF: ${{ env.REPO }}@${{ env.DIGEST }}
-          IMAGE_CHECK_ARCH: ${{ matrix.arch }}
-          IMAGE_CHECK_STUB: ${{ runner.temp }}/echostub
-        run: bash scripts/image-check.sh 3>&1
-      - name: Container and stub logs
-        if: failure()
-        run: bash scripts/image-check.sh --logs
-      - name: Remove the container
-        if: always()
-        run: docker rm -f porymcp-ci || true
+      - run: echo "publish would run here"
