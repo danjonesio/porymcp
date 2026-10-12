@@ -54,7 +54,7 @@ jobs:
       - name: Tracked-file guards ran and passed
         shell: bash
         run: |
-          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestGoToolchainConsistent|TestDockerfilePinned|TestVulnPinned' -v | tee "$RUNNER_TEMP/guards.log"
+          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestGoToolchainConsistent|TestDockerfilePinned|TestVulnPinned|TestImageJobsGated' -v | tee "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNoInternalReferences' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestProseStyle' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestOwnerConsistent' "$RUNNER_TEMP/guards.log"
@@ -62,6 +62,7 @@ jobs:
           grep -q -- '--- PASS: TestGoToolchainConsistent' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestDockerfilePinned' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestVulnPinned' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestImageJobsGated' "$RUNNER_TEMP/guards.log"
       - run: make vuln
 
   web:
@@ -271,6 +272,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # The index digest, for the verify job to pull by. Not a secret.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -322,7 +326,74 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'the build gave no digest'; exit 1; }
           docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee "$RUNNER_TEMP/index.txt"
           grep -q 'linux/amd64' "$RUNNER_TEMP/index.txt"
           grep -q 'linux/arm64' "$RUNNER_TEMP/index.txt"
           echo "Published \`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # The published index pulled by digest with no credential and run through
+  # the same image checks, once on each platform. This is the first run of
+  # the bytes publish pushed. It is a signal after publish, not a gate: by
+  # the time it runs the tags have moved, and a red verify means the next
+  # patch tag (docs/13-releasing.md). The pull uses an empty client config
+  # and the job holds no login, no secret and no packages permission, so a
+  # private package fails the pull.
+  verify:
+    name: verify (${{ matrix.arch }})
+    needs: publish
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    env:
+      REPO: ghcr.io/${{ github.repository }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the echo stub
+        run: go build -o "$RUNNER_TEMP/echostub" ./scripts/echostub
+      # The same line in the docker-arm64 job.
+      - name: The file command is installed
+        timeout-minutes: 3
+        run: command -v file >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends file; }
+      - name: Pull the published index by digest with no credential
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'publish gave no digest'; exit 1; }
+          export DOCKER_CONFIG="$RUNNER_TEMP/anon-docker"
+          mkdir -p "$DOCKER_CONFIG"
+          echo '{}' > "$DOCKER_CONFIG/config.json"
+          echo "pulling with an empty client config at $DOCKER_CONFIG (no registry login in this job)"
+          docker pull "$REPO@$DIGEST"
+          docker image inspect --format '{{json .RepoDigests}}' "$REPO@$DIGEST" | grep -qF "$REPO@$DIGEST"
+      - name: The published image starts, answers /health, serves the dashboard and passes the smoke script
+        shell: bash
+        timeout-minutes: 10
+        env:
+          IMAGE_CHECK_REF: ${{ env.REPO }}@${{ env.DIGEST }}
+          IMAGE_CHECK_ARCH: ${{ matrix.arch }}
+          IMAGE_CHECK_STUB: ${{ runner.temp }}/echostub
+        run: bash scripts/image-check.sh 3>&1
+      - name: Container and stub logs
+        if: failure()
+        run: bash scripts/image-check.sh --logs
+      - name: Remove the container
+        if: always()
+        run: docker rm -f porymcp-ci || true
