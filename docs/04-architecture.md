@@ -280,6 +280,8 @@ Five levels, each in a named place.
 4. The browser level is the Playwright suite in `web/e2e`, run in the same `docker` job after the smoke script against the same container and stub, and locally through `make web-e2e` against a binary the target starts. Twelve tests drive the dashboard in Chromium through sign in and out, adding and editing an upstream and removing a stored value, a group with a tool filter, a virtual key shown once, a revoke the proxy then refuses, the Logs filters and Settings; every row a test creates is deleted even when it fails, and the three row counts are compared with the start. The report uploads on failure only, after `scripts/e2e-scrub.sh` has withheld every key form in it (docs/06-ui.md, Browser tests).
 5. The deployment level is the same smoke script with `SMOKE_EXPECT_EDGE=1` and no admin key, run from a machine the instance admits after a redeploy: `/health` with `scheme_enforced` and `trusted_proxies`, the served title, and, with `SMOKE_VIRTUAL_KEY`, one handshake and `tools/list` through the shared `/mcp` door.
 
+CI's `go` job runs the Go tests of levels 1 and 2 under the race detector (`make test-race`), so a data race fails a pull request.
+
 An opt-in run against a real MCP server (PORM-57) is planned and not yet in the tree.
 
 ## Tech stack (recommended)

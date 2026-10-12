@@ -23,7 +23,7 @@ env:
 jobs:
   go:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       # setup-go restores GOCACHE, which holds test results; a cached result
       # prints no PASS line and would fail the guard step below. Go ignores
@@ -42,7 +42,11 @@ jobs:
       # enforced (docs/08-docker.md).
       - run: go version
       - run: make vet
-      - run: make test
+      # The Go suites under the race detector; a race fails the job with
+      # DATA RACE in the log. setup-go saves its cache only when its key (the
+      # toolchain and go.sum) is new, so the race build compiles cold until
+      # one of them next changes on main.
+      - run: make test-race
       # The two tracked-file guards skip themselves when .git is absent, and
       # the owner guard's repository check needs GITHUB_ACTIONS, so a green
       # suite is not proof they ran. The pin guards are listed so a deleted
