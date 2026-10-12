@@ -6,8 +6,9 @@ on:
     tags: ['v*']
   pull_request:
   # A manual run from main re-publishes edge without a new commit; from a tag
-  # it re-publishes that tag; from any other ref the checks run and publish
-  # is skipped. Only users with write access can trigger it.
+  # it re-publishes that tag; either way verify then runs against the new
+  # digest. From any other ref the checks run and publish and verify are
+  # skipped. Only users with write access can trigger it.
   workflow_dispatch:
 
 permissions:
@@ -191,9 +192,11 @@ jobs:
           path: ${{ runner.temp }}/playwright-report
           if-no-files-found: ignore
           retention-days: 7
-      # The build stage cross-compiles by argument. Extract the arm64 image and
-      # check the binary really is arm64, which a manifest cannot show: buildx
-      # stamps the platform from the request, not from the artefact.
+      # The build stage cross-compiles by argument, the way publish builds
+      # arm64. This build fills the arm64 cache scope publish reads, and the
+      # check below is a cheap first look at the cross-compiled binary, which
+      # a manifest cannot give: buildx stamps the platform from the request,
+      # not from the artefact. The docker-arm64 job runs an arm64 image.
       # Nothing from this build is pushed. Without provenance: false the action
       # would attach a mode=max attestation computed over the event payload.
       - name: Build the arm64 image to a directory
@@ -318,8 +321,8 @@ jobs:
           cache-from: |
             type=gha,scope=amd64
             type=gha,scope=arm64
-      # This proves the index shape. The docker job's file check, which this
-      # job needs, proved the arm64 binary.
+      # This proves the index shape. The verify job pulls the index by this
+      # digest and runs it on each platform.
       - name: The published index lists both platforms
         shell: bash
         env:
