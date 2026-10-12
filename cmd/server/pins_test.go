@@ -612,14 +612,21 @@ func ciGateProblems(src string) []string {
 	if strings.Contains(verify, "login-action") {
 		problems = append(problems, "verify logs in to a registry")
 	}
-	if strings.Contains(verify, "secrets.") {
+	if strings.Contains(verify, "secrets.") || strings.Contains(verify, "github.token") {
 		problems = append(problems, "verify reads a secret")
+	}
+	if strings.Contains(verify, "docker login") {
+		problems = append(problems, "verify runs docker login")
+	}
+	if strings.Contains(verify, "packages:") {
+		problems = append(problems, "verify asks for a packages permission")
 	}
 	return problems
 }
 
-// TestImageJobsGated keeps publish behind the arm64 image check and keeps
-// the verify job's pull anonymous (PORM-156). The red proof on the issue's
+// TestImageJobsGated keeps publish behind the arm64 image check, and keeps
+// the verify job free of a login, a secret, the job token and a packages
+// permission, so its pull stays anonymous (PORM-156). The red proof on the issue's
 // branch showed the gate once; this keeps it.
 func TestImageJobsGated(t *testing.T) {
 	root := repoRoot(t)
@@ -666,9 +673,13 @@ func TestCIGateProblems_PublishNotGated(t *testing.T) {
 	wantGateProblem(t, src, "publish does not need docker-arm64")
 }
 
-// The docker job's block ends where docker-arm64 starts, so a needs line
-// naming docker alone is not read as naming docker-arm64.
+// The docker job's block ends where docker-arm64 starts, a name is matched as
+// the whole key, and a needs line naming docker alone is not read as naming
+// docker-arm64.
 func TestCIGateProblems_DockerIsNotDockerArm64(t *testing.T) {
+	if got := ciJobBlock(gatedWorkflow, "docker-arm"); got != "" {
+		t.Fatalf("a prefix of a job name found a block: %q", got)
+	}
 	if got := ciJobBlock(gatedWorkflow, "docker"); strings.Contains(got, "ubuntu-24.04-arm") {
 		t.Fatalf("the docker block ran into docker-arm64: %q", got)
 	}
@@ -689,6 +700,22 @@ func TestCIGateProblems_VerifyLogsIn(t *testing.T) {
 func TestCIGateProblems_VerifyReadsSecret(t *testing.T) {
 	src := gatedWorkflow + "        env:\n          TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
 	wantGateProblem(t, src, "verify reads a secret")
+}
+
+func TestCIGateProblems_VerifyReadsToken(t *testing.T) {
+	src := gatedWorkflow + "        env:\n          TOKEN: ${{ github.token }}\n"
+	wantGateProblem(t, src, "verify reads a secret")
+}
+
+func TestCIGateProblems_VerifyRunsDockerLogin(t *testing.T) {
+	src := gatedWorkflow + "      - run: docker login ghcr.io -u x --password-stdin\n"
+	wantGateProblem(t, src, "verify runs docker login")
+}
+
+func TestCIGateProblems_VerifyPackagesPermission(t *testing.T) {
+	src := strings.Replace(gatedWorkflow, "  verify:\n    needs: publish\n",
+		"  verify:\n    needs: publish\n    permissions:\n      contents: read\n      packages: read\n", 1)
+	wantGateProblem(t, src, "verify asks for a packages permission")
 }
 
 // A comment in verify that names secrets. or the login action is not a use.
