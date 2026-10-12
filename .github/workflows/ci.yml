@@ -44,15 +44,17 @@ jobs:
       - run: make test
       # The two tracked-file guards skip themselves when .git is absent, and
       # the owner guard's repository check needs GITHUB_ACTIONS, so a green
-      # suite is not proof they ran. Assert the PASS lines.
+      # suite is not proof they ran. The pin guards are listed so a deleted
+      # test is noticed. Assert the PASS lines.
       - name: Tracked-file guards ran and passed
         shell: bash
         run: |
-          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestDockerfilePinned|TestVulnPinned' -v | tee "$RUNNER_TEMP/guards.log"
+          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestGoToolchainConsistent|TestDockerfilePinned|TestVulnPinned' -v | tee "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNoInternalReferences' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestProseStyle' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestOwnerConsistent' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNodeMajorConsistent' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestGoToolchainConsistent' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestDockerfilePinned' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestVulnPinned' "$RUNNER_TEMP/guards.log"
       - run: make vuln
