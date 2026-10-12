@@ -296,8 +296,11 @@ at rest with AES-256-GCM. Observability is structured JSON logs plus optional
 Prometheus.
 
 Go 1.26 is the supported minimum; `go.mod` pins the exact toolchain
-(`toolchain go1.26.9`) so local builds, the Docker stage and the `go` job in
-`.github/workflows/ci.yml` compile with the same release.
+(`toolchain go1.26.9`), which the `go` job in `.github/workflows/ci.yml`
+installs and which a workstation downloads when its Go is older. The Docker
+build stage compiles with its `golang` image's own release, at or above that
+minor (`docs/08-docker.md`); `TestGoToolchainConsistent` fails `make test`
+when it falls below.
 
 ## Project structure (Go example)
 /
