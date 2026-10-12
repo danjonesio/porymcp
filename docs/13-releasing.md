@@ -1,6 +1,6 @@
 # Releasing
 
-A release is a signed `vX.Y.Z` tag on a merge commit on `main`. The tag run in `.github/workflows/ci.yml` builds the image, runs it on amd64 and arm64, publishes it to `ghcr.io/danjonesio/porymcp` and then pulls it back and runs it again on both platforms. Which tags it publishes and which of them move is in `docs/08-docker.md`, Images and tags. This page covers the number, the steps in order, and what to do when a step goes red.
+A release is a signed `vX.Y.Z` tag on a merge commit on `main`. The tag run in `.github/workflows/ci.yml` runs the amd64 image, builds and runs an arm64 image natively, publishes both platforms to `ghcr.io/danjonesio/porymcp`, and then pulls the published image and runs it on each platform. Which tags it publishes, which of them move and what each job proves are in `docs/08-docker.md`, Images and tags. This page covers the number, the steps in order, and what to do when a step goes red.
 
 ## The number
 
@@ -10,7 +10,7 @@ Versions follow semantic versioning, `vMAJOR.MINOR.PATCH`. The next number is de
 - New behaviour that keeps existing clients, configurations and data working: a minor (`v0.1.1` to `v0.2.0`).
 - An entry whose heading starts `### Breaking:`: a minor while the major is 0, and a major from `v1.0.0` on. `Breaking:` is the marker; an entry that changes a contract carries it.
 
-A release candidate is `vX.Y.Z-rc1`, `-rc2` and so on, and is published under its own name only. A number is never reused once its tag has been pushed: the Go checksum database records the module at a version the first time anyone fetches it, so a second commit under the same tag fails every later fetch. A bad cut is followed by the next number. The release issue records any exception to these rules.
+A release candidate is `vX.Y.Z-rc1`, `-rc2` and so on; `docs/08-docker.md` says which tags it publishes. A number is never reused once its tag has been pushed: the Go checksum database records the module at a version the first time anyone fetches it, so a second commit under the same tag fails every later fetch. The release issue records any exception to these rules.
 
 ## Before the tag
 
@@ -61,18 +61,21 @@ gh run list --workflow ci --event push --branch vX.Y.Z
 gh run watch <run id> --exit-status
 ```
 
-When it is green, read the published digest three ways and check that they agree:
+When it is green, read the published digest from the registry and from the run, and check that every reading is the same digest:
 
 ```
 docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:vX.Y.Z --format '{{.Manifest.Digest}}'
 docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:latest --format '{{.Manifest.Digest}}'
+gh run view <run id> --json jobs --jq '.jobs[] | [.name, .databaseId] | @tsv'
+gh run view <run id> --log --job <publish job id> | grep -A1 'group.Digest'
+gh run view <run id> --log --job <verify job id> | grep 'image ghcr.io/'
 ```
 
-These two print the same digest, which is also the `Published` line in the run summary and the `image ghcr.io/danjonesio/porymcp@sha256:...` line in both `verify` job logs. A release candidate publishes no `latest`, so for one only the first command applies. `edge` at the same commit carries its own digest, because the push to `main` built it in a separate run.
+The third command lists the run's jobs with their ids. The fourth prints the digest the build step pushed, and the fifth the reference each `verify` leg ran; run it once for `verify (amd64)` and once for `verify (arm64)`. The run's summary page shows the same digest on its `Published` line. For a release candidate, skip the `latest` reading. `edge` at the same commit carries its own digest, because the push to `main` built it in a separate run.
 
 ## Proving the image
 
-The tag run proves the image on both platforms without a person in the loop. Before `publish`, the `docker` job runs the amd64 image on an amd64 runner and the `docker-arm64` job builds the image natively on an arm64 runner and runs it there; `publish` does not start unless both are green. After `publish`, `verify (amd64)` and `verify (arm64)` each pull the published index by digest with no credential and run the same checks, which is the first run of the published bytes on each platform. `docs/08-docker.md` says what each job proves and what it does not.
+The tag run proves the image on both platforms without a person in the loop: `publish` waits for `docker` and `docker-arm64`, and `verify (amd64)` and `verify (arm64)` run the published image after it. What each of those jobs proves, and what it does not, is in `docs/08-docker.md`, Images and tags. Read the jobs' results:
 
 ```
 gh run view <run id> --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
@@ -95,7 +98,7 @@ The notes file holds one line per `###` heading under the release's heading in `
 ## When it goes red
 
 - A check fails on the tag run (`go`, `web`, `docker` or `docker-arm64`). `publish` did not run and nothing was published. `web-audit` reads a live advisory database, so the `web` job can fail on a commit that was green an hour earlier. Do not re-dispatch the tag. Fix the cause or bump the dependency on `main`, rename the changelog heading to the next patch number in that pull request, and cut the next patch. A job that failed because its runner was lost or cancelled, not because a check failed, may be re-run once with "Re-run failed jobs".
-- `publish` fails after every check passed, before the release is announced. Re-dispatch the tag once, and only if nothing was pushed: the `publish` log has no `DIGEST` line and `docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:vX.Y.Z` reports that the tag is not found.
+- `publish` fails after every check passed, before the release is announced. Re-dispatch the tag once, and only if nothing was pushed: the `publish` log has no `Digest` group (the fourth command in The run and the digest prints nothing) and `docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:vX.Y.Z` reports that the tag is not found.
 
   ```
   gh workflow run ci --ref vX.Y.Z
