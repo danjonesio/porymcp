@@ -5,7 +5,7 @@
 # zip, so a plain grep over the files sees nothing. This script decodes every
 # layer, withholds the forms the tree already withholds elsewhere (KEY_RE and
 # scrub() in scripts/smoke.sh, addKeyForms in cmd/server/binary_test.go, the
-# sed in the docker job's failure step; the four lists move together), and
+# sed in scripts/image-check.sh --logs; the four lists move together), and
 # then checks the result with unzip, base64 and grep, which share no code with
 # the rewrite. It prints counts and fixed lines, never a value or a path.
 #
