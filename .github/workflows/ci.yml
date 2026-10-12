@@ -180,7 +180,7 @@ jobs:
       - name: Remove the container
         if: always()
         run: docker rm -f porymcp-ci || true
-      # The browser suite's report, present only when the main step moved it
+      # The browser suite's report, present only when the image check moved it
       # here after the scrub withheld every key form and its check found
       # nothing. A green run skips this step; a red smoke, a scrub hit or a
       # timeout leaves no directory, so nothing uploads then either.
