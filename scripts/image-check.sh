@@ -76,10 +76,12 @@ for tool in $tools; do
 done
 
 stub_pid= extract_id=
+# Every line tolerates failure: under errexit a failing command here would end
+# the trap early and replace the script's exit status.
 cleanup() {
-  [ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null
-  [ -n "$extract_id" ] && docker rm -f "$extract_id" >/dev/null 2>&1
-  rm -f "$work/porymcp.bin"
+  if [ -n "$stub_pid" ]; then kill "$stub_pid" 2>/dev/null || true; fi
+  if [ -n "$extract_id" ]; then docker rm -f "$extract_id" >/dev/null 2>&1 || true; fi
+  rm -f "$work/porymcp.bin" || true
   return 0
 }
 trap cleanup EXIT
