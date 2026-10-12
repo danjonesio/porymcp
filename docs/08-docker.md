@@ -11,7 +11,7 @@ Copy `.env.example` to `.env` and set both `ADMIN_API_KEY` and `ENCRYPTION_KEY` 
 | Stage | Base image | What it does |
 | --- | --- | --- |
 | `web` | `node:22-alpine`, pinned by digest | `npm ci --no-audit --no-fund`, then `npm run build`: the Next.js static export lands in `/web/out`. Runs on the builder's own architecture. |
-| `build` | `golang:1.26-alpine`, pinned by digest | Copies `cmd/`, `internal/`, `web/fs.go` and the export from the `web` stage, then `go build` with `GOOS` and `GOARCH` taken from the target platform. `web/fs.go` declares `//go:embed all:out`, so the export is compiled into the binary. |
+| `build` | `golang:1.NN-alpine`, pinned by digest; `TestGoToolchainConsistent` checks the minor | Copies `cmd/`, `internal/`, `web/fs.go` and the export from the `web` stage, then `go build` with `GOOS` and `GOARCH` taken from the target platform. `web/fs.go` declares `//go:embed all:out`, so the export is compiled into the binary. |
 | runtime | `gcr.io/distroless/static-debian12:nonroot`, pinned by digest | The `/porymcp` binary and `openapi.yaml`. No shell, no dashboard files on disk. |
 
 The embed directive is a compile-time error when `web/out` is missing, so the `COPY --from=web` in the `build` stage has to come before `go build`. `.dockerignore` excludes the tracked `web/out`, so the image always embeds what the `web` stage just built, never what happens to be checked in. Both build stages carry `--platform=$BUILDPLATFORM`, so a multi-arch build (`--platform linux/amd64,linux/arm64`) runs the export once and cross-compiles the binary per target; nothing runs under emulation, and only the runtime stage resolves per platform.

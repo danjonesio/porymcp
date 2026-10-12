@@ -37,8 +37,9 @@ jobs:
         with:
           go-version-file: go.mod
       # setup-go reads the toolchain line in go.mod, installs that release and
-      # sets GOTOOLCHAIN=local for the job, so this is the compiler and a
-      # mismatch would fail rather than download.
+      # sets GOTOOLCHAIN=local for the job, so this is the compiler and
+      # nothing is downloaded; under GOTOOLCHAIN=local only the go line is
+      # enforced (docs/08-docker.md).
       - run: go version
       - run: make vet
       - run: make test
