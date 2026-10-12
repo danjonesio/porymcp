@@ -6,8 +6,9 @@ on:
     tags: ['v*']
   pull_request:
   # A manual run from main re-publishes edge without a new commit; from a tag
-  # it re-publishes that tag; from any other ref the checks run and publish
-  # is skipped. Only users with write access can trigger it.
+  # it re-publishes that tag; either way verify then runs against the new
+  # digest. From any other ref the checks run and publish and verify are
+  # skipped. Only users with write access can trigger it.
   workflow_dispatch:
 
 permissions:
@@ -54,7 +55,7 @@ jobs:
       - name: Tracked-file guards ran and passed
         shell: bash
         run: |
-          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestGoToolchainConsistent|TestDockerfilePinned|TestVulnPinned' -v | tee "$RUNNER_TEMP/guards.log"
+          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestGoToolchainConsistent|TestDockerfilePinned|TestVulnPinned|TestImageJobsGated' -v | tee "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNoInternalReferences' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestProseStyle' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestOwnerConsistent' "$RUNNER_TEMP/guards.log"
@@ -62,6 +63,7 @@ jobs:
           grep -q -- '--- PASS: TestGoToolchainConsistent' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestDockerfilePinned' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestVulnPinned' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestImageJobsGated' "$RUNNER_TEMP/guards.log"
       - run: make vuln
 
   web:
@@ -149,151 +151,36 @@ jobs:
           tags: porymcp:ci
           cache-from: type=gha,scope=amd64
           cache-to: type=gha,scope=amd64,mode=max
-      # Both keys are set, so the server never logs a generated admin key.
-      # They are minted here, live for this one container, and are not
-      # secrets. Nothing in this step echoes them and set -x is never used.
-      # The smoke script registers the admin key and each minted key as a
-      # mask through file descriptor 3, which this step points at its own
-      # stdout, so the mask lines reach the runner and never the captured
-      # output the grep below reads. The script runs in this step because
-      # the admin key lives in this shell: GITHUB_ENV would print it in a
-      # later step's header. The browser suite (PORM-157) runs here after
-      # the smoke script for the same reason, against the same container and
-      # stub, and its report is moved to the upload path only after
-      # scripts/e2e-scrub.sh has withheld every key form and checked the
-      # result.
+      # The image checks live in scripts/image-check.sh, which the
+      # docker-arm64 and verify jobs run too. Both keys are minted inside it
+      # and never leave its process: GITHUB_ENV would print them in a later
+      # step's header. The smoke script registers the admin key and each
+      # minted key as a mask through file descriptor 3, which this step points
+      # at its own stdout, so the mask lines reach the runner and never the
+      # captured output the script greps. The browser suite (PORM-157) runs
+      # after the smoke script against the same container and stub, and its
+      # report is moved to the upload path only after scripts/e2e-scrub.sh has
+      # withheld every key form and checked the result.
       - name: The image starts, answers /health, serves the dashboard, passes the smoke script and the browser suite
         shell: bash
         timeout-minutes: 10
-        run: |
-          ADMIN_API_KEY="$(openssl rand -hex 32)"
-          ENCRYPTION_KEY="$(openssl rand -hex 32)"
-          [ -n "$ADMIN_API_KEY" ] && [ -n "$ENCRYPTION_KEY" ]
-          export ADMIN_API_KEY ENCRYPTION_KEY
-          # The echo stub listens on the bridge gateway, which is what
-          # host-gateway resolves to inside the container, and nowhere else.
-          # Its log is read only by the greps below and the failure step.
-          gw="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
-          [ -n "$gw" ]
-          "$RUNNER_TEMP/echostub" -addr "$gw:8098" > "$RUNNER_TEMP/echostub.log" 2>&1 &
-          stub_pid=$!
-          trap 'kill "$stub_pid" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 10); do
-            if curl -s -o /dev/null --max-time 1 "http://$gw:8098/v1/ok"; then
-              stub=yes
-              break
-            fi
-            sleep 1
-          done
-          [ "${stub:-}" = yes ]
-          docker run -d --name porymcp-ci -p 8080:8080 --add-host=host.docker.internal:host-gateway -e ADMIN_API_KEY -e ENCRYPTION_KEY porymcp:ci
-          for _ in $(seq 1 30); do
-            if curl -fs http://localhost:8080/health 2>/dev/null | grep -q '"status":"ok"'; then
-              ok=yes
-              break
-            fi
-            sleep 1
-          done
-          [ "${ok:-}" = yes ]
-          # The startup line and the image's guard defaults (PORM-79). Logged
-          # before the listener opens, so it is there once /health answers.
-          docker logs porymcp-ci > "$RUNNER_TEMP/porymcp.log" 2>&1
-          grep -qF '"msg":"upstream guard","allow_loopback":false,"deny_private":false' "$RUNNER_TEMP/porymcp.log"
-          curl -fsS -o "$RUNNER_TEMP/index.html" -w '%{http_code} %{content_type}\n' http://localhost:8080/ | grep -q '^200 text/html'
-          grep -q '<title>PoryMCP</title>' "$RUNNER_TEMP/index.html"
-          # The smoke script (PORM-213): two upstreams, a group, three keys,
-          # the four MCP doors, the relay, a revoke and the audit rows. Its
-          # output is checked before it is printed, so a leak never reaches
-          # the job log and a later read of the log proves nothing. The stored
-          # credentials are smokeplain followed by alpha or bravo; the regex
-          # is written so the step's own text never matches it.
-          smoke_status=0
-          STUB_URL=http://host.docker.internal:8098 SMOKE_BASE=http://localhost:8080 bash scripts/smoke.sh 3>&1 > "$RUNNER_TEMP/smoke.out" 2>&1 || smoke_status=$?
-          if grep -qE 'smokeplain(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/smoke.out" || grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/smoke.out"; then
-            echo 'the smoke output carries a stored credential or a key'
-            exit 1
-          fi
-          cat "$RUNNER_TEMP/smoke.out"
-          # The log is captured once and grepped from the file: grep -q on a
-          # pipe exits at the first match, docker logs can then die of
-          # SIGPIPE, and under pipefail the if reads a match as no match.
-          docker logs porymcp-ci > "$RUNNER_TEMP/porymcp.log" 2>&1
-          if grep -q admin_api_key "$RUNNER_TEMP/porymcp.log"; then
-            echo 'the container log carries an admin key field'
-            exit 1
-          fi
-          if grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/porymcp.log"; then
-            echo 'the container log carries a key value'
-            exit 1
-          fi
-          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/porymcp.log"; then
-            echo 'the container log carries a stored credential or a virtual key'
-            exit 1
-          fi
-          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/echostub.log"; then
-            echo 'the stub log carries a stored credential or a virtual key'
-            exit 1
-          fi
-          [ "$smoke_status" -eq 0 ] || exit "$smoke_status"
-          # The browser suite's scrub self-test runs first, while the keys are
-          # exported, so the check that gates the upload is proven able to see
-          # a key at every layer of a report.
-          bash scripts/e2e-scrub.sh --self-test
-          e2e_status=0
-          (cd web && PORYMCP_BASE_URL=http://localhost:8080 STUB_URL=http://host.docker.internal:8098 PLAYWRIGHT_NO_COPY_PROMPT=1 npm run e2e) > "$RUNNER_TEMP/e2e.raw" 2>&1 || e2e_status=$?
-          # A failing Settings assertion prints the first 12 characters of the
-          # admin key; they are withheld before the grep, which then sees what
-          # would be printed. The stored credential words are not grepped in
-          # this output: a failing fill on the bearer field prints them, and a
-          # hit would hide an ordinary failure. They are grepped in the logs.
-          sed "s/${ADMIN_API_KEY:0:12}/<withheld>/g" "$RUNNER_TEMP/e2e.raw" > "$RUNNER_TEMP/e2e.out"
-          if grep -qE 'pory_[0-9a-f]{16,}' "$RUNNER_TEMP/e2e.out" || grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/e2e.out"; then
-            echo 'the browser suite output carries a key'
-            exit 1
-          fi
-          cat "$RUNNER_TEMP/e2e.out"
-          docker logs porymcp-ci > "$RUNNER_TEMP/porymcp.log" 2>&1
-          if grep -q admin_api_key "$RUNNER_TEMP/porymcp.log"; then
-            echo 'the container log carries an admin key field'
-            exit 1
-          fi
-          if grep -qF -e "$ADMIN_API_KEY" -e "$ENCRYPTION_KEY" "$RUNNER_TEMP/porymcp.log"; then
-            echo 'the container log carries a key value'
-            exit 1
-          fi
-          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/porymcp.log"; then
-            echo 'the container log carries a stored credential or a virtual key'
-            exit 1
-          fi
-          if grep -qE '(smokeplain|e2eplain)(alpha|bravo)|pory_[0-9a-f]{16,}' "$RUNNER_TEMP/echostub.log"; then
-            echo 'the stub log carries a stored credential or a virtual key'
-            exit 1
-          fi
-          # On a red suite the report is scrubbed and moved to the upload path
-          # only when the scrub's check finds nothing; otherwise it stays on
-          # this ephemeral runner and nothing uploads.
-          if [ "$e2e_status" -ne 0 ] && [ -d web/playwright-report ]; then
-            if bash scripts/e2e-scrub.sh web/playwright-report web/test-results; then
-              mv web/playwright-report "$RUNNER_TEMP/playwright-report"
-              echo 'the browser report is the playwright-report artefact on this run (npx playwright show-report <dir>); the test-results paths above stayed on the runner'
-            else
-              echo 'the browser report was not kept'
-            fi
-          fi
-          exit "$e2e_status"
-      # Both logs pass through a filter that withholds virtual key shapes,
-      # the stored literals and any 64-hex value (the shape of both keys
-      # minted above), so the one case where a key reached a log never
-      # publishes it. The live log is read, not the file captured above,
-      # which a failure earlier in the step would leave stale.
+        env:
+          IMAGE_CHECK_REF: porymcp:ci
+          IMAGE_CHECK_ARCH: amd64
+          IMAGE_CHECK_STUB: ${{ runner.temp }}/echostub
+          IMAGE_CHECK_E2E: '1'
+        run: bash scripts/image-check.sh 3>&1
+      # Both logs pass through the script's filter, which withholds virtual
+      # key shapes, the stored literals and any 64-hex value (the shape of
+      # both keys), so the one case where a key reached a log never publishes
+      # it. The live log is read, not a file captured earlier.
       - name: Container and stub logs
         if: failure()
-        run: |
-          { docker logs porymcp-ci 2>&1; echo '--- echostub'; cat "$RUNNER_TEMP/echostub.log" 2>/dev/null; } | grep -v admin_api_key | sed -E 's/pory_[0-9a-f]{16,}/pory_<withheld>/g; s/(smokeplain|e2eplain)(alpha|bravo)/<withheld>/g; s/[0-9a-f]{64}/<withheld>/g' || true
+        run: bash scripts/image-check.sh --logs
       - name: Remove the container
         if: always()
         run: docker rm -f porymcp-ci || true
-      # The browser suite's report, present only when the main step moved it
+      # The browser suite's report, present only when the image check moved it
       # here after the scrub withheld every key form and its check found
       # nothing. A green run skips this step; a red smoke, a scrub hit or a
       # timeout leaves no directory, so nothing uploads then either.
@@ -305,9 +192,11 @@ jobs:
           path: ${{ runner.temp }}/playwright-report
           if-no-files-found: ignore
           retention-days: 7
-      # The build stage cross-compiles by argument. Extract the arm64 image and
-      # check the binary really is arm64, which a manifest cannot show: buildx
-      # stamps the platform from the request, not from the artefact.
+      # The build stage cross-compiles by argument, the way publish builds
+      # arm64. This build fills the arm64 cache scope publish reads, and the
+      # check below is a cheap first look at the cross-compiled binary, which
+      # a manifest cannot give: buildx stamps the platform from the request,
+      # not from the artefact. The docker-arm64 job runs an arm64 image.
       # Nothing from this build is pushed. Without provenance: false the action
       # would attach a mode=max attestation computed over the event payload.
       - name: Build the arm64 image to a directory
@@ -324,14 +213,71 @@ jobs:
         shell: bash
         run: file "$RUNNER_TEMP/arm64/porymcp" | grep -q 'ARM aarch64'
 
+  # The image built natively on an arm64 host and run through the same image
+  # checks as the amd64 image, so publish never pushes an arm64 image whose
+  # recipe has not run on arm64. Both build stages run on the builder's own
+  # architecture, so these are not the bytes publish pushes: publish
+  # cross-compiles on amd64, and the verify job below is the first run of the
+  # published bytes. No cache: a native build would replace the cross-built
+  # layers in the arm64 scope publish reads. Nothing here authenticates.
+  docker-arm64:
+    name: docker-arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the echo stub
+        run: go build -o "$RUNNER_TEMP/echostub" ./scripts/echostub
+      # The same line in the verify job.
+      - name: The file command is installed
+        timeout-minutes: 3
+        run: command -v file >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends file; }
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Nothing from this build is pushed. Without provenance: false the action
+      # would attach a mode=max attestation computed over the event payload.
+      - name: Build the arm64 image natively
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          provenance: false
+          tags: porymcp:ci
+      - name: The arm64 image starts, answers /health, serves the dashboard and passes the smoke script
+        shell: bash
+        timeout-minutes: 10
+        env:
+          IMAGE_CHECK_REF: porymcp:ci
+          IMAGE_CHECK_ARCH: arm64
+          IMAGE_CHECK_STUB: ${{ runner.temp }}/echostub
+        run: bash scripts/image-check.sh 3>&1
+      - name: Container and stub logs
+        if: failure()
+        run: bash scripts/image-check.sh --logs
+      - name: Remove the container
+        if: always()
+        run: docker rm -f porymcp-ci || true
+
   publish:
-    needs: [go, web, docker]
+    needs: [go, web, docker, docker-arm64]
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
+    # The index digest, for the verify job to pull by. Not a secret.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -375,15 +321,82 @@ jobs:
           cache-from: |
             type=gha,scope=amd64
             type=gha,scope=arm64
-      # This proves the index shape. The docker job's file check, which this
-      # job needs, proved the arm64 binary.
+      # This proves the index shape. The verify job pulls the index by this
+      # digest and runs it on each platform.
       - name: The published index lists both platforms
         shell: bash
         env:
           IMAGE: ghcr.io/${{ github.repository }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'the build gave no digest'; exit 1; }
           docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee "$RUNNER_TEMP/index.txt"
           grep -q 'linux/amd64' "$RUNNER_TEMP/index.txt"
           grep -q 'linux/arm64' "$RUNNER_TEMP/index.txt"
           echo "Published \`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # The published index pulled by digest with no credential and run through
+  # the same image checks, once on each platform. This is the first run of
+  # the bytes publish pushed. It is a signal after publish, not a gate: by
+  # the time it runs the tags have moved, and a red verify means the next
+  # patch tag (docs/13-releasing.md). The pull uses an empty client config
+  # and the job holds no login, no secret and no packages permission, so a
+  # private package fails the pull.
+  verify:
+    name: verify (${{ matrix.arch }})
+    needs: publish
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    env:
+      REPO: ghcr.io/${{ github.repository }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the echo stub
+        run: go build -o "$RUNNER_TEMP/echostub" ./scripts/echostub
+      # The same line in the docker-arm64 job.
+      - name: The file command is installed
+        timeout-minutes: 3
+        run: command -v file >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends file; }
+      - name: Pull the published index by digest with no credential
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'publish gave no digest'; exit 1; }
+          export DOCKER_CONFIG="$RUNNER_TEMP/anon-docker"
+          mkdir -p "$DOCKER_CONFIG"
+          echo '{}' > "$DOCKER_CONFIG/config.json"
+          echo "pulling with an empty client config at $DOCKER_CONFIG (no registry login in this job)"
+          docker pull "$REPO@$DIGEST"
+          docker image inspect --format '{{json .RepoDigests}}' "$REPO@$DIGEST" | grep -qF "$REPO@$DIGEST"
+      - name: The published image starts, answers /health, serves the dashboard and passes the smoke script
+        shell: bash
+        timeout-minutes: 10
+        env:
+          IMAGE_CHECK_REF: ${{ env.REPO }}@${{ env.DIGEST }}
+          IMAGE_CHECK_ARCH: ${{ matrix.arch }}
+          IMAGE_CHECK_STUB: ${{ runner.temp }}/echostub
+        run: bash scripts/image-check.sh 3>&1
+      - name: Container and stub logs
+        if: failure()
+        run: bash scripts/image-check.sh --logs
+      - name: Remove the container
+        if: always()
+        run: docker rm -f porymcp-ci || true

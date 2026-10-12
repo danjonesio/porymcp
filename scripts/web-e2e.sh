@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # web-e2e.sh runs the browser suite against a binary it starts itself: the echo
 # stub and bin/porymcp on free loopback ports, a temp DATA_DIR, keys minted
-# here as shell locals, LOG_LEVEL=warn. It mirrors the docker job's main step,
-# so the suite always meets an instance that is already up. make web-e2e runs
+# here as shell locals, LOG_LEVEL=warn. It mirrors scripts/image-check.sh,
+# which CI runs against the image, so the suite always meets an instance that
+# is already up. make web-e2e runs
 # it after make build.
 #
 # Keys never appear on a command line, in this script's output or in a file

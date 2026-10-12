@@ -555,3 +555,173 @@ func readRepoFile(t *testing.T, root, rel string) []byte {
 	}
 	return b
 }
+
+// ciJobBlock returns the text of one job in a workflow: from the line that
+// names it at two spaces of indent to the next key at that indent, or to the
+// end of the file. The whole line is matched, so docker does not find
+// docker-arm64. It returns "" when the job is absent.
+func ciJobBlock(src, name string) string {
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+	head := "\n  " + name + ":\n"
+	i := strings.Index(src, head)
+	if i < 0 {
+		return ""
+	}
+	rest := src[i+1:]
+	lines := strings.SplitAfter(rest, "\n")
+	n := len(lines[0])
+	for _, line := range lines[1:] {
+		if len(line) > 2 && line[0] == ' ' && line[1] == ' ' && line[2] >= 'a' && line[2] <= 'z' {
+			break
+		}
+		n += len(line)
+	}
+	return rest[:n]
+}
+
+// withoutComments drops every line whose first non-space character is #, so
+// a comment that names a thing is not read as the thing.
+func withoutComments(block string) string {
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(block, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+var publishNeedsArm64 = regexp.MustCompile(`(?m)^    needs: \[[^\]]*\bdocker-arm64\b[^\]]*\]`)
+
+// ciGateProblems reports what would let publish run without the arm64 image
+// having run, or let verify pull with a credential (PORM-156).
+func ciGateProblems(src string) []string {
+	var problems []string
+	publish := withoutComments(ciJobBlock(src, "publish"))
+	if publish == "" {
+		problems = append(problems, "ci.yml has no publish job")
+	} else if !publishNeedsArm64.MatchString(publish) {
+		problems = append(problems, "publish does not need docker-arm64")
+	}
+	verify := withoutComments(ciJobBlock(src, "verify"))
+	if verify == "" {
+		problems = append(problems, "ci.yml has no verify job")
+		return problems
+	}
+	if strings.Contains(verify, "login-action") {
+		problems = append(problems, "verify logs in to a registry")
+	}
+	if strings.Contains(verify, "secrets.") || strings.Contains(verify, "github.token") {
+		problems = append(problems, "verify reads a secret")
+	}
+	if strings.Contains(verify, "docker login") {
+		problems = append(problems, "verify runs docker login")
+	}
+	if strings.Contains(verify, "packages:") {
+		problems = append(problems, "verify asks for a packages permission")
+	}
+	return problems
+}
+
+// TestImageJobsGated keeps publish behind the arm64 image check, and keeps
+// the verify job free of a login, a secret, the job token and a packages
+// permission, so its pull stays anonymous (PORM-156). The red proof on the issue's
+// branch showed the gate once; this keeps it.
+func TestImageJobsGated(t *testing.T) {
+	root := repoRoot(t)
+	for _, p := range ciGateProblems(string(readRepoFile(t, root, ".github/workflows/ci.yml"))) {
+		t.Error(p)
+	}
+}
+
+// The tests below run ciGateProblems on an in-memory workflow, so the guard
+// is shown to fail without touching ci.yml.
+
+const gatedWorkflow = "name: ci\n\njobs:\n" +
+	"  docker:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo docker\n\n" +
+	"  docker-arm64:\n    runs-on: ubuntu-24.04-arm\n    steps:\n      - run: echo arm\n\n" +
+	"  publish:\n    needs: [go, web, docker, docker-arm64]\n    steps:\n" +
+	"      - uses: docker/login-action@0000000000000000000000000000000000000000 # v1.0.0\n" +
+	"        with:\n          password: ${{ secrets.GITHUB_TOKEN }}\n\n" +
+	"  verify:\n    needs: publish\n    steps:\n      - run: docker pull \"$REPO@$DIGEST\"\n"
+
+func wantGateProblem(t *testing.T, src, fragment string) {
+	t.Helper()
+	got := ciGateProblems(src)
+	for _, p := range got {
+		if strings.Contains(p, fragment) {
+			return
+		}
+	}
+	t.Fatalf("no problem containing %q; got %q", fragment, got)
+}
+
+// publish's own login and secret are not verify's.
+func TestCIGateProblems_Gated(t *testing.T) {
+	if got := ciGateProblems(gatedWorkflow); len(got) != 0 {
+		t.Fatalf("a gated workflow reported %q", got)
+	}
+	crlf := strings.ReplaceAll(gatedWorkflow, "\n", "\r\n")
+	if got := ciGateProblems(crlf); len(got) != 0 {
+		t.Fatalf("a CRLF workflow reported %q", got)
+	}
+}
+
+func TestCIGateProblems_PublishNotGated(t *testing.T) {
+	src := strings.Replace(gatedWorkflow, "[go, web, docker, docker-arm64]", "[go, web, docker]", 1)
+	wantGateProblem(t, src, "publish does not need docker-arm64")
+}
+
+// The docker job's block ends where docker-arm64 starts, a name is matched as
+// the whole key, and a needs line naming docker alone is not read as naming
+// docker-arm64.
+func TestCIGateProblems_DockerIsNotDockerArm64(t *testing.T) {
+	if got := ciJobBlock(gatedWorkflow, "docker-arm"); got != "" {
+		t.Fatalf("a prefix of a job name found a block: %q", got)
+	}
+	if got := ciJobBlock(gatedWorkflow, "docker"); strings.Contains(got, "ubuntu-24.04-arm") {
+		t.Fatalf("the docker block ran into docker-arm64: %q", got)
+	}
+	src := strings.Replace(gatedWorkflow, "[go, web, docker, docker-arm64]", "[go, web, docker] # docker-arm64", 1)
+	wantGateProblem(t, src, "publish does not need docker-arm64")
+}
+
+func TestCIGateProblems_NoVerify(t *testing.T) {
+	src := gatedWorkflow[:strings.Index(gatedWorkflow, "  verify:")]
+	wantGateProblem(t, src, "no verify job")
+}
+
+func TestCIGateProblems_VerifyLogsIn(t *testing.T) {
+	src := gatedWorkflow + "      - uses: docker/login-action@0000000000000000000000000000000000000000 # v1.0.0\n"
+	wantGateProblem(t, src, "verify logs in")
+}
+
+func TestCIGateProblems_VerifyReadsSecret(t *testing.T) {
+	src := gatedWorkflow + "        env:\n          TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
+	wantGateProblem(t, src, "verify reads a secret")
+}
+
+func TestCIGateProblems_VerifyReadsToken(t *testing.T) {
+	src := gatedWorkflow + "        env:\n          TOKEN: ${{ github.token }}\n"
+	wantGateProblem(t, src, "verify reads a secret")
+}
+
+func TestCIGateProblems_VerifyRunsDockerLogin(t *testing.T) {
+	src := gatedWorkflow + "      - run: docker login ghcr.io -u x --password-stdin\n"
+	wantGateProblem(t, src, "verify runs docker login")
+}
+
+func TestCIGateProblems_VerifyPackagesPermission(t *testing.T) {
+	src := strings.Replace(gatedWorkflow, "  verify:\n    needs: publish\n",
+		"  verify:\n    needs: publish\n    permissions:\n      contents: read\n      packages: read\n", 1)
+	wantGateProblem(t, src, "verify asks for a packages permission")
+}
+
+// A comment in verify that names secrets. or the login action is not a use.
+func TestCIGateProblems_CommentIgnored(t *testing.T) {
+	src := gatedWorkflow + "      # no secrets. reference and no docker/login-action here\n"
+	if got := ciGateProblems(src); len(got) != 0 {
+		t.Fatalf("a comment reported %q", got)
+	}
+}

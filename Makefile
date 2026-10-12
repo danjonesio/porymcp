@@ -1,4 +1,4 @@
-.PHONY: dev test test-race vet vuln web web-dev web-test web-lint web-typecheck web-audit web-e2e build tidy smoke
+.PHONY: dev test test-race vet vuln web web-dev web-test web-lint web-typecheck web-audit web-e2e build tidy smoke image-check
 
 dev:
 	go run ./cmd/server
@@ -56,6 +56,13 @@ build: web
 # STUB_URL and the SMOKE_* inputs from the environment it inherits.
 smoke:
 	@bash scripts/smoke.sh
+
+# image-check runs scripts/image-check.sh against an image already on this
+# host. The recipe is silent and names no variable: the script reads
+# IMAGE_CHECK_REF, IMAGE_CHECK_ARCH, IMAGE_CHECK_STUB and IMAGE_CHECK_E2E
+# from the environment it inherits and mints its own keys.
+image-check:
+	@bash scripts/image-check.sh
 
 # web-e2e runs the browser suite (web/e2e) against a binary scripts/web-e2e.sh
 # starts on free loopback ports. It has no prerequisite because npm ci must

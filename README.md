@@ -150,6 +150,7 @@ Each virtual key has its own endpoint. A group key has one per member, so your c
 - [Connecting clients](docs/09-clients.md)
 - [TLS and reverse-proxy deployment](docs/11-deployment.md)
 - [Writing guide](docs/12-writing.md)
+- [Releasing](docs/13-releasing.md)
 
 ## Tech stack
 
