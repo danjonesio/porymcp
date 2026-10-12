@@ -38,10 +38,13 @@ umask 077
 cd "$(dirname "$0")/.."
 
 # One work directory both modes find: the runner's temp directory in CI, a
-# fixed path under TMPDIR by hand. It is refused when another user owns it.
+# fixed path under TMPDIR by hand. It is refused when it is a symbolic link
+# or another user owns it, and the path under TMPDIR is kept private.
 work="${RUNNER_TEMP:-${TMPDIR:-/tmp}/porymcp-image-check}"
+[ ! -L "$work" ] || { echo "FAIL input: $work is a symbolic link" >&2; exit 1; }
 mkdir -p "$work"
 [ -O "$work" ] || { echo "FAIL input: $work is owned by another user" >&2; exit 1; }
+[ -n "${RUNNER_TEMP:-}" ] || chmod 700 "$work"
 
 # The withheld forms: virtual key shapes, the stored literals and any 64-hex
 # value (the shape of both keys). This sed is one of the four lists that move
