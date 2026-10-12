@@ -161,8 +161,12 @@ done
 base=http://127.0.0.1:8080
 docker run -d --pull=never --name porymcp-ci -p 127.0.0.1:8080:8080 --add-host=host.docker.internal:host-gateway -e ADMIN_API_KEY -e ENCRYPTION_KEY "$ref" >/dev/null
 ok=
+# PROOF BRANCH ONLY (PORM-156): on arm64 the readiness loop asks a port
+# nothing listens on, so docker-arm64 goes red and amd64 stays green.
+health_base="$base"
+[ "$(uname -m)" = aarch64 ] && health_base=http://127.0.0.1:8081
 for _ in $(seq 1 30); do
-  if curl -fs "$base/health" 2>/dev/null | grep -q '"status":"ok"'; then
+  if curl -fs "$health_base/health" 2>/dev/null | grep -q '"status":"ok"'; then
     ok=yes
     break
   fi
