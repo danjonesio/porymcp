@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "biome lint src e2e playwright.config.ts",
+    "lint": "biome lint --error-on-warnings src e2e playwright.config.ts",
     "test": "node --test 'src/lib/*.test.ts'",
     "e2e": "playwright test"
   },

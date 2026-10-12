@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"go/version"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,18 +88,87 @@ func TestNodeMajorConsistent(t *testing.T) {
 	}
 }
 
+// goToolchainProblems lists what puts a golang build image in the Dockerfile
+// below the Go release go.mod asks for, one message per problem. Each image
+// tag names a minor (golang:1.27-alpine), and that minor has to be at least
+// the minor of go.mod's go line and of its toolchain line. The image sets
+// GOTOOLCHAIN=local, so a newer go line fails the image build, but a newer
+// toolchain line is ignored and the image compiles with its own older
+// release; that second comparison is the one no build makes. An image a
+// minor ahead passes, as the tree stands since the docker lane moved the tag
+// (aac1934) and PORM-215 kept it; the go job and make vuln then run on the
+// toolchain line's release, not the image's. The patch is not compared: the
+// tag carries none, and the release inside the image is fixed by its digest,
+// which is read by running the image when the pin moves (docs/08-docker.md).
+// No golang tag with a minor (golang:alpine), a garbled line or a missing go
+// line is a problem, never a pass. A go.mod with no toolchain line, or with
+// toolchain default, is checked on its go line alone, which is Go's own rule.
+func goToolchainProblems(gomod, dockerfile []byte) []string {
+	src := dockerfileContinuation.ReplaceAll(dockerfileComment.ReplaceAll(dockerfile, nil), []byte(" "))
+	froms := dockerfileGolang.FindAllSubmatch(src, -1)
+	if len(froms) == 0 {
+		return []string{"Dockerfile has no FROM line with a golang:<major>.<minor> tag, so there is no minor to compare with go.mod"}
+	}
+	var problems []string
+	g := gomodGo.FindSubmatch(gomod)
+	tc := gomodToolchain.FindSubmatch(gomod)
+	switch {
+	case g == nil:
+		problems = append(problems, "go.mod has no go line")
+	case !version.IsValid("go" + string(g[1])):
+		problems = append(problems, fmt.Sprintf("go.mod's go line %q is not a Go version", g[1]))
+	}
+	if tc != nil && string(tc[1]) != "default" && !version.IsValid(string(tc[1])) {
+		problems = append(problems, fmt.Sprintf("go.mod's toolchain line %q is not a Go toolchain name", tc[1]))
+	}
+	if len(problems) > 0 {
+		return problems
+	}
+	for _, m := range froms {
+		tag := string(m[1])
+		image := version.Lang("go" + tag)
+		if version.Compare(image, version.Lang("go"+string(g[1]))) < 0 {
+			problems = append(problems, fmt.Sprintf("go.mod says go %s and the Dockerfile builds on golang:%s; under GOTOOLCHAIN=local the image build fails with go.mod requires go >= %s", g[1], tag, g[1]))
+		}
+		if tc != nil && string(tc[1]) != "default" && version.Compare(image, version.Lang(string(tc[1]))) < 0 {
+			problems = append(problems, fmt.Sprintf("go.mod pins toolchain %s, a newer minor than the Dockerfile's golang:%s build image; under GOTOOLCHAIN=local the image ignores the line and compiles with Go %s", tc[1], tag, tag))
+		}
+	}
+	return problems
+}
+
+// TestGoToolchainConsistent keeps every golang build image in the Dockerfile
+// at or above the minor release go.mod names (PORM-185), as
+// TestNodeMajorConsistent keeps web/.nvmrc on the image's Node major. The
+// workflow greps its PASS line.
+func TestGoToolchainConsistent(t *testing.T) {
+	root := repoRoot(t)
+	for _, p := range goToolchainProblems(readRepoFile(t, root, "go.mod"), readRepoFile(t, root, "Dockerfile")) {
+		t.Error(p)
+	}
+}
+
 var (
 	dockerfileComment      = regexp.MustCompile(`(?m)^[ \t]*#.*$`)
 	dockerfileContinuation = regexp.MustCompile(`\\[ \t]*\r?\n`)
 	dockerfileFrom         = regexp.MustCompile(`(?m)^FROM .*$`)
+	// dockerfileGolang reads the minor from a golang build stage's tag, after
+	// comment lines are stripped and continuations joined. Instructions are
+	// case-insensitive and may be indented. The digest after the tag is not
+	// read: TestDockerfilePinned checks its shape.
+	dockerfileGolang       = regexp.MustCompile(`(?mi)^[ \t]*FROM\b.*\bgolang:(\d+\.\d+)\b`)
 	dockerfilePinnedFrom   = regexp.MustCompile(`^FROM\s+(?:--\S+\s+)*\S+@sha256:[0-9a-f]{64}(?:\s|$)`)
 	dockerfileRun          = regexp.MustCompile(`(?m)^RUN\b.*$`)
 	dockerfileNpmCi        = regexp.MustCompile(`(?m)^RUN npm ci\b`)
 	dockerfileSyntax       = regexp.MustCompile(`(?mi)^#\s*syntax\s*=.*$`)
 	dockerfilePinnedSyntax = regexp.MustCompile(`@sha256:[0-9a-f]{64}\s*$`)
-	gomodToolVuln          = regexp.MustCompile(`(?m)^(?:tool[ \t]+|\t)golang\.org/x/vuln/cmd/govulncheck[ \t]*\r?$`)
-	makefileComment        = regexp.MustCompile(`^[ \t]*#`)
-	makefileVulnRecipe     = regexp.MustCompile(`(?m)^vuln:[ \t]*\r?\n\tgo tool govulncheck `)
+	// gomodGo and gomodToolchain read the two version lines. \S+ stops before
+	// a carriage return, so a CRLF file reads the same.
+	gomodGo            = regexp.MustCompile(`(?m)^go[ \t]+(\S+)`)
+	gomodToolVuln      = regexp.MustCompile(`(?m)^(?:tool[ \t]+|\t)golang\.org/x/vuln/cmd/govulncheck[ \t]*\r?$`)
+	gomodToolchain     = regexp.MustCompile(`(?m)^toolchain[ \t]+(\S+)`)
+	makefileComment    = regexp.MustCompile(`^[ \t]*#`)
+	makefileVulnRecipe = regexp.MustCompile(`(?m)^vuln:[ \t]*\r?\n\tgo tool govulncheck `)
 )
 
 // dockerfileProblems lists what is wrong with a Dockerfile's pins and its
@@ -363,6 +433,117 @@ func TestVulnPinProblems_CommentAndCRLF(t *testing.T) {
 	crlf := strings.ReplaceAll(pinnedGoMod, "\n", "\r\n")
 	if got := vulnPinProblems([]byte(crlf), []byte(pinnedMakefile)); len(got) != 0 {
 		t.Fatalf("a CRLF go.mod reported %q", got)
+	}
+}
+
+// The tests below run goToolchainProblems on in-memory inputs, so the guard
+// is shown to fail without touching the tracked files. The Dockerfile fixture
+// builds on golang:1.26-alpine and the go.mod fixture says go 1.26.0.
+
+// toolchainGoMod is pinnedGoMod with a toolchain line.
+func toolchainGoMod(tc string) string {
+	return strings.Replace(pinnedGoMod, "go 1.26.0\n", "go 1.26.0\n\ntoolchain "+tc+"\n", 1)
+}
+
+func wantToolchainProblem(t *testing.T, gomod, dockerfile, fragment string) {
+	t.Helper()
+	got := goToolchainProblems([]byte(gomod), []byte(dockerfile))
+	for _, p := range got {
+		if strings.Contains(p, fragment) {
+			return
+		}
+	}
+	t.Fatalf("no problem containing %q; got %q", fragment, got)
+}
+
+// A go.mod with no toolchain line, with toolchain default, or with a
+// toolchain at the image's minor passes, as does an image a minor ahead (how
+// the tree stands), a tag that carries a patch, and an indented lower-case
+// from instruction.
+func TestGoToolchainProblems_Consistent(t *testing.T) {
+	ahead := strings.Replace(pinnedDockerfile(), "golang:1.26-alpine", "golang:1.27-alpine", 1)
+	patch := strings.Replace(pinnedDockerfile(), "golang:1.26-alpine", "golang:1.26.9-alpine", 1)
+	lower := strings.Replace(pinnedDockerfile(), "FROM --platform=$BUILDPLATFORM golang:1.26-alpine",
+		"  from --platform=$BUILDPLATFORM golang:1.26-alpine", 1)
+	for _, c := range []struct{ name, gomod, dockerfile string }{
+		{"no toolchain line", pinnedGoMod, pinnedDockerfile()},
+		{"equal minor", toolchainGoMod("go1.26.9"), pinnedDockerfile()},
+		{"toolchain default", toolchainGoMod("default"), pinnedDockerfile()},
+		{"image a minor ahead", toolchainGoMod("go1.26.9"), ahead},
+		{"tag with a patch", toolchainGoMod("go1.26.9"), patch},
+		{"indented lower-case from", toolchainGoMod("go1.26.9"), lower},
+	} {
+		if got := goToolchainProblems([]byte(c.gomod), []byte(c.dockerfile)); len(got) != 0 {
+			t.Fatalf("%s reported %q", c.name, got)
+		}
+	}
+}
+
+// A toolchain line a minor past the image is the case no build catches.
+func TestGoToolchainProblems_ToolchainAhead(t *testing.T) {
+	gomod := toolchainGoMod("go1.27.0")
+	wantToolchainProblem(t, gomod, pinnedDockerfile(),
+		"go.mod pins toolchain go1.27.0, a newer minor than the Dockerfile's golang:1.26 build image")
+	if got := goToolchainProblems([]byte(gomod), []byte(pinnedDockerfile())); len(got) != 1 {
+		t.Fatalf("want 1 problem, got %q", got)
+	}
+}
+
+// A go line past the image is reported as well, beside the toolchain line.
+func TestGoToolchainProblems_GoLineAhead(t *testing.T) {
+	gomod := strings.Replace(toolchainGoMod("go1.27.0"), "go 1.26.0\n", "go 1.27.0\n", 1)
+	wantToolchainProblem(t, gomod, pinnedDockerfile(), "go.mod says go 1.27.0 and the Dockerfile builds on golang:1.26")
+	wantToolchainProblem(t, gomod, pinnedDockerfile(), "go.mod pins toolchain go1.27.0")
+	if got := goToolchainProblems([]byte(gomod), []byte(pinnedDockerfile())); len(got) != 2 {
+		t.Fatalf("want 2 problems, got %q", got)
+	}
+}
+
+// A tag without a minor, and a golang stage that is only a comment, leave
+// nothing to compare and fail closed.
+func TestGoToolchainProblems_NoMinorTag(t *testing.T) {
+	const fragment = "no FROM line with a golang:<major>.<minor> tag"
+	for _, tag := range []string{"golang:alpine", "golang:1-alpine", "golang:latest"} {
+		src := strings.Replace(pinnedDockerfile(), "golang:1.26-alpine", tag, 1)
+		wantToolchainProblem(t, toolchainGoMod("go1.26.9"), src, fragment)
+		if got := goToolchainProblems([]byte(toolchainGoMod("go1.26.9")), []byte(src)); len(got) != 1 {
+			t.Fatalf("%s: want 1 problem, got %q", tag, got)
+		}
+	}
+	commented := strings.Replace(pinnedDockerfile(), "FROM --platform=$BUILDPLATFORM golang:1.26-alpine",
+		"# FROM --platform=$BUILDPLATFORM golang:1.26-alpine", 1)
+	wantToolchainProblem(t, toolchainGoMod("go1.26.9"), commented, fragment)
+	if got := goToolchainProblems([]byte(toolchainGoMod("go1.26.9")), []byte(commented)); len(got) != 1 {
+		t.Fatalf("commented stage: want 1 problem, got %q", got)
+	}
+}
+
+// A go.mod the guard cannot read fails closed rather than passing: version
+// ranks an invalid name below every valid one, so the IsValid checks are what
+// keep a garbled line from passing.
+func TestGoToolchainProblems_Garbled(t *testing.T) {
+	for _, c := range []struct{ name, gomod, fragment string }{
+		{"no go line", strings.Replace(pinnedGoMod, "go 1.26.0\n", "", 1), "has no go line"},
+		{"go 1.x", strings.Replace(pinnedGoMod, "go 1.26.0\n", "go 1.x\n", 1), "is not a Go version"},
+		{"toolchain without the go prefix", toolchainGoMod("1.27.0"), "is not a Go toolchain name"},
+	} {
+		wantToolchainProblem(t, c.gomod, pinnedDockerfile(), c.fragment)
+		if got := goToolchainProblems([]byte(c.gomod), []byte(pinnedDockerfile())); len(got) != 1 {
+			t.Fatalf("%s: want 1 problem, got %q", c.name, got)
+		}
+	}
+}
+
+// Files written with CRLF line endings read the same.
+func TestGoToolchainProblems_CRLF(t *testing.T) {
+	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+	if got := goToolchainProblems([]byte(crlf(toolchainGoMod("go1.26.9"))), []byte(crlf(pinnedDockerfile()))); len(got) != 0 {
+		t.Fatalf("a CRLF pair reported %q", got)
+	}
+	gomod := crlf(toolchainGoMod("go1.27.0"))
+	wantToolchainProblem(t, gomod, crlf(pinnedDockerfile()), "go.mod pins toolchain go1.27.0")
+	if got := goToolchainProblems([]byte(gomod), []byte(crlf(pinnedDockerfile()))); len(got) != 1 {
+		t.Fatalf("want 1 problem, got %q", got)
 	}
 }
 

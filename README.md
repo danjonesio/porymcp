@@ -68,7 +68,7 @@ until you rotate or restore.
 
 ## Local development
 
-Go 1.26 or later. `go.mod` pins `toolchain go1.26.9`, which Go downloads automatically. Set `GOTOOLCHAIN=local` to insist on your installed release. The dashboard is compiled into the server binary. After `go run ./cmd/server`, open http://localhost:8080.
+Go 1.26 or later. `go.mod` pins `toolchain go1.26.9`, which Go downloads when the installed release is older. Set `GOTOOLCHAIN=local` to insist on your installed release. The dashboard is compiled into the server binary. After `go run ./cmd/server`, open http://localhost:8080.
 
 ```bash
 [ -f ~/porymcp.admin ] || (umask 077; openssl rand -hex 32 > ~/porymcp.admin)
@@ -94,7 +94,7 @@ cd web && npm ci && npm run build
 # then restart the Go server (or `npm run dev` on :3000 while the API stays on :8080)
 ```
 
-`make test` covers auth, key verification, store CRUD, management API, proxy credential injection and the tracked-file guards. Use the target rather than `go test ./...`: once `npm ci` has run, `./...` also reaches a Go file shipped inside `web/node_modules`. `make web-test` (`cd web && npm test`) covers the dashboard's client-snippet generation, and `make web-e2e` drives the dashboard in Chromium through the flows a person uses first: sign in, an upstream, a group with a tool filter, a virtual key, a revoke, the Logs filters and Settings (docs/06-ui.md, Browser tests). [CONTRIBUTING.md](CONTRIBUTING.md) lists every check CI runs and the order to run them in.
+`make test` runs the dashboard's unit tests (`make web-test`, which needs Node from `web/.nvmrc` and no `npm ci`), then the Go suites: auth, key verification, store CRUD, management API, proxy credential injection and the tracked-file guards. `make test-race` runs the same Go suites under the race detector, as CI's `go` job does. Use the targets rather than `go test ./...`: once `npm ci` has run, `./...` also reaches a Go file shipped inside `web/node_modules`. `make web-e2e` drives the dashboard in Chromium through the flows a person uses first: sign in, an upstream, a group with a tool filter, a virtual key, a revoke, the Logs filters and Settings (docs/06-ui.md, Browser tests). [CONTRIBUTING.md](CONTRIBUTING.md) lists every check CI runs and the order to run them in.
 
 ## Core concepts
 

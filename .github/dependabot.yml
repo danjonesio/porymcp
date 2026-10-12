@@ -44,9 +44,8 @@
 # failed on PR #21 on 2026-09-15 for a js-yaml advisory nothing was watching.
 #
 # docker (/): version lane. All three FROM lines in the Dockerfile are
-# digest-pinned (node:22-alpine, golang:1.26-alpine and
-# gcr.io/distroless/static-debian12:nonroot, each @sha256). How a pin moves,
-# by this lane or by hand, is in docs/08-docker.md.
+# digest-pinned (node, golang and distroless, each @sha256). How a pin
+# moves, by this lane or by hand, is in docs/08-docker.md.
 #
 # Not covered, on purpose:
 #   - docker-compose (docker-compose.yml, docker-compose.tls.yml): no
