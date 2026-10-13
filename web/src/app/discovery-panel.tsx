@@ -1,6 +1,6 @@
 'use client'
 
-import { Badge } from '@/components/badge'
+import { Badge, type BadgeColor } from '@/components/badge'
 import { Button } from '@/components/button'
 import { CheckboxField } from '@/components/checkbox'
 import { Description, Label } from '@/components/fieldset'
@@ -122,7 +122,16 @@ export function ProbeSummary({ result, testPath }: { result: Discovery; testPath
  * attribute. A real list, so its length and boundaries are announced. Renders
  * nothing for an empty list.
  */
-export function ReportedList({ label, items }: { label: string; items: string[] }) {
+export function ReportedList({
+  label,
+  items,
+  markFor,
+}: {
+  label: string
+  items: string[]
+  /** A note on one item, such as the Policy dialog's "Also denied". The item's badge takes the mark's color and the label follows it. */
+  markFor?: (item: string) => { label: string; color: BadgeColor } | null
+}) {
   if (items.length === 0) return null
   return (
     <div>
@@ -133,13 +142,26 @@ export function ReportedList({ label, items }: { label: string; items: string[] 
         {items.map((item, index) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: the items are plain strings the upstream reported, which may repeat, and the whole list is replaced on every change, so the position is the identity.
           <li key={index} className="max-w-full min-w-0">
-            <Badge color="zinc" dir="ltr" className="max-w-full break-all">
-              {item}
-            </Badge>
+            <ReportedItem item={item} mark={markFor?.(item) ?? null} />
           </li>
         ))}
       </ul>
     </div>
+  )
+}
+
+function ReportedItem({ item, mark }: { item: string; mark: { label: string; color: BadgeColor } | null }) {
+  const badge = (
+    <Badge color={mark?.color ?? 'zinc'} dir="ltr" className="max-w-full break-all">
+      {item}
+    </Badge>
+  )
+  if (!mark) return badge
+  return (
+    <span className="inline-flex max-w-full flex-wrap items-center gap-x-2">
+      {badge}
+      <span className="text-zinc-500">{mark.label}</span>
+    </span>
   )
 }
 

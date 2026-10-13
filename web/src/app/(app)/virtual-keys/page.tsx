@@ -16,11 +16,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Strong, Text } from '@/components/text'
 import { Textarea } from '@/components/textarea'
 import { HttpMethodsFields } from '@/app/http-methods-fields'
+import { PolicyDialog } from '@/app/policy-dialog'
 import { ToolListFields } from '@/app/tool-list-fields'
-import { ApiError, api, type Endpoint, type Group, type Upstream, type VirtualKey } from '@/lib/api'
+import { ApiError, api, type Endpoint, type Group, type PolicyView, type Upstream, type VirtualKey } from '@/lib/api'
 import type { Member } from '@/lib/catalogue'
 import { clientHint, clientLabels, clientSnippet, slugName, type ClientKind, type SnippetServer } from '@/lib/clients'
 import { editErrorMessage } from '@/lib/edit-error'
+import { SLOW_COUNT_SENTENCE } from '@/lib/policy-view'
 import { ABSENT } from '@/lib/placeholder'
 import { useCatalogue } from '@/lib/use-catalogue'
 import {
@@ -124,6 +126,13 @@ export default function VirtualKeysPage() {
   const [client, setClient] = useState<ClientKind>('claude-code')
   const [mode, setMode] = useState<ConnectionMode>('aggregate')
   const [form, setForm] = useState<KeyForm>(blankVirtualKeyForm)
+  // The Policy dialog (PORM-209). One dialog serves every row, so policySeq
+  // tells an answer which open it belongs to: a slow answer for row A must not
+  // land in the dialog after it was reopened on row B, or after it closed.
+  const [policyKey, setPolicyKey] = useState<VirtualKey | null>(null)
+  const [policy, setPolicy] = useState<PolicyView | null>(null)
+  const [policyError, setPolicyError] = useState('')
+  const policySeq = useRef(0)
 
   function load() {
     Promise.all([
@@ -140,6 +149,31 @@ export default function VirtualKeysPage() {
   }
 
   useEffect(load, [])
+
+  function openPolicy(vk: VirtualKey) {
+    const mine = ++policySeq.current
+    setPolicyKey(vk)
+    setPolicy(null)
+    setPolicyError('')
+    api<PolicyView>(`/virtual-keys/${vk.id}/policy`)
+      .then((v) => {
+        if (policySeq.current === mine) setPolicy(v)
+      })
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && err.status === 404) load()
+        if (policySeq.current !== mine) return
+        setPolicyError(
+          err instanceof ApiError && err.status === 503 ? SLOW_COUNT_SENTENCE : editErrorMessage(err, 'virtual key', 'load'),
+        )
+      })
+  }
+
+  function closePolicy() {
+    policySeq.current++
+    setPolicyKey(null)
+    setPolicy(null)
+    setPolicyError('')
+  }
 
 
   useEffect(() => {
@@ -436,6 +470,9 @@ export default function VirtualKeysPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <span className="inline-flex gap-2">
+                      <Button type="button" plain onClick={() => openPolicy(a)}>
+                        Policy
+                      </Button>
                       <Button type="button" plain onClick={() => openEdit(a)}>
                         Edit
                       </Button>
@@ -456,6 +493,8 @@ export default function VirtualKeysPage() {
           </TableBody>
         </Table>
       )}
+
+      <PolicyDialog keyName={policyKey?.name ?? null} view={policy} error={policyError} onClose={closePolicy} />
 
       <Dialog open={open} onClose={close} size="2xl">
         <form onSubmit={submit}>

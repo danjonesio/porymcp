@@ -94,8 +94,18 @@ function RuleList({
  * of the three. Its entries are stored text, drawn as the Tools panel draws a
  * reported name.
  */
-function GroupFilterBlock({ group }: { group: Group }) {
-  const s = groupFilterSummary(group)
+export function GroupFilterBlock({
+  group,
+  listsAbove,
+  malformed,
+}: {
+  group: Pick<Group, 'name' | 'tool_filter'>
+  /** The Policy dialog draws the key's lists first (groupFilterSummary). */
+  listsAbove?: boolean
+  /** The server's verdict that the filter is unreadable, which wins over the browser's parse. */
+  malformed?: boolean
+}) {
+  const s = groupFilterSummary(group, { listsAbove, malformed })
   return (
     <div data-slot="control" className="space-y-3 text-base/6 sm:text-sm/6">
       {s.tone === 'pink' ? (
