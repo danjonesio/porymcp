@@ -38,7 +38,7 @@ What each one needs:
 ## Branches and pull requests
 
 - One branch per issue, named after it (`dan/porm-NN-...`), pushed to `origin`, with a pull request against `main`.
-- The three checks `go`, `web` and `docker` must be green. `docker-arm64` runs on every pull request too, and `publish` waits for it. `publish` and `verify` run after a merge and on tags, never on a pull request. How a release is cut is in `docs/13-releasing.md`.
+- The four checks `go`, `web`, `docker` and `docker-arm64` must be green, and `publish` waits for all four. `publish` and `verify` run after a merge and on tags, never on a pull request. How a release is cut is in `docs/13-releasing.md`.
 - Every action in both workflows is pinned to a commit SHA with the release in a comment. Dependabot's monthly `github-actions` lane raises the bumps (`.github/dependabot.yml`). A bump the repository cannot take gets an `ignore` entry in that file, with the failure and the condition for lifting it in a comment beside the entry. A comment ignore on the pull request is kept only in Dependabot's state, where no reader sees it, and covers only what the comment names.
 - Commit messages name the issue in the subject and carry a `Verify:` line with the command that proved the change.
 
