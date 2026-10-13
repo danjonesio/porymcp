@@ -327,6 +327,17 @@
   v0.1 a `tool_filter` only hid tools from the aggregate `tools/list`, so a
   client that already knew a name could still call it; a filter written then
   is enforced now.
+- Every rule that applies to one key is visible in one place (PORM-209): the
+  Policy dialog on the Virtual keys page, and `GET
+  /api/v1/virtual-keys/{id}/policy` behind it, show the key's deny and allow
+  lists, its group's filter, its allowed methods and the two egress switches
+  (`UPSTREAM_ALLOW_LOOPBACK`, `UPSTREAM_DENY_PRIVATE`), each with the calls it
+  refused in a period. The counts are policy refusals only: an unknown
+  endpoint and a failed authentication stay on the Logs page. The egress count
+  is an upper bound, because an upstream that returns the same sentence as its
+  own error is counted too, and it covers upstream addresses only. An
+  unreadable filter, list or method set is shown as refusing every call,
+  which is what the gate does with it.
 - **A real credential is presented to exactly one host: the host in
   `upstreams.url` (or the egress proxy named by `HTTPS_PROXY`/`HTTP_PROXY`, in
   either case, if the deployment sets one); the proxy never follows a

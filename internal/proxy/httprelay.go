@@ -468,12 +468,12 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, memberPath bool)
 	// this door: they judge tool names, and a relayed request has none.
 	if vk.MethodsMalformed {
 		size := writePlainError(w, http.StatusForbidden, requestID, "method not allowed by virtual key")
-		h.finish(vk, requestID, verb, tool, up.ID, models.StatusBlocked, "blocked: virtual key http_methods could not be decoded", start, size, nil)
+		h.finish(vk, requestID, verb, tool, up.ID, models.StatusBlocked, reasonInvalidKeyMethods, start, size, nil)
 		return
 	}
 	if len(vk.HTTPMethods) > 0 && !slices.Contains(vk.HTTPMethods, verb) {
 		size := writePlainError(w, http.StatusForbidden, requestID, "method not allowed by virtual key")
-		h.finish(vk, requestID, verb, tool, up.ID, models.StatusBlocked, "blocked by virtual key http_methods", start, size, nil)
+		h.finish(vk, requestID, verb, tool, up.ID, models.StatusBlocked, reasonKeyMethods, start, size, nil)
 		return
 	}
 

@@ -734,6 +734,7 @@ clears on `""` or `null`; `upstream_ids` and `tool_filter` clear on `null`.
 - `GET    /virtual-keys`
 - `GET    /virtual-keys/{id}`
 - `PATCH  /virtual-keys/{id}`
+- `GET    /virtual-keys/{id}/policy`: the key's rules and what they refused (see Policy)
 - `POST   /virtual-keys/{id}/rotate`: new key returned once
 - `POST   /virtual-keys/{id}/revoke`
 - `DELETE /virtual-keys/{id}`
@@ -948,6 +949,90 @@ untouched; send a rewritten `tool_allowlist` with the same request to move and
 fix in one call. The denylist is never refused for a move: an operator who
 writes "never `delete_repo`, anywhere" wants precisely the entry that survives
 one, and forcing a rewrite on every retarget would only teach them to empty it.
+
+### Policy
+
+`GET /virtual-keys/{id}/policy?since=&until=` (PORM-209) answers, read only,
+every rule that applies to one key and how many calls each refused in a
+period. The dashboard's Policy dialog on the Virtual keys page reads it.
+
+```
+curl -sS -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "$PUBLIC_URL/api/v1/virtual-keys/$ID/policy" | jq '.order, .blocked.by_rule'
+```
+
+```json
+{
+  "virtual_key_id": "77232bc0-dd4a-44d5-8ae7-ef2f679879ec",
+  "status": "active",
+  "target_type": "group",
+  "target_slug": "",
+  "target_kinds": ["mcp", "http"],
+  "order": ["key_denylist", "key_allowlist", "group_tool_filter", "http_methods"],
+  "key_denylist": ["github__delete_repo"],
+  "lists_malformed": false,
+  "group_tool_filter": {
+    "group_id": "5b1f0c7e-2a43-4d8e-9a51-0e6f3c2b7d10",
+    "group_name": "ops",
+    "tool_filter": {"mode": "deny", "prefixes": ["delete_"]},
+    "malformed": false
+  },
+  "http_methods": ["GET", "HEAD"],
+  "http_methods_malformed": false,
+  "egress": {"allow_loopback": false, "deny_private": false},
+  "blocked": {
+    "since": "2026-10-06T05:30:00Z",
+    "until": "2026-10-13T05:30:00Z",
+    "by_rule": {
+      "key_denylist": 12, "key_allowlist": 0, "key_lists_unreadable": 0,
+      "group_tool_filter": 3, "group_tool_filter_unreadable": 0,
+      "http_methods": 0, "http_methods_unreadable": 0
+    },
+    "upstream_address_denied": 1,
+    "upstream_address_denied_by_class": {
+      "metadata": 0, "loopback": 1, "unspecified": 0,
+      "multicast": 0, "link-local": 0, "private": 0
+    }
+  }
+}
+```
+
+- **Period.** `since` and `until` parse as on `GET /logs`, with the same
+  `400 {"error":"invalid since"}` and `{"error":"invalid until"}`. `until`
+  defaults to now and `since` to seven days before `until`, both inclusive.
+  A period longer than 90 days is `400 {"error":"period longer than 90
+  days"}`; a `since` after `until` is an empty period and every count is
+  zero. The answer echoes the bounds it used.
+- **Order.** `order` is the four sections in the order the proxy consults
+  them. The three tool sections apply on the `/mcp` endpoints and
+  `http_methods` on the `/api/` endpoint. An unreadable group filter or key
+  list is checked before all of them and refuses every call.
+- **Lists.** `key_denylist`, `key_allowlist`, `lists_malformed` and
+  `http_methods_malformed` are the same values `GET /virtual-keys/{id}`
+  answers: a list is absent when empty or when it could not be decoded. The
+  two flags are always present here.
+- **Target.** `target_kinds` is the kinds of every member of the target,
+  enabled or not, as the Edit dialog reads them. It is `[]` both for a target
+  that no longer exists and for a group with no members; `group_tool_filter`
+  is `null` only in the first case. `http_methods` is `null`
+  when that has no `http`, and `[]` means every method only when
+  `http_methods_malformed` is false. `group_tool_filter` is `null` for an
+  upstream target and for a group that no longer exists; otherwise its
+  `tool_filter` is the stored value when it is a JSON object, and `malformed` is the proxy's own
+  verdict, which wins over whatever `tool_filter` reads as. `target_slug` is
+  the upstream's slug for an upstream target and `""` otherwise.
+- **Counts.** `by_rule` has every id, zero included. It is per step, not per
+  current entry: a call refused by an entry that has since been removed still
+  counts. It counts policy refusals only; a routing refusal (an unknown
+  endpoint) and an authentication failure stay on the Logs page.
+  `upstream_address_denied` is the egress guard's refusals by class, which
+  the proxy records with `status = "error"`. It is an upper bound: an
+  upstream that answers with one of the same six sentences as its own error
+  is counted too. It covers upstream addresses only; an OAuth token call the
+  guard refuses is not counted.
+- **Cost.** The count reads every row the key wrote in the period. It runs
+  under a five-second deadline, past which the answer is
+  `503 {"error":"policy counts took too long"}`.
 
 ## Logs
 - `GET /logs?virtual_key_id=&since=&until=&method=&tool=&status=&limit=&cursor=`

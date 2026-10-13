@@ -4,6 +4,18 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### See a virtual key's rules and what they refused in one view (PORM-209)
+
+- **`GET /api/v1/virtual-keys/{id}/policy`.** A new read-only admin route
+  answers every rule that applies to one key, in the order the proxy consults
+  them, with the calls each refused in a period (seven days by default, 90 at
+  most). It also answers the two egress switches, which no route reported
+  before. See docs/03-api.md, Policy.
+- **A Policy action on the Virtual keys table** opens the same view as a
+  dialog. Nothing in it can be edited.
+- **The relay door's two `http_methods` reasons are now constants** beside the
+  other policy reasons. The sentences written to audit rows are unchanged.
+
 ### Upstreams created at the same time with one name each get their own slug (PORM-67)
 
 - **A burst of creates with no `slug` answers `201` for each.** When several

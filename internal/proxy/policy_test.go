@@ -2,6 +2,12 @@ package proxy
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/danjonesio/porymcp/internal/models"
@@ -237,5 +243,94 @@ func TestToolPolicyKeyListsOnly(t *testing.T) {
 	}
 	if !literal.permits("search") {
 		t.Error(`the entry "docs__search" reached a prompt called "search"`)
+	}
+}
+
+// The policy view counts refusals by the sentence the gate wrote, so a reason
+// the view does not know is a count that silently reads zero. This reads the
+// package's own source rather than a hand-kept list: a new reason* constant,
+// or a "blocked ..." sentence written inline at a call site (as the relay's
+// two once were), fails here until PolicyRules names it.
+func TestPolicyRulesCoverReasons(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := map[string]bool{}
+	for _, r := range PolicyRules() {
+		counted[r.Reason] = true
+	}
+	consts := map[string]string{}
+	for _, pkg := range pkgs {
+		for _, f := range pkg.Files {
+			inConst := map[ast.Node]bool{}
+			for _, d := range f.Decls {
+				gd, ok := d.(*ast.GenDecl)
+				if !ok || gd.Tok != token.CONST {
+					continue
+				}
+				inConst[gd] = true
+				for _, spec := range gd.Specs {
+					vs := spec.(*ast.ValueSpec)
+					for i, name := range vs.Names {
+						if !strings.HasPrefix(name.Name, "reason") || i >= len(vs.Values) {
+							continue
+						}
+						if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							v, _ := strconv.Unquote(lit.Value)
+							consts[name.Name] = v
+						}
+					}
+				}
+			}
+			// A blocked sentence spelled outside a const block.
+			ast.Inspect(f, func(n ast.Node) bool {
+				if inConst[n] {
+					return false
+				}
+				lit, ok := n.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return true
+				}
+				v, _ := strconv.Unquote(lit.Value)
+				if strings.HasPrefix(v, "blocked by ") || strings.HasPrefix(v, "blocked: ") {
+					t.Errorf("%s: blocked reason %q is a literal; make it a reason* constant in policy.go", fset.Position(lit.Pos()), v)
+				}
+				return true
+			})
+		}
+	}
+	if len(consts) == 0 {
+		t.Fatal("found no reason* constants; the parse is looking in the wrong place")
+	}
+	for name, v := range consts {
+		if name == "reasonUnknownIdentity" {
+			continue
+		}
+		if !counted[v] {
+			t.Errorf("%s (%q) is not in PolicyRules, so the policy view would never count it", name, v)
+		}
+	}
+	sections := map[string]bool{}
+	for _, s := range PolicyOrder() {
+		sections[s] = true
+	}
+	ids := map[string]bool{}
+	for _, r := range PolicyRules() {
+		if !sections[r.Section] {
+			t.Errorf("rule %s names section %q, which is not in PolicyOrder", r.ID, r.Section)
+		}
+		if ids[r.ID] {
+			t.Errorf("rule id %s appears twice", r.ID)
+		}
+		ids[r.ID] = true
+	}
+	order := PolicyOrder()
+	order[0] = "changed"
+	if PolicyOrder()[0] == "changed" {
+		t.Error("PolicyOrder hands out its own slice")
 	}
 }

@@ -408,3 +408,21 @@ func TestGuardThroughTransportFallsBack(t *testing.T) {
 		t.Fatalf("took %v; the first candidate kept more than its share of the %v budget", took, dialBudget)
 	}
 }
+
+// The policy view matches these sentences whole against audit rows, so they
+// must be exactly what a refusal's Error() writes, one per class.
+func TestDeniedSentences(t *testing.T) {
+	classes := DeniedClasses()
+	sentences := DeniedSentences()
+	if len(classes) != 6 || len(sentences) != 6 {
+		t.Fatalf("got %d classes and %d sentences, want 6 of each", len(classes), len(sentences))
+	}
+	for i, c := range classes {
+		if want := (Denied{Class: c}).Error(); sentences[i] != want {
+			t.Errorf("sentence %d = %q, want %q", i, sentences[i], want)
+		}
+	}
+	if sentences[1] != "upstream address denied: loopback" {
+		t.Errorf("loopback sentence = %q", sentences[1])
+	}
+}

@@ -1,4 +1,5 @@
 import type { AdminEvent } from './api'
+import { plural } from './plural.ts'
 
 /**
  * The verb for each action, in the words the product's own buttons use ("Add
@@ -62,10 +63,6 @@ function label(field: string): string {
 
 function strings(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
-}
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`
 }
 
 /**

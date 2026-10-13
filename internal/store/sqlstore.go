@@ -2255,6 +2255,54 @@ func (s *SQLStore) GetAuditLog(ctx context.Context, id string) (*models.AuditLog
 	return e, err
 }
 
+// CountBlockedByReason reads every row the key wrote in the period through
+// audit_logs_virtual_key, so its cost grows with the key's traffic, not with
+// its refusals; the caller bounds the period. Every value is bound: q()
+// rewrites each ? for pgx, including one that would sit inside a literal.
+func (s *SQLStore) CountBlockedByReason(ctx context.Context, keyID string, since, until time.Time, blocked, errored []string) (models.RefusalCounts, error) {
+	out := models.RefusalCounts{Blocked: map[string]int{}, Errored: map[string]int{}}
+	var alts []string
+	args := []any{keyID, fmtTime(since), fmtTime(until)}
+	// An empty IN () is a syntax error, so a status with no messages drops
+	// out of the OR, and with neither there is nothing to count.
+	for _, part := range []struct {
+		status string
+		msgs   []string
+	}{{models.StatusBlocked, blocked}, {models.StatusError, errored}} {
+		if len(part.msgs) == 0 {
+			continue
+		}
+		alts = append(alts, "(status = ? AND error_message IN ("+strings.TrimSuffix(strings.Repeat("?, ", len(part.msgs)), ", ")+"))")
+		args = append(args, part.status)
+		for _, m := range part.msgs {
+			args = append(args, m)
+		}
+	}
+	if len(alts) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT status, error_message, COUNT(*) FROM audit_logs
+		WHERE virtual_key_id = ? AND timestamp >= ? AND timestamp <= ? AND (`+strings.Join(alts, " OR ")+`)
+		GROUP BY status, error_message`), args...)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status, msg string
+		var n int64
+		if err := rows.Scan(&status, &msg, &n); err != nil {
+			return out, err
+		}
+		if status == models.StatusBlocked {
+			out.Blocked[msg] = int(n)
+		} else {
+			out.Errored[msg] = int(n)
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLStore) ListAuditLogs(ctx context.Context, f models.LogFilter) ([]models.AuditLog, string, error) {
 	if f.Limit <= 0 || f.Limit > 200 {
 		f.Limit = 50

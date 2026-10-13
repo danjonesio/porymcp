@@ -105,6 +105,18 @@ export function prefixMatchNote(prefix: string, c: Catalogue): string {
 /** How many of a group's entries the key dialog lists before it counts the rest. */
 const GROUP_ENTRIES_SHOWN = 12
 
+export type GroupFilterSummaryOptions = {
+  /** The key's lists are drawn before the group's filter, as in the Policy dialog, not after it as in the key dialog. */
+  listsAbove?: boolean
+  /**
+   * The server's verdict that the stored filter is unreadable (the policy
+   * view's group_tool_filter.malformed). It wins over the browser's own parse:
+   * a stored value that is not JSON reaches the browser as no filter at all,
+   * while the proxy refuses every tool on the group.
+   */
+  malformed?: boolean
+}
+
 export type GroupFilterSummary = {
   /** pink when the group blocks every tool whatever the key says. */
   tone: 'zinc' | 'pink'
@@ -121,10 +133,13 @@ export type GroupFilterSummary = {
  * lists, and it can only take tools away, so the key dialog is where an operator
  * needs to see it. The verdict is parseToolFilter's, which is the proxy's.
  */
-export function groupFilterSummary(group: Pick<Group, 'name' | 'tool_filter'>): GroupFilterSummary {
+export function groupFilterSummary(
+  group: Pick<Group, 'name' | 'tool_filter'>,
+  opts: GroupFilterSummaryOptions = {},
+): GroupFilterSummary {
   const stored = parseToolFilter(group.tool_filter)
   const where = 'It is edited on the Groups page.'
-  if (stored.kind === 'unreadable') {
+  if (opts.malformed || stored.kind === 'unreadable') {
     return {
       tone: 'pink',
       sentence: `The group ${group.name} has a filter that cannot be read, so every tool on it is blocked whatever this key allows. Replace it on the Groups page.`,
@@ -136,7 +151,9 @@ export function groupFilterSummary(group: Pick<Group, 'name' | 'tool_filter'>): 
   if (stored.kind === 'none') {
     return {
       tone: 'zinc',
-      sentence: `The group ${group.name} has no filter, so the two lists below are the only rules on this key.`,
+      sentence: opts.listsAbove
+        ? `The group ${group.name} has no filter, so the key's two lists above are the only rules on this key.`
+        : `The group ${group.name} has no filter, so the two lists below are the only rules on this key.`,
       tools: [],
       prefixes: [],
       more: 0,

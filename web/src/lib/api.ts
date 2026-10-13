@@ -266,6 +266,48 @@ export type VirtualKey = {
   endpoints: Endpoint[]
 }
 
+/**
+ * GET /virtual-keys/{id}/policy (PORM-209): every rule that applies to one key
+ * and the calls each refused in a period. Read only.
+ */
+export type PolicyView = {
+  virtual_key_id: string
+  status: string
+  target_type: string
+  /** The upstream's slug for an upstream target; '' for a group, and for an upstream that is gone. */
+  target_slug: string
+  /** Every member's kind, enabled or not, 'mcp' before 'http'. [] when the target is gone. */
+  target_kinds: string[]
+  /** The four section ids in the order the proxy consults them. */
+  order: string[]
+  /** Absent when empty or unreadable, as on GET /virtual-keys/{id}. */
+  key_denylist?: string[]
+  key_allowlist?: string[]
+  lists_malformed: boolean
+  /** null for an upstream target, and for a group that is gone. */
+  group_tool_filter: {
+    group_id: string
+    group_name: string
+    /** The stored filter; absent when the group has none or the stored value is not JSON. */
+    tool_filter?: unknown
+    /** The proxy's verdict, which wins over whatever tool_filter reads as. */
+    malformed: boolean
+  } | null
+  /** null when the target has no HTTP API member; [] means every method unless http_methods_malformed. */
+  http_methods: string[] | null
+  http_methods_malformed: boolean
+  egress: { allow_loopback: boolean; deny_private: boolean }
+  blocked: {
+    since: string
+    until: string
+    /** Every rule id, zero included. */
+    by_rule: Record<string, number>
+    upstream_address_denied: number
+    /** All six classes, zero included. */
+    upstream_address_denied_by_class: Record<string, number>
+  }
+}
+
 export type AuditLog = {
   id: string
   timestamp: string

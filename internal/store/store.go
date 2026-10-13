@@ -91,6 +91,11 @@ type Store interface {
 
 	InsertAuditLog(ctx context.Context, e *models.AuditLog) error
 	ListAuditLogs(ctx context.Context, f models.LogFilter) (logs []models.AuditLog, next string, err error)
+	// CountBlockedByReason counts one key's audit rows in [since, until] whose
+	// error_message is one of blocked (status blocked) or one of errored
+	// (status error). Both lists are closed sets the caller names, so a
+	// client-chosen message can never become a key in the result.
+	CountBlockedByReason(ctx context.Context, keyID string, since, until time.Time, blocked, errored []string) (models.RefusalCounts, error)
 	GetAuditLog(ctx context.Context, id string) (*models.AuditLog, error)
 
 	// InsertAdminEvent writes one management-plane event. It is a separate

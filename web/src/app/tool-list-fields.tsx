@@ -22,7 +22,7 @@ import {
   groupFilterSummary,
 } from '@/lib/rule-conflicts'
 import { addToolHint, toggleEntry } from '@/lib/tool-filter'
-import type { KeyForm } from '@/lib/virtual-key-form'
+import { LISTS_UNREADABLE_SENTENCE, type KeyForm } from '@/lib/virtual-key-form'
 import { useState } from 'react'
 
 export type ToolListFieldsProps = {
@@ -94,8 +94,18 @@ function RuleList({
  * of the three. Its entries are stored text, drawn as the Tools panel draws a
  * reported name.
  */
-function GroupFilterBlock({ group }: { group: Group }) {
-  const s = groupFilterSummary(group)
+export function GroupFilterBlock({
+  group,
+  listsAbove,
+  malformed,
+}: {
+  group: Pick<Group, 'name' | 'tool_filter'>
+  /** The Policy dialog draws the key's lists first (groupFilterSummary). */
+  listsAbove?: boolean
+  /** The server's verdict that the filter is unreadable, which wins over the browser's parse. */
+  malformed?: boolean
+}) {
+  const s = groupFilterSummary(group, { listsAbove, malformed })
   return (
     <div data-slot="control" className="space-y-3 text-base/6 sm:text-sm/6">
       {s.tone === 'pink' ? (
@@ -151,7 +161,7 @@ export function ToolListFields({
       <Fieldset>
         <Legend>Tool rules</Legend>
         <p role="status" className={errorLine}>
-          This key&apos;s stored tool rules cannot be read, so every call on it is refused.
+          {LISTS_UNREADABLE_SENTENCE}
         </p>
         <div data-slot="control" className="space-y-3">
           <Text>Saving other changes leaves them as they are.</Text>

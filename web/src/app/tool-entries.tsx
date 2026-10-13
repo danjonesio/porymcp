@@ -11,7 +11,7 @@ import { useRef, useState } from 'react'
 export type EntryRow = { text: string; kind: 'tool' | 'prefix'; badge: string; note: string }
 
 // Pink is broken, amber is held (docs/06-ui.md): an allow entry the deny list overrules is held.
-const BADGE_TONE: Record<string, BadgeColor> = {
+export const BADGE_TONE: Record<string, BadgeColor> = {
   'Cannot be saved': 'pink',
   'Also denied': 'amber',
   'Not advertised': 'amber',

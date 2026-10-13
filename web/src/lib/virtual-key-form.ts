@@ -1,6 +1,13 @@
 import type { VirtualKey } from './api.ts'
 import { listProblem, sameEntries } from './tool-filter.ts'
 
+/** The Edit dialog's and the Policy dialog's sentence for a key whose stored tool lists cannot be read. */
+export const LISTS_UNREADABLE_SENTENCE = "This key's stored tool rules cannot be read, so every call on it is refused."
+
+/** The same for a key whose stored http_methods cannot be read. */
+export const METHODS_UNREADABLE_SENTENCE =
+  "This key's allowed methods cannot be read, so every request on its /api/ endpoint is refused."
+
 /**
  * The Create and Edit virtual key dialogs share one form shape. Everything that
  * turns it into a request body lives here so `node --test` can reach it.

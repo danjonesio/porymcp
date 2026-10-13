@@ -1,4 +1,5 @@
-import { createUpstream, waitForRow } from './api.ts'
+import { blockedLine, listEmptySentence } from '../src/lib/policy-view.ts'
+import { createKey, createUpstream, waitForRow } from './api.ts'
 import { alertTitled, expect, rowNamed, STUB_URL, test } from './fixtures.ts'
 
 test.skip(() => !STUB_URL, 'STUB_URL is not set')
@@ -104,4 +105,47 @@ test('the plaintext shows in the secret dialog and is gone after Done and a relo
   await keyRow.getByRole('button', { name: 'Delete', exact: true }).click()
   await alertTitled(page, 'Delete this virtual key?').getByRole('button', { name: 'Delete', exact: true }).click()
   await expect(rowNamed(page, keyName)).toHaveCount(0)
+})
+
+// PORM-209: the Policy dialog shows the key's rules and never its secret.
+test("the Policy dialog shows a key's rules in order and no secret", async ({ page, prefix, created }) => {
+  const mcp = `${prefix} pol mcp`
+  const keyName = `${prefix} pol key`
+  const u = await createUpstream({
+    name: mcp,
+    kind: 'mcp',
+    url: `${STUB_URL}/mcp`,
+    transport: 'streamable-http',
+    auth_type: 'none',
+    auth_config: {},
+  })
+  created.upstreams.push(u.id)
+  const k = await createKey({ name: keyName, target_type: 'upstream', target_id: u.id, tool_denylist: ['delete_repo'] })
+  created.keys.push(k.id)
+  const plaintext = k.api_key ?? ''
+  expect(plaintext, 'create answered a plaintext key').not.toBe('')
+
+  await page.goto('/virtual-keys/')
+  await rowNamed(page, keyName).getByRole('button', { name: 'Policy', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Policy', exact: true })).toBeVisible()
+  const dialog = page.locator('[role="dialog"]', { has: page.getByRole('heading', { name: 'Policy', exact: true }) })
+  await expect(dialog.getByRole('heading', { name: 'Outbound connections', exact: true })).toBeVisible()
+
+  const blocks = await dialog.locator('h3').allTextContents()
+  expect(blocks, 'the blocks in order; a single MCP upstream has no HTTP API door').toEqual([
+    'MCP endpoints',
+    'Outbound connections',
+  ])
+  const rules = await dialog.locator('h4').allTextContents()
+  expect(rules.slice(0, 2)).toEqual(['Deny list', 'Allow list'])
+  await expect(dialog.getByRole('list', { name: 'Tools this key denies', exact: true })).toContainText('delete_repo')
+  await expect(dialog.getByText(listEmptySentence('allow'), { exact: true })).toBeVisible()
+  await expect(dialog.getByText(blockedLine(0), { exact: true }).first()).toBeVisible()
+
+  const text = (await dialog.textContent()) ?? ''
+  expect(text.includes(plaintext), 'the dialog never shows the plaintext key').toBe(false)
+  expect(text.includes('pory_'), 'the dialog shows no key form at all').toBe(false)
+
+  await page.getByRole('button', { name: 'Close', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Policy', exact: true })).toBeHidden()
 })

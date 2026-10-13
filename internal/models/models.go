@@ -339,6 +339,15 @@ type Stats struct {
 	BlockedToday      int     `json:"blocked_today"`
 }
 
+// RefusalCounts is a per-key count of audit rows by error_message, split by
+// status. It backs the policy view (GET /virtual-keys/{id}/policy): Blocked
+// holds the policy refusals, Errored the egress guard's refusals, which the
+// proxy records as errors. Neither map is ever nil.
+type RefusalCounts struct {
+	Blocked map[string]int
+	Errored map[string]int
+}
+
 // LogFilter is used by the queryable logs API.
 type LogFilter struct {
 	VirtualKeyID string

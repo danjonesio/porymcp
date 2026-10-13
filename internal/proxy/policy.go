@@ -27,7 +27,58 @@ const (
 	// Its own reason, not reasonInvalidFilter: this one tells the operator to
 	// look at the key, and the group's filter may be perfectly fine.
 	reasonInvalidKeyLists = "blocked: virtual key tool lists could not be decoded"
+	// The relay door's two reasons (httprelay.go). They live here with the
+	// rest so that PolicyRules can count them from the same constant the
+	// door writes.
+	reasonKeyMethods        = "blocked by virtual key http_methods"
+	reasonInvalidKeyMethods = "blocked: virtual key http_methods could not be decoded"
 )
+
+// PolicyRule is one reason the gate writes, named for the policy view
+// (GET /virtual-keys/{id}/policy). ID is the stable key the view counts under,
+// so a reworded sentence does not change the API; Section is the step of
+// PolicyOrder the count is shown beside.
+type PolicyRule struct {
+	ID      string
+	Section string
+	Reason  string
+}
+
+// policySections is the order the proxy consults a key's rules in, as the
+// view shows them. The three tool steps run on /mcp doors and http_methods on
+// the /api/ door; the two unreadable checks run before all of them and are
+// counted inside their own section (policyRules).
+var policySections = []string{"key_denylist", "key_allowlist", "group_tool_filter", "http_methods"}
+
+// policyRules is every reason the view counts. reasonUnknownIdentity is left
+// out on purpose: serve refuses such a name before the policy is asked, so no
+// row should carry it (TestPolicyRulesCoverReasons holds that exception).
+var policyRules = []PolicyRule{
+	{ID: "key_denylist", Section: "key_denylist", Reason: reasonKeyDenylist},
+	{ID: "key_allowlist", Section: "key_allowlist", Reason: reasonKeyAllowlist},
+	{ID: "key_lists_unreadable", Section: "key_denylist", Reason: reasonInvalidKeyLists},
+	{ID: "group_tool_filter", Section: "group_tool_filter", Reason: reasonGroupFilter},
+	{ID: "group_tool_filter_unreadable", Section: "group_tool_filter", Reason: reasonInvalidFilter},
+	{ID: "http_methods", Section: "http_methods", Reason: reasonKeyMethods},
+	{ID: "http_methods_unreadable", Section: "http_methods", Reason: reasonInvalidKeyMethods},
+}
+
+// PolicyOrder returns the view's section ids in the order the proxy consults
+// them. The slice is a copy.
+func PolicyOrder() []string { return append([]string(nil), policySections...) }
+
+// PolicyRules returns every counted rule. The slice is a copy.
+func PolicyRules() []PolicyRule { return append([]PolicyRule(nil), policyRules...) }
+
+// PolicyReasons returns the sentence of every counted rule, the closed list a
+// count over audit_logs is restricted to.
+func PolicyReasons() []string {
+	out := make([]string, len(policyRules))
+	for i, r := range policyRules {
+		out[i] = r.Reason
+	}
+	return out
+}
 
 // identityMode says how the name a client used is turned into the tool
 // identity (the member's slug and the tool's own name) that a rule entry is
