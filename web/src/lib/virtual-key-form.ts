@@ -10,6 +10,13 @@ import { listProblem, sameEntries } from './tool-filter.ts'
  * rest of that dialog. Bodies are built from named keys and never by spreading
  * a row, so a response's one-time `api_key` cannot travel back.
  */
+/** The Edit dialog's and the Policy dialog's sentence for a key whose stored tool lists cannot be read. */
+export const LISTS_UNREADABLE_SENTENCE = "This key's stored tool rules cannot be read, so every call on it is refused."
+
+/** The same for a key whose stored http_methods cannot be read. */
+export const METHODS_UNREADABLE_SENTENCE =
+  "This key's allowed methods cannot be read, so every request on its /api/ endpoint is refused."
+
 export type KeyForm = {
   name: string
   /** Create only. */

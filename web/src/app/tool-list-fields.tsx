@@ -22,7 +22,7 @@ import {
   groupFilterSummary,
 } from '@/lib/rule-conflicts'
 import { addToolHint, toggleEntry } from '@/lib/tool-filter'
-import type { KeyForm } from '@/lib/virtual-key-form'
+import { LISTS_UNREADABLE_SENTENCE, type KeyForm } from '@/lib/virtual-key-form'
 import { useState } from 'react'
 
 export type ToolListFieldsProps = {
@@ -151,7 +151,7 @@ export function ToolListFields({
       <Fieldset>
         <Legend>Tool rules</Legend>
         <p role="status" className={errorLine}>
-          This key&apos;s stored tool rules cannot be read, so every call on it is refused.
+          {LISTS_UNREADABLE_SENTENCE}
         </p>
         <div data-slot="control" className="space-y-3">
           <Text>Saving other changes leaves them as they are.</Text>

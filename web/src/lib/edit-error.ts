@@ -2,10 +2,11 @@ import { ApiError } from './api.ts'
 import { discoveryErrorMessage } from './discovery.ts'
 
 export type EditResource = 'upstream' | 'group' | 'virtual key'
-export type EditAction = 'save' | 'delete'
+/** 'load' is a read a dialog makes on open, such as the Policy dialog's; it maps as a save does. */
+export type EditAction = 'save' | 'delete' | 'load'
 
 /**
- * One sentence for a failed save or delete from the Upstreams, Groups or
+ * One sentence for a failed save, delete or load from the Upstreams, Groups or
  * Virtual keys page.
  *
  * 404: the row went away while the dialog was open; the caller reloads the

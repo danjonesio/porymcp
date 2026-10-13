@@ -5,7 +5,7 @@ import { Checkbox, CheckboxField, CheckboxGroup } from '@/components/checkbox'
 import { Fieldset, Label, Legend } from '@/components/fieldset'
 import { errorLine } from '@/components/primitives'
 import { Text } from '@/components/text'
-import { HTTP_METHODS, type KeyForm } from '@/lib/virtual-key-form'
+import { HTTP_METHODS, METHODS_UNREADABLE_SENTENCE, type KeyForm } from '@/lib/virtual-key-form'
 
 export type HttpMethodsFieldsProps = {
   form: KeyForm
@@ -31,7 +31,7 @@ export function HttpMethodsFields({ form, onChange, groupTarget, unreadable }: H
       <Fieldset>
         <Legend>Allowed methods</Legend>
         <p role="status" className={errorLine}>
-          This key&apos;s allowed methods cannot be read, so every request on its /api/ endpoint is refused.
+          {METHODS_UNREADABLE_SENTENCE}
         </p>
         <div data-slot="control" className="space-y-3">
           <Text>Saving other changes leaves them as they are.</Text>
