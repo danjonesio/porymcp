@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,7 +55,7 @@ type policyGroup struct {
 	GroupID   string `json:"group_id"`
 	GroupName string `json:"group_name"`
 	// The stored filter, raw, as GET /groups/{id} returns it. Absent when the
-	// group has none, and when the stored bytes are not JSON at all, so the
+	// group has none, and when the stored value is not a JSON object, so the
 	// encoder can never fail halfway through the answer.
 	ToolFilter json.RawMessage `json:"tool_filter,omitempty"`
 	// Malformed is the proxy's own verdict (models.ValidateToolFilter): the
@@ -211,7 +212,9 @@ func (s *Server) policyTarget(ctx context.Context, ix *endpointIndex, vk *models
 		pg := &policyGroup{GroupID: g.ID, GroupName: g.Name}
 		if len(g.ToolFilter) > 0 {
 			pg.Malformed = models.ValidateToolFilter(g.ToolFilter) != nil
-			if json.Valid(g.ToolFilter) {
+			// Echoed only as the JSON object the schema promises: a stored
+			// array, string or null is malformed (or no filter) and stays out.
+			if t := bytes.TrimSpace(g.ToolFilter); len(t) > 0 && t[0] == '{' && json.Valid(t) {
 				pg.ToolFilter = g.ToolFilter
 			}
 		}

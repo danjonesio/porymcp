@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -215,6 +216,9 @@ func TestPolicyViewMalformedGroupFilter(t *testing.T) {
 	}{
 		{`{"mode":"Deny"}`, true},
 		{`{"mode":"deny"`, false},
+		// Valid JSON that is not an object: malformed, and never echoed under
+		// a field the schema types as an object.
+		{`["deny"]`, false},
 	} {
 		if _, err := db.Exec(`UPDATE groups SET tool_filter = ? WHERE id = ?`, tc.stored, gid); err != nil {
 			t.Fatal(err)
@@ -248,12 +252,31 @@ func TestPolicyViewTargetGone(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw, v := policyOf(t, h, tc.id, "")
-		if raw["group_tool_filter"] != nil || len(v.TargetKinds) != 0 || raw["target_kinds"] == nil {
-			t.Errorf("%s: group_tool_filter %v target_kinds %v", tc.id, raw["group_tool_filter"], raw["target_kinds"])
+		if g, ok := raw["group_tool_filter"]; !ok || g != nil {
+			t.Errorf("%s: group_tool_filter = %v (present %v), want null", tc.id, g, ok)
+		}
+		if len(v.TargetKinds) != 0 || raw["target_kinds"] == nil {
+			t.Errorf("%s: target_kinds %v, want []", tc.id, raw["target_kinds"])
 		}
 		if v.TargetType != tc.typ {
 			t.Errorf("%s: target_type %q", tc.id, v.TargetType)
 		}
+	}
+}
+
+// TestPolicyViewEmptyGroup: a group that exists with no members answers its
+// filter (not null, which means gone) and no kinds. The dialog tells the two
+// apart by group_tool_filter, so this is the server half of that rule.
+func TestPolicyViewEmptyGroup(t *testing.T) {
+	_, h, _ := testAPI(t)
+	gid := groupWithFilter(t, h, "empty", []string{}, map[string]any{"mode": "deny", "tools": []string{"x__y"}})
+	id := newVirtualKey(t, h, "group", gid, nil)["id"].(string)
+	raw, v := policyOf(t, h, id, "")
+	if v.GroupToolFilter == nil || v.GroupToolFilter.GroupName != "empty" {
+		t.Fatalf("group_tool_filter = %v, want the empty group", raw["group_tool_filter"])
+	}
+	if len(v.TargetKinds) != 0 {
+		t.Errorf("target_kinds = %v, want []", v.TargetKinds)
 	}
 }
 
@@ -276,6 +299,18 @@ func TestPolicyViewPeriod(t *testing.T) {
 	}
 	if first.Blocked.Since != base.Add(-time.Hour).Format(time.RFC3339Nano) || first.Blocked.Until != base.Add(time.Hour).Format(time.RFC3339Nano) {
 		t.Errorf("echoed period %s to %s", first.Blocked.Since, first.Blocked.Until)
+	}
+	// A bound with a fraction and an offset is echoed as the instant used, in
+	// UTC and to the nanosecond, and the fraction still bounds the count: the
+	// row at base is 1 ns inside this until.
+	frac := "?since=" + url.QueryEscape("2026-09-01T13:00:00.0000000015+02:00") + "&until=" + url.QueryEscape("2026-09-01T14:00:00.0000000015+02:00")
+	_, fv := policyOf(t, h, id, frac)
+	// Go truncates a fraction past nine digits, so 1.5 ns reads as 1 ns.
+	if fv.Blocked.Since != "2026-09-01T11:00:00.000000001Z" {
+		t.Errorf("since echoed as %q", fv.Blocked.Since)
+	}
+	if fv.Blocked.Until != "2026-09-01T12:00:00.000000001Z" || fv.Blocked.ByRule["key_denylist"] != 1 {
+		t.Errorf("until echoed as %q, count %d; want 12:00:00.000000001Z and 1", fv.Blocked.Until, fv.Blocked.ByRule["key_denylist"])
 	}
 	// since after until is an empty period, as GET /logs answers it.
 	_, empty := policyOf(t, h, id, q(base.Add(72*time.Hour), base.Add(-time.Hour)))
@@ -350,9 +385,20 @@ func TestPolicyViewNoSecrets(t *testing.T) {
 	}
 }
 
-// TestPolicyViewUnknownKey is S8.
+// countForbidden fails the test if the handler ever counts.
+type countForbidden struct {
+	store.Store
+	t *testing.T
+}
+
+func (s countForbidden) CountBlockedByReason(context.Context, string, time.Time, time.Time, []string, []string) (models.RefusalCounts, error) {
+	s.t.Error("CountBlockedByReason ran for a key that does not exist")
+	return models.RefusalCounts{}, nil
+}
+
+// TestPolicyViewUnknownKey is S8: an unknown key answers 404 before any count.
 func TestPolicyViewUnknownKey(t *testing.T) {
-	_, h, _ := testAPI(t)
+	_, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return countForbidden{st, t} })
 	rr := doJSON(t, h, http.MethodGet, "/virtual-keys/no-such-key/policy", "test-admin", nil)
 	wantError(t, rr, http.StatusNotFound, "not found")
 }
