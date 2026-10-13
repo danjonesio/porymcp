@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -3177,5 +3178,87 @@ func TestVirtualKeyHTTPMethodsRoundTrip(t *testing.T) {
 	}
 	if raw != "[]" {
 		t.Errorf("nil list updated as %q, want []", raw)
+	}
+}
+
+// TestCountBlockedByReason is PORM-209 security requirement S3 and the
+// period half of S7: the count is per key, both bounds are inclusive, and only
+// the named messages under their own status are counted. The decoys are rows a
+// key holder or an upstream can write: a client-chosen slug in an unknown
+// endpoint refusal, an egress sentence with a tail, and each list's sentence
+// under the other status.
+func TestCountBlockedByReason(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	const deny = "blocked by virtual key denylist"
+	const group = "blocked by group tool_filter"
+	const loopback = "upstream address denied: loopback"
+	blocked := []string{deny, group}
+	errored := []string{loopback}
+	since := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	mid := since.Add(48 * time.Hour)
+	n := 0
+	put := func(key, status, msg string, ts time.Time) {
+		t.Helper()
+		n++
+		e := auditRow(fmt.Sprintf("r%02d", n), ts)
+		e.VirtualKeyID, e.Status, e.ErrorMessage = key, status, msg
+		if err := s.InsertAuditLog(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("A", models.StatusBlocked, deny, mid)
+	put("A", models.StatusBlocked, deny, mid)
+	put("A", models.StatusBlocked, group, mid)
+	put("A", models.StatusError, loopback, mid)
+	put("A", models.StatusError, "upstream returned 500", mid)
+	// Decoys: none of these may be counted.
+	put("A", models.StatusBlocked, "unknown endpoint: a", mid)
+	put("A", models.StatusBlocked, "unknown endpoint: b", mid)
+	put("A", models.StatusError, "upstream address denied: loopbackXYZ", mid)
+	put("A", models.StatusError, deny, mid)
+	put("A", models.StatusBlocked, loopback, mid)
+	// Another key.
+	put("B", models.StatusBlocked, deny, mid)
+	// The edges: on each bound counts, one nanosecond outside does not.
+	put("A", models.StatusBlocked, deny, since)
+	put("A", models.StatusBlocked, deny, until)
+	put("A", models.StatusBlocked, deny, since.Add(-time.Nanosecond))
+	put("A", models.StatusBlocked, deny, until.Add(time.Nanosecond))
+
+	got, err := s.CountBlockedByReason(ctx, "A", since, until, blocked, errored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]int{deny: 4, group: 1}; !reflect.DeepEqual(got.Blocked, want) {
+		t.Errorf("Blocked = %v, want %v", got.Blocked, want)
+	}
+	if want := map[string]int{loopback: 1}; !reflect.DeepEqual(got.Errored, want) {
+		t.Errorf("Errored = %v, want %v", got.Errored, want)
+	}
+
+	// An empty window, and no messages at all, answer empty maps, never nil.
+	empty, err := s.CountBlockedByReason(ctx, "A", until.Add(time.Hour), until.Add(2*time.Hour), blocked, errored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Blocked == nil || empty.Errored == nil || len(empty.Blocked)+len(empty.Errored) != 0 {
+		t.Errorf("empty window = %+v, want two empty maps", empty)
+	}
+	none, err := s.CountBlockedByReason(ctx, "A", since, until, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.Blocked == nil || none.Errored == nil || len(none.Blocked)+len(none.Errored) != 0 {
+		t.Errorf("no messages = %+v, want two empty maps", none)
+	}
+	// One list alone still counts.
+	onlyErr, err := s.CountBlockedByReason(ctx, "A", since, until, nil, errored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onlyErr.Blocked) != 0 || onlyErr.Errored[loopback] != 1 {
+		t.Errorf("errored only = %+v", onlyErr)
 	}
 }
