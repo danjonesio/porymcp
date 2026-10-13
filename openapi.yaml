@@ -878,7 +878,7 @@ components:
           description: The upstream's slug for an upstream target; empty for a group, and for an upstream that no longer exists.
         target_kinds:
           type: array
-          description: The kinds of every member of the target, enabled or not, `mcp` before `http`. Empty when the target no longer exists.
+          description: The kinds of every member of the target, enabled or not, `mcp` before `http`. Empty when the target no longer exists and when a group has no members; `group_tool_filter` (null only when the group is gone) and `target_slug` tell those apart.
           items:
             type: string
             enum: [mcp, http]
@@ -916,7 +916,7 @@ components:
               type: string
             tool_filter:
               type: object
-              description: The stored filter as GET /groups/{id} returns it. Absent when the group has none, or when the stored value is not JSON.
+              description: The stored filter as GET /groups/{id} returns it. Absent when the group has none, or when the stored value is not a JSON object.
             malformed:
               type: boolean
               description: The proxy's own verdict. True means every tool on the group is refused, whatever `tool_filter` reads as.

@@ -1012,11 +1012,13 @@ curl -sS -H "Authorization: Bearer $ADMIN_API_KEY" \
   answers: a list is absent when empty or when it could not be decoded. The
   two flags are always present here.
 - **Target.** `target_kinds` is the kinds of every member of the target,
-  enabled or not, as the Edit dialog reads them. `http_methods` is `null`
+  enabled or not, as the Edit dialog reads them. It is `[]` both for a target
+  that no longer exists and for a group with no members; `group_tool_filter`
+  is `null` only in the first case. `http_methods` is `null`
   when that has no `http`, and `[]` means every method only when
   `http_methods_malformed` is false. `group_tool_filter` is `null` for an
   upstream target and for a group that no longer exists; otherwise its
-  `tool_filter` is the stored value, and `malformed` is the proxy's own
+  `tool_filter` is the stored value when it is a JSON object, and `malformed` is the proxy's own
   verdict, which wins over whatever `tool_filter` reads as. `target_slug` is
   the upstream's slug for an upstream target and `""` otherwise.
 - **Counts.** `by_rule` has every id, zero included. It is per step, not per

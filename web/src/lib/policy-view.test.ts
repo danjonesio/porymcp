@@ -7,14 +7,17 @@ import {
   alwaysRefusedCount,
   blockedLine,
   egressSentences,
+  emptyGroupSentence,
+  keyListsState,
   listEmptySentence,
   methodsSentence,
   shownForCountsOnly,
   statusLine,
   targetGoneSentence,
+  unreadableLine,
   visibleBlocks,
 } from './policy-view.ts'
-import { allowEntryDeniedBy, groupFilterSummary } from './rule-conflicts.ts'
+import { allowEntryDeniedBy } from './rule-conflicts.ts'
 import { METHODS_UNREADABLE_SENTENCE } from './virtual-key-form.ts'
 
 // Run with: npm test (node --test). PORM-209: the Policy dialog's copy
@@ -75,19 +78,6 @@ test('unreadable methods are refused, not every method allowed (S5)', () => {
   assert.equal(methodsSentence(['GET'], false), null)
 })
 
-test('a group filter the server calls malformed is unreadable even when the browser sees no filter (S5)', () => {
-  const s = groupFilterSummary({ name: 'ops', tool_filter: undefined }, { malformed: true, listsAbove: true })
-  assert.equal(s.tone, 'pink')
-  assert.match(s.sentence, /cannot be read, so every tool on it is blocked/)
-})
-
-test('listsAbove points the no-filter sentence at the lists drawn before it', () => {
-  const above = groupFilterSummary({ name: 'ops', tool_filter: undefined }, { listsAbove: true })
-  assert.equal(above.sentence, "The group ops has no filter, so the key's two lists above are the only rules on this key.")
-  const below = groupFilterSummary({ name: 'ops', tool_filter: undefined })
-  assert.equal(below.sentence, 'The group ops has no filter, so the two lists below are the only rules on this key.')
-})
-
 test('egress switches read as sentences either way', () => {
   assert.deepEqual(egressSentences({ allow_loopback: false, deny_private: false }), {
     loopback: 'Loopback addresses are refused. Set UPSTREAM_ALLOW_LOOPBACK to allow them.',
@@ -138,4 +128,24 @@ test('an unscoped allow entry on a single-upstream key is marked when the deny l
   const v = view({ key_allowlist: ['create_issue'], key_denylist: ['github__create_issue'] })
   assert.notEqual(allowEntryDeniedBy('create_issue', v.key_denylist ?? [], v.target_slug), '')
   assert.equal(allowEntryDeniedBy('create_issue', v.key_denylist ?? [], ''), '')
+})
+
+test('a group with no members is not a group that is gone', () => {
+  const g = { group_id: 'g1', group_name: 'empty', malformed: false }
+  const v = view({ target_type: 'group', target_slug: '', target_kinds: [], group_tool_filter: g })
+  assert.equal(targetGoneSentence(v), null)
+  assert.equal(emptyGroupSentence(v), 'The group empty has no members, so no call on this key reaches an upstream.')
+  assert.equal(emptyGroupSentence(view({ target_type: 'group', target_slug: '', target_kinds: ['mcp'], group_tool_filter: g })), null)
+  assert.equal(emptyGroupSentence(view({ target_type: 'group', target_slug: '', target_kinds: [] })), null)
+})
+
+test('unreadable key lists replace both lists, whatever the lists read as (S5)', () => {
+  assert.equal(keyListsState(view({ lists_malformed: true, key_denylist: undefined })), 'unreadable')
+  assert.equal(keyListsState(view({ lists_malformed: true, key_allowlist: ['search'] })), 'unreadable')
+  assert.equal(keyListsState(view()), 'lists')
+})
+
+test('refusals made while a rule was unreadable get their own line', () => {
+  assert.equal(unreadableLine(0), null)
+  assert.equal(unreadableLine(5), 'Blocked 5 calls in the last 7 days while the stored value could not be read.')
 })

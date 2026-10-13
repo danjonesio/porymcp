@@ -144,3 +144,17 @@ test('groupBlocks follows the group filter as the proxy reads it', () => {
   assert.equal(groupBlocks({ tool_filter: undefined })('gh', 'search'), false)
   assert.equal(groupBlocks({ tool_filter: { mode: 'Deny' } })('gh', 'search'), true)
 })
+
+// PORM-209: the Policy dialog's two options.
+test('a group filter the server calls malformed is unreadable even when the browser sees no filter (S5)', () => {
+  const s = groupFilterSummary({ name: 'ops', tool_filter: undefined }, { malformed: true, listsAbove: true })
+  assert.equal(s.tone, 'pink')
+  assert.match(s.sentence, /cannot be read, so every tool on it is blocked/)
+})
+
+test('listsAbove points the no-filter sentence at the lists drawn before it', () => {
+  const above = groupFilterSummary({ name: 'ops', tool_filter: undefined }, { listsAbove: true })
+  assert.equal(above.sentence, "The group ops has no filter, so the key's two lists above are the only rules on this key.")
+  const below = groupFilterSummary({ name: 'ops', tool_filter: undefined })
+  assert.equal(below.sentence, 'The group ops has no filter, so the two lists below are the only rules on this key.')
+})

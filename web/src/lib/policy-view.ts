@@ -57,10 +57,39 @@ export const COUNTS_ONLY_NOTE = 'This key has no such endpoint now; the counts a
 export const GROUP_GONE_SENTENCE = 'The group this key targets no longer exists, so every call on it fails.'
 export const UPSTREAM_GONE_SENTENCE = 'The upstream this key targets no longer exists, so every call on it fails.'
 
-/** The line above every block when the key's target is gone, or null. */
+/**
+ * The line above every block when the key's target is gone, or null. Gone is
+ * the target row missing, never an empty target_kinds: a group that exists with
+ * no members has no kinds either, and its rules are still there.
+ */
 export function targetGoneSentence(view: PolicyView): string | null {
-  if (view.target_kinds.length > 0) return null
-  return view.target_type === 'group' ? GROUP_GONE_SENTENCE : UPSTREAM_GONE_SENTENCE
+  if (view.target_type === 'group') return view.group_tool_filter === null ? GROUP_GONE_SENTENCE : null
+  return view.target_slug === '' ? UPSTREAM_GONE_SENTENCE : null
+}
+
+/** The line above every block for a group that exists with no members, or null. */
+export function emptyGroupSentence(view: PolicyView): string | null {
+  const g = view.group_tool_filter
+  if (view.target_type !== 'group' || g === null || view.target_kinds.length > 0) return null
+  return `The group ${g.group_name} has no members, so no call on this key reaches an upstream.`
+}
+
+/**
+ * How the key's two lists are drawn: one pink line in place of both when the
+ * server says they cannot be read (the API does not say which one failed), or
+ * the two lists. The flag wins over the lists, which read as empty.
+ */
+export function keyListsState(view: PolicyView): 'unreadable' | 'lists' {
+  return view.lists_malformed ? 'unreadable' : 'lists'
+}
+
+/**
+ * The second count line under a readable rule that was unreadable earlier in
+ * the period, or null. Kept apart from blockedLine so a rule reading "No
+ * entries" never carries refusals it did not make.
+ */
+export function unreadableLine(n: number): string | null {
+  return n === 0 ? null : `Blocked ${plural(n, 'call')} ${PERIOD_TEXT} while the stored value could not be read.`
 }
 
 /** The sentence for an empty key list. The allow list judges prompts and resources by name too, but tools are the common case. */

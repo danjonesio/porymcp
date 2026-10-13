@@ -15,18 +15,20 @@ import {
   COUNTS_ONLY_NOTE,
   EDITED_RULES_NOTE,
   EVERY_KEY_NOTE,
-  GROUP_GONE_SENTENCE,
   ORDER_NOTE,
   OUTBOUND_LOGS_NOTE,
   alwaysRefusedCount,
   blockedLine,
   egressSentences,
+  emptyGroupSentence,
+  keyListsState,
   listEmptySentence,
   methodsSentence,
   ruleCount,
   shownForCountsOnly,
   statusLine,
   targetGoneSentence,
+  unreadableLine,
   visibleBlocks,
 } from '@/lib/policy-view'
 import { allowEntryDeniedBy } from '@/lib/rule-conflicts'
@@ -77,17 +79,15 @@ export function PolicyDialog({ keyName, view, error, onClose }: PolicyDialogProp
 function PolicyBody({ view }: { view: PolicyView }) {
   const status = statusLine(view.status)
   const gone = targetGoneSentence(view)
+  const empty = emptyGroupSentence(view)
   const blocks = visibleBlocks(view)
   return (
     <div className="space-y-8">
-      {status || gone ? (
+      {status || gone || empty ? (
         <div className="space-y-2">
           {status ? <Text>{status}</Text> : null}
-          {gone ? (
-            <p role="status" className={errorLine}>
-              {gone}
-            </p>
-          ) : null}
+          {gone ? <Pink>{gone}</Pink> : null}
+          {empty ? <Text>{empty}</Text> : null}
         </div>
       ) : null}
       {blocks.includes('mcp') ? <McpBlock view={view} /> : null}
@@ -107,13 +107,29 @@ function Block({ title, children }: { title: string; children: React.ReactNode }
   )
 }
 
-/** One rule inside a block: its name, what it holds, and what it refused. */
-function Rule({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
+/**
+ * One rule inside a block: its name, what it holds, and what it refused.
+ * `unreadable` is what the rule refused while its stored value could not be
+ * read, shown on a line of its own so it is never credited to the entries.
+ */
+function Rule({
+  title,
+  count,
+  unreadable = 0,
+  children,
+}: {
+  title: string
+  count: number
+  unreadable?: number
+  children: React.ReactNode
+}) {
+  const extra = unreadableLine(unreadable)
   return (
     <div className="space-y-3 border-t border-zinc-950/5 pt-4 dark:border-white/5">
       <Subheading level={4}>{title}</Subheading>
       {children}
       <Text className="tabular-nums">{blockedLine(count)}</Text>
+      {extra ? <Text className="tabular-nums">{extra}</Text> : null}
     </div>
   )
 }
@@ -136,16 +152,17 @@ function McpBlock({ view }: { view: PolicyView }) {
     <Block title="MCP endpoints">
       <Text>{ORDER_NOTE}</Text>
       {shownForCountsOnly(view, 'mcp') ? <Text>{COUNTS_ONLY_NOTE}</Text> : null}
-      {view.lists_malformed ? (
-        <Rule
-          title="Deny list and allow list"
-          count={ruleCount(view, 'key_denylist') + ruleCount(view, 'key_lists_unreadable') + ruleCount(view, 'key_allowlist')}
-        >
+      {keyListsState(view) === 'unreadable' ? (
+        <Rule title="Deny list and allow list" count={ruleCount(view, 'key_lists_unreadable')}>
           <Pink>{LISTS_UNREADABLE_SENTENCE}</Pink>
         </Rule>
       ) : (
         <>
-          <Rule title="Deny list" count={ruleCount(view, 'key_denylist') + ruleCount(view, 'key_lists_unreadable')}>
+          <Rule
+            title="Deny list"
+            count={ruleCount(view, 'key_denylist')}
+            unreadable={ruleCount(view, 'key_lists_unreadable')}
+          >
             {deny.length > 0 ? (
               <ReportedList label="Tools this key denies" items={deny} />
             ) : (
@@ -161,21 +178,20 @@ function McpBlock({ view }: { view: PolicyView }) {
           </Rule>
         </>
       )}
-      {view.target_type === 'group' ? (
-        <Rule
-          title="Group filter"
-          count={ruleCount(view, 'group_tool_filter') + ruleCount(view, 'group_tool_filter_unreadable')}
-        >
-          {g ? (
-            <GroupFilterBlock
-              group={{ name: g.group_name, tool_filter: g.tool_filter }}
-              listsAbove
-              malformed={g.malformed}
-            />
-          ) : (
-            <Pink>{GROUP_GONE_SENTENCE}</Pink>
-          )}
-        </Rule>
+      {g ? (
+        g.malformed ? (
+          <Rule title="Group filter" count={ruleCount(view, 'group_tool_filter_unreadable')}>
+            <GroupFilterBlock group={{ name: g.group_name, tool_filter: g.tool_filter }} listsAbove malformed />
+          </Rule>
+        ) : (
+          <Rule
+            title="Group filter"
+            count={ruleCount(view, 'group_tool_filter')}
+            unreadable={ruleCount(view, 'group_tool_filter_unreadable')}
+          >
+            <GroupFilterBlock group={{ name: g.group_name, tool_filter: g.tool_filter }} listsAbove />
+          </Rule>
+        )
       ) : null}
       <Text>{EDITED_RULES_NOTE}</Text>
     </Block>
@@ -190,7 +206,8 @@ function HttpBlock({ view }: { view: PolicyView }) {
       {shownForCountsOnly(view, 'http') ? <Text>{COUNTS_ONLY_NOTE}</Text> : null}
       <Rule
         title="Allowed methods"
-        count={ruleCount(view, 'http_methods') + ruleCount(view, 'http_methods_unreadable')}
+        count={ruleCount(view, view.http_methods_malformed ? 'http_methods_unreadable' : 'http_methods')}
+        unreadable={view.http_methods_malformed ? 0 : ruleCount(view, 'http_methods_unreadable')}
       >
         {sentence ? (
           sentence.tone === 'pink' ? (
