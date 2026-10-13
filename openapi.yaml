@@ -606,6 +606,41 @@ paths:
           description: Deleted
         "404":
           description: Not found
+  /virtual-keys/{id}/policy:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Read a virtual key's effective policy and what it refused (PORM-209)
+      description: >-
+        Every rule that applies to the key, in the order the proxy consults
+        them, and how many calls each refused in the period. Read only. The
+        period defaults to the seven days before `until`, and `until` to now;
+        it may be at most 90 days long. A `since` after `until` is an empty
+        period and every count is zero. Counts are policy refusals only:
+        routing refusals (an unknown endpoint) and authentication failures stay
+        on the Logs page.
+      parameters:
+        - $ref: "#/components/parameters/Since"
+        - $ref: "#/components/parameters/Until"
+      responses:
+        "200":
+          description: The key's policy view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyView"
+        "400":
+          description: >-
+            `{"error":"invalid since"}`, `{"error":"invalid until"}` or
+            `{"error":"period longer than 90 days"}`
+        "401":
+          description: Missing or wrong admin key
+        "404":
+          description: Not found
+        "503":
+          description: >-
+            `{"error":"policy counts took too long"}`: the count passed its
+            five-second deadline. A shorter period reads fewer rows.
   /virtual-keys/{id}/rotate:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -676,18 +711,8 @@ paths:
           in: query
           schema:
             type: string
-        - name: since
-          in: query
-          description: Inclusive lower bound, RFC 3339, exact at any fraction of a second.
-          schema:
-            type: string
-            format: date-time
-        - name: until
-          in: query
-          description: Inclusive upper bound, RFC 3339, exact at any fraction of a second.
-          schema:
-            type: string
-            format: date-time
+        - $ref: "#/components/parameters/Since"
+        - $ref: "#/components/parameters/Until"
         - name: method
           in: query
           schema:
@@ -797,6 +822,20 @@ components:
       schema:
         type: string
         format: uuid
+    Since:
+      name: since
+      in: query
+      description: Inclusive lower bound, RFC 3339, exact at any fraction of a second.
+      schema:
+        type: string
+        format: date-time
+    Until:
+      name: until
+      in: query
+      description: Inclusive upper bound, RFC 3339, exact at any fraction of a second.
+      schema:
+        type: string
+        format: date-time
   responses:
     DiscoveryRateLimited:
       description: >-
@@ -822,6 +861,114 @@ components:
               error:
                 type: string
   schemas:
+    PolicyView:
+      type: object
+      required: [virtual_key_id, status, target_type, target_slug, target_kinds, order, lists_malformed, group_tool_filter, http_methods, http_methods_malformed, egress, blocked]
+      properties:
+        virtual_key_id:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked, expired]
+        target_type:
+          type: string
+          enum: [upstream, group]
+        target_slug:
+          type: string
+          description: The upstream's slug for an upstream target; empty for a group, and for an upstream that no longer exists.
+        target_kinds:
+          type: array
+          description: The kinds of every member of the target, enabled or not, `mcp` before `http`. Empty when the target no longer exists.
+          items:
+            type: string
+            enum: [mcp, http]
+        order:
+          type: array
+          description: >-
+            The section ids in the order the proxy consults them. The three
+            tool sections apply on /mcp endpoints and `http_methods` on the
+            /api/ endpoint. An unreadable group filter or key list is checked
+            before all of them.
+          items:
+            type: string
+            enum: [key_denylist, key_allowlist, group_tool_filter, http_methods]
+        key_denylist:
+          type: array
+          description: As `tool_denylist` on GET /virtual-keys/{id}. Absent when empty or unreadable.
+          items:
+            type: string
+        key_allowlist:
+          type: array
+          description: As `tool_allowlist` on GET /virtual-keys/{id}. Absent when empty or unreadable.
+          items:
+            type: string
+        lists_malformed:
+          type: boolean
+          description: Always present. True when the key's stored tool lists cannot be decoded, so every call on it is refused.
+        group_tool_filter:
+          type: [object, "null"]
+          description: Null for an upstream target, and for a group that no longer exists.
+          required: [group_id, group_name, malformed]
+          properties:
+            group_id:
+              type: string
+            group_name:
+              type: string
+            tool_filter:
+              type: object
+              description: The stored filter as GET /groups/{id} returns it. Absent when the group has none, or when the stored value is not JSON.
+            malformed:
+              type: boolean
+              description: The proxy's own verdict. True means every tool on the group is refused, whatever `tool_filter` reads as.
+        http_methods:
+          type: [array, "null"]
+          description: Null when the target has no HTTP API member. `[]` means every method, unless `http_methods_malformed` is true.
+          items:
+            type: string
+            enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
+        http_methods_malformed:
+          type: boolean
+          description: Always present. True when the stored methods cannot be decoded, so every request on the /api/ endpoint is refused.
+        egress:
+          type: object
+          required: [allow_loopback, deny_private]
+          description: The two egress switches, UPSTREAM_ALLOW_LOOPBACK and UPSTREAM_DENY_PRIVATE. They apply to every key.
+          properties:
+            allow_loopback:
+              type: boolean
+            deny_private:
+              type: boolean
+        blocked:
+          type: object
+          required: [since, until, by_rule, upstream_address_denied, upstream_address_denied_by_class]
+          properties:
+            since:
+              type: string
+              format: date-time
+            until:
+              type: string
+              format: date-time
+            by_rule:
+              type: object
+              description: >-
+                Refused calls per rule over the period, every id present. Per
+                step, not per current entry: a call refused by an entry since
+                removed still counts.
+              required: [key_denylist, key_allowlist, key_lists_unreadable, group_tool_filter, group_tool_filter_unreadable, http_methods, http_methods_unreadable]
+              additionalProperties:
+                type: integer
+            upstream_address_denied:
+              type: integer
+              description: >-
+                Calls the egress guard refused, the sum of the six classes. An
+                upper bound: an upstream that answers with the same sentence as
+                its own error is counted too. Upstream addresses only; an OAuth
+                token call refused by the guard is not counted.
+            upstream_address_denied_by_class:
+              type: object
+              required: [metadata, loopback, unspecified, multicast, link-local, private]
+              additionalProperties:
+                type: integer
     Health:
       type: object
       required: [status, scheme_enforced, trusted_proxies, encryption]
