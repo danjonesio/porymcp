@@ -19,6 +19,7 @@ import {
   OUTBOUND_LOGS_NOTE,
   alwaysRefusedCount,
   blockedLine,
+  earlierLine,
   egressSentences,
   emptyGroupSentence,
   keyListsState,
@@ -116,14 +117,17 @@ function Rule({
   title,
   count,
   unreadable = 0,
+  earlier = 0,
   children,
 }: {
   title: string
   count: number
   unreadable?: number
+  /** What the rule refused earlier in the period, before its stored value became unreadable. */
+  earlier?: number
   children: React.ReactNode
 }) {
-  const extra = unreadableLine(unreadable)
+  const extra = unreadableLine(unreadable) ?? earlierLine(earlier)
   return (
     <div className="space-y-3 border-t border-zinc-950/5 pt-4 dark:border-white/5">
       <Subheading level={4}>{title}</Subheading>
@@ -153,7 +157,11 @@ function McpBlock({ view }: { view: PolicyView }) {
       <Text>{ORDER_NOTE}</Text>
       {shownForCountsOnly(view, 'mcp') ? <Text>{COUNTS_ONLY_NOTE}</Text> : null}
       {keyListsState(view) === 'unreadable' ? (
-        <Rule title="Deny list and allow list" count={ruleCount(view, 'key_lists_unreadable')}>
+        <Rule
+          title="Deny list and allow list"
+          count={ruleCount(view, 'key_lists_unreadable')}
+          earlier={ruleCount(view, 'key_denylist') + ruleCount(view, 'key_allowlist')}
+        >
           <Pink>{LISTS_UNREADABLE_SENTENCE}</Pink>
         </Rule>
       ) : (
@@ -180,7 +188,11 @@ function McpBlock({ view }: { view: PolicyView }) {
       )}
       {g ? (
         g.malformed ? (
-          <Rule title="Group filter" count={ruleCount(view, 'group_tool_filter_unreadable')}>
+          <Rule
+            title="Group filter"
+            count={ruleCount(view, 'group_tool_filter_unreadable')}
+            earlier={ruleCount(view, 'group_tool_filter')}
+          >
             <GroupFilterBlock group={{ name: g.group_name, tool_filter: g.tool_filter }} listsAbove malformed />
           </Rule>
         ) : (
@@ -208,6 +220,7 @@ function HttpBlock({ view }: { view: PolicyView }) {
         title="Allowed methods"
         count={ruleCount(view, view.http_methods_malformed ? 'http_methods_unreadable' : 'http_methods')}
         unreadable={view.http_methods_malformed ? 0 : ruleCount(view, 'http_methods_unreadable')}
+        earlier={view.http_methods_malformed ? ruleCount(view, 'http_methods') : 0}
       >
         {sentence ? (
           sentence.tone === 'pink' ? (

@@ -7,6 +7,7 @@ import {
   alwaysRefusedCount,
   blockedLine,
   egressSentences,
+  earlierLine,
   emptyGroupSentence,
   keyListsState,
   listEmptySentence,
@@ -148,4 +149,9 @@ test('unreadable key lists replace both lists, whatever the lists read as (S5)',
 test('refusals made while a rule was unreadable get their own line', () => {
   assert.equal(unreadableLine(0), null)
   assert.equal(unreadableLine(5), 'Blocked 5 calls in the last 7 days while the stored value could not be read.')
+})
+
+test('refusals made before a rule became unreadable get their own line', () => {
+  assert.equal(earlierLine(0), null)
+  assert.equal(earlierLine(2), 'Blocked 2 calls in the last 7 days under the entries stored before.')
 })

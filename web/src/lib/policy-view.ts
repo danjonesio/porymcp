@@ -92,6 +92,15 @@ export function unreadableLine(n: number): string | null {
   return n === 0 ? null : `Blocked ${plural(n, 'call')} ${PERIOD_TEXT} while the stored value could not be read.`
 }
 
+/**
+ * The second count line under a rule that is unreadable now but was readable
+ * earlier in the period, or null: those refusals were made by entries the
+ * dialog can no longer show.
+ */
+export function earlierLine(n: number): string | null {
+  return n === 0 ? null : `Blocked ${plural(n, 'call')} ${PERIOD_TEXT} under the entries stored before.`
+}
+
 /** The sentence for an empty key list. The allow list judges prompts and resources by name too, but tools are the common case. */
 export function listEmptySentence(list: 'deny' | 'allow'): string {
   return list === 'deny' ? 'No entries. This list blocks nothing.' : 'No entries. Every tool passes this list.'

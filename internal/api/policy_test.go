@@ -288,29 +288,33 @@ func TestPolicyViewPeriod(t *testing.T) {
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	putRow(t, st, id, models.StatusBlocked, "blocked by virtual key denylist", base)
 	putRow(t, st, id, models.StatusBlocked, "blocked by virtual key denylist", base.Add(48*time.Hour))
+	// One nanosecond after base: inside an until that keeps its fraction,
+	// outside one that drops it.
+	putRow(t, st, id, models.StatusBlocked, "blocked by virtual key denylist", base.Add(time.Nanosecond))
 
 	q := func(since, until time.Time) string {
 		return "?since=" + since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339)
 	}
 	_, both := policyOf(t, h, id, q(base.Add(-time.Hour), base.Add(72*time.Hour)))
 	_, first := policyOf(t, h, id, q(base.Add(-time.Hour), base.Add(time.Hour)))
-	if both.Blocked.ByRule["key_denylist"] != 2 || first.Blocked.ByRule["key_denylist"] != 1 {
-		t.Errorf("counts both=%d first=%d, want 2 and 1", both.Blocked.ByRule["key_denylist"], first.Blocked.ByRule["key_denylist"])
+	if both.Blocked.ByRule["key_denylist"] != 3 || first.Blocked.ByRule["key_denylist"] != 2 {
+		t.Errorf("counts both=%d first=%d, want 3 and 2", both.Blocked.ByRule["key_denylist"], first.Blocked.ByRule["key_denylist"])
 	}
 	if first.Blocked.Since != base.Add(-time.Hour).Format(time.RFC3339Nano) || first.Blocked.Until != base.Add(time.Hour).Format(time.RFC3339Nano) {
 		t.Errorf("echoed period %s to %s", first.Blocked.Since, first.Blocked.Until)
 	}
 	// A bound with a fraction and an offset is echoed as the instant used, in
 	// UTC and to the nanosecond, and the fraction still bounds the count: the
-	// row at base is 1 ns inside this until.
+	// row at base plus 1 ns sits exactly on this until, so it counts only
+	// because the fraction was kept.
 	frac := "?since=" + url.QueryEscape("2026-09-01T13:00:00.0000000015+02:00") + "&until=" + url.QueryEscape("2026-09-01T14:00:00.0000000015+02:00")
 	_, fv := policyOf(t, h, id, frac)
 	// Go truncates a fraction past nine digits, so 1.5 ns reads as 1 ns.
 	if fv.Blocked.Since != "2026-09-01T11:00:00.000000001Z" {
 		t.Errorf("since echoed as %q", fv.Blocked.Since)
 	}
-	if fv.Blocked.Until != "2026-09-01T12:00:00.000000001Z" || fv.Blocked.ByRule["key_denylist"] != 1 {
-		t.Errorf("until echoed as %q, count %d; want 12:00:00.000000001Z and 1", fv.Blocked.Until, fv.Blocked.ByRule["key_denylist"])
+	if fv.Blocked.Until != "2026-09-01T12:00:00.000000001Z" || fv.Blocked.ByRule["key_denylist"] != 2 {
+		t.Errorf("until echoed as %q, count %d; want 12:00:00.000000001Z and 2", fv.Blocked.Until, fv.Blocked.ByRule["key_denylist"])
 	}
 	// since after until is an empty period, as GET /logs answers it.
 	_, empty := policyOf(t, h, id, q(base.Add(72*time.Hour), base.Add(-time.Hour)))
