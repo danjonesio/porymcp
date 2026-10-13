@@ -157,6 +157,7 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/virtual-keys", s.createVirtualKey)
 		r.Get("/virtual-keys/{id}", s.getVirtualKey)
 		r.Patch("/virtual-keys/{id}", s.patchVirtualKey)
+		r.Get("/virtual-keys/{id}/policy", s.getVirtualKeyPolicy)
 		r.Post("/virtual-keys/{id}/rotate", s.rotateVirtualKey)
 		r.Post("/virtual-keys/{id}/revoke", s.revokeVirtualKey)
 		r.Delete("/virtual-keys/{id}", s.deleteVirtualKey)
