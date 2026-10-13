@@ -28,7 +28,7 @@ docker buildx imagetools inspect node:22-alpine@sha256:<digest>   # lists linux/
 docker run --rm golang:<tag>@sha256:<digest> go version           # the release inside the image, which no CI step reads
 ```
 
-An index digest resolves per platform. The digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned: the two build stages run on the builder's own architecture, so an amd64 manifest pinned there builds on the amd64 CI runners and is only noticed on an arm64 machine. The runtime base resolves per target, so the same mistake there fails the `docker` job's arm64 build. The `docker` job builds and smoke-tests the new pin on the pull request: it starts the echo upstream from `scripts/echostub` on the runner and runs `scripts/smoke.sh` against the container (upstreams, keys, the MCP doors, the HTTP relay, a revoke and the audit rows), with the script's output checked for key values before it is printed. The same step then runs the browser suite in `web/e2e` against the container (docs/06-ui.md, Browser tests), with the suite's output and its report checked the same way.
+An index digest resolves per platform. The digest `docker inspect` prints on one machine is that machine's platform manifest and must not be pinned: the two build stages run on the builder's own architecture, so an amd64 manifest pinned there builds on the amd64 CI runners and is only noticed on an arm64 machine. The runtime base resolves per target, so the same mistake there fails the `docker` job's arm64 cross build and the `docker-arm64` job's native build. The `docker` job builds and smoke-tests the new pin on the pull request through `scripts/image-check.sh`: it starts the echo upstream from `scripts/echostub` on the runner and runs `scripts/smoke.sh` against the container (upstreams, keys, the MCP doors, the HTTP relay, a revoke and the audit rows), with the script's output checked for key values before it is printed. The same step then runs the browser suite in `web/e2e` against the container (docs/06-ui.md, Browser tests), with the suite's output and its report checked the same way.
 
 A `toolchain` move past the image's minor moves the `golang` tag and digest in the same commit (`TestGoToolchainConsistent` fails otherwise), and any `toolchain` move changes the version string in `README.md`, `docs/04-architecture.md` and this file. The `golang` tag may move ahead alone, as the docker lane's pull requests do. A Node major move also changes `web/.nvmrc` (`TestNodeMajorConsistent` fails otherwise) and needs the `web/out` rebuild that `CONTRIBUTING.md` describes. A digest refresh under the same tag needs neither.
 
@@ -38,7 +38,7 @@ Dependabot's monthly docker lane (`.github/dependabot.yml`) raises a pull reques
 
 ## Images and tags
 
-The `publish` job in `.github/workflows/ci.yml` pushes to `ghcr.io/danjonesio/porymcp` after the `go`, `web` and `docker` checks pass on a push to `main`, on a `v*` tag, or on a manual run. It authenticates with the job's own `GITHUB_TOKEN` (`packages: write`); the repository holds no secret for it.
+The `publish` job in `.github/workflows/ci.yml` pushes to `ghcr.io/danjonesio/porymcp` after the `go`, `web`, `docker` and `docker-arm64` checks pass on a push to `main`, on a `v*` tag, or on a manual run. It authenticates with the job's own `GITHUB_TOKEN` (`packages: write`); the repository holds no secret for it.
 
 | Tag | Built from |
 | --- | --- |
@@ -47,7 +47,11 @@ The `publish` job in `.github/workflows/ci.yml` pushes to `ghcr.io/danjonesio/po
 | `vX.Y.Z` (the git tag) | a `v*` tag |
 | `latest` | a `v*` tag with no `-` suffix; a release candidate such as `v0.2.0-rc1` leaves it alone |
 
-Each tag is one index carrying `linux/amd64` and `linux/arm64`. `docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:edge` lists those two platforms and two `unknown/unknown` rows, which are the provenance attestation the build attaches, not a broken index. `edge` and `latest` move, so a production deployment pins the digest printed in the publish run's summary: `ghcr.io/danjonesio/porymcp@sha256:...`. A tag is never moved; a bad release is followed by the next patch tag. The first push creates the package private; it is switched to public once, in the package settings, after which every tag pulls without a login.
+Each tag is one index carrying `linux/amd64` and `linux/arm64`. `docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:edge` lists those two platforms and two `unknown/unknown` rows, which are the provenance attestation the build attaches, not a broken index. `edge` and `latest` move, so a production deployment pins the digest printed in the publish run's summary and in both `verify` logs: `ghcr.io/danjonesio/porymcp@sha256:...`. A tag is never moved; a bad release is followed by the next patch tag. The first push creates the package private; it is switched to public once, in the package settings, after which every tag pulls without a login.
+
+Both platforms are executed, in three places. The `docker` job runs the amd64 image on an amd64 runner, and the `docker-arm64` job builds the image natively on an arm64 runner (`ubuntu-24.04-arm`) and runs it there; both run `scripts/image-check.sh`, which checks the architecture of the host, the image and its binary, then `/health`, the dashboard and `scripts/smoke.sh`, and `publish` waits for both. The `docker-arm64` build is not the bytes `publish` pushes: both build stages run on the builder's own architecture, so `publish` cross-compiles arm64 on amd64, and the dashboard export compiled into the binary is not byte-reproducible. After `publish`, the `verify` job pulls the index by digest with no credential on an amd64 and an arm64 runner and runs the same checks, which is the first run of the published bytes. `verify` is a signal after publish, not a gate: the tags have already moved when it runs.
+
+How a release is cut and how its number is chosen is in `docs/13-releasing.md`.
 
 ## Runtime
 
