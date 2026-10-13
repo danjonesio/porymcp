@@ -63,6 +63,26 @@ const (
 	ClassPrivate     = "private"
 )
 
+// DeniedClasses returns every class a refusal can name, in declaration order.
+// The policy view counts refusals per class, and a closed list is what keeps
+// that count to these six.
+func DeniedClasses() []string {
+	return []string{ClassMetadata, ClassLoopback, ClassUnspecified, ClassMulticast, ClassLinkLocal, ClassPrivate}
+}
+
+// DeniedSentences returns Denied{Class: c}.Error() for each class, in the
+// order of DeniedClasses: the exact error_message a refused dial leaves on an
+// audit row. Matched whole, never by prefix, because an error row also stores
+// an upstream's own error text and a prefix would count that too.
+func DeniedSentences() []string {
+	classes := DeniedClasses()
+	out := make([]string, len(classes))
+	for i, c := range classes {
+		out[i] = Denied{Class: c}.Error()
+	}
+	return out
+}
+
 // metadata is the list of cloud metadata addresses refused whatever the
 // options say. Checked first, because the AWS and GCP IPv6 addresses are
 // ULA (which DenyPrivate alone would leave open) and the IPv4 ones are
