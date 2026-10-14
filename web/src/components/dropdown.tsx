@@ -10,8 +10,10 @@ export function Dropdown(props: Headless.MenuProps) {
 }
 
 /**
- * The trigger. `as` is required: the one call site renders it as a sidebar
- * row, and there is no sensible default now that Button needs a variant.
+ * The trigger. `as` is required: the two call sites render it as a sidebar
+ * row (the account menu) and as a plain Button (each table row's Actions
+ * menu, app/row-actions.tsx), and there is no sensible default now that
+ * Button needs a variant.
  */
 export function DropdownButton<T extends React.ElementType>(props: { as: T } & Omit<Headless.MenuButtonProps<T>, 'as'>) {
   // Callers are typed by this signature. Headless's own generic cannot be
@@ -21,7 +23,7 @@ export function DropdownButton<T extends React.ElementType>(props: { as: T } & O
   return <Trigger {...props} />
 }
 
-/** The floating panel, anchored by Headless (`anchor="top start"` for the sidebar footer). */
+/** The floating panel, anchored by Headless (`anchor="top start"` for the sidebar footer, `"bottom end"` for a row's Actions menu). */
 export function DropdownMenu({
   anchor = 'bottom',
   className,
@@ -41,20 +43,31 @@ export function DropdownMenu({
 }
 
 const itemClasses = clsx(
-  'group flex w-full cursor-default items-center gap-x-3 rounded-lg px-3.5 py-2.5 text-left text-base/6 text-zinc-950 focus:outline-hidden sm:px-3 sm:py-1.5 sm:text-sm/6 dark:text-white',
+  'group flex w-full cursor-default items-center gap-x-3 rounded-lg px-3.5 py-2.5 text-left text-base/6 focus:outline-hidden sm:px-3 sm:py-1.5 sm:text-sm/6',
   'data-focus:bg-focus data-focus:text-white',
   '*:data-[slot=icon]:size-5 *:data-[slot=icon]:shrink-0 *:data-[slot=icon]:text-zinc-500 sm:*:data-[slot=icon]:size-4 dark:*:data-[slot=icon]:text-zinc-400 data-focus:*:data-[slot=icon]:text-white',
   'forced-colors:data-focus:bg-[Highlight] forced-colors:data-focus:text-[HighlightText]'
 )
 
-type ItemProps = { className?: string; children: React.ReactNode } & (
+// The text colour is a tone, not part of itemClasses, so a destructive item
+// never relies on a call-site class winning over the base colour. Focus keeps
+// the one focus fill for both tones.
+const itemTones = {
+  plain: 'text-zinc-950 dark:text-white',
+  destructive: 'text-red-600 dark:text-red-400',
+}
+
+type ItemProps = { className?: string; destructive?: boolean; children: React.ReactNode } & (
   | ({ href: string } & Omit<React.ComponentPropsWithoutRef<typeof Link>, 'href' | 'as' | 'className' | 'children'>)
   | ({ href?: never } & Omit<React.ComponentPropsWithoutRef<'button'>, 'className' | 'children'>)
 )
 
-/** One row of the menu: a link when it has `href`, a button otherwise. Focus paints a solid fill. */
-export function DropdownItem({ className, children, ...props }: ItemProps) {
-  const classes = clsx(className, itemClasses)
+/**
+ * One row of the menu: a link when it has `href`, a button otherwise. Focus
+ * paints a solid fill. `destructive` draws the label in red, for Delete.
+ */
+export function DropdownItem({ className, destructive = false, children, ...props }: ItemProps) {
+  const classes = clsx(className, itemClasses, destructive ? itemTones.destructive : itemTones.plain)
   if (props.href !== undefined) {
     return (
       <Headless.MenuItem as={Link} className={classes} {...props}>
