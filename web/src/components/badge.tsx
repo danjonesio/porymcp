@@ -1,8 +1,9 @@
 import clsx from 'clsx'
 
 /**
- * The status language of the dashboard: lime is good or enabled, amber is held
- * or expired, pink is broken or revoked, zinc is neutral or disabled. The four
+ * The status language of the dashboard: lime is good or enabled, amber is held,
+ * expired or waiting for a sign-in (a row that needs an operator action), pink
+ * is broken or revoked, zinc is neutral or disabled. The four
  * pairs are exact: a badge is how an operator reads a row at a glance.
  */
 const tones = {
