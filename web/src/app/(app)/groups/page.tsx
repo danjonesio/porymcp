@@ -1,6 +1,7 @@
 'use client'
 
 import { GroupFields } from '@/app/group-form'
+import { RowActions } from '@/app/row-actions'
 import { Alert, AlertActions, AlertDescription, AlertTitle } from '@/components/alert'
 import { Badge } from '@/components/badge'
 import { Button } from '@/components/button'
@@ -23,6 +24,7 @@ import {
   type GroupForm,
 } from '@/lib/group-form'
 import { ABSENT } from '@/lib/placeholder'
+import { bindRowActions, groupActions } from '@/lib/row-actions'
 import { filterPermits } from '@/lib/tool-entry'
 import { useCatalogue } from '@/lib/use-catalogue'
 import clsx from 'clsx'
@@ -338,14 +340,13 @@ export default function GroupsPage() {
                     {g.upstream_ids.length === 0 ? ABSENT : g.upstream_ids.map(nameFor).join(', ')}
                   </TableCell>
                   <TableCell className="text-right">
-                    <span className="inline-flex gap-2">
-                      <Button type="button" plain onClick={() => openEdit(g)}>
-                        Edit
-                      </Button>
-                      <Button type="button" plain onClick={() => setPendingDelete(g)}>
-                        Delete
-                      </Button>
-                    </span>
+                    <RowActions
+                      name={g.name}
+                      sections={bindRowActions(groupActions(), {
+                        edit: () => openEdit(g),
+                        delete: () => setPendingDelete(g),
+                      })}
+                    />
                   </TableCell>
                 </TableRow>
               )
