@@ -521,6 +521,16 @@ test('oauthDescription: a held row says Reconnect when expires_at is set and Con
   )
 })
 
+// The API leaves the oauth object off an undecryptable row
+// (internal/api/upstreams.go presentUpstream), so the menu offers Connect and
+// the sentence says so.
+test('oauthDescription: an undecryptable row as the API sends it says Connect', () => {
+  assert.equal(
+    oauthDescription(oauthUp({ auth_status: 'undecryptable', oauth: undefined })),
+    "The stored token cannot be read with the current encryption key. Restore the key it was saved under, or choose Connect in the upstream's Actions menu to sign in again.",
+  )
+})
+
 test('removeCredentialDescription: choosing None on a connected oauth row says the credential goes', () => {
   assert.equal(
     removeCredentialDescription(oauthUp(), edit(oauthUp(), { auth_type: 'none' })),
