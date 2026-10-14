@@ -78,12 +78,12 @@ export function UpstreamFields({ className, mode, form, onChange, before }: Upst
   const urlNote = urlChangeDescription(row, form)
   const plainHTTP = !!row && plainHTTPCredential(form.url, form.auth_type)
   const isOAuth = form.auth_type === 'oauth'
-  // What the Auth type select says on an oauth row: the state and the press
+  // What the Auth type select says on an oauth row: the state and the item
   // that fixes it (edit), or where Connect lives (create).
   const oauthNote = isOAuth
     ? row
       ? editCredentialDescription(row, form)
-      : "After Create, press Connect on the upstream's row to sign in to the vendor."
+      : "After Create, choose Connect in the upstream's Actions menu to sign in to the vendor."
     : null
   const secretAlone = clientSecretAlone(form)
   // Both sentences come from the lib, where node --test pins their exact text
