@@ -17,12 +17,14 @@ import { Strong, Text } from '@/components/text'
 import { Textarea } from '@/components/textarea'
 import { HttpMethodsFields } from '@/app/http-methods-fields'
 import { PolicyDialog } from '@/app/policy-dialog'
+import { RowActions } from '@/app/row-actions'
 import { ToolListFields } from '@/app/tool-list-fields'
 import { ApiError, api, type Endpoint, type Group, type PolicyView, type Upstream, type VirtualKey } from '@/lib/api'
 import type { Member } from '@/lib/catalogue'
 import { clientHint, clientLabels, clientSnippet, slugName, type ClientKind, type SnippetServer } from '@/lib/clients'
 import { editErrorMessage } from '@/lib/edit-error'
 import { SLOW_COUNT_SENTENCE } from '@/lib/policy-view'
+import { bindRowActions, virtualKeyActions } from '@/lib/row-actions'
 import { ABSENT } from '@/lib/placeholder'
 import { useCatalogue } from '@/lib/use-catalogue'
 import {
@@ -469,23 +471,16 @@ export default function VirtualKeysPage() {
                     {a.last_used_at ? new Date(a.last_used_at).toLocaleString() : 'Never'}
                   </TableCell>
                   <TableCell className="text-right">
-                    <span className="inline-flex gap-2">
-                      <Button type="button" plain onClick={() => openPolicy(a)}>
-                        Policy
-                      </Button>
-                      <Button type="button" plain onClick={() => openEdit(a)}>
-                        Edit
-                      </Button>
-                      <Button type="button" plain onClick={() => rotate(a.id)}>
-                        Rotate
-                      </Button>
-                      <Button type="button" plain onClick={() => revoke(a.id)}>
-                        Revoke
-                      </Button>
-                      <Button type="button" plain onClick={() => setPendingDelete(a)}>
-                        Delete
-                      </Button>
-                    </span>
+                    <RowActions
+                      name={a.name}
+                      sections={bindRowActions(virtualKeyActions(), {
+                        policy: () => openPolicy(a),
+                        edit: () => openEdit(a),
+                        rotate: () => void rotate(a.id),
+                        revoke: () => void revoke(a.id),
+                        delete: () => setPendingDelete(a),
+                      })}
+                    />
                   </TableCell>
                 </TableRow>
               )
