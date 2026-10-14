@@ -1,4 +1,5 @@
 import { CONNECTING, actionsTriggerName, groupActions, ROW_ACTION_LABELS, toolsLabel, upstreamActions, virtualKeyActions } from '../src/lib/row-actions.ts'
+import { connectLabel } from '../src/lib/upstream-auth.ts'
 import { createGroup, createKey, createUpstream } from './api.ts'
 import { expect, rowAction, rowNamed, STUB_URL, test } from './fixtures.ts'
 import type { Page } from '@playwright/test'
@@ -53,6 +54,9 @@ test("each table's row holds one Actions button whose menu lists the row's actio
 
   await trigger(page, keyName).click()
   await page.mouse.move(0, 0)
+  // A focused item is white on the focus fill, so the colours are read with
+  // no item active, as a pointer-opened menu starts.
+  await expect(page.locator('[role="menuitem"][data-focus]')).toHaveCount(0)
   const colours = await page.evaluate(() => {
     const items = Array.from(document.querySelectorAll('[role="menuitem"]'))
     const colour = (label: string) => {
@@ -62,6 +66,7 @@ test("each table's row holds one Actions button whose menu lists the row's actio
     return { edit: colour('Edit'), del: colour('Delete') }
   })
   expect(colours.edit, 'the Edit item has a colour').not.toBe('')
+  expect(colours.del, 'the Delete item has a colour').not.toBe('')
   expect(colours.del, 'Delete is drawn in another colour than Edit').not.toBe(colours.edit)
   await page.keyboard.press('Escape')
 
@@ -177,11 +182,17 @@ test('an oauth upstream that is not connected shows the amber badge, offers Conn
   await page.goto('/upstreams/')
   const row = rowNamed(page, oauth)
   await expect(row).toBeVisible()
-  await expect(row).toContainText('Not connected')
+  // The exact text is the badge alone: the old plain-text rendering read
+  // "· Not connected" and had no fill of its own.
+  const badge = row.getByText('Not connected', { exact: true })
+  await expect(badge).toBeVisible()
+  const fill = await badge.evaluate((el) => getComputedStyle(el).backgroundColor)
+  expect(fill, 'Not connected is drawn as a filled badge').not.toBe('rgba(0, 0, 0, 0)')
   expect(await menuLabels(page, oauth)).toEqual(flatLabels(upstreamActions({ kind: 'mcp', auth_type: 'oauth' })))
-  expect((await menuLabels(page, oauth))[0]).toBe('Connect')
+  const connect = connectLabel({})
+  expect((await menuLabels(page, oauth))[0]).toBe(connect)
 
-  await rowAction(page, oauth, 'Connect')
+  await rowAction(page, oauth, connect)
   const busy = row.getByRole('button', { name: actionsTriggerName(oauth, CONNECTING), exact: true })
   await expect(busy).toBeDisabled()
   await expect(busy).toContainText(CONNECTING)
@@ -211,7 +222,7 @@ test('a double activation of Connect starts one sign-in', async ({ page, prefix,
   await trigger(page, oauth).click()
   // The second click lands while the menu fades out; the ref in connect()
   // is what refuses it.
-  await page.getByRole('menuitem', { name: 'Connect', exact: true }).dblclick()
+  await page.getByRole('menuitem', { name: connectLabel({}), exact: true }).dblclick()
   release()
   await expect(page.locator('p[role="alert"]')).toHaveText(REFUSAL)
   expect(calls, 'one oauth/start request for two activations').toBe(1)
