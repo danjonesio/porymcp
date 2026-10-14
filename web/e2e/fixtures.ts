@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, type Locator, type Page, test as base } from '@playwright/test'
+import { actionsTriggerName } from '../src/lib/row-actions.ts'
 import { deriveSlug } from '../src/lib/slug.ts'
 import { remove } from './api.ts'
 
@@ -20,14 +21,24 @@ export const STUB_URL = (process.env.STUB_URL ?? '').replace(/\/$/, '')
 
 export const slugOf = (name: string) => deriveSlug(name)
 
-// Row action buttons share their names across rows, so every action is
-// found inside the row whose first cell, the Name cell, holds the run's
-// unique name. The match is on that cell's text, not the whole row's: a key
+// A row is found by its first cell, the Name cell, which holds the run's
+// unique name; each row's one Actions button is found inside it (PORM-219).
+// The match is on that cell's text, not the whole row's: a key
 // row's Target cell names its upstream too. A substring match on the cell is
 // safe because no run name contains another, and it still matches a Name
 // cell that carries a badge beside the name.
 export const rowNamed = (page: Page, name: string): Locator =>
   page.getByRole('row').filter({ has: page.locator('td:first-of-type', { hasText: name }) })
+
+// Runs one of a row's actions: opens the row's Actions menu, then chooses the
+// item by exact name. The item is found on the page, not in the row: an
+// anchored Headless menu is portalled to the end of the body, and a closed
+// menu's items are absent, so the names the menus share across rows only
+// ever match the one open menu.
+export async function rowAction(page: Page, rowName: string, label: string): Promise<void> {
+  await rowNamed(page, rowName).getByRole('button', { name: actionsTriggerName(rowName, null), exact: true }).click()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
+}
 
 // Headless UI gives an Alert a boxless role=dialog wrapper that role queries
 // read as hidden, so its buttons are found under the wrapper that holds the

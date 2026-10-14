@@ -1,5 +1,6 @@
+import { ROW_ACTION_LABELS } from '../src/lib/row-actions.ts'
 import { createKey, createUpstream } from './api.ts'
-import { expect, rowNamed, STUB_URL, test } from './fixtures.ts'
+import { expect, rowAction, rowNamed, STUB_URL, test } from './fixtures.ts'
 
 test.skip(() => !STUB_URL, 'STUB_URL is not set')
 
@@ -47,8 +48,8 @@ test('a revoked key reads revoked and the proxy answers 401', async ({ page, pre
   await page.goto('/virtual-keys/')
   const keyRow = rowNamed(page, keyName)
   await expect(keyRow).toContainText('active')
-  // Revoke posts at once, with no confirm step (virtual-keys/page.tsx:314-321).
-  await keyRow.getByRole('button', { name: 'Revoke', exact: true }).click()
+  // Revoke posts at once, with no confirm step (revoke() in virtual-keys/page.tsx).
+  await rowAction(page, keyName, ROW_ACTION_LABELS.revoke)
   await expect(keyRow).toContainText('revoked')
 
   expect(await probe(k.id, plaintext), 'the revoked key is refused').toBe(401)

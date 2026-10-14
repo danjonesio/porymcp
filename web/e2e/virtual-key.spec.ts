@@ -1,6 +1,7 @@
 import { blockedLine, listEmptySentence } from '../src/lib/policy-view.ts'
+import { ROW_ACTION_LABELS } from '../src/lib/row-actions.ts'
 import { createKey, createUpstream, waitForRow } from './api.ts'
-import { alertTitled, expect, rowNamed, STUB_URL, test } from './fixtures.ts'
+import { alertTitled, expect, rowAction, rowNamed, STUB_URL, test } from './fixtures.ts'
 
 test.skip(() => !STUB_URL, 'STUB_URL is not set')
 
@@ -102,7 +103,7 @@ test('the plaintext shows in the secret dialog and is gone after Done and a relo
   await expect(keyRow).toContainText(/pory_[0-9a-f]{7}…/)
   await expect(keyRow).toContainText('active')
 
-  await keyRow.getByRole('button', { name: 'Delete', exact: true }).click()
+  await rowAction(page, keyName, ROW_ACTION_LABELS.delete)
   await alertTitled(page, 'Delete this virtual key?').getByRole('button', { name: 'Delete', exact: true }).click()
   await expect(rowNamed(page, keyName)).toHaveCount(0)
 })
@@ -126,7 +127,7 @@ test("the Policy dialog shows a key's rules in order and no secret", async ({ pa
   expect(plaintext, 'create answered a plaintext key').not.toBe('')
 
   await page.goto('/virtual-keys/')
-  await rowNamed(page, keyName).getByRole('button', { name: 'Policy', exact: true }).click()
+  await rowAction(page, keyName, ROW_ACTION_LABELS.policy)
   await expect(page.getByRole('heading', { name: 'Policy', exact: true })).toBeVisible()
   const dialog = page.locator('[role="dialog"]', { has: page.getByRole('heading', { name: 'Policy', exact: true }) })
   await expect(dialog.getByRole('heading', { name: 'Outbound connections', exact: true })).toBeVisible()

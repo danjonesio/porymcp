@@ -1,7 +1,8 @@
 import { AUTH_TYPE_LABELS, KIND_LABELS } from '../src/lib/upstream-form.ts'
 import { testState } from '../src/lib/upstream-test.ts'
+import { ROW_ACTION_LABELS, toolsLabel } from '../src/lib/row-actions.ts'
 import { waitForRow } from './api.ts'
-import { alertTitled, expect, rowNamed, STUB_URL, test } from './fixtures.ts'
+import { alertTitled, expect, rowAction, rowNamed, STUB_URL, test } from './fixtures.ts'
 
 test.skip(() => !STUB_URL, 'STUB_URL is not set')
 
@@ -33,10 +34,10 @@ test('an MCP upstream with a bearer credential is listed, not tested, then passe
   await expect(mcpRow).toContainText('bearer')
   await expect(mcpRow).toContainText('· set')
   await expect(mcpRow).toContainText('Enabled')
-  // Create runs no discovery; the state moves only when the row's Tools
-  // button records one (web/src/app/(app)/upstreams/page.tsx:274-281).
+  // Create runs no discovery; the state moves only when the Tools item in
+  // the row's Actions menu records one (openTools in upstreams/page.tsx).
   await expect(mcpRow).toContainText(notTested)
-  await mcpRow.getByRole('button', { name: 'Tools', exact: true }).click()
+  await rowAction(page, mcp, toolsLabel('mcp'))
   await expect(page.getByRole('heading', { name: 'Tools', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(mcpRow).toContainText(/Passed/)
@@ -56,13 +57,13 @@ test('an MCP upstream with a bearer credential is listed, not tested, then passe
   const nopeRow = rowNamed(page, nope)
   await expect(nopeRow).toBeVisible()
   await expect(nopeRow).toContainText(notTested)
-  await nopeRow.getByRole('button', { name: 'Tools', exact: true }).click()
+  await rowAction(page, nope, toolsLabel('mcp'))
   await expect(page.getByRole('heading', { name: 'Tools', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(nopeRow).toContainText(/Failed/)
 
   for (const name of [mcp, nope]) {
-    await rowNamed(page, name).getByRole('button', { name: 'Delete', exact: true }).click()
+    await rowAction(page, name, ROW_ACTION_LABELS.delete)
     await alertTitled(page, 'Delete this upstream?').getByRole('button', { name: 'Delete', exact: true }).click()
     await expect(rowNamed(page, name)).toHaveCount(0)
   }
