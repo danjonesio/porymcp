@@ -4,9 +4,10 @@ import { connectLabel } from './upstream-auth.ts'
 /**
  * The row Actions menus on Virtual keys, Upstreams and Groups (PORM-219).
  * Each table's menu is declared here, so the three pages only bind handlers
- * and render, and the order is one rule the tests pin: reading actions
- * first, then edits, then the consequential ones after a divider, with
- * Delete last and the only destructive item. The lib returns action ids and
+ * and render, and the order is one rule the tests pin: the row's own
+ * actions first (Policy, Connect, Tools, Edit), then the consequential ones
+ * after a divider, with Delete last and the only destructive item. The lib
+ * returns action ids and
  * labels, never callbacks: the page binds each id to a closure over its own
  * row, so an item can never act on a row it was not built for.
  */

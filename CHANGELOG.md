@@ -8,11 +8,12 @@ Behaviour changes that affect a running deployment. Newest first.
 
 - **One Actions button per row.** On Virtual keys, Upstreams and Groups each
   row has one ellipsis button, named for the row, that opens a menu of its
-  actions in a fixed order: reading actions first, then edits, then a divider
-  and the consequential ones, with Delete last and in red. What each action
-  does is unchanged.
+  actions in a fixed order, with Delete last and in red. Virtual keys: Policy,
+  Edit, then Rotate, Revoke, Delete. Upstreams: Connect or Reconnect on an
+  OAuth row, Tools or Test, Edit, then Delete. Groups: Edit, then Delete. What
+  each action does is unchanged.
 - **An OAuth upstream that needs a sign-in shows an amber `Not connected`
-  badge** in the Auth column, beside the amber `Expired`, and Connect or
+  badge** in the Auth column, like the amber `Expired`, and Connect or
   Reconnect is the first item in its menu. The help sentences name the menu.
 - **While a connect is in flight every row's Actions button is held**, and the
   pressed row's reads `Connecting…` beside its icon. A second activation

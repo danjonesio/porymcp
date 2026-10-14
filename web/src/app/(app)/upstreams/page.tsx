@@ -184,7 +184,7 @@ export default function UpstreamsPage() {
 
   useEffect(() => {
     // Back from the vendor through the browser's page cache restores this page
-    // as it was when it left: with every Connect held. Release them.
+    // as it was when it left: with every Actions button held. Release them.
     function restored(e: PageTransitionEvent) {
       if (e.persisted) {
         connectingRef.current = null
@@ -677,7 +677,7 @@ export default function UpstreamsPage() {
                     one primary button. It is a create-only affordance: from an edit
                     dialog the payload route would probe with whatever credential
                     the operator typed, which for a blank box is none, and blame a
-                    working token for the 401. Tools on the row tests the saved
+                    working token for the 401. Tools in the row's Actions menu tests the saved
                     upstream with its stored credential. */}
                 <Divider soft className="my-8" />
                 <div>
