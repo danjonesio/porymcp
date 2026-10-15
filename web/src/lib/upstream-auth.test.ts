@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { authState, connectLabel, oauthConnected } from './upstream-auth.ts'
+import { authBadge, authState, connectLabel, oauthConnected } from './upstream-auth.ts'
 
 // Run with: npm test (node --test). The .ts extension above is required:
 // Node will not resolve an extensionless TypeScript specifier.
@@ -26,11 +26,11 @@ test('authState: an unknown future value renders no badge, never red', () => {
   assert.deepEqual(authState({ auth_status: '' }), { tone: 'ok', label: '', expiresAt: null })
 })
 
-// PORM-139: the oauth states. Not connected is plain text, Expired is the
-// amber badge the badge rule gives "held or expired" (amendment A1), a set
+// PORM-139: the oauth states. Not connected and Expired are amber badges
+// (Expired since PORM-139's amendment A1, Not connected since PORM-219), a set
 // with no refresh token names its expiry, and a bearer row's unreadable still
 // reads Incomplete.
-test('authState: an oauth row with nothing usable stored reads Not connected as plain text', () => {
+test('authState: an oauth row with nothing usable stored reads Not connected as an amber badge beside Expired', () => {
   assert.deepEqual(authState({ auth_type: 'oauth', auth_status: 'unreadable' }), { tone: 'idle', label: 'Not connected', expiresAt: null })
   assert.deepEqual(
     authState({ auth_type: 'oauth', auth_status: 'unreadable', oauth: { expires_at: null, has_refresh_token: false, client_source: 'supplied' } }),
@@ -62,4 +62,13 @@ test('connectLabel and oauthConnected: Reconnect once a token set is stored', ()
   assert.equal(oauthConnected({ auth_type: 'oauth', oauth: { expires_at: '2026-09-23T11:00:00Z', has_refresh_token: true, client_source: null } }), true)
   assert.equal(oauthConnected({ auth_type: 'oauth', oauth: { expires_at: null, has_refresh_token: false, client_source: 'supplied' } }), false)
   assert.equal(oauthConnected({ auth_type: 'bearer' }), false)
+})
+
+test('authBadge: broken is pink, held and idle are amber, ok and none have none', () => {
+  assert.equal(authBadge(authState({ auth_status: 'undecryptable' })), 'pink')
+  assert.equal(authBadge(authState({ auth_status: 'unreadable' })), 'pink')
+  assert.equal(authBadge(authState({ auth_type: 'oauth', auth_status: 'expired' })), 'amber')
+  assert.equal(authBadge(authState({ auth_type: 'oauth', auth_status: 'unreadable' })), 'amber')
+  assert.equal(authBadge(authState({ auth_status: 'ok' })), null)
+  assert.equal(authBadge(authState({ auth_status: 'none' })), null)
 })

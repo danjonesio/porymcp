@@ -602,7 +602,7 @@ reach (an IP allowlist, a Cloudflare access rule or challenge, a tailnet, a
 LAN name) fails at the vendor's own page, where PoryMCP logs nothing. Exempt
 that one path from the rule (it carries no secret and needs no key), or tick
 "Register PoryMCP with the vendor instead of publishing its client document"
-in the upstream's Edit dialog, press Save, then press Connect on the row
+in the upstream's Edit dialog, press Save, then choose Connect in the row's Actions menu
 (Cancel drops the tick; the API form is `POST /upstreams/{id}/oauth/start`
 with `{"client":"registered"}`). A
 registration, once stored, is used by later connects, so the choice sticks

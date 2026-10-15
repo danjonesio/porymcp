@@ -490,22 +490,45 @@ test('editCredentialDescription: switching to OAuth says what the save does, by 
 
 test('oauthDescription and credentialHelp: one sentence per state, reading the same status the badge reads', () => {
   const notConnected = oauthUp({ auth_configured: false, auth_status: 'unreadable', oauth: { expires_at: null, has_refresh_token: false, client_source: null } })
-  assert.equal(oauthDescription(notConnected), "Not connected. Press Connect on the upstream's row to sign in to the vendor.")
+  assert.equal(oauthDescription(notConnected), "Not connected. Choose Connect in the upstream's Actions menu to sign in to the vendor.")
   assert.equal(credentialHelp(notConnected, edit(notConnected)), oauthDescription(notConnected))
   assert.equal(oauthDescription(oauthUp()), 'Connected. PoryMCP renews the access token before it expires.')
   assert.equal(
     oauthDescription(oauthUp({ oauth: { expires_at: '2026-09-23T11:00:00Z', has_refresh_token: false, client_source: 'document' } })),
-    'Connected. The vendor issued no refresh token, so the connection ends at the time shown in the table. Press Connect on the row again after that.',
+    "Connected. The vendor issued no refresh token, so the connection ends at the time shown in the table. Choose Reconnect in the upstream's Actions menu after that.",
   )
   assert.equal(
     oauthDescription(oauthUp({ auth_status: 'expired' })),
-    "The vendor refused to renew the access token, or it lapsed with no refresh token. Press Connect on the upstream's row to sign in again.",
+    "The vendor refused to renew the access token, or it lapsed with no refresh token. Choose Reconnect in the upstream's Actions menu to sign in again.",
   )
   assert.equal(
     oauthDescription(oauthUp({ auth_status: 'undecryptable' })),
-    'The stored token cannot be read with the current encryption key. Restore the key it was saved under, or press Connect to sign in again.',
+    "The stored token cannot be read with the current encryption key. Restore the key it was saved under, or choose Reconnect in the upstream's Actions menu to sign in again.",
   )
   assert.equal(editCredentialDescription(oauthUp(), edit(oauthUp())), oauthDescription(oauthUp()))
+})
+
+// PORM-219: the sentence names the item the row's Actions menu shows, which
+// is Reconnect once a token set is stored and Connect before.
+test('oauthDescription: a held row says Reconnect when expires_at is set and Connect when it is not', () => {
+  assert.equal(
+    oauthDescription(oauthUp({ auth_status: 'expired' })),
+    "The vendor refused to renew the access token, or it lapsed with no refresh token. Choose Reconnect in the upstream's Actions menu to sign in again.",
+  )
+  assert.equal(
+    oauthDescription(oauthUp({ auth_status: 'expired', oauth: { expires_at: null, has_refresh_token: false, client_source: 'document' } })),
+    "The vendor refused to renew the access token, or it lapsed with no refresh token. Choose Connect in the upstream's Actions menu to sign in again.",
+  )
+})
+
+// The API leaves the oauth object off an undecryptable row
+// (internal/api/upstreams.go presentUpstream), so the menu offers Connect and
+// the sentence says so.
+test('oauthDescription: an undecryptable row as the API sends it says Connect', () => {
+  assert.equal(
+    oauthDescription(oauthUp({ auth_status: 'undecryptable', oauth: undefined })),
+    "The stored token cannot be read with the current encryption key. Restore the key it was saved under, or choose Connect in the upstream's Actions menu to sign in again.",
+  )
 })
 
 test('removeCredentialDescription: choosing None on a connected oauth row says the credential goes', () => {

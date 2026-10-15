@@ -1,6 +1,7 @@
+import { ROW_ACTION_LABELS } from '../src/lib/row-actions.ts'
 import { ZERO_ENTRIES } from '../src/lib/tool-filter.ts'
 import { createUpstream, waitForRow } from './api.ts'
-import { alertTitled, expect, rowNamed, slugOf, STUB_URL, test } from './fixtures.ts'
+import { alertTitled, expect, rowAction, rowNamed, slugOf, STUB_URL, test } from './fixtures.ts'
 
 test.skip(() => !STUB_URL, 'STUB_URL is not set')
 
@@ -62,7 +63,7 @@ test('a group of two upstreams with an allow filter validates entries and the fo
   for (const name of names) await expect(page.getByLabel(name, { exact: true })).not.toBeChecked()
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
 
-  await groupRow.getByRole('button', { name: 'Delete', exact: true }).click()
+  await rowAction(page, group, ROW_ACTION_LABELS.delete)
   await alertTitled(page, 'Delete this group?').getByRole('button', { name: 'Delete', exact: true }).click()
   await expect(rowNamed(page, group)).toHaveCount(0)
 })

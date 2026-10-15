@@ -1,5 +1,5 @@
 import type { Upstream } from './api.ts'
-import { authState } from './upstream-auth.ts'
+import { authState, connectLabel } from './upstream-auth.ts'
 
 /**
  * The Add and Edit upstream dialogs share one form shape: the row's fields plus
@@ -443,22 +443,24 @@ export function editCredentialDescription(before: Upstream, f: UpstreamForm): st
 
 /**
  * The sentence under the Auth type select of an oauth row (PORM-139): the
- * state the row is in and what to press. It reads the same status the table
- * badge reads, so the two cannot disagree. The lib formats no date: the
- * expiry is on the row itself.
+ * state the row is in and what to choose. It reads the same status the table
+ * badge reads, and names the item by the label the row's Actions menu shows
+ * (PORM-219), so none of the three can disagree. The lib formats no date:
+ * the expiry is on the row itself.
  */
 export function oauthDescription(before: Upstream): string {
   const state = authState(before)
+  const item = connectLabel(before)
   switch (state.tone) {
     case 'idle':
-      return 'Not connected. Press Connect on the upstream\'s row to sign in to the vendor.'
+      return `Not connected. Choose ${item} in the upstream's Actions menu to sign in to the vendor.`
     case 'held':
-      return 'The vendor refused to renew the access token, or it lapsed with no refresh token. Press Connect on the upstream\'s row to sign in again.'
+      return `The vendor refused to renew the access token, or it lapsed with no refresh token. Choose ${item} in the upstream's Actions menu to sign in again.`
     case 'broken':
-      return 'The stored token cannot be read with the current encryption key. Restore the key it was saved under, or press Connect to sign in again.'
+      return `The stored token cannot be read with the current encryption key. Restore the key it was saved under, or choose ${item} in the upstream's Actions menu to sign in again.`
     default:
       if (state.expiresAt) {
-        return 'Connected. The vendor issued no refresh token, so the connection ends at the time shown in the table. Press Connect on the row again after that.'
+        return `Connected. The vendor issued no refresh token, so the connection ends at the time shown in the table. Choose ${item} in the upstream's Actions menu after that.`
       }
       return 'Connected. PoryMCP renews the access token before it expires.'
   }

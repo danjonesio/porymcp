@@ -4,6 +4,21 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### Every dashboard table's row actions sit behind one Actions menu (PORM-219)
+
+- **One Actions button per row.** On Virtual keys, Upstreams and Groups each
+  row has one ellipsis button, named for the row, that opens a menu of its
+  actions in a fixed order, with Delete last and in red. Virtual keys: Policy,
+  Edit, then Rotate, Revoke, Delete. Upstreams: Connect or Reconnect on an
+  OAuth row, Tools or Test, Edit, then Delete. Groups: Edit, then Delete. What
+  each action does is unchanged.
+- **An OAuth upstream that needs a sign-in shows an amber `Not connected`
+  badge** in the Auth column, like the amber `Expired`, and Connect or
+  Reconnect is the first item in its menu. The help sentences name the menu.
+- **While a connect is in flight every row's Actions button is held**, and the
+  pressed row's reads `Connecting…` beside its icon. A second activation
+  cannot start a second sign-in.
+
 ### See a virtual key's rules and what they refused in one view (PORM-209)
 
 - **`GET /api/v1/virtual-keys/{id}/policy`.** A new read-only admin route

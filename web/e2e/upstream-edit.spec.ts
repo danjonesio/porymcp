@@ -1,6 +1,7 @@
+import { ROW_ACTION_LABELS } from '../src/lib/row-actions.ts'
 import { AUTH_TYPE_LABELS } from '../src/lib/upstream-form.ts'
 import { createUpstream, patchUpstream, waitForRow } from './api.ts'
-import { expect, rowNamed, STUB_URL, test } from './fixtures.ts'
+import { expect, rowAction, rowNamed, STUB_URL, test } from './fixtures.ts'
 
 test.skip(() => !STUB_URL, 'STUB_URL is not set')
 
@@ -22,7 +23,7 @@ test('editing keeps the row and the None switch warns; a stored value on a None 
 
   await page.goto('/upstreams/')
   const mcpRow = rowNamed(page, mcp)
-  await mcpRow.getByRole('button', { name: 'Edit', exact: true }).click()
+  await rowAction(page, mcp, ROW_ACTION_LABELS.edit)
   await expect(page.getByRole('heading', { name: 'Edit upstream', exact: true })).toBeVisible()
   await expect(page.getByText(/^Slug: /)).toBeVisible()
   await page.getByLabel('Description', { exact: true }).fill('edited')
@@ -30,7 +31,7 @@ test('editing keeps the row and the None switch warns; a stored value on a None 
   await expect(page.getByRole('heading', { name: 'Edit upstream', exact: true })).toBeHidden()
   await expect(mcpRow).toBeVisible()
 
-  await mcpRow.getByRole('button', { name: 'Edit', exact: true }).click()
+  await rowAction(page, mcp, ROW_ACTION_LABELS.edit)
   await expect(page.getByLabel('Description', { exact: true })).toHaveValue('edited')
   await page.getByLabel('Auth type', { exact: true }).selectOption({ label: AUTH_TYPE_LABELS.none })
   // web/src/lib/upstream-form.ts:503-507
@@ -62,7 +63,7 @@ test('editing keeps the row and the None switch warns; a stored value on a None 
   await patchUpstream(noneId, { auth_config: { token: 'e2eplainbravo' } })
 
   await page.reload()
-  await noneRow.getByRole('button', { name: 'Edit', exact: true }).click()
+  await rowAction(page, none, ROW_ACTION_LABELS.edit)
   await expect(page.getByRole('heading', { name: 'Edit upstream', exact: true })).toBeVisible()
   const clear = page.getByLabel('Remove the stored value', { exact: true })
   await expect(clear).toBeVisible()
@@ -70,7 +71,7 @@ test('editing keeps the row and the None switch warns; a stored value on a None 
   await page.getByRole('button', { name: 'Save changes', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Edit upstream', exact: true })).toBeHidden()
 
-  await noneRow.getByRole('button', { name: 'Edit', exact: true }).click()
+  await rowAction(page, none, ROW_ACTION_LABELS.edit)
   await expect(page.getByRole('heading', { name: 'Edit upstream', exact: true })).toBeVisible()
   await expect(page.getByLabel('Remove the stored value', { exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()

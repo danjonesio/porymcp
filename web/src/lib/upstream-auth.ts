@@ -2,16 +2,17 @@ import type { UpstreamOAuth } from './api.ts'
 
 /**
  * Which of the five things the Auth cell says beside the auth type. `held`
- * and `idle` are PORM-139's: an amber Expired badge, and plain "Not
- * connected" text.
+ * and `idle` are PORM-139's: an amber Expired badge, and an amber Not
+ * connected badge (PORM-219). They stay two tones because the edit dialog
+ * gives each its own sentence (oauthDescription in upstream-form.ts).
  */
 export type AuthTone = 'ok' | 'none' | 'broken' | 'held' | 'idle'
 
 /**
  * One rendered cell suffix: `ok` shows "· set" (or "· set until <time>" when
  * `expiresAt` is set), `none` shows nothing, `broken` shows a pink badge whose
- * label says what is wrong, `held` an amber badge, `idle` the label as plain
- * text. The lib does no date formatting: the page renders `expiresAt` as a
+ * label says what is wrong, `held` and `idle` an amber badge. The lib does no
+ * date formatting: the page renders `expiresAt` as a
  * <time> element, so these rules stay clock-free.
  */
 export type AuthState = { tone: AuthTone; label: string; expiresAt: string | null }
@@ -22,8 +23,8 @@ export type AuthState = { tone: AuthTone; label: string; expiresAt: string | nul
  * values are broken and get a pink badge: `undecryptable` (ENCRYPTION_KEY
  * changed; the fix is a key) reads "Unreadable", `unreadable` (nothing
  * stored, or nothing the auth type can send; the fix is the credential) reads
- * "Incomplete", except on an oauth row, where it reads "Not connected" as
- * plain text: the fix is Connect, and nothing is wrong with the setup.
+ * "Incomplete", except on an oauth row, where it reads "Not connected" in an
+ * amber badge: the row needs a sign-in, and nothing is wrong with the setup.
  * `expired` (an oauth token lapsed with no refresh token, or the vendor
  * refused to renew it) gets the amber badge the badge rule reserves for
  * "held or expired", as expired virtual keys do; the fix is Connect again. An
@@ -51,7 +52,24 @@ export function authState(u: { auth_type?: string; auth_status: string; oauth?: 
   }
 }
 
-/** The Connect row action's label: Reconnect once a token set is stored. */
+/**
+ * The badge colour the Auth cell draws for a state, or null for none: pink
+ * when the setup is broken, amber when the row needs an operator action
+ * (an expired set, or an oauth row not yet connected).
+ */
+export function authBadge(a: AuthState): 'pink' | 'amber' | null {
+  switch (a.tone) {
+    case 'broken':
+      return 'pink'
+    case 'held':
+    case 'idle':
+      return 'amber'
+    default:
+      return null
+  }
+}
+
+/** The Connect item's label in a row's Actions menu: Reconnect once a token set is stored. */
 export function connectLabel(u: { oauth?: UpstreamOAuth }): 'Connect' | 'Reconnect' {
   return u.oauth?.expires_at ? 'Reconnect' : 'Connect'
 }

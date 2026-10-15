@@ -1,6 +1,7 @@
 'use client'
 
 import { DiscoveryPanel, IDLE, type DiscoveryState } from '@/app/discovery-panel'
+import { RowActions } from '@/app/row-actions'
 import { UpstreamFields } from '@/app/upstream-form'
 import { Alert, AlertActions, AlertDescription, AlertTitle } from '@/components/alert'
 import { Badge } from '@/components/badge'
@@ -33,7 +34,8 @@ import {
   saveRegisterChoices,
 } from '@/lib/oauth-connect'
 import { deriveSlug } from '@/lib/slug'
-import { authState, connectLabel } from '@/lib/upstream-auth'
+import { bindRowActions, rowConnectState, toolsLabel, upstreamActions } from '@/lib/row-actions'
+import { authBadge, authState } from '@/lib/upstream-auth'
 import {
   CONNECTION_FIELDS,
   authConfigFrom,
@@ -76,23 +78,20 @@ function TestStateLine({ upstream, nowMs }: { upstream: Upstream; nowMs: number 
 
 /**
  * The type, then what the stored credential is worth, one rendering per tone
- * of authState: a pink badge for a setup problem, an amber one for a lapsed
- * oauth token (the fix is Connect again, so it is held rather than broken),
- * plain "Not connected" text for an oauth row before its first sign-in, "set"
- * for a credential PoryMCP can use, with the expiry when the vendor issued no
+ * of authState: a pink badge for a setup problem, an amber one when the row
+ * needs a sign-in (a lapsed oauth token, or an oauth row before its first
+ * sign-in; the fix is the Connect item in the row's Actions menu), "set" for
+ * a credential PoryMCP can use, with the expiry when the vendor issued no
  * refresh token, and nothing for none.
  */
 function AuthCell({ upstream }: { upstream: Upstream }) {
   const a = authState(upstream)
+  const badge = authBadge(a)
   return (
     <span className="inline-flex items-center gap-2">
       <span>{upstream.auth_type}</span>
-      {a.tone === 'broken' ? (
-        <Badge color="pink">{a.label}</Badge>
-      ) : a.tone === 'held' ? (
-        <Badge color="amber">{a.label}</Badge>
-      ) : a.tone === 'idle' ? (
-        <span className="text-zinc-500 dark:text-zinc-400">· {a.label}</span>
+      {badge ? (
+        <Badge color={badge}>{a.label}</Badge>
       ) : a.tone === 'ok' ? (
         <span className="text-zinc-500 dark:text-zinc-400">
           · {a.expiresAt ? a.label : 'set'}
@@ -139,15 +138,20 @@ export default function UpstreamsPage() {
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   /**
-   * The oauth flow (PORM-139). connecting is the row whose Connect was pressed:
+   * The oauth flow (PORM-139). connecting is the row whose Connect was chosen:
    * start makes up to ten seconds of outbound calls and then the page
-   * navigates, so the button says so and every Connect is held meanwhile.
+   * navigates, so every row's Actions button is held meanwhile and the
+   * pressed row's reads Connecting…. connectingRef is the same value without
+   * waiting for a render, so a second activation that lands before React
+   * re-renders (a menu item is still clickable while the menu fades out)
+   * cannot start a second sign-in.
    * connectError answers a press and is announced. registerFor remembers,
    * per row, the "register PoryMCP with the vendor" choice ticked in the Edit
    * dialog, which the next Connect sends. pendingRevoke is the row the
    * Disconnect Alert is asking about; revokeLine is what the vendor said.
    */
   const [connecting, setConnecting] = useState<string | null>(null)
+  const connectingRef = useRef<string | null>(null)
   const [connectError, setConnectError] = useState('')
   const [registerFor, setRegisterFor] = useState<Record<string, boolean>>(() =>
     loadRegisterChoices(typeof window === 'undefined' ? undefined : window.sessionStorage),
@@ -180,9 +184,12 @@ export default function UpstreamsPage() {
 
   useEffect(() => {
     // Back from the vendor through the browser's page cache restores this page
-    // as it was when it left: with every Connect held. Release them.
+    // as it was when it left: with every Actions button held. Release them.
     function restored(e: PageTransitionEvent) {
-      if (e.persisted) setConnecting(null)
+      if (e.persisted) {
+        connectingRef.current = null
+        setConnecting(null)
+      }
     }
     window.addEventListener('pageshow', restored)
     return () => window.removeEventListener('pageshow', restored)
@@ -486,12 +493,15 @@ export default function UpstreamsPage() {
    * to this list. Only an http or https URL is ever assigned.
    */
   async function connect(u: Upstream) {
+    if (connectingRef.current !== null) return
+    connectingRef.current = u.id
     setConnectError('')
     setConnecting(u.id)
     try {
       const out = await oauthStart(u.id, registerFor[u.id] ? { client: 'registered' } : undefined)
       if (!authorizationURLIsWeb(out.authorization_url)) {
         setConnectError('The server answered with an address this browser cannot open.')
+        connectingRef.current = null
         setConnecting(null)
         return
       }
@@ -499,6 +509,7 @@ export default function UpstreamsPage() {
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) void load()
       setConnectError(connectErrorMessage(err))
+      connectingRef.current = null
       setConnecting(null)
     }
   }
@@ -620,32 +631,16 @@ export default function UpstreamsPage() {
                   </div>
                 </TableCell>
                 <TableCell className="text-right">
-                  <span className="inline-flex gap-2">
-                    {/* Connect is a row action, not a dialog button: Create
-                        closes the dialog, and the Expired fix is one press. It
-                        renders on every oauth row whatever its state, so it
-                        never unmounts under keyboard focus. */}
-                    {u.auth_type === 'oauth' ? (
-                      <Button
-                        type="button"
-                        plain
-                        disabled={connecting !== null}
-                        aria-label={`${connecting === u.id ? 'Connecting…' : connectLabel(u)} ${u.name}`}
-                        onClick={() => connect(u)}
-                      >
-                        {connecting === u.id ? 'Connecting…' : connectLabel(u)}
-                      </Button>
-                    ) : null}
-                    <Button type="button" plain onClick={() => openTools(u)}>
-                      {u.kind === 'http' ? 'Test' : 'Tools'}
-                    </Button>
-                    <Button type="button" plain onClick={() => openEdit(u)}>
-                      Edit
-                    </Button>
-                    <Button type="button" plain onClick={() => setPendingDelete(u)}>
-                      Delete
-                    </Button>
-                  </span>
+                  <RowActions
+                    name={u.name}
+                    {...rowConnectState(u.id, connecting)}
+                    sections={bindRowActions(upstreamActions(u), {
+                      connect: () => void connect(u),
+                      tools: () => openTools(u),
+                      edit: () => openEdit(u),
+                      delete: () => setPendingDelete(u),
+                    })}
+                  />
                 </TableCell>
               </TableRow>
             ))}
@@ -682,7 +677,7 @@ export default function UpstreamsPage() {
                     one primary button. It is a create-only affordance: from an edit
                     dialog the payload route would probe with whatever credential
                     the operator typed, which for a blank box is none, and blame a
-                    working token for the 401. Tools on the row tests the saved
+                    working token for the 401. Tools in the row's Actions menu tests the saved
                     upstream with its stored credential. */}
                 <Divider soft className="my-8" />
                 <div>
@@ -762,7 +757,7 @@ export default function UpstreamsPage() {
       </Dialog>
 
       <Dialog open={!!tools} onClose={closeTools} size="2xl">
-        <DialogTitle>{tools?.kind === 'http' ? 'Test' : 'Tools'}</DialogTitle>
+        <DialogTitle>{tools ? toolsLabel(tools.kind) : null}</DialogTitle>
         <DialogDescription>{tools?.name}</DialogDescription>
         <DialogBody>
           {tools ? (
