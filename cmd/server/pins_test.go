@@ -725,3 +725,191 @@ func TestCIGateProblems_CommentIgnored(t *testing.T) {
 		t.Fatalf("a comment reported %q", got)
 	}
 }
+
+// deployIf is the deploy job's condition: an allow-list of the two events
+// that may deploy, and main by its full ref, so an event added to the
+// workflow later and a tag named main never reach the edge environment.
+const deployIf = "    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'"
+
+var deployNeeds = regexp.MustCompile(`(?m)^    needs: \[([^\]]*)\]`)
+
+// deployGateProblems reports what would let the deploy job run on another
+// ref or event, deploy before both verify legs passed, widen its token, turn
+// a red deploy green, or let a DEPLOY_ secret reach another job or a shell
+// line (PORM-220). Comments are ignored throughout.
+func deployGateProblems(src string) []string {
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+	block := withoutComments(ciJobBlock(src, "deploy"))
+	if block == "" {
+		return []string{"ci.yml has no deploy job"}
+	}
+	lines := strings.Split(block, "\n")
+	has := func(want string) bool {
+		for _, l := range lines {
+			if strings.TrimRight(l, " ") == want {
+				return true
+			}
+		}
+		return false
+	}
+	var problems []string
+	needs := map[string]bool{}
+	if m := deployNeeds.FindStringSubmatch(block); m != nil {
+		for _, n := range strings.Split(m[1], ",") {
+			needs[strings.TrimSpace(n)] = true
+		}
+	}
+	if !needs["publish"] || !needs["verify"] {
+		problems = append(problems, "deploy does not need both publish and verify")
+	}
+	if !has(deployIf) {
+		problems = append(problems, "deploy's if is not the main-only allow-list")
+	}
+	// The scalar form only: the mapping form is where a url would go, and the
+	// environment's deployments are listed publicly.
+	if !has("    environment: edge") {
+		problems = append(problems, "deploy does not name the edge environment as a scalar")
+	}
+	var perms []string
+	for i, l := range lines {
+		if strings.HasPrefix(l, "    permissions:") {
+			if strings.TrimRight(l, " ") != "    permissions:" {
+				perms = append(perms, l)
+			}
+			for _, p := range lines[i+1:] {
+				if !strings.HasPrefix(p, "      ") {
+					break
+				}
+				perms = append(perms, strings.TrimSpace(p))
+			}
+		}
+	}
+	if len(perms) != 1 || perms[0] != "contents: read" {
+		problems = append(problems, "deploy's permissions are not contents: read alone")
+	}
+	if strings.Contains(block, "continue-on-error") {
+		problems = append(problems, "deploy sets continue-on-error")
+	}
+	// An expression on a run line, or in a run block, is pasted into the
+	// shell before it runs; the secrets reach the script through env only.
+	for i, l := range lines {
+		t := strings.TrimPrefix(strings.TrimSpace(l), "- ")
+		if !strings.HasPrefix(t, "run:") {
+			continue
+		}
+		body := []string{t}
+		if v := strings.TrimSpace(strings.TrimPrefix(t, "run:")); strings.HasPrefix(v, "|") || strings.HasPrefix(v, ">") {
+			indent := len(l) - len(strings.TrimLeft(l, " "))
+			for _, n := range lines[i+1:] {
+				if strings.TrimSpace(n) != "" && len(n)-len(strings.TrimLeft(n, " ")) <= indent {
+					break
+				}
+				body = append(body, n)
+			}
+		}
+		if strings.Contains(strings.Join(body, "\n"), "${{") {
+			problems = append(problems, "deploy has an expression in a run step")
+		}
+	}
+	if strings.Count(withoutComments(src), "secrets.DEPLOY_") != strings.Count(block, "secrets.DEPLOY_") {
+		problems = append(problems, "a DEPLOY_ secret is read outside the deploy job")
+	}
+	return problems
+}
+
+// TestDeployJobGated keeps the deploy job on main, behind both verify legs,
+// with contents: read, the edge environment and no url, and keeps its
+// secrets out of every other job and every shell line (PORM-220).
+func TestDeployJobGated(t *testing.T) {
+	root := repoRoot(t)
+	for _, p := range deployGateProblems(string(readRepoFile(t, root, ".github/workflows/ci.yml"))) {
+		t.Error(p)
+	}
+}
+
+// The tests below run deployGateProblems on an in-memory workflow, so the
+// guard is shown to fail without touching ci.yml.
+
+const deployWorkflow = "name: ci\n\njobs:\n" +
+	"  verify:\n    needs: publish\n    steps:\n      - run: docker pull \"$REPO@$DIGEST\"\n\n" +
+	"  # The deploy job.\n" +
+	"  deploy:\n    needs: [publish, verify]\n" + deployIf + "\n" +
+	"    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    environment: edge\n" +
+	"    permissions:\n      contents: read\n    steps:\n" +
+	"      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n" +
+	"        with:\n          persist-credentials: false\n" +
+	"      - name: Redeploy\n        shell: bash\n        env:\n" +
+	"          DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}\n" +
+	"          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n" +
+	"        run: bash scripts/edge-deploy.sh\n"
+
+func wantDeployProblem(t *testing.T, src, fragment string) {
+	t.Helper()
+	got := deployGateProblems(src)
+	for _, p := range got {
+		if strings.Contains(p, fragment) {
+			return
+		}
+	}
+	t.Fatalf("no problem containing %q; got %q", fragment, got)
+}
+
+func TestDeployGateProblems_Gated(t *testing.T) {
+	if got := deployGateProblems(deployWorkflow); len(got) != 0 {
+		t.Fatalf("a gated workflow reported %q", got)
+	}
+	if got := deployGateProblems(strings.ReplaceAll(deployWorkflow, "\n", "\r\n")); len(got) != 0 {
+		t.Fatalf("a CRLF workflow reported %q", got)
+	}
+}
+
+func TestDeployGateProblems_NoDeploy(t *testing.T) {
+	wantDeployProblem(t, deployWorkflow[:strings.Index(deployWorkflow, "  deploy:")], "no deploy job")
+}
+
+func TestDeployGateProblems_NeedsVerify(t *testing.T) {
+	wantDeployProblem(t, strings.Replace(deployWorkflow, "[publish, verify]", "[publish]", 1), "does not need both")
+}
+
+// The deny-list form admits any event added later.
+func TestDeployGateProblems_IfWidened(t *testing.T) {
+	src := strings.Replace(deployWorkflow, deployIf, "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'", 1)
+	wantDeployProblem(t, src, "main-only allow-list")
+}
+
+func TestDeployGateProblems_EnvironmentURL(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "    environment: edge\n", "    environment:\n      name: edge\n      url: https://deploy.invalid\n", 1)
+	wantDeployProblem(t, src, "edge environment as a scalar")
+}
+
+func TestDeployGateProblems_Permissions(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "      contents: read\n", "      contents: read\n      deployments: write\n", 1)
+	wantDeployProblem(t, src, "contents: read alone")
+	src = strings.Replace(deployWorkflow, "    permissions:\n      contents: read\n", "    permissions: write-all\n", 1)
+	wantDeployProblem(t, src, "contents: read alone")
+}
+
+func TestDeployGateProblems_ContinueOnError(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "        shell: bash\n", "        shell: bash\n        continue-on-error: true\n", 1)
+	wantDeployProblem(t, src, "continue-on-error")
+}
+
+func TestDeployGateProblems_RunExpression(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "        run: bash scripts/edge-deploy.sh\n", "        run: TOKEN=${{ secrets.DEPLOY_TOKEN }} bash scripts/edge-deploy.sh\n", 1)
+	wantDeployProblem(t, src, "expression in a run step")
+	src = strings.Replace(deployWorkflow, "        run: bash scripts/edge-deploy.sh\n", "        run: |\n          echo ${{ github.ref }}\n          bash scripts/edge-deploy.sh\n", 1)
+	wantDeployProblem(t, src, "expression in a run step")
+}
+
+func TestDeployGateProblems_SecretOutside(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "      - run: docker pull", "      - env:\n          T: ${{ secrets.DEPLOY_TOKEN }}\n        run: docker pull", 1)
+	wantDeployProblem(t, src, "outside the deploy job")
+}
+
+// A comment that names the things the guard looks for is not a use.
+func TestDeployGateProblems_CommentIgnored(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "  # The deploy job.\n", "  # secrets.DEPLOY_TOKEN, continue-on-error and ${{ }} are named here only.\n", 1)
+	if got := deployGateProblems(src); len(got) != 0 {
+		t.Fatalf("a comment reported %q", got)
+	}
+}
