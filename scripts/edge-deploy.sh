@@ -14,9 +14,11 @@
 # reports the deployment finished, and 1 on anything else. It never prints
 # the webhook URL, the token, the status record's logs, or what curl and jq
 # write to stderr: both secrets reach curl in a config on stdin and never on
-# its command line, and the script refuses to run under xtrace. Platform text
-# reaches the log as printable ASCII after a fixed prefix, and the step
-# summary carries only the deployment id and a known status.
+# its command line, and the script refuses to run under xtrace. The log is
+# public, so the platform's message is printed on a failure only, where it
+# says why (its success message names the resource), and then as printable
+# ASCII after a fixed prefix. The step summary carries only the deployment id
+# and a known status.
 set -u
 case $- in *x*)
   echo 'FAIL input: xtrace is on; a trace prints keys' >&2
@@ -29,6 +31,9 @@ export LC_ALL=C
 
 url="${DEPLOY_WEBHOOK_URL:-}"
 token="${DEPLOY_TOKEN:-}"
+# The values live in shell variables from here on, so no child process
+# (curl, jq, sleep) carries them in its environment.
+export -n DEPLOY_WEBHOOK_URL DEPLOY_TOKEN 2>/dev/null || true
 interval="${EDGE_DEPLOY_INTERVAL:-10}"
 budget="${EDGE_DEPLOY_BUDGET:-600}"
 
@@ -126,9 +131,12 @@ call() {
   curl_exit=0
   # -q first: curl then reads no curlrc, so a user's verbose, location or
   # trace setting cannot reach a run. No -L, so a redirect is never followed
-  # and the token never reaches a second host.
-  code="$(printf 'url = "%s"\nheader = "Authorization: Bearer %s"\nheader = "Accept: application/json"\nrequest = "%s"\n' "$2" "$token" "$1" |
-    curl -q -K - --proto "$proto" -sS --connect-timeout 10 --max-time 30 -o "$tmp/body" -w '%{http_code}' 2>/dev/null)" || curl_exit=$?
+  # and the token never reaches a second host. The empty data on the POST
+  # sends a Content-Length of 0, and a body over 1 MiB is a curl error.
+  local data=''
+  if [ "$1" = POST ]; then data='data = ""'; fi
+  code="$(printf 'url = "%s"\nheader = "Authorization: Bearer %s"\nheader = "Accept: application/json"\nrequest = "%s"\n%s\n' "$2" "$token" "$1" "$data" |
+    curl -q -K - --proto "$proto" -sS --connect-timeout 10 --max-time 30 --max-filesize 1048576 -o "$tmp/body" -w '%{http_code}' 2>/dev/null)" || curl_exit=$?
 }
 
 # field PATH: one field of the last body, empty when the body is not JSON or
@@ -157,11 +165,17 @@ case "$code" in
 esac
 id="$(field '.deployments[0].deployment_uuid')"
 msg="$(field '.deployments[0].message' | clean)"
+# A deployment already queued or running for the app is not joined: the
+# platform answers with a new id it never stores, so polling it would end in
+# a 404 that names the wrong cause.
+if [ "$msg" = 'Deployment already queued for this commit.' ]; then
+  not_started 'deploy: a deployment was already in flight; nothing new was requested'
+fi
 # The id goes into the status URL, so it is checked before any use.
 if ! [[ $id =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
   not_started 'deploy: the answer has no valid deployment id' "${msg:+: $msg}"
 fi
-echo "deploy: requested $id${msg:+: $msg}"
+echo "deploy: requested $id"
 
 # finish STATUS: the summary line. Only a known status reaches it.
 finish() {

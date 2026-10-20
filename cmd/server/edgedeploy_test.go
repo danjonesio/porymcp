@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The tests below run scripts/edge-deploy.sh (PORM-220) with bash against a
@@ -34,7 +36,7 @@ type stubAnswer struct {
 }
 
 type stubHit struct {
-	method, path, query, auth string
+	method, path, query, auth, accept string
 }
 
 // deployStub answers POST /api/v1/deploy with webhook and each
@@ -62,7 +64,7 @@ func newDeployStub(t *testing.T, webhook stubAnswer, statuses ...stubAnswer) *de
 func (s *deployStub) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.hits = append(s.hits, stubHit{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")})
+	s.hits = append(s.hits, stubHit{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), r.Header.Get("Accept")})
 	w.Header().Set("Content-Type", "application/json")
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/deploy":
@@ -92,12 +94,26 @@ func (s *deployStub) webhookURL() string {
 	return s.srv.URL + "/api/v1/deploy?uuid=" + edAppCanary
 }
 
+// jsonBody encodes v as the platform would. Go's %q is not JSON: it writes
+// \x1b, which jq refuses, so a hostile body built with it tests nothing.
+func jsonBody(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 func queued(id, msg string) stubAnswer {
-	return stubAnswer{200, fmt.Sprintf(`{"deployments":[{"message":%q,"resource_uuid":"r1","deployment_uuid":%q}]}`, msg, id)}
+	return stubAnswer{200, jsonBody(map[string]any{"deployments": []map[string]string{{"message": msg, "resource_uuid": "r1", "deployment_uuid": id}}})}
 }
 
 func status(s string) stubAnswer {
-	return stubAnswer{200, fmt.Sprintf(`{"status":%q,"logs":%q}`, s, edLogsCanary)}
+	return stubAnswer{200, jsonBody(map[string]string{"status": s, "logs": edLogsCanary})}
+}
+
+func message(code int, msg string) stubAnswer {
+	return stubAnswer{code, jsonBody(map[string]string{"message": msg})}
 }
 
 // edgeEnv is the environment of one run: PATH and HOME and nothing else
@@ -199,6 +215,11 @@ func TestEdgeDeploy(t *testing.T) {
 				if h.auth != "Bearer "+edTokenCanary {
 					t.Errorf("%s %s reached the stub with Authorization %q", h.method, h.path, h.auth)
 				}
+				// The platform answers an unauthenticated API call with a
+				// JSON 401 only when the client asks for JSON.
+				if h.accept != "application/json" {
+					t.Errorf("%s %s reached the stub with Accept %q", h.method, h.path, h.accept)
+				}
 			}
 		}
 		assertNoSecret(t, canaries, map[string]string{"stdout": stdout, "stderr": stderr, "summary": summary})
@@ -241,7 +262,11 @@ func TestEdgeDeploy(t *testing.T) {
 		stub := newDeployStub(t, queued(edID, "Deployment request queued."), status("queued"), status("in_progress"), status("finished"))
 		r := run(t, stub, edgeEnv(t, stub))
 		wantCode(t, r, 0)
-		wantOut(t, r, "PASS deploy: "+edID+" finished", "deploy: requested "+edID+": Deployment request queued.")
+		wantOut(t, r, "PASS deploy: "+edID+" finished", "deploy: requested "+edID+"\n")
+		// The success message names the resource, and the log is public.
+		if strings.Contains(r.stdout+r.stderr, "Deployment request queued.") {
+			t.Errorf("the platform's success message reached the log:\n%s", r.stdout)
+		}
 		if want := "Deployment `" + edID + "`: finished"; !strings.Contains(r.summary, want) {
 			t.Errorf("summary %q lacks %q", r.summary, want)
 		}
@@ -276,7 +301,7 @@ func TestEdgeDeploy(t *testing.T) {
 	// Acceptance criterion 1: an answer with no deployment id exits 1 and
 	// prints the platform's message.
 	t.Run("NoDeploymentID", func(t *testing.T) {
-		stub := newDeployStub(t, stubAnswer{200, `{"deployments":[{"message":"No resources found."}]}`})
+		stub := newDeployStub(t, stubAnswer{200, jsonBody(map[string]any{"deployments": []map[string]string{{"message": "No resources found."}}})})
 		r := run(t, stub, edgeEnv(t, stub))
 		wantCode(t, r, 1)
 		wantOut(t, r, "FAIL deploy: the answer has no valid deployment id: No resources found.")
@@ -289,7 +314,7 @@ func TestEdgeDeploy(t *testing.T) {
 	// printing the code and the message.
 	for _, c := range []int{401, 429} {
 		t.Run(fmt.Sprintf("WebhookError/%d", c), func(t *testing.T) {
-			stub := newDeployStub(t, stubAnswer{c, `{"message":"Unauthenticated."}`})
+			stub := newDeployStub(t, message(c, "Unauthenticated."))
 			r := run(t, stub, edgeEnv(t, stub))
 			wantCode(t, r, 1)
 			wantOut(t, r, fmt.Sprintf("FAIL deploy: HTTP %d: Unauthenticated.", c))
@@ -299,23 +324,33 @@ func TestEdgeDeploy(t *testing.T) {
 		})
 	}
 
-	// A request while one is in flight answers with the existing id; the run
-	// follows it and prints the message (plan, platform answers).
+	// A request while a deployment is queued or running answers 200 with
+	// this message and a new id the platform never stores, so a poll would
+	// 404. The run fails at once with the real cause.
 	t.Run("AlreadyQueued", func(t *testing.T) {
-		stub := newDeployStub(t, queued(edID, "Deployment already queued for this commit."), status("finished"))
+		stub := newDeployStub(t, queued(edID, "Deployment already queued for this commit."), message(404, "Deployment not found."))
 		r := run(t, stub, edgeEnv(t, stub))
-		wantCode(t, r, 0)
-		wantOut(t, r, "Deployment already queued for this commit.")
+		wantCode(t, r, 1)
+		wantOut(t, r, "FAIL deploy: a deployment was already in flight; nothing new was requested")
+		if gets(stub) != 0 {
+			t.Error("the script polled an id the platform never stored")
+		}
 	})
 
 	// Acceptance criterion 1 and security requirement 8: a status that never
 	// finishes fails at the budget with the last status printed clean, and
 	// an unknown status reaches the summary as unknown only.
 	t.Run("Budget", func(t *testing.T) {
-		stub := newDeployStub(t, queued(edID, "queued"), status("in_progress"), status("weird`x`[a](b)"))
+		stub := newDeployStub(t, queued(edID, "queued"), status("weird`x`[a](b)"))
 		env := edgeEnv(t, stub)
 		env["EDGE_DEPLOY_BUDGET"] = "2"
+		began := time.Now()
 		r := run(t, stub, env)
+		// $SECONDS counts whole seconds, so a budget of 2 ends after 1 to 2
+		// seconds of waiting, plus the run's own start-up.
+		if took := time.Since(began); took < time.Second || took > 6*time.Second {
+			t.Errorf("a budget of 2 s took %s", took)
+		}
 		wantCode(t, r, 1)
 		wantOut(t, r, "FAIL deploy: "+edID+" did not finish in 2s; last status weird`x`[a](b)")
 		if !strings.Contains(r.summary, "Deployment `"+edID+"`: unknown") || strings.Contains(r.summary, "[a](b)") {
@@ -323,22 +358,25 @@ func TestEdgeDeploy(t *testing.T) {
 		}
 	})
 
-	// The poll rule: a 5xx and a 2xx with no status keep waiting; 404 fails
+	// The poll rule: a 5xx and a 2xx with no status keep waiting; 401, 403
+	// and 404 fail
 	// at once.
 	t.Run("PollErrors/502ThenFinished", func(t *testing.T) {
 		stub := newDeployStub(t, queued(edID, "queued"), stubAnswer{502, `bad gateway`}, stubAnswer{200, `{}`}, status("finished"))
 		r := run(t, stub, edgeEnv(t, stub))
 		wantCode(t, r, 0)
 	})
-	t.Run("PollErrors/404", func(t *testing.T) {
-		stub := newDeployStub(t, queued(edID, "queued"), stubAnswer{404, `{"message":"Deployment not found."}`}, status("finished"))
-		r := run(t, stub, edgeEnv(t, stub))
-		wantCode(t, r, 1)
-		wantOut(t, r, "FAIL deploy: "+edID+": HTTP 404: Deployment not found.")
-		if n := gets(stub); n != 1 {
-			t.Errorf("%d polls after a 404, want 1", n)
-		}
-	})
+	for _, c := range []int{401, 403, 404} {
+		t.Run(fmt.Sprintf("PollErrors/%d", c), func(t *testing.T) {
+			stub := newDeployStub(t, queued(edID, "queued"), message(c, "Deployment not found."), status("finished"))
+			r := run(t, stub, edgeEnv(t, stub))
+			wantCode(t, r, 1)
+			wantOut(t, r, fmt.Sprintf("FAIL deploy: %s: HTTP %d: Deployment not found.", edID, c))
+			if n := gets(stub); n != 1 {
+				t.Errorf("%d polls after a %d, want 1", n, c)
+			}
+		})
+	}
 
 	// Acceptance criterion 1: no secrets exits 0 with the notice.
 	t.Run("NoSecrets", func(t *testing.T) {
@@ -408,15 +446,17 @@ func TestEdgeDeploy(t *testing.T) {
 		for _, c := range cases {
 			env := edgeEnv(t, stub)
 			env[c.key] = c.value
-			stdout, stderr, code, _ := runEdgeDeploy(t, env)
+			stdout, stderr, code, summary := runEdgeDeploy(t, env)
 			all := stdout + stderr
 			if code != 1 || !strings.Contains(all, "FAIL input: "+c.want) {
 				t.Errorf("%s: exit %d, output %q; want exit 1 naming %s", c.name, code, all, c.want)
 			}
-			// A value as short as "0" is part of the message's own wording.
-			if (len(c.value) > 3 && strings.Contains(all, c.value)) || strings.Contains(all, edAppCanary) {
-				t.Errorf("%s: the output holds the rejected value: %q", c.name, all)
+			canaries := map[string]string{"token": edTokenCanary, "app uuid": edAppCanary, "rejected value": c.value}
+			// "0" is part of the message's own wording ("0.01 to 10").
+			if c.value == "0" {
+				delete(canaries, "rejected value")
 			}
+			assertNoSecret(t, canaries, map[string]string{"stdout": stdout, "stderr": stderr, "summary": summary})
 		}
 		noHits(t, stub)
 	})
@@ -438,7 +478,7 @@ func TestEdgeDeploy(t *testing.T) {
 	// the only workflow command is the fixed annotation.
 	t.Run("HostileAnswer", func(t *testing.T) {
 		msg := "::error::x\x1b[31m%0A::warning::y\nnext " + strings.Repeat("A", 5000)
-		stub := newDeployStub(t, stubAnswer{401, fmt.Sprintf(`{"message":%q}`, msg)})
+		stub := newDeployStub(t, message(401, msg))
 		env := edgeEnv(t, stub)
 		env["GITHUB_ACTIONS"] = "true"
 		r := run(t, stub, env)
@@ -458,6 +498,13 @@ func TestEdgeDeploy(t *testing.T) {
 		}
 		if !strings.Contains(all, edFixedError) {
 			t.Errorf("no fixed annotation in %q", all)
+		}
+		// The message did reach the log, cleaned: ESC, %, the newline and
+		// everything past 200 bytes gone.
+		want := prefix + "::error::x[31m0A::warning::ynext "
+		want += strings.Repeat("A", 200-(len(want)-len(prefix))) + "\n"
+		if !strings.Contains(all, want) {
+			t.Errorf("the cleaned message is not in the log; want %q in\n%s", want, all)
 		}
 	})
 
