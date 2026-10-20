@@ -8,7 +8,9 @@ on:
   # A manual run from main re-publishes edge without a new commit; from a tag
   # it re-publishes that tag; either way verify then runs against the new
   # digest. From any other ref the checks run and publish and verify are
-  # skipped. Only users with write access can trigger it.
+  # skipped. A manual run from main also redeploys, through the deploy job,
+  # and holds the concurrency group until it ends. Only users with write
+  # access can trigger it.
   workflow_dispatch:
 
 permissions:
@@ -55,7 +57,7 @@ jobs:
       - name: Tracked-file guards ran and passed
         shell: bash
         run: |
-          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestGoToolchainConsistent|TestDockerfilePinned|TestVulnPinned|TestImageJobsGated' -v | tee "$RUNNER_TEMP/guards.log"
+          go test ./cmd/server -run 'TestNoInternalReferences|TestProseStyle|TestOwnerConsistent|TestNodeMajorConsistent|TestGoToolchainConsistent|TestDockerfilePinned|TestVulnPinned|TestImageJobsGated|TestDeployJobGated|TestEdgeDeploy' -v | tee "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestNoInternalReferences' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestProseStyle' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestOwnerConsistent' "$RUNNER_TEMP/guards.log"
@@ -64,6 +66,8 @@ jobs:
           grep -q -- '--- PASS: TestDockerfilePinned' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestVulnPinned' "$RUNNER_TEMP/guards.log"
           grep -q -- '--- PASS: TestImageJobsGated' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestDeployJobGated ' "$RUNNER_TEMP/guards.log"
+          grep -q -- '--- PASS: TestEdgeDeploy ' "$RUNNER_TEMP/guards.log"
       - run: make vuln
 
   web:
@@ -337,11 +341,13 @@ jobs:
 
   # The published index pulled by digest with no credential and run through
   # the same image checks, once on each platform. This is the first run of
-  # the bytes publish pushed. It is a signal after publish, not a gate: by
-  # the time it runs the tags have moved, and a red verify means the next
-  # patch tag (docs/13-releasing.md). The pull uses an empty client config
-  # and the job holds no login, no secret and no packages permission, so a
-  # private package fails the pull.
+  # the bytes publish pushed. It does not gate the tags: by the time it runs
+  # they have moved, and a red verify means the next patch tag
+  # (docs/13-releasing.md). It gates the deploy job, so CI never asks to
+  # deploy a digest that failed on either platform; edge has already moved,
+  # so a redeploy pressed by hand would still pull it. The pull uses an empty
+  # client config and the job holds no login, no secret and no packages
+  # permission, so a private package fails the pull.
   verify:
     name: verify (${{ matrix.arch }})
     needs: publish
@@ -400,3 +406,28 @@ jobs:
       - name: Remove the container
         if: always()
         run: docker rm -f porymcp-ci || true
+
+  # Redeploys the deployment that follows edge and waits for it to finish
+  # (PORM-220). It runs on main only, after both verify legs, because tags do
+  # not move edge. Its two secrets live in the edge environment, which admits
+  # main only; the repository has no secret. One main run at a time comes from
+  # the workflow's concurrency group. Not a required check: a red deploy does
+  # not block the next merge.
+  deploy:
+    needs: [publish, verify]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: edge
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Redeploy the deployment that follows edge and wait for it
+        shell: bash
+        env:
+          DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: bash scripts/edge-deploy.sh

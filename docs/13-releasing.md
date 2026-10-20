@@ -81,7 +81,7 @@ The tag run proves the image on both platforms without a person in the loop: `pu
 gh run view <run id> --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
 ```
 
-Every row reads `success`. The checks are `scripts/image-check.sh`; to repeat one by hand against the published image on a host of either architecture, follow `make image-check` in `CONTRIBUTING.md` with `IMAGE_CHECK_REF=ghcr.io/danjonesio/porymcp@sha256:<digest>` after a `docker pull` of that reference, then `docker rm -f porymcp-ci` and `docker rmi` the image.
+Every row reads `success` except `deploy`, which reads `skipped`: only a run from `main` deploys. The checks are `scripts/image-check.sh`; to repeat one by hand against the published image on a host of either architecture, follow `make image-check` in `CONTRIBUTING.md` with `IMAGE_CHECK_REF=ghcr.io/danjonesio/porymcp@sha256:<digest>` after a `docker pull` of that reference, then `docker rm -f porymcp-ci` and `docker rmi` the image.
 
 ## After
 
@@ -104,7 +104,7 @@ The notes file holds one line per `###` heading under the release's heading in `
   gh workflow run ci --ref vX.Y.Z
   ```
 
-  If any tag was pushed, cut the next patch instead. A dispatch from `main` republishes `edge`, so `--ref main` is never part of a release.
+  If any tag was pushed, cut the next patch instead. A dispatch from `main` republishes `edge` and redeploys the deployment that follows it, so `--ref main` is never part of a release.
 - The image is bad after the tag, including a red `verify`. Cut the next patch; `latest` keeps pointing at the bad digest until that run publishes. Deleting a package version is a deliberate act and needs a wider token for the length of the deletion only:
 
   ```
