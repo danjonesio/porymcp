@@ -3,9 +3,9 @@
 # Deploy on merge: yes for cmd/, internal/, web/, go.mod, go.sum and
 # openapi.yaml, the paths the Dockerfile copies, because the publish job in
 # .github/workflows/ci.yml runs on every push to main and pushes
-# ghcr.io/danjonesio/porymcp:edge and :sha-<short>. Nothing else goes live on
-# its own: a deployment that follows edge is redeployed by hand, and README.md
-# tells production to pin a digest.
+# ghcr.io/danjonesio/porymcp:edge and :sha-<short>, and its deploy job then
+# redeploys the deployment that follows edge. Nothing else goes live on its
+# own: README.md tells production to pin a digest.
 # No for .github/workflows/ and the compose files, which the image never
 # contains.
 #
@@ -14,8 +14,8 @@
 # updates on all four ecosystems so the digest pins move deliberately. The
 # standard's default for a deploying path is security-only; the reasons for
 # going wider are that a merge republishes edge from whatever sources it
-# changed while the deploy itself is a hand press, and that a pin nothing
-# watches is the drift PORM-42 exists to stop. Monthly rather than PORM-42's
+# changed and the deploy job puts it live with no one in the loop, and that
+# a pin nothing watches is the drift PORM-42 exists to stop. Monthly rather than PORM-42's
 # weekly: the default-branch ruleset requires an up-to-date branch, so every
 # open PR rebases after every merge, and fewer grouped PRs cost fewer CI runs.
 # Each lane carries two groups, so a bump month is one PR and an advisory wave

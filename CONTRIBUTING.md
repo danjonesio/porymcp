@@ -1,6 +1,6 @@
 # Contributing
 
-PoryMCP is developed on GitHub at `danjonesio/porymcp`. Every change reaches `main` through a pull request, and every pull request runs the checks below from `.github/workflows/ci.yml`. Neither workflow in `.github/workflows` needs a repository secret: the `publish` job in `ci.yml` uses its own `GITHUB_TOKEN` with `packages: write`, and nothing else in either pipeline authenticates anywhere.
+PoryMCP is developed on GitHub at `danjonesio/porymcp`. Every change reaches `main` through a pull request, and every pull request runs the checks below from `.github/workflows/ci.yml`. Neither workflow in `.github/workflows` needs a repository secret: the `publish` job in `ci.yml` uses its own `GITHUB_TOKEN` with `packages: write`. The `deploy` job reads two secrets, `DEPLOY_WEBHOOK_URL` and `DEPLOY_TOKEN`, from the `edge` environment, which admits `main` only, and redeploys the deployment that follows `edge` after each merge; where they are unset, as in a fork, it prints a notice and passes. Nothing else in either pipeline authenticates anywhere.
 
 ## Before you open a pull request
 
