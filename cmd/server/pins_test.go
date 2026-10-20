@@ -731,7 +731,11 @@ func TestCIGateProblems_CommentIgnored(t *testing.T) {
 // workflow later and a tag named main never reach the edge environment.
 const deployIf = "    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'"
 
-var deployNeeds = regexp.MustCompile(`(?m)^    needs: \[([^\]]*)\]`)
+var (
+	deployNeeds = regexp.MustCompile(`(?m)^    needs: \[([^\]]*)\]`)
+	// An environment named edge, as a scalar or as a mapping's name.
+	edgeEnvLine = regexp.MustCompile(`(?m)^\s*(environment|name):\s*['"]?edge['"]?\s*$`)
+)
 
 // deployGateProblems reports what would let the deploy job run on another
 // ref or event, deploy before both verify legs passed, widen its token, turn
@@ -777,6 +781,9 @@ func deployGateProblems(src string) []string {
 				perms = append(perms, l)
 			}
 			for _, p := range lines[i+1:] {
+				if strings.TrimSpace(p) == "" {
+					continue
+				}
 				if !strings.HasPrefix(p, "      ") {
 					break
 				}
@@ -790,29 +797,46 @@ func deployGateProblems(src string) []string {
 	if strings.Contains(block, "continue-on-error") {
 		problems = append(problems, "deploy sets continue-on-error")
 	}
-	// An expression on a run line, or in a run block, is pasted into the
-	// shell before it runs; the secrets reach the script through env only.
+	// An expression on a run line, or on any more-indented line under it (a
+	// block or a plain multi-line scalar), is pasted into the shell before it
+	// runs; the secrets reach the script through env only.
 	for i, l := range lines {
 		t := strings.TrimPrefix(strings.TrimSpace(l), "- ")
 		if !strings.HasPrefix(t, "run:") {
 			continue
 		}
 		body := []string{t}
-		if v := strings.TrimSpace(strings.TrimPrefix(t, "run:")); strings.HasPrefix(v, "|") || strings.HasPrefix(v, ">") {
-			indent := len(l) - len(strings.TrimLeft(l, " "))
-			for _, n := range lines[i+1:] {
-				if strings.TrimSpace(n) != "" && len(n)-len(strings.TrimLeft(n, " ")) <= indent {
-					break
-				}
-				body = append(body, n)
+		indent := len(l) - len(strings.TrimLeft(l, " "))
+		for _, n := range lines[i+1:] {
+			if strings.TrimSpace(n) != "" && len(n)-len(strings.TrimLeft(n, " ")) <= indent {
+				break
 			}
+			body = append(body, n)
 		}
 		if strings.Contains(strings.Join(body, "\n"), "${{") {
 			problems = append(problems, "deploy has an expression in a run step")
 		}
 	}
-	if strings.Count(withoutComments(src), "secrets.DEPLOY_") != strings.Count(block, "secrets.DEPLOY_") {
+	// Job-level env would hand the secrets to the checkout step too, so each
+	// one is mapped on its own line in the step's env.
+	for _, l := range lines {
+		if strings.Contains(l, "secrets.") && !strings.HasPrefix(l, "          DEPLOY_") {
+			problems = append(problems, "deploy maps a secret outside the step's env")
+		}
+	}
+	// Environment secrets reach any job that names the environment, so no
+	// other job may name it, and no job may read the secrets by index or
+	// whole.
+	whole := withoutComments(src)
+	rest := strings.Replace(whole, block, "", 1)
+	if strings.Count(whole, "secrets.DEPLOY_") != strings.Count(block, "secrets.DEPLOY_") {
 		problems = append(problems, "a DEPLOY_ secret is read outside the deploy job")
+	}
+	if edgeEnvLine.MatchString(rest) {
+		problems = append(problems, "a job other than deploy names the edge environment")
+	}
+	if strings.Contains(whole, "secrets[") || strings.Contains(whole, "toJSON(secrets") {
+		problems = append(problems, "the workflow reads secrets by index or whole")
 	}
 	return problems
 }
@@ -885,6 +909,9 @@ func TestDeployGateProblems_EnvironmentURL(t *testing.T) {
 func TestDeployGateProblems_Permissions(t *testing.T) {
 	src := strings.Replace(deployWorkflow, "      contents: read\n", "      contents: read\n      deployments: write\n", 1)
 	wantDeployProblem(t, src, "contents: read alone")
+	// A blank line inside the block does not end it.
+	src = strings.Replace(deployWorkflow, "      contents: read\n", "      contents: read\n\n      deployments: write\n", 1)
+	wantDeployProblem(t, src, "contents: read alone")
 	src = strings.Replace(deployWorkflow, "    permissions:\n      contents: read\n", "    permissions: write-all\n", 1)
 	wantDeployProblem(t, src, "contents: read alone")
 }
@@ -899,6 +926,27 @@ func TestDeployGateProblems_RunExpression(t *testing.T) {
 	wantDeployProblem(t, src, "expression in a run step")
 	src = strings.Replace(deployWorkflow, "        run: bash scripts/edge-deploy.sh\n", "        run: |\n          echo ${{ github.ref }}\n          bash scripts/edge-deploy.sh\n", 1)
 	wantDeployProblem(t, src, "expression in a run step")
+	src = strings.Replace(deployWorkflow, "        run: bash scripts/edge-deploy.sh\n", "        run: bash scripts/edge-deploy.sh\n          ${{ github.ref }}\n", 1)
+	wantDeployProblem(t, src, "expression in a run step")
+}
+
+func TestDeployGateProblems_JobLevelEnv(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "    timeout-minutes: 15\n", "    timeout-minutes: 15\n    env:\n      T: ${{ secrets.DEPLOY_TOKEN }}\n", 1)
+	wantDeployProblem(t, src, "outside the step's env")
+}
+
+func TestDeployGateProblems_EdgeNamedElsewhere(t *testing.T) {
+	src := strings.Replace(deployWorkflow, "  verify:\n    needs: publish\n", "  verify:\n    needs: publish\n    environment: edge\n", 1)
+	wantDeployProblem(t, src, "other than deploy names the edge environment")
+	src = strings.Replace(deployWorkflow, "  verify:\n    needs: publish\n", "  verify:\n    needs: publish\n    environment:\n      name: edge\n", 1)
+	wantDeployProblem(t, src, "other than deploy names the edge environment")
+}
+
+func TestDeployGateProblems_SecretsWhole(t *testing.T) {
+	for _, expr := range []string{"${{ toJSON(secrets) }}", "${{ secrets['DEPLOY_TOKEN'] }}"} {
+		src := strings.Replace(deployWorkflow, "      - run: docker pull", "      - env:\n          T: "+expr+"\n        run: docker pull", 1)
+		wantDeployProblem(t, src, "by index or whole")
+	}
 }
 
 func TestDeployGateProblems_SecretOutside(t *testing.T) {
