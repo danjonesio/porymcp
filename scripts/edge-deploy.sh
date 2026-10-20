@@ -171,9 +171,14 @@ msg="$(field '.deployments[0].message' | clean)"
 if [ "$msg" = 'Deployment already queued for this commit.' ]; then
   not_started 'deploy: a deployment was already in flight; nothing new was requested'
 fi
-# The id goes into the status URL, so it is checked before any use.
-if ! [[ $id =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+# The id goes into the status URL, so it is checked before any use. With no
+# id the message says why; next to an id it is the success text, which names
+# the resource, so it is not printed.
+if [ -z "$id" ]; then
   not_started 'deploy: the answer has no valid deployment id' "${msg:+: $msg}"
+fi
+if ! [[ $id =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+  not_started 'deploy: the answer has no valid deployment id'
 fi
 echo "deploy: requested $id"
 

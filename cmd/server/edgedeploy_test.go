@@ -359,8 +359,7 @@ func TestEdgeDeploy(t *testing.T) {
 	})
 
 	// The poll rule: a 5xx and a 2xx with no status keep waiting; 401, 403
-	// and 404 fail
-	// at once.
+	// and 404 fail at once.
 	t.Run("PollErrors/502ThenFinished", func(t *testing.T) {
 		stub := newDeployStub(t, queued(edID, "queued"), stubAnswer{502, `bad gateway`}, stubAnswer{200, `{}`}, status("finished"))
 		r := run(t, stub, edgeEnv(t, stub))
@@ -511,10 +510,15 @@ func TestEdgeDeploy(t *testing.T) {
 	// Security requirement 8: an id that is not an id never reaches a URL.
 	for _, id := range []string{"../x", "a?b"} {
 		t.Run("BadID/"+id, func(t *testing.T) {
-			stub := newDeployStub(t, queued(id, "queued"), status("finished"))
+			stub := newDeployStub(t, queued(id, "Application named-resource deployment queued."), status("finished"))
 			r := run(t, stub, edgeEnv(t, stub))
 			wantCode(t, r, 1)
 			wantOut(t, r, "FAIL deploy: the answer has no valid deployment id")
+			// Next to an id the message is the success text, which names the
+			// resource.
+			if strings.Contains(r.stdout+r.stderr, "named-resource") {
+				t.Errorf("the success message reached the log:\n%s", r.stdout)
+			}
 			if gets(stub) != 0 {
 				t.Error("the script polled with an invalid id")
 			}

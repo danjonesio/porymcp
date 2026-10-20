@@ -735,6 +735,8 @@ var (
 	deployNeeds = regexp.MustCompile(`(?m)^    needs: \[([^\]]*)\]`)
 	// An environment named edge, as a scalar or as a mapping's name.
 	edgeEnvLine = regexp.MustCompile(`(?m)^\s*(environment|name):\s*['"]?edge['"]?\s*$`)
+	// Expression function names ignore case and allow spaces.
+	secretsWhole = regexp.MustCompile(`(?i)\bsecrets\s*\[|\btojson\s*\(\s*secrets\b`)
 )
 
 // deployGateProblems reports what would let the deploy job run on another
@@ -835,7 +837,7 @@ func deployGateProblems(src string) []string {
 	if edgeEnvLine.MatchString(rest) {
 		problems = append(problems, "a job other than deploy names the edge environment")
 	}
-	if strings.Contains(whole, "secrets[") || strings.Contains(whole, "toJSON(secrets") {
+	if secretsWhole.MatchString(whole) {
 		problems = append(problems, "the workflow reads secrets by index or whole")
 	}
 	return problems
@@ -943,7 +945,7 @@ func TestDeployGateProblems_EdgeNamedElsewhere(t *testing.T) {
 }
 
 func TestDeployGateProblems_SecretsWhole(t *testing.T) {
-	for _, expr := range []string{"${{ toJSON(secrets) }}", "${{ secrets['DEPLOY_TOKEN'] }}"} {
+	for _, expr := range []string{"${{ toJSON(secrets) }}", "${{ toJson( secrets ) }}", "${{ secrets['DEPLOY_TOKEN'] }}", "${{ secrets ['DEPLOY_TOKEN'] }}"} {
 		src := strings.Replace(deployWorkflow, "      - run: docker pull", "      - env:\n          T: "+expr+"\n        run: docker pull", 1)
 		wantDeployProblem(t, src, "by index or whole")
 	}
