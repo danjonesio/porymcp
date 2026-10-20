@@ -5,6 +5,8 @@
 #   SMOKE_BASE         the instance root, default http://localhost:8080
 #   SMOKE_EXPECT_EDGE  1 to require scheme_enforced and a trusted proxy on /health
 #   SMOKE_VIRTUAL_KEY  a virtual key; runs one handshake and tools/list on /mcp
+#   SMOKE_VIRTUAL_ENDPOINT  that key's own door on the same origin, /{id}/mcp or
+#                      /{id}/{slug}/mcp; runs the same handshake through it
 #   ADMIN_API_KEY      with STUB_URL, runs the full section against a loopback instance
 #   STUB_URL           the echo stub (scripts/echostub) as the instance reaches it
 #
@@ -25,6 +27,7 @@ SMOKE_BASE="${SMOKE_BASE:-http://localhost:8080}"
 SMOKE_BASE="${SMOKE_BASE%/}"
 SMOKE_EXPECT_EDGE="${SMOKE_EXPECT_EDGE:-}"
 SMOKE_VIRTUAL_KEY="${SMOKE_VIRTUAL_KEY:-}"
+SMOKE_VIRTUAL_ENDPOINT="${SMOKE_VIRTUAL_ENDPOINT:-}"
 ADMIN_API_KEY="${ADMIN_API_KEY:-}"
 STUB_URL="${STUB_URL:-}"
 STUB_URL="${STUB_URL%/}"
@@ -154,6 +157,38 @@ def validate(name, val):
     return u.scheme, u.hostname
 
 
+# A key's own door: /{id}/mcp, or /{id}/{slug}/mcp with the slug in the
+# models slug pattern. The id is matched loosely so the check does not tie
+# itself to the id format.
+DOOR_PATH = re.compile(r'^/([0-9A-Za-z-]{1,64})(/[a-z0-9]([a-z0-9_-]{0,38}[a-z0-9])?)?/mcp$')
+DEFAULT_PORT = {'http': 80, 'https': 443}
+
+
+# door checks VAL against BASE and returns (key id, None), or (None, reason).
+# The door must share BASE's scheme, host and port, so the key is never sent
+# to another origin. A reason never quotes the value.
+def door(base, val):
+    if any(c.isspace() or ord(c) < 32 for c in val):
+        return None, 'has a space or a control character'
+    b, u = urlsplit(base), urlsplit(val)
+    if u.username is not None or u.password is not None:
+        return None, 'has userinfo'
+    if u.query or u.fragment:
+        return None, 'has a query or a fragment'
+    if u.scheme != b.scheme:
+        return None, 'is not on the scheme of SMOKE_BASE'
+    try:
+        same = (u.hostname, u.port or DEFAULT_PORT.get(u.scheme)) == (b.hostname, b.port or DEFAULT_PORT.get(b.scheme))
+    except ValueError:
+        return None, 'has a port that is not a number'
+    if not same:
+        return None, 'is not on the host and port of SMOKE_BASE'
+    m = DOOR_PATH.match(u.path)
+    if not m:
+        return None, 'is not a /{id}/mcp or /{id}/{slug}/mcp path'
+    return m.group(1), None
+
+
 def load_rows(tmp, name):
     try:
         raw = read(os.path.join(tmp, name))
@@ -243,6 +278,10 @@ def main():
         if r is None:
             sys.exit(1)
         print(r[0], r[1])
+    elif cmd == 'door':
+        kid, why = door(sys.argv[2], sys.argv[3])
+        print(kid or why)
+        sys.exit(0 if kid else 1)
     elif cmd == 'jget':
         want = sys.argv[4] if len(sys.argv) > 4 else None
         print(show(walk(pick(read(sys.argv[2]), want), sys.argv[3])))
@@ -880,6 +919,18 @@ loopback=""
 case "$base_host" in
   localhost|127.0.0.1|::1) loopback=1 ;;
 esac
+door_id=""
+if [ -n "$SMOKE_VIRTUAL_ENDPOINT" ]; then
+  section=input
+  if [ -z "$SMOKE_VIRTUAL_KEY" ]; then
+    fail "SMOKE_VIRTUAL_ENDPOINT" "set without SMOKE_VIRTUAL_KEY"
+    exit 1
+  fi
+  if ! door_id="$(py door "$SMOKE_BASE" "$SMOKE_VIRTUAL_ENDPOINT")"; then
+    fail "SMOKE_VIRTUAL_ENDPOINT" "$door_id"
+    exit 1
+  fi
+fi
 if [ "$base_scheme" = http ] && [ -z "$loopback" ] && { [ -n "$SMOKE_VIRTUAL_KEY" ] || [ -n "$ADMIN_API_KEY" ]; }; then
   section=input
   fail "scheme" "a key is never sent over plain http to a remote host"
@@ -896,6 +947,12 @@ if [ -n "$SMOKE_VIRTUAL_KEY" ]; then
   printf 'Authorization: Bearer %s\n' "$SMOKE_VIRTUAL_KEY" > "$tmp/hdr.deploy"
   printf '%s\n' "$SMOKE_VIRTUAL_KEY" >> "$tmp/secrets"
   mask "$SMOKE_VIRTUAL_KEY"
+fi
+# The door's path carries the key's id. It is no credential, but it is
+# withheld from every printed body all the same.
+if [ -n "$door_id" ]; then
+  printf '%s\n' "$door_id" >> "$tmp/secrets"
+  mask "$door_id"
 fi
 sfx="$(py suffix)"
 
@@ -929,14 +986,17 @@ else
   fail "GET / is 200 text/html with the PoryMCP title" "status $(code), content type $ct"
 fi
 
-# deploy key: the shared /mcp door with an operator's key. One handshake,
-# one tools/list, one DELETE. The tool count is printed, never the body.
-if [ -n "$SMOKE_VIRTUAL_KEY" ]; then
-  say "deploy key"
+# deploy_door LABEL URL WHERE: one handshake, one tools/list and one DELETE
+# through URL with the operator's key. WHERE names the door on the PASS
+# line; the URL itself is never printed. The tool count is printed, never
+# the body.
+deploy_door() {
+  local label="$1" url="$2" where="$3"
+  say "$label"
   : > "$tmp/ids.deploy"
-  if handshake "$SMOKE_BASE/mcp" "$tmp/hdr.deploy" "$tmp/ids.deploy" "deploy key" "" 1; then
-    pass "initialize on /mcp answers protocolVersion $hs_version"
-    rpc "$SMOKE_BASE/mcp" "$tmp/hdr.deploy" "$(rpc_body 2 tools/list)" "$tmp/ids.deploy" "$hs_session" "$hs_version"
+  if handshake "$url" "$tmp/hdr.deploy" "$tmp/ids.deploy" "$label" "" 1; then
+    pass "initialize on $where answers protocolVersion $hs_version"
+    rpc "$url" "$tmp/hdr.deploy" "$(rpc_body 2 tools/list)" "$tmp/ids.deploy" "$hs_session" "$hs_version"
     n="$(py tool_count "$tmp/body" 2)"
     if [ "$(code)" = 200 ] && [ "${n:-0}" -gt 0 ] 2>/dev/null; then
       pass "tools/list carries $n tool$([ "$n" = 1 ] || echo s)"
@@ -944,9 +1004,18 @@ if [ -n "$SMOKE_VIRTUAL_KEY" ]; then
       fail "tools/list carries at least one tool" "status $(code), count ${n:-0}" "$tmp/body"
     fi
     if [ -n "$hs_session" ]; then
-      del "$SMOKE_BASE/mcp" "$tmp/hdr.deploy" "$hs_session"
-      echo "deploy key: DELETE with the session answered $(code)"
+      del "$url" "$tmp/hdr.deploy" "$hs_session"
+      echo "$label: DELETE with the session answered $(code)"
     fi
+  fi
+}
+
+# deploy key: the shared /mcp door with an operator's key, then that key's
+# own door when SMOKE_VIRTUAL_ENDPOINT names it.
+if [ -n "$SMOKE_VIRTUAL_KEY" ]; then
+  deploy_door "deploy key" "$SMOKE_BASE/mcp" /mcp
+  if [ -n "$SMOKE_VIRTUAL_ENDPOINT" ]; then
+    deploy_door "key door" "$SMOKE_VIRTUAL_ENDPOINT" "the key's own door"
   fi
 fi
 
