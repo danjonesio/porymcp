@@ -14,10 +14,11 @@
 # updates on all four ecosystems so the digest pins move deliberately. The
 # standard's default for a deploying path is security-only; the reasons for
 # going wider are that a merge republishes edge from whatever sources it
-# changed and the deploy job puts it live with no one in the loop, and that
-# a pin nothing watches is the drift PORM-42 exists to stop. Monthly rather than PORM-42's
-# weekly: the default-branch ruleset requires an up-to-date branch, so every
-# open PR rebases after every merge, and fewer grouped PRs cost fewer CI runs.
+# changed and the deploy job then puts it live with no further step, and
+# that a pin nothing watches is the drift PORM-42 exists to stop. Monthly
+# rather than PORM-42's weekly: the default-branch ruleset requires an
+# up-to-date branch, so every open PR rebases after every merge, and fewer
+# grouped PRs cost fewer CI runs.
 # Each lane carries two groups, so a bump month is one PR and an advisory wave
 # is one PR.
 #

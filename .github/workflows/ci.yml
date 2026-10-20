@@ -343,10 +343,11 @@ jobs:
   # the same image checks, once on each platform. This is the first run of
   # the bytes publish pushed. It does not gate the tags: by the time it runs
   # they have moved, and a red verify means the next patch tag
-  # (docs/13-releasing.md). It gates the deploy job, so a digest that failed
-  # on either platform is never deployed. The pull uses an empty client config
-  # and the job holds no login, no secret and no packages permission, so a
-  # private package fails the pull.
+  # (docs/13-releasing.md). It gates the deploy job, so CI never asks to
+  # deploy a digest that failed on either platform; edge has already moved,
+  # so a redeploy pressed by hand would still pull it. The pull uses an empty
+  # client config and the job holds no login, no secret and no packages
+  # permission, so a private package fails the pull.
   verify:
     name: verify (${{ matrix.arch }})
     needs: publish
