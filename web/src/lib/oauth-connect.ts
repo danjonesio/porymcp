@@ -6,8 +6,8 @@ import { discoveryErrorMessage } from './discovery.ts'
  * (PORM-139). 404: the row went away; the page reloads the list, so there is
  * no dialog to close. A 400 or a 502 is the server's own fixed sentence
  * (PUBLIC_URL, the auth type, the authorization server). Everything else is
- * the house mapper's: the 429 of the discovery budget the start route shares,
- * the 401 sentence, the network sentence.
+ * discoveryErrorMessage's: the 429 of the discovery budget the start route
+ * shares, then the house mapper's 401 and network sentences.
  */
 export function connectErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {

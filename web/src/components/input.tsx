@@ -14,7 +14,7 @@ export function Input({
   ...props
 }: {
   className?: string
-  type?: 'email' | 'number' | 'password' | 'search' | 'tel' | 'text' | 'url'
+  type?: 'datetime-local' | 'email' | 'number' | 'password' | 'search' | 'tel' | 'text' | 'url'
 } & Omit<Headless.InputProps, 'as' | 'className' | 'type'>) {
   return (
     <span data-slot="control" className={clsx(className, controlFrame)}>

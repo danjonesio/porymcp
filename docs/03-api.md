@@ -1052,8 +1052,17 @@ PORM-149's.
 `limit` below 1 or not an integer is a `400`; above 200 it is treated as 50.
 
 `since` and `until` take RFC 3339 and are inclusive and exact, at any
-fraction of a second. `next_cursor` is opaque; a cursor issued by a build before
-schema version 6 still works after the upgrade.
+fraction of a second. A `since` after `until` is an empty page, not an error.
+The response is `{"logs": [...], "next_cursor": "..."}`, newest first;
+`next_cursor` is empty on the last page and `logs` is `[]`, never null.
+The cursor is opaque: pass `next_cursor` back as `cursor`. A cursor issued by
+a build before schema version 6 still works after the upgrade; a malformed one,
+including one with an empty half, is a `400 {"error":"invalid cursor"}`, as on
+`/admin-events`. A cursor holds a position, not the filters: send it with the
+query of the page that returned it, as the dashboard's Load more does. On
+SQLite a page that follows a cursor reads one index range down from the cursor
+(the timestamp index, or the virtual key index with `virtual_key_id`) instead
+of sorting every row below it.
 
 ## Admin events
 - `GET /admin-events?since=&resource_type=&limit=&cursor=`

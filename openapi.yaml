@@ -753,11 +753,16 @@ paths:
             type: integer
         - name: cursor
           in: query
+          description: >-
+            Opaque, from the previous page's `next_cursor`. A malformed cursor,
+            including one with an empty half, is a 400.
           schema:
             type: string
       responses:
         "200":
           description: Page of logs
+        "400":
+          description: Invalid limit, since, until or cursor
   /logs/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"

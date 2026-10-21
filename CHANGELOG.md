@@ -4,6 +4,39 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The Logs page pages back through history and narrows Proxy calls to a period (PORM-20)
+
+- **Load more under each table.** Proxy calls and Admin activity show 50 rows
+  at a time with `Load more calls` / `Load more changes` and a count line;
+  the button goes on the last page. Before, each table stopped at the 50
+  newest rows with no way to reach older ones from the dashboard.
+- **A Period select on Proxy calls.** Last 24 hours, Last 7 days (the
+  default), Last 30 days or Custom, which shows Since and Until in the
+  browser's time zone. The page used to ask for every row with no window; it
+  now sends `since` for the chosen period on every request.
+- **The Log detail dialog names the upstream** with its slug beside it, in
+  place of the raw id; a row whose upstream is no longer listed shows the
+  full id with "Not in the upstream list.".
+- **A Load more reads one index range.** On SQLite, a page that followed a
+  cursor, alone or with `since`, sorted every row below the cursor before
+  taking 50, on the one connection the proxy's key lookups share; on both
+  `/logs` and `/admin-events`. The cursor now adds one upper bound, so a page
+  is one index range read at any depth (measured on 1M rows: about 1 s
+  before, under 0.5 ms after). The rows returned are unchanged.
+
+### `GET /api/v1/logs` refuses a malformed cursor with 400 (PORM-154)
+
+- **A cursor with an empty half is a `400 {"error":"invalid cursor"}`** on
+  `/logs`, as it already was on `/admin-events`. Before, a cursor whose
+  timestamp half was empty answered `200` with an empty page, which a client
+  walking the log read as the end. A cursor whose id half is empty, not valid
+  UTF-8 or holds a NUL is refused the same way on both routes. No cursor the
+  server issues has any of these.
+
+### The Go toolchain moves to 1.26.10 and the build image to Go 1.27.3
+
+- **GO-2026-6809 cleared.** `go.mod` pins `toolchain go1.26.10`, which adds a denylist of intermediate certificates that are no longer trusted to `crypto/x509` (`Certificate.Verify` refuses a chain through one). `govulncheck` reported it against go1.26.9. The `golang:1.27-alpine` build image digest moves from Go 1.27.2 to Go 1.27.3, the release that carries the same fix, so the published image is built on a patched compiler.
+
 ### Every dashboard table's row actions sit behind one Actions menu (PORM-219)
 
 - **One Actions button per row.** On Virtual keys, Upstreams and Groups each

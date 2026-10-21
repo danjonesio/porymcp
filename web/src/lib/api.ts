@@ -65,6 +65,29 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T
 }
 
+/**
+ * requestErrorMessage is the house mapper: one sentence for a failed
+ * management request. 429 is the failed-admin-auth limiter that sits in front
+ * of every management route (internal/api/api.go requireAdmin), which a stale
+ * session key reaches. 401 has no redirect to the login page: the other pages
+ * would not do it either, and a redirect on one page is worse than none
+ * (PORM-31). Any other ApiError is the server's own sentence, verbatim;
+ * anything else never reached PoryMCP. Callers with a sentence of their own
+ * for a status (a discovery budget, a missing row) check it first.
+ */
+export function requestErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      const n = err.retryAfterSeconds
+      if (n === undefined) return 'Too many requests. Try again in a minute.'
+      return `Too many requests. Try again in ${n} ${n === 1 ? 'second' : 'seconds'}.`
+    }
+    if (err.status === 401) return 'This browser session is no longer signed in. Reload the page to sign in again.'
+    return err.message
+  }
+  return 'Could not reach PoryMCP. Check that the server is still running.'
+}
+
 export type Upstream = {
   id: string
   name: string
