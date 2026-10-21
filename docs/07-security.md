@@ -249,8 +249,9 @@
   `error` after a member over 1 MiB is not rewritten, the injected literal
   included. Rows written before
   this change hold the upstream's text as sent. Nothing purges them until retention
-  ships (PORM-13); an operator whose upstream echoed a credential should
-  rotate it at the vendor.
+  ships (PORM-13), and since PORM-20 the Logs page pages back to them with
+  Load more rather than through the API alone; an operator whose upstream
+  echoed a credential should rotate it at the vendor.
 - Management changes are recorded in `admin_events` (PORM-54): one row per
   successful create, update, delete, rotate or revoke, with actor, action,
   resource, request id and client address, written after the store write

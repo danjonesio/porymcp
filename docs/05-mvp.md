@@ -33,8 +33,6 @@
   fails is left out of the merged catalogue while the client's request succeeds.
   Each member's own endpoint `/{virtual_key_id}/{upstream_slug}/mcp` passes the
   handshake through (PORM-23).
-- The Logs page shows the newest 50 rows and has no control for older ones.
-  `GET /api/v1/logs` returns a `next_cursor` for them (PORM-20).
 
 ## Nice-to-have (post-MVP)
 - Tool-level filtering UI ships (PORM-4): a group's filter and a virtual key's
