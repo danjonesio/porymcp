@@ -1053,7 +1053,9 @@ PORM-149's.
 
 `since` and `until` take RFC 3339 and are inclusive and exact, at any
 fraction of a second. `next_cursor` is opaque; a cursor issued by a build before
-schema version 6 still works after the upgrade.
+schema version 6 still works after the upgrade. `cursor` is opaque; a malformed
+one, including one with an empty half, is a `400 {"error":"invalid cursor"}`,
+as on `/admin-events`.
 
 ## Admin events
 - `GET /admin-events?since=&resource_type=&limit=&cursor=`
