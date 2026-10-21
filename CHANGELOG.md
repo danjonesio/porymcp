@@ -21,7 +21,7 @@ Behaviour changes that affect a running deployment. Newest first.
   cursor, alone or with `since`, sorted every row below the cursor before
   taking 50, on the one connection the proxy's key lookups share; on both
   `/logs` and `/admin-events`. The cursor now adds one upper bound, so a page
-  is one index range read at any depth (measured on 1M rows: up to 0.96 s
+  is one index range read at any depth (measured on 1M rows: about 1 s
   before, under 0.5 ms after). The rows returned are unchanged.
 
 ### `GET /api/v1/logs` refuses a malformed cursor with 400 (PORM-154)
