@@ -2,7 +2,7 @@
 
 A release is a signed `vX.Y.Z` tag on a merge commit on `main`. The tag run in `.github/workflows/ci.yml` runs the amd64 image, builds and runs an arm64 image natively, publishes both platforms to `ghcr.io/danjonesio/porymcp`, and then pulls the published image and runs it on each platform. Which tags it publishes, which of them move and what each job proves are in `docs/08-docker.md`, Images and tags. This page covers the number, the steps in order, and what to do when a step goes red.
 
-Every release has a release issue, the issue that tracks the cut (PORM-131 for v0.1.0). It records the number and any exception to the rules below, its branch carries the release pull request, and it is closed once the release page exists. Branch names and commit messages follow `CONTRIBUTING.md`, Branches and pull requests.
+Every release has a release issue, created in the project's issue tracker as `Release vX.Y.Z` to track the cut (PORM-131 cut v0.1.0). It records the number and any exception to the rules below, its branch carries the release pull request, and it is closed once the release page exists. Branch names and commit messages follow `CONTRIBUTING.md`, Branches and pull requests.
 
 Cutting a release needs write access to the repository, `gh` signed in, Docker with buildx, nvm, Go, make, and a key git signs tags with. For an SSH key, git needs the key, the format, and a file of allowed signers that `git tag -v` reads:
 
@@ -23,20 +23,22 @@ Versions follow semantic versioning, `vMAJOR.MINOR.PATCH`. The next number is de
 - New behaviour that keeps existing clients, configurations and data working, such as a new route, field, auth type or schema version: a minor (`v0.1.1` to `v0.2.0`).
 - An entry whose heading starts `### Breaking:`: a minor while the major is 0, and a major from `v1.0.0` on. `Breaking:` is the marker; an entry that changes a contract carries it.
 
-The rule reads only the headings, so first check that every change since the last tag has one. This lists the pull requests merged since then:
+The last release is the newest tag that is not a release candidate. Every tag ever pushed is spent, including one whose run failed, so the next number is above all of them. The first two commands below show both; the third lists the pull requests merged since the last release:
 
 ```
 git fetch origin --tags
-git log --first-parent --merges --format='%as %s' "$(git describe --tags --abbrev=0 origin/main)"..origin/main
+git ls-remote --tags origin 'v*'
+git describe --tags --abbrev=0 --exclude '*-rc*' origin/main
+git log --first-parent --merges --format='%as %s' "$(git describe --tags --abbrev=0 --exclude '*-rc*' origin/main)"..origin/main
 ```
 
-A change a user or operator can see (a route, a field, the dashboard, the proxy's behaviour, a schema step, a toolchain or base image move) has a `###` heading that names its issue. Dependency bumps that change no behaviour, and changes to CI, tests or docs alone, have none. A missing heading is added in a pull request of its own before the release pull request.
+The rule reads only the headings, so check that every change in that list has one. A change a user or operator can see (a route, a field, the dashboard, the proxy's behaviour, a schema step, a toolchain or base image move) has a `###` heading, which names its issue when it has one. Dependency bumps that change no behaviour, and changes to CI, tests or docs alone, have none. Each line of the list names the merged branch: an issue's branch carries its id (`dan/porm-NN-...`), and a Dependabot branch carries none, so `gh pr view <number> --json title,files` shows what it changed. A missing heading is added in a pull request of its own before the release pull request.
 
 A release candidate is `vX.Y.Z-rc1`, `-rc2` and so on; `docs/08-docker.md` says which tags it publishes. A number is never reused once its tag has been pushed: the Go checksum database records the module at a version the first time anyone fetches it, so a second commit under the same tag fails every later fetch. The release issue records any exception to these rules.
 
 ## Before the tag
 
-One pull request, on the release issue's branch, makes the release commit and nothing else. `YYYY-MM-DD` below is the day the pull request is expected to merge, and the tag follows on the same day.
+One pull request, on the release issue's branch, makes the release commit and nothing else. From the heading check in The number until the tag is pushed, nothing else merges to `main`: tell everyone who can merge. `YYYY-MM-DD` below is the day the pull request is expected to merge, and the tag follows on the same day; if either slips to a later day, the date stays as written.
 
 1. Branch from an up-to-date `main`:
 
@@ -47,21 +49,22 @@ One pull request, on the release issue's branch, makes the release commit and no
 
 2. Rename `## Unreleased` in `CHANGELOG.md` to `## vX.Y.Z (YYYY-MM-DD)` and add a new, empty `## Unreleased` above it.
 3. Set `info.version` in `openapi.yaml` to `X.Y.Z`.
-4. Set the dashboard's version with the Node release in `web/.nvmrc`, so the lockfile is written by the npm the project uses. The brackets run it in a subshell, so the shell stays in the repository root; `nvm install` installs that release when it is missing, then uses it:
+4. Switch the shell to the Node release in `web/.nvmrc`, which the next step and `make test` both need, then set the dashboard's version with it, so the lockfile is written by the npm the project uses. `nvm install` installs that release when it is missing, then uses it; the brackets keep the shell in the repository root:
 
    ```
-   (cd web && nvm install && npm version X.Y.Z --no-git-tag-version)
+   nvm install "$(cat web/.nvmrc)"
+   (cd web && npm version X.Y.Z --no-git-tag-version)
    ```
 
    This changes `web/package.json` and both version entries in `web/package-lock.json`. The lockfile is never edited by hand. nvm is a shell function: in a shell that has not loaded it, run `source ~/.nvm/nvm.sh` first.
-5. Check the change and run the tests:
+5. Run the tests and check the change:
 
    ```
-   git diff --stat
    make test
+   git status --short
    ```
 
-   `git diff --stat` lists exactly four files: `CHANGELOG.md`, `openapi.yaml`, `web/package.json` and `web/package-lock.json`. `make test` exits 0.
+   `make test` exits 0. `git status --short` then lists exactly four modified files and nothing untracked: `CHANGELOG.md`, `openapi.yaml`, `web/package.json` and `web/package-lock.json`.
 6. Commit the four files, push, open the pull request and wait for its four checks (`go`, `web`, `docker` and `docker-arm64`) to pass:
 
    ```
@@ -72,23 +75,27 @@ One pull request, on the release issue's branch, makes the release commit and no
    gh pr checks --watch
    ```
 
+   Straight after `gh pr create`, `gh pr checks` can report that no checks exist yet; run it again after a minute.
 7. Merge it with a merge commit (`gh pr merge --merge`, or Create a merge commit on the pull request page). That merge commit is what gets tagged.
 
 The MCP handshake reports the version `dev` until PORM-59 stamps a build version into the binary from the tag; PORM-59 removes steps 3 and 4 from this page when it lands. The branch name carries the release issue's id, so merging the pull request closes the issue by automation; move it back to In Progress until the release page exists.
 
 ## The tag
 
-From an up-to-date `main`, find the release pull request's merge commit and the `main` run for it:
+From an up-to-date `main`, find the release pull request's merge commit, check what merged since the last release, and read the `main` run for that commit:
 
 ```
 git switch main && git pull --ff-only origin main
 gh pr view <release pull request number> --json mergeCommit --jq .mergeCommit.oid
+git log --first-parent --merges --format='%as %s' <last release tag>..<merge sha>
 gh run list --workflow ci --commit <merge sha> --event push
 gh run watch <run id> --exit-status
 gh run view <run id> --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
 ```
 
-Every job of that run reads `success`, with one exception: `deploy` may read `failure`. It redeploys the deployment that follows `edge` and checks nothing about the image, which both `verify` legs have already run, and `ci.yml` does not make it a required check. Any other red job stops the release: fix it on `main` in a pull request of its own, and tag that pull request's merge commit instead once its run passes. The number is not spent until a tag is pushed.
+The `git log` list is the one from The number with the release pull request added at the top. Any other line merged during the cut: its heading belongs under `## vX.Y.Z`, so move it there in a pull request of its own and tag that pull request's merge commit instead.
+
+The run shows the same eight jobs as a tag run (Proving the image), and every one reads `success` with one exception: `deploy` may read `failure`. It redeploys the deployment that follows `edge` and checks nothing about the image, which both `verify` legs have already run, and `ci.yml` does not make it a required check. `gh run watch --exit-status` exits non-zero when only `deploy` failed, so read the job list either way. Any other red job stops the release: fix it on `main` in a pull request of its own that also puts its heading under `## vX.Y.Z`, and tag that pull request's merge commit instead once its run passes. The number is not spent until a tag is pushed.
 
 Then sign the tag on the merge commit, check it, and push that one tag by name:
 
@@ -111,7 +118,7 @@ gh run list --workflow ci --event push --branch vX.Y.Z
 gh run watch <run id> --exit-status
 ```
 
-A non-zero exit from the watch goes to When it goes red. When it is green, read the published digest from the registry and from the run, and check that every reading is the same digest:
+A non-zero exit from the watch goes to When it goes red. When it is green, read the published digest from the registry and from the run, and check that every reading is the same digest. The package is public, so the registry readings need no login:
 
 ```
 docker buildx imagetools inspect ghcr.io/danjonesio/porymcp:vX.Y.Z --format '{{.Manifest.Digest}}'
@@ -145,13 +152,13 @@ gh release create vX.Y.Z --verify-tag --title 'PoryMCP vX.Y.Z' --notes-file "$no
 rm "$notes"
 ```
 
-Between the first two commands, write the notes into `$notes`, from the tracked `CHANGELOG.md` only, in this order:
+Between the first two commands, write the notes into `$notes` as Markdown, from the tracked `CHANGELOG.md` only, in this order:
 
-1. An `Upgrading` paragraph that copies every sentence under the release's heading asking an operator to act before or after the upgrade: a backup, a one-way schema step and its rollback, a new or changed variable, and each `Breaking:` entry in full. With none, it reads `Nothing to do before upgrading.`
+1. An `Upgrading` paragraph that copies every sentence under the release's heading asking an operator to do something before or after the upgrade: back up, rotate a credential, reconnect clients, change a configuration, a proxy setting or a log search, or follow a rollback step. Each `Breaking:` entry is copied in full, every bullet. With none, it reads `Nothing to do before upgrading.`
 2. One line per `###` heading under the release's heading.
 3. The image and its digest, `ghcr.io/danjonesio/porymcp@sha256:<digest>`, and the pull line, `docker pull ghcr.io/danjonesio/porymcp:vX.Y.Z`.
 
-`--generate-notes` is not used: it publishes the title of every pull request merged since the last release, text that no check in this repository reads.
+For a release candidate, `gh release create` also takes `--prerelease`. `--generate-notes` is not used: it publishes the title of every pull request merged since the last release, text that no check in this repository reads.
 
 A README sentence that speaks of this release as still to come comes out in a one-line pull request; most releases have none. Then close the release issue.
 
