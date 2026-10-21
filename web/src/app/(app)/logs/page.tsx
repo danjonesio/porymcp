@@ -85,7 +85,24 @@ export default function LogsPage() {
     }
   }
 
+  // Chromium fires one change event when a filled datetime-local loses its
+  // first segment (value "", badInput true) and none while the rest are
+  // cleared or on blur, so badInput is also read on key-up and on blur:
+  // otherwise a cleared Until would stay incomplete and send nothing.
+  function syncInput(field: 'since' | 'until', el: HTMLInputElement) {
+    const bad = field === 'since' ? filters.sinceBad : filters.untilBad
+    if (el.value === filters[field] && el.validity.badInput === bad) return
+    change(field === 'since' ? { since: el.value, sinceBad: el.validity.badInput } : { until: el.value, untilBad: el.validity.badInput })
+  }
+
   const error = pages.error || keysError
+  // Read in the browser and only once Custom is chosen, so the static export
+  // never bakes in the build host's zone. Each input carries it as its
+  // description; the visible line under the row is the same sentence.
+  const zoneSentence =
+    filters.period === 'custom'
+      ? `Times are in ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Both ends are included.`
+      : ''
 
   return (
     <>
@@ -97,7 +114,11 @@ export default function LogsPage() {
         Every proxied MCP method and HTTP API request is recorded. Secrets in params and credential-shaped text in
         error messages are redacted. HTTP API request bodies are not recorded.
       </p>
-      {error ? <p className={clsx('mt-4', errorLine)}>{error}</p> : null}
+      {error ? (
+        <p role="alert" className={clsx('mt-4', errorLine)}>
+          {error}
+        </p>
+      ) : null}
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Field>
@@ -119,13 +140,16 @@ export default function LogsPage() {
                 name="since"
                 value={filters.since}
                 invalid={!!problems.since}
-                onChange={(e) => change({ since: e.target.value, sinceBad: e.target.validity.badInput })}
+                onChange={(e) => syncInput('since', e.target)}
+                onKeyUp={(e) => syncInput('since', e.currentTarget)}
+                onBlur={(e) => syncInput('since', e.currentTarget)}
               />
               {problems.since ? (
                 <Description>
                   <span className="text-pink-600 dark:text-pink-400">{problems.since}</span>
                 </Description>
               ) : null}
+              <Description className="sr-only">{zoneSentence}</Description>
             </Field>
             <Field>
               <Label>Until</Label>
@@ -134,20 +158,23 @@ export default function LogsPage() {
                 name="until"
                 value={filters.until}
                 invalid={!!problems.until}
-                onChange={(e) => change({ until: e.target.value, untilBad: e.target.validity.badInput })}
+                onChange={(e) => syncInput('until', e.target)}
+                onKeyUp={(e) => syncInput('until', e.currentTarget)}
+                onBlur={(e) => syncInput('until', e.currentTarget)}
               />
               {problems.until ? (
                 <Description>
                   <span className="text-pink-600 dark:text-pink-400">{problems.until}</span>
                 </Description>
               ) : null}
+              <Description className="sr-only">{zoneSentence}</Description>
             </Field>
           </>
         ) : null}
       </div>
       {filters.period === 'custom' ? (
-        <Text className="mt-3">
-          Times are in {Intl.DateTimeFormat().resolvedOptions().timeZone}. Both ends are included.
+        <Text aria-hidden="true" className="mt-3">
+          {zoneSentence}
         </Text>
       ) : null}
 
@@ -182,11 +209,7 @@ export default function LogsPage() {
         </Field>
       </div>
 
-      {pages.rows.length === 0 ? (
-        pages.showEmpty ? (
-          <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">{NO_LOGS}</p>
-        ) : null
-      ) : (
+      {pages.rows.length === 0 ? null : (
         <Table className="mt-8 [--gutter:--spacing(6)] lg:[--gutter:--spacing(10)]">
           <TableHead>
             <TableRow>
@@ -221,7 +244,7 @@ export default function LogsPage() {
           </TableBody>
         </Table>
       )}
-      <LoadMore label={LOAD_MORE_CALLS} noun="call" pages={pages} />
+      <LoadMore label={LOAD_MORE_CALLS} noun="call" empty={NO_LOGS} pages={pages} />
 
       <Dialog open={!!selected} onClose={() => setSelected(null)} size="2xl">
         <DialogTitle>Log detail</DialogTitle>
@@ -253,7 +276,7 @@ export default function LogsPage() {
                     <DescriptionDetails>
                       {/* Colour only: the list sets the line height, and its
                           own text colour would win over a class on the dd. */}
-                      <span className="text-pink-600 dark:text-pink-400">{selected.error_message}</span>
+                      <span className="wrap-anywhere text-pink-600 dark:text-pink-400">{selected.error_message}</span>
                     </DescriptionDetails>
                   </>
                 ) : null}
@@ -296,7 +319,7 @@ function UpstreamValue({ cell }: { cell: UpstreamCell }) {
       return (
         <span className="flex flex-wrap items-baseline gap-x-2">
           <span>{cell.name}</span>
-          <span dir="ltr" className="font-mono text-zinc-500 dark:text-zinc-400">
+          <span dir="ltr" className="font-mono break-all text-zinc-500 dark:text-zinc-400">
             {cell.slug}
           </span>
         </span>

@@ -54,6 +54,9 @@ export const LOAD_MORE_CHANGES = 'Load more changes'
 export const LOADING_MORE = 'Loading…'
 export const NO_LOGS = 'No matching log entries.'
 export const NOT_LISTED = 'Not in the upstream list.'
+export const SINCE_MISSING = 'Enter a start time.'
+export const INPUT_INCOMPLETE = 'Enter a full date and time.'
+export const UNTIL_BEFORE_SINCE = 'Until is earlier than Since.'
 
 const HOUR_MS = 3_600_000
 
@@ -120,11 +123,11 @@ export function customProblems(f: LogFilters): { since?: string; until?: string 
   if (f.period !== 'custom') return {}
   const out: { since?: string; until?: string } = {}
   const since = fromLocalInput(f.since)
-  if (f.sinceBad) out.since = 'Enter a full date and time.'
-  else if (!since) out.since = 'Enter a start time.'
+  if (f.sinceBad) out.since = INPUT_INCOMPLETE
+  else if (!since) out.since = SINCE_MISSING
   const until = untilFromLocalInput(f.until)
-  if (f.untilBad) out.until = 'Enter a full date and time.'
-  else if (since && until && Date.parse(until) < Date.parse(since)) out.until = 'Until is earlier than Since.'
+  if (f.untilBad) out.until = INPUT_INCOMPLETE
+  else if (since && until && Date.parse(until) < Date.parse(since)) out.until = UNTIL_BEFORE_SINCE
   return out
 }
 

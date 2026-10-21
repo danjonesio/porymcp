@@ -1,7 +1,17 @@
 import type { Page } from '@playwright/test'
 import { eventSentence } from '../src/lib/admin-event.ts'
 import type { AdminEvent } from '../src/lib/api.ts'
-import { countLine, LOAD_MORE_CALLS, LOAD_MORE_CHANGES, NO_LOGS, toLocalInput } from '../src/lib/logs-view.ts'
+import {
+  countLine,
+  INPUT_INCOMPLETE,
+  LOAD_MORE_CALLS,
+  LOAD_MORE_CHANGES,
+  NO_LOGS,
+  PERIODS,
+  toLocalInput,
+  UNTIL_BEFORE_SINCE,
+} from '../src/lib/logs-view.ts'
+import { ABSENT } from '../src/lib/placeholder.ts'
 import { api, createGroup, createKey, createUpstream, patchUpstream, revokeKey } from './api.ts'
 import { type Created, expect, STUB_URL, slugOf, test } from './fixtures.ts'
 
@@ -197,7 +207,7 @@ test('proxy rows for the run key appear and the filters narrow them; admin activ
   await showKey(page, gk.id, groupKeyName)
   await rows('initialize').click()
   await expect(page.getByRole('heading', { name: 'Log detail', exact: true })).toBeVisible()
-  await expect(page.locator('dt:text-is("Upstream") + dd')).toHaveText('None')
+  await expect(page.locator('dt:text-is("Upstream") + dd')).toHaveText(ABSENT)
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Log detail', exact: true })).toBeHidden()
 
@@ -211,6 +221,13 @@ test('proxy rows for the run key appear and the filters narrow them; admin activ
 // shown, goes on the last page, and a filter change starts again from page one.
 test('Load more pages the proxy calls and a filter change starts again', async ({ page, prefix, created }) => {
   const key = await seededKey(prefix, created, 'lm', 50)
+  // S5: the two lists load once, never with a filter change or a Load more.
+  const listFetches = { upstreams: 0, keys: 0 }
+  page.on('request', (r) => {
+    const path = new URL(r.url()).pathname
+    if (path === '/api/v1/upstreams') listFetches.upstreams++
+    if (path === '/api/v1/virtual-keys') listFetches.keys++
+  })
 
   await page.goto('/logs/')
   await showKey(page, key.id, key.name)
@@ -246,6 +263,7 @@ test('Load more pages the proxy calls and a filter change starts again', async (
   )
   await expect(proxyRows(page)).toHaveCount(50)
   await expect(loadMoreCalls(page)).toBeVisible()
+  expect(listFetches, 'the upstream and key lists load once').toEqual({ upstreams: 1, keys: 1 })
 })
 
 // S1: a Load more still in flight when the filter changes is dropped, never
@@ -270,16 +288,19 @@ test('A Load more in flight is dropped when the filter changes', async ({ page, 
     page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
   )
   release()
-  await heldPage
+  await (await heldPage).finished()
   await page.evaluate(() => new Promise(requestAnimationFrame))
+  // The held page carried one row. Dropped, Success still shows its first 50
+  // and its own Load more brings exactly the 51st; appended, it would be 52.
   await expect(proxyRows(page)).toHaveCount(50)
-  await expect(page.getByText(countLine(50, 'call', 'more'), { exact: true })).toBeVisible()
-  await expect(loadMoreCalls(page)).toBeVisible()
+  await loadMoreCalls(page).click()
+  await expect(page.getByText(countLine(51, 'call', 'last'), { exact: true })).toBeVisible()
+  await expect(proxyRows(page)).toHaveCount(51)
 })
 
 // S1: a slow first page for an older filter never replaces a newer answer.
 test('A stale first page never lands', async ({ page, prefix, created }) => {
-  const key = await seededKey(prefix, created, 'sf', 2)
+  const key = await seededKey(prefix, created, 'sf', 51)
   let release: () => void = () => {}
   const held = new Promise<void>((r) => {
     release = r
@@ -298,9 +319,13 @@ test('A stale first page never lands', async ({ page, prefix, created }) => {
     page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
   )
   release()
-  await heldPage
+  await (await heldPage).finished()
   await page.evaluate(() => new Promise(requestAnimationFrame))
-  await expect(proxyRows(page)).toHaveCount(2)
+  // Had the Error answer (no rows) landed, Success would have lost its rows
+  // and its Load more; it keeps both, and the next page is its own.
+  await expect(proxyRows(page)).toHaveCount(50)
+  await loadMoreCalls(page).click()
+  await expect(page.getByText(countLine(51, 'call', 'last'), { exact: true })).toBeVisible()
   await expect(page.getByText(NO_LOGS, { exact: true })).toHaveCount(0)
 })
 
@@ -371,14 +396,45 @@ test('Custom since today and until yesterday shows the empty copy', async ({ pag
 
   await page.goto('/logs/')
   await expect(page.getByRole('heading', { name: 'Proxy calls', exact: true })).toBeVisible()
-  await page.getByLabel('Period', { exact: true }).selectOption({ label: 'Custom' })
+  await page.getByLabel('Period', { exact: true }).selectOption({ label: PERIODS[3].label })
   await page.getByLabel('Since', { exact: true }).fill(toLocalInput(today.getTime()))
   await filtered(page, (u) => u.includes('until='), () =>
     page.getByLabel('Until', { exact: true }).fill(toLocalInput(yesterday.getTime()))
   )
   await expect(page.getByText(NO_LOGS, { exact: true })).toBeVisible()
-  await expect(page.getByText('Until is earlier than Since.', { exact: true })).toBeVisible()
+  await expect(page.getByText(UNTIL_BEFORE_SINCE, { exact: true })).toBeVisible()
   expect(errors).toEqual([])
+})
+
+// An Until cleared from the keyboard is no upper bound. Chromium reports the
+// first cleared segment as incomplete and fires nothing after the last, so the
+// page reads the input again on key-up and blur.
+test('Clearing Until from the keyboard leaves no upper bound', async ({ page }) => {
+  const yesterday = new Date()
+  yesterday.setDate(yesterday.getDate() - 1)
+  await page.goto('/logs/')
+  await expect(page.getByRole('heading', { name: 'Proxy calls', exact: true })).toBeVisible()
+  await page.getByLabel('Period', { exact: true }).selectOption({ label: PERIODS[3].label })
+  const until = page.getByLabel('Until', { exact: true })
+  await filtered(page, (u) => u.includes('until='), () => until.fill(toLocalInput(yesterday.getTime())))
+  await filtered(
+    page,
+    (u) => u.includes('since=') && !u.includes('until='),
+    async () => {
+      // A click lands on a middle segment: step to the first, then clear every
+      // segment, whatever the locale's order; a Backspace on a cleared
+      // segment changes nothing.
+      await until.click()
+      for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowLeft')
+      for (let i = 0; i < 8; i++) {
+        await page.keyboard.press('Backspace')
+        await page.keyboard.press('ArrowRight')
+      }
+      await until.blur()
+    }
+  )
+  await expect(until).toHaveValue('')
+  await expect(page.getByText(INPUT_INCOMPLETE, { exact: true })).toHaveCount(0)
 })
 
 // Admin activity pages too. The database is shared with the other specs, so

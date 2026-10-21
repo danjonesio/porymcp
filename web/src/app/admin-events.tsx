@@ -20,14 +20,14 @@ import { LoadMore } from './load-more'
  *
  * Every cell is a server-composed field drawn as text by named key; details is
  * never rendered as JSON. Rows take no click handler, so the table adds no
- * keyboard gap. useCursorPages owns the rows: the empty copy shows only once
- * the current filter has answered with nothing, so it cannot flash a false
- * negative on first paint or after a failed fetch, and an answer for a
- * previous filter never lands under the new one. A failed re-fetch shows the
- * error and keeps the rows it had, as the proxy table above does.
- * remote_addr renders verbatim: the server writes the literal "unknown" when
- * it could not parse the socket
- * address, and that is a value the row has, not one it lacks. A row with no
+ * keyboard gap. useCursorPages owns the rows: the empty copy, in LoadMore's
+ * status line, shows only once the current filter has answered with nothing,
+ * so it cannot flash a false negative on first paint or after a failed fetch,
+ * and an answer for a previous filter never lands under the new one. A failed
+ * re-fetch shows the error and keeps the rows it had, as the proxy table above
+ * does. remote_addr renders verbatim: the server writes the literal "unknown"
+ * when it could not parse the socket address, and that is a value the row has,
+ * not one it lacks. A row with no
  * address at all (a token refresh the proxy made on its own, PORM-139) shows
  * its actor instead: fromText.
  */
@@ -41,7 +41,11 @@ export function AdminEvents() {
       <p className="mt-2 max-w-[56ch] text-pretty text-base/7 text-zinc-500 sm:text-sm/6">
         Changes made with the admin key, newest first. A request that was refused is not recorded here.
       </p>
-      {pages.error ? <p className={clsx('mt-4', errorLine)}>{pages.error}</p> : null}
+      {pages.error ? (
+        <p role="alert" className={clsx('mt-4', errorLine)}>
+          {pages.error}
+        </p>
+      ) : null}
 
       <div className="mt-8 max-w-xs">
         <Field>
@@ -55,13 +59,7 @@ export function AdminEvents() {
         </Field>
       </div>
 
-      {pages.rows.length === 0 ? (
-        pages.showEmpty ? (
-          <p className="mt-10 text-base/7 text-zinc-500 sm:text-sm/6">
-            {resourceType ? 'No matching changes.' : 'No changes recorded yet.'}
-          </p>
-        ) : null
-      ) : (
+      {pages.rows.length === 0 ? null : (
         <Table className="mt-8 [--gutter:--spacing(6)] lg:[--gutter:--spacing(10)]">
           <TableHead>
             <TableRow>
@@ -83,7 +81,12 @@ export function AdminEvents() {
           </TableBody>
         </Table>
       )}
-      <LoadMore label={LOAD_MORE_CHANGES} noun="change" pages={pages} />
+      <LoadMore
+        label={LOAD_MORE_CHANGES}
+        noun="change"
+        empty={resourceType ? 'No matching changes.' : 'No changes recorded yet.'}
+        pages={pages}
+      />
     </>
   )
 }

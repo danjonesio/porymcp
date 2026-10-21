@@ -28,8 +28,8 @@ test('the zone is New York for the rest of this file', () => {
 
 const custom = (patch: Partial<LogFilters>): LogFilters => ({ ...DEFAULT_FILTERS, period: 'custom', ...patch })
 
-// Criterion 2 and S3: a preset is a since measured from the anchor, never a
-// sliding now, and no until, because the cursor bounds every later page.
+// S3 and the frozen window: a preset is a since measured from the anchor,
+// never a sliding now, and no until, because the cursor bounds every later page.
 test('logWindow: a preset sends since only, from the anchor', () => {
   const anchor = Date.UTC(2026, 9, 21, 12, 0, 0)
   assert.deepEqual(logWindow(DEFAULT_FILTERS, anchor), { since: '2026-10-14T12:00:00.000Z' })
