@@ -1055,13 +1055,14 @@ PORM-149's.
 fraction of a second. A `since` after `until` is an empty page, not an error.
 The response is `{"logs": [...], "next_cursor": "..."}`, newest first;
 `next_cursor` is empty on the last page and `logs` is `[]`, never null.
-`next_cursor` is opaque; a cursor issued by a build before
-schema version 6 still works after the upgrade. `cursor` is opaque; a malformed
-one, including one with an empty half, is a `400 {"error":"invalid cursor"}`,
-as on `/admin-events`. A cursor holds a position, not the filters: send it with
-the query of the page that returned it, as the dashboard's Load more does. A
-page that follows a cursor reads the timestamp index down from the cursor, so
-its cost does not grow with how far back the walk is.
+The cursor is opaque: pass `next_cursor` back as `cursor`. A cursor issued by
+a build before schema version 6 still works after the upgrade; a malformed one,
+including one with an empty half, is a `400 {"error":"invalid cursor"}`, as on
+`/admin-events`. A cursor holds a position, not the filters: send it with the
+query of the page that returned it, as the dashboard's Load more does. On
+SQLite a page that follows a cursor reads one index range down from the cursor
+(the timestamp index, or the virtual key index with `virtual_key_id`) instead
+of sorting every row below it.
 
 ## Admin events
 - `GET /admin-events?since=&resource_type=&limit=&cursor=`

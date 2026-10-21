@@ -17,11 +17,12 @@ Behaviour changes that affect a running deployment. Newest first.
 - **The Log detail dialog names the upstream** with its slug beside it, in
   place of the raw id; a row whose upstream is no longer listed shows the
   full id with "Not in the upstream list.".
-- **A Load more reads one index range.** With `since` and a cursor, SQLite
-  used to sort every row in the window below the cursor before taking a
-  page, on the one connection the proxy's key lookups share. The cursor now
-  adds one upper bound, so a page costs the same at any depth. The rows
-  returned are unchanged.
+- **A Load more reads one index range.** On SQLite, a page that followed a
+  cursor, alone or with `since`, sorted every row below the cursor before
+  taking 50, on the one connection the proxy's key lookups share; on both
+  `/logs` and `/admin-events`. The cursor now adds one upper bound, so a page
+  is one index range read at any depth (measured on 1M rows: up to 0.96 s
+  before, under 0.5 ms after). The rows returned are unchanged.
 
 ### `GET /api/v1/logs` refuses a malformed cursor with 400 (PORM-154)
 
