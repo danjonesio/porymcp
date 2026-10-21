@@ -368,6 +368,32 @@ Behaviour changes that affect a running deployment. Newest first.
   key's `proxy_url` ends in `/api/`. A group's `proxy_url` stays its `/mcp`
   aggregate whatever its members are.
 
+### An upstream that requires OAuth is connected once and renewed by the proxy (PORM-139)
+
+- **An upstream can take `auth_type: "oauth"`.** It is created with no
+  credential. Connect on its row in the dashboard sends the operator to the
+  vendor's sign-in, and the callback stores the token set encrypted in the
+  upstream's credential column. Agents keep their virtual keys. A client ID
+  the vendor issued, with an optional secret, can be supplied as the
+  upstream's `auth_config`. See docs/03-api.md, Connecting an OAuth upstream.
+- **The proxy renews the access token** within sixty seconds of its expiry,
+  under a per-upstream lock, so concurrent calls cost one refresh. When the
+  vendor refuses a refresh, the row reads `auth_status: "expired"` once the
+  access token lapses, and the fix is Connect again.
+- **Four new routes.** `POST /api/v1/upstreams/{id}/oauth/start` and
+  `POST /api/v1/upstreams/{id}/oauth/revoke` take the admin key.
+  `GET /api/v1/oauth/callback`, where the vendor sends the browser back, and
+  `GET /api/v1/oauth/client-metadata`, the client metadata document a vendor
+  may fetch, take none. Connect needs `PUBLIC_URL` to be an https address.
+- **Disconnect** asks the vendor to revoke the token where it offers a way,
+  then removes the token set and the client identity.
+- **Three admin events** record each connect, refresh and disconnect:
+  `upstream.oauth_connect`, `upstream.oauth_refresh` and
+  `upstream.oauth_revoke`.
+- No schema change. An older build reads an `oauth` row as unreadable,
+  answers `502` for calls through it and never refreshes it; nothing stored
+  is lost.
+
 ### Event-stream answers are relayed as they arrive (PORM-5)
 
 - **A 2xx `text/event-stream` answer on a member or single-upstream endpoint
@@ -444,6 +470,34 @@ Behaviour changes that affect a running deployment. Newest first.
   call every such body used to be a `502`.
 - **`Retry-After` now crosses on a routed `tools/call`**, as it already did on
   a relayed method.
+
+### The key dialog warns when a key's rules contradict each other (PORM-181)
+
+- **An allow entry the deny list also names** carries an amber `Also denied`
+  badge, because deny is checked first. When every entry on the allow list
+  is denied, one line says the key can call nothing. Save stays enabled: the
+  proxy accepts these rules, and the dialog says what they do.
+- **Each add input says what it adds.** Under "Add a tool by name" and "Add
+  a prefix", one sentence worded from the mode tells a single tool from a
+  prefix that can match several. After Load tools, a prefix row names the
+  advertised tools it matches.
+- **A key on a group shows the group's filter** at the top of Tool rules,
+  read-only, and the picker marks each tool the group's filter stops.
+- Dashboard only: nothing the proxy enforces, validates or serves changes.
+
+### Tool filters are set from the dashboard (PORM-4)
+
+- **The Groups dialog has a Tool filter section** with three modes: No
+  filter, Allow only these tools, and Deny these tools. Load tools lists each
+  member's tools to tick, and a tool name or a prefix can be added by hand.
+- **The Virtual keys page has an Edit dialog** for a key's name, rate limit
+  and tool rules, and create gains the same Tool rules: a deny list and an
+  allow list. The target is fixed once the key exists.
+- **`lists_malformed`** is a new response-only field on every virtual-key
+  response. It is `true` when the key's stored lists cannot be read; the
+  proxy refuses every call on such a key, which before looked like a key
+  with no rules.
+- No schema change and no new route.
 
 ### The group endpoint is a server in both protocol eras (PORM-153)
 
