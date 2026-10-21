@@ -1,4 +1,4 @@
-import { ApiError } from './api.ts'
+import { ApiError, requestErrorMessage } from './api.ts'
 import type { Discovery } from './api.ts'
 
 /**
@@ -58,21 +58,16 @@ export function plainHTTPCredential(url: string, authType: string): boolean {
 /**
  * One sentence for a request that never produced a Discovery. An upstream that
  * answers badly is not this function's business: that arrives as `ok: false`
- * with the server's own sentence in `error`.
+ * with the server's own sentence in `error`. A 429 here is the discovery
+ * budget, which has a sentence of its own; the rest is requestErrorMessage's.
  */
 export function discoveryErrorMessage(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.status === 429) {
-      const n = err.retryAfterSeconds
-      if (n === undefined) return 'Too many discovery requests. Try again shortly.'
-      return `Too many discovery requests. Try again in ${n} ${n === 1 ? 'second' : 'seconds'}.`
-    }
-    // No redirect to the login page: the other four pages would not do it either,
-    // and a redirect on one of five is worse than none (PORM-31).
-    if (err.status === 401) return 'This browser session is no longer signed in. Reload the page to sign in again.'
-    return err.message
+  if (err instanceof ApiError && err.status === 429) {
+    const n = err.retryAfterSeconds
+    if (n === undefined) return 'Too many discovery requests. Try again shortly.'
+    return `Too many discovery requests. Try again in ${n} ${n === 1 ? 'second' : 'seconds'}.`
   }
-  return 'Could not reach PoryMCP. Check that the server is still running.'
+  return requestErrorMessage(err)
 }
 
 /**

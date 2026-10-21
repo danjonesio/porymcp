@@ -1,5 +1,4 @@
-import { ApiError } from './api.ts'
-import { discoveryErrorMessage } from './discovery.ts'
+import { ApiError, requestErrorMessage } from './api.ts'
 
 export type EditResource = 'upstream' | 'group' | 'virtual key'
 /** 'load' is a read a dialog makes on open, such as the Policy dialog's; it maps as a save does. */
@@ -21,13 +20,10 @@ export type EditAction = 'save' | 'delete' | 'load'
  * (nothing references a key), so that resource has no sentence of its own and
  * keeps the server's words, through an arm of its own so that a third
  * resource can never fall into the group sentence.
- * 429: the failed-admin-auth limiter that sits in front of every management
- * route (internal/api/api.go requireAdmin), which a stale session key reaches
- * by pressing Save. discoveryErrorMessage would name the discovery budget for
- * the same status, so this branch runs first.
- * Everything else is the house mapper's business: the 401 sentence, the
- * server's own message verbatim (`unknown upstream_id: …`, `name cannot be
- * empty`), or the network sentence.
+ * Everything else is the house mapper's business (requestErrorMessage): the
+ * admin limiter's 429, which a stale session key reaches by pressing Save, the
+ * 401 sentence, the server's own message verbatim (`unknown upstream_id: …`,
+ * `name cannot be empty`), or the network sentence.
  */
 export function editErrorMessage(err: unknown, resource: EditResource, action: EditAction): string {
   if (err instanceof ApiError) {
@@ -37,11 +33,6 @@ export function editErrorMessage(err: unknown, resource: EditResource, action: E
       if (resource === 'group') return 'This group is still targeted by a virtual key. Delete that key first.'
       return err.message
     }
-    if (err.status === 429) {
-      const n = err.retryAfterSeconds
-      if (n === undefined) return 'Too many requests. Try again in a minute.'
-      return `Too many requests. Try again in ${n} ${n === 1 ? 'second' : 'seconds'}.`
-    }
   }
-  return discoveryErrorMessage(err)
+  return requestErrorMessage(err)
 }
