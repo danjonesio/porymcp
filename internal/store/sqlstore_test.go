@@ -2338,6 +2338,38 @@ func TestDecodeCursorAcceptsLegacyFormat(t *testing.T) {
 	}
 }
 
+// TestDecodeCursorRefusesEmptyTimestamp is PORM-154: a cursor with an empty
+// half decodes without a base64 or parse error, and a zero bound or an empty id
+// would answer an empty page or skip the rows at the cursor's instant. Both
+// audit endpoints refuse it, as they refuse any other malformed cursor. An id
+// half that is not valid UTF-8 or holds a NUL is refused too, so Postgres never
+// sees it as a text parameter and answers 500 instead of 400.
+func TestDecodeCursorRefusesEmptyTimestamp(t *testing.T) {
+	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	cases := map[string]string{
+		"empty timestamp half": "fHg", // base64url of "|x"
+		"both halves empty":    "fA",  // base64url of "|"
+		"explicit zero time":   enc("0001-01-01T00:00:00.000000000Z|x"),
+		"empty id half":        enc("2026-10-21T09:00:00.000000000Z|"),
+		"id half not UTF-8":    enc("2026-10-21T09:00:00.000000000Z|\xff"),
+		"id half holds a NUL":  enc("2026-10-21T09:00:00.000000000Z|a\x00b"),
+	}
+	for name, cur := range cases {
+		if _, _, err := decodeCursor(cur); !errors.Is(err, ErrInvalidCursor) {
+			t.Errorf("%s: decodeCursor(%q) error = %v, want ErrInvalidCursor", name, cur, err)
+		}
+	}
+
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.ListAuditLogs(ctx, models.LogFilter{Cursor: "fHg"}); !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("ListAuditLogs with an empty timestamp half: %v, want ErrInvalidCursor", err)
+	}
+	if _, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Cursor: "fHg"}); !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("ListAdminEvents with an empty timestamp half: %v, want ErrInvalidCursor", err)
+	}
+}
+
 // v5Fixture builds a database as a version-5 server left it, without ever
 // running step 6: the base DDL and steps 1 to 5 through this binary's own
 // migrate helpers on a raw connection, then rows in the RFC3339Nano spelling

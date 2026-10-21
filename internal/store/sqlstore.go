@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -2405,7 +2406,22 @@ func decodeCursor(cur string) (time.Time, string, error) {
 		return time.Time{}, "", ErrInvalidCursor
 	}
 	ts, err := parseTime(parts[0])
-	return ts, parts[1], err
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	// A cursor whose timestamp half is empty decodes to the zero time
+	// without an error (parseTime accepts ""), and a zero bound would
+	// answer an empty page. On an audit endpoint an empty answer reads as
+	// "nothing happened", so it is refused like any other malformed cursor.
+	// An empty id half would skip the rows at the cursor's instant (no id
+	// sorts below ""), and an id half that is not valid UTF-8 or holds a NUL
+	// is a 500 on Postgres rather than a 400, so both are refused here too.
+	// Every cursor the server issues carries a time and an id.
+	id := parts[1]
+	if ts.IsZero() || id == "" || !utf8.ValidString(id) || strings.IndexByte(id, 0) >= 0 {
+		return time.Time{}, "", ErrInvalidCursor
+	}
+	return ts, id, nil
 }
 
 // --- Admin events ---
@@ -2447,11 +2463,7 @@ func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilte
 	}
 	if f.Cursor != "" {
 		ts, id, err := decodeCursor(f.Cursor)
-		// A cursor whose timestamp half is empty decodes to the zero time
-		// without an error (parseTime accepts ""), and a zero bound would
-		// answer an empty page. On an audit endpoint an empty answer reads as
-		// "nothing happened", so it is refused like any other malformed cursor.
-		if err != nil || ts.IsZero() {
+		if err != nil {
 			return nil, "", ErrInvalidCursor
 		}
 		conds = append(conds, "(timestamp < ? OR (timestamp = ? AND id < ?))")
