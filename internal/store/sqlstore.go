@@ -2308,46 +2308,11 @@ func (s *SQLStore) ListAuditLogs(ctx context.Context, f models.LogFilter) ([]mod
 	if f.Limit <= 0 || f.Limit > 200 {
 		f.Limit = 50
 	}
-	var conds []string
-	var args []any
-	if f.VirtualKeyID != "" {
-		conds = append(conds, "virtual_key_id = ?")
-		args = append(args, f.VirtualKeyID)
+	query, args, err := s.auditLogsQuery(f)
+	if err != nil {
+		return nil, "", err
 	}
-	if f.Method != "" {
-		conds = append(conds, "method = ?")
-		args = append(args, f.Method)
-	}
-	if f.Tool != "" {
-		conds = append(conds, "tool_name = ?")
-		args = append(args, f.Tool)
-	}
-	if f.Status != "" {
-		conds = append(conds, "status = ?")
-		args = append(args, f.Status)
-	}
-	if f.Since != nil {
-		conds = append(conds, "timestamp >= ?")
-		args = append(args, fmtTime(*f.Since))
-	}
-	if f.Until != nil {
-		conds = append(conds, "timestamp <= ?")
-		args = append(args, fmtTime(*f.Until))
-	}
-	if f.Cursor != "" {
-		ts, id, err := decodeCursor(f.Cursor)
-		if err != nil {
-			return nil, "", ErrInvalidCursor
-		}
-		conds = append(conds, "(timestamp < ? OR (timestamp = ? AND id < ?))")
-		args = append(args, fmtTime(ts), fmtTime(ts), id)
-	}
-	where := ""
-	if len(conds) > 0 {
-		where = "WHERE " + strings.Join(conds, " AND ")
-	}
-	args = append(args, f.Limit+1)
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT `+logCols+` FROM audit_logs `+where+` ORDER BY timestamp DESC, id DESC LIMIT ?`), args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2375,6 +2340,51 @@ func (s *SQLStore) ListAuditLogs(ctx context.Context, f models.LogFilter) ([]mod
 	return out, next, nil
 }
 
+// auditLogsQuery builds the SELECT ListAuditLogs runs, so the query-plan tests
+// explain the real query. f.Limit is already clamped: the caller slices the
+// page with the same value.
+func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
+	var conds []string
+	var args []any
+	if f.VirtualKeyID != "" {
+		conds = append(conds, "virtual_key_id = ?")
+		args = append(args, f.VirtualKeyID)
+	}
+	if f.Method != "" {
+		conds = append(conds, "method = ?")
+		args = append(args, f.Method)
+	}
+	if f.Tool != "" {
+		conds = append(conds, "tool_name = ?")
+		args = append(args, f.Tool)
+	}
+	if f.Status != "" {
+		conds = append(conds, "status = ?")
+		args = append(args, f.Status)
+	}
+	if f.Since != nil {
+		conds = append(conds, "timestamp >= ?")
+		args = append(args, fmtTime(*f.Since))
+	}
+	if f.Cursor != "" {
+		c, a, err := cursorConds(f.Cursor, f.Until)
+		if err != nil {
+			return "", nil, err
+		}
+		conds = append(conds, c...)
+		args = append(args, a...)
+	} else if f.Until != nil {
+		conds = append(conds, "timestamp <= ?")
+		args = append(args, fmtTime(*f.Until))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	args = append(args, f.Limit+1)
+	return s.q(`SELECT ` + logCols + ` FROM audit_logs ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?`), args, nil
+}
+
 const logCols = `id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, latency_ms, response_size_bytes, upstream_id, error_message, request_id`
 
 func scanLog(row rowScanner) (*models.AuditLog, error) {
@@ -2390,6 +2400,28 @@ func scanLog(row rowScanner) (*models.AuditLog, error) {
 	e.Timestamp, err = parseTime(ts)
 	e.Params = rawOrNil(params)
 	return &e, err
+}
+
+// cursorConds returns the keyset terms for a page that starts below cur. One
+// upper bound comes first, the earlier of until and the cursor's time, so
+// SQLite reads the timestamp index from the cursor down instead of planning
+// MULTI-INDEX OR and sorting every row in the window below the cursor. The OR
+// keeps the id tie-break for rows that share the cursor's time; the bound is
+// <=, so they stay in. It replaces the until term when a cursor is present:
+// the OR implies timestamp <= the cursor's time, so the one bound is the same
+// set of rows as both. fmtTime is fixed-width UTC, so the Go comparison and
+// SQLite's byte comparison agree.
+func cursorConds(cur string, until *time.Time) ([]string, []any, error) {
+	ts, id, err := decodeCursor(cur)
+	if err != nil {
+		return nil, nil, ErrInvalidCursor
+	}
+	upper := ts
+	if until != nil && until.Before(upper) {
+		upper = *until
+	}
+	return []string{"timestamp <= ?", "(timestamp < ? OR (timestamp = ? AND id < ?))"},
+		[]any{fmtTime(upper), fmtTime(ts), fmtTime(ts), id}, nil
 }
 
 func encodeCursor(ts time.Time, id string) string {
@@ -2451,30 +2483,11 @@ func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilte
 	if f.Limit <= 0 || f.Limit > 200 {
 		f.Limit = 50
 	}
-	var conds []string
-	var args []any
-	if f.ResourceType != "" {
-		conds = append(conds, "resource_type = ?")
-		args = append(args, f.ResourceType)
+	query, args, err := s.adminEventsQuery(f)
+	if err != nil {
+		return nil, "", err
 	}
-	if f.Since != nil {
-		conds = append(conds, "timestamp >= ?")
-		args = append(args, fmtTime(*f.Since))
-	}
-	if f.Cursor != "" {
-		ts, id, err := decodeCursor(f.Cursor)
-		if err != nil {
-			return nil, "", ErrInvalidCursor
-		}
-		conds = append(conds, "(timestamp < ? OR (timestamp = ? AND id < ?))")
-		args = append(args, fmtTime(ts), fmtTime(ts), id)
-	}
-	where := ""
-	if len(conds) > 0 {
-		where = "WHERE " + strings.Join(conds, " AND ")
-	}
-	args = append(args, f.Limit+1)
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT `+adminEventCols+` FROM admin_events `+where+` ORDER BY timestamp DESC, id DESC LIMIT ?`), args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2500,6 +2513,36 @@ func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilte
 		out = []models.AdminEvent{}
 	}
 	return out, next, nil
+}
+
+// adminEventsQuery builds the SELECT ListAdminEvents runs, so the query-plan
+// tests explain the real query. f.Limit is already clamped: the caller slices
+// the page with the same value.
+func (s *SQLStore) adminEventsQuery(f models.AdminEventFilter) (string, []any, error) {
+	var conds []string
+	var args []any
+	if f.ResourceType != "" {
+		conds = append(conds, "resource_type = ?")
+		args = append(args, f.ResourceType)
+	}
+	if f.Since != nil {
+		conds = append(conds, "timestamp >= ?")
+		args = append(args, fmtTime(*f.Since))
+	}
+	if f.Cursor != "" {
+		c, a, err := cursorConds(f.Cursor, nil)
+		if err != nil {
+			return "", nil, err
+		}
+		conds = append(conds, c...)
+		args = append(args, a...)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	args = append(args, f.Limit+1)
+	return s.q(`SELECT ` + adminEventCols + ` FROM admin_events ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?`), args, nil
 }
 
 func scanAdminEvent(row rowScanner) (*models.AdminEvent, error) {

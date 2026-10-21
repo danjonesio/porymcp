@@ -601,7 +601,21 @@ func TestFreshAndMigratedSchemasMatch(t *testing.T) {
 // index could be dropped (PORM-68), and the guard that keeps the drop honest.
 func assertLookupUsesUniqueIndex(t *testing.T, s *SQLStore) {
 	t.Helper()
-	rows, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT `+virtualKeyCols+` FROM virtual_keys WHERE key_lookup = ?`, "lookup-a1")
+	plan := queryPlan(t, s, `SELECT `+virtualKeyCols+` FROM virtual_keys WHERE key_lookup = ?`, "lookup-a1")
+	// Measured on modernc SQLite, identical on a fresh and on a migrated
+	// database: the UNIQUE constraint's index is the second one SQLite creates
+	// on this table, after the one for the TEXT PRIMARY KEY.
+	const want = "SEARCH virtual_keys USING INDEX sqlite_autoindex_virtual_keys_2 (key_lookup=?)"
+	if got := strings.Join(plan, " | "); got != want {
+		t.Errorf("query plan for the lookup = %q, want %q", got, want)
+	}
+}
+
+// queryPlan runs EXPLAIN QUERY PLAN on query and returns the detail column of
+// each step, in order. SQLite only: the store's tests never open Postgres.
+func queryPlan(t *testing.T, s *SQLStore, query string, args ...any) []string {
+	t.Helper()
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN `+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,13 +632,7 @@ func assertLookupUsesUniqueIndex(t *testing.T, s *SQLStore) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	// Measured on modernc SQLite, identical on a fresh and on a migrated
-	// database: the UNIQUE constraint's index is the second one SQLite creates
-	// on this table, after the one for the TEXT PRIMARY KEY.
-	const want = "SEARCH virtual_keys USING INDEX sqlite_autoindex_virtual_keys_2 (key_lookup=?)"
-	if got := strings.Join(plan, " | "); got != want {
-		t.Errorf("query plan for the lookup = %q, want %q", got, want)
-	}
+	return plan
 }
 
 // indexNames lists the explicitly created indexes, sorted.
@@ -2367,6 +2375,201 @@ func TestDecodeCursorRefusesEmptyTimestamp(t *testing.T) {
 	}
 	if _, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Cursor: "fHg"}); !errors.Is(err, ErrInvalidCursor) {
 		t.Errorf("ListAdminEvents with an empty timestamp half: %v, want ErrInvalidCursor", err)
+	}
+}
+
+// TestListClampsAnOversizedLimit pins that the clamp and the page slicing use
+// the same value after the query builders were split out (PORM-20): a limit
+// above 200 is treated as 50, so 51 rows give a page of 50 and a cursor, not 51
+// rows and an empty cursor that would end an API client's walk after one page.
+func TestListClampsAnOversizedLimit(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 51; i++ {
+		ts := T.Add(time.Duration(i) * time.Second)
+		if err := s.InsertAuditLog(ctx, auditRow(fmt.Sprintf("a%02d", i), ts)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertAdminEvent(ctx, adminEventFixture(fmt.Sprintf("e%02d", i), ts, "upstream")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logs, next, err := s.ListAuditLogs(ctx, models.LogFilter{Limit: 500})
+	if err != nil || len(logs) != 50 || next == "" {
+		t.Errorf("audit logs at limit 500: %d rows, cursor %q, %v; want 50 rows and a cursor", len(logs), next, err)
+	}
+	events, next, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Limit: 500})
+	if err != nil || len(events) != 50 || next == "" {
+		t.Errorf("admin events at limit 500: %d rows, cursor %q, %v; want 50 rows and a cursor", len(events), next, err)
+	}
+}
+
+// firstPlanLine runs EXPLAIN QUERY PLAN on a built query and returns its first
+// detail line, the access path. Every shape, old and new, then adds
+// "USE TEMP B-TREE FOR LAST TERM OF ORDER BY" for the id tie-break.
+func firstPlanLine(t *testing.T, s *SQLStore, query string, args []any, err error) string {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := queryPlan(t, s, query, args...)
+	if len(plan) == 0 {
+		t.Fatal("empty query plan")
+	}
+	return plan[0]
+}
+
+// TestAuditLogsCursorQueryWalksTheIndex pins the access path of a Load more
+// (PORM-20). With since and a cursor the keyset OR gave SQLite no single range,
+// so it planned MULTI-INDEX OR and sorted every row in the window below the
+// cursor before LIMIT, on the one connection the proxy's key lookups share.
+// One upper bound ahead of the OR makes it a range read from the cursor down.
+// The store never runs ANALYZE, so an empty table gives the production plan.
+func TestAuditLogsCursorQueryWalksTheIndex(t *testing.T) {
+	s := testStore(t)
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	since := T.Add(-7 * 24 * time.Hour)
+	cur := encodeCursor(T, "m")
+	for name, tc := range map[string]struct {
+		f    models.LogFilter
+		want string
+	}{
+		"since and cursor": {
+			models.LogFilter{Since: &since, Cursor: cur, Limit: 50},
+			"SEARCH audit_logs USING INDEX audit_logs_ts (timestamp>? AND timestamp<?)",
+		},
+		"cursor only": {
+			models.LogFilter{Cursor: cur, Limit: 50},
+			"SEARCH audit_logs USING INDEX audit_logs_ts (timestamp<?)",
+		},
+		"key, since and cursor": {
+			models.LogFilter{VirtualKeyID: "k1", Since: &since, Cursor: cur, Limit: 50},
+			"SEARCH audit_logs USING INDEX audit_logs_virtual_key (virtual_key_id=? AND timestamp>? AND timestamp<?)",
+		},
+	} {
+		query, args, err := s.auditLogsQuery(tc.f)
+		if got := firstPlanLine(t, s, query, args, err); got != tc.want {
+			t.Errorf("%s: plan starts %q, want %q", name, got, tc.want)
+		}
+	}
+
+	// With until as well the plan text cannot show which upper bound drives
+	// the range, so the builder's output is pinned instead: one upper bound,
+	// the earlier of until and the cursor's time.
+	for name, until := range map[string]time.Time{
+		"until after the cursor":  T.Add(time.Hour),
+		"until before the cursor": T.Add(-time.Hour),
+	} {
+		f := models.LogFilter{Since: &since, Until: &until, Cursor: cur, Limit: 50}
+		query, args, err := s.auditLogsQuery(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(query, "timestamp <= ?"); n != 1 {
+			t.Errorf("%s: %d upper bounds in %q, want 1", name, n, query)
+		}
+		want := fmtTime(T)
+		if until.Before(T) {
+			want = fmtTime(until)
+		}
+		if !slices.Contains(args, any(want)) {
+			t.Errorf("%s: args %v do not carry the upper bound %q", name, args, want)
+		}
+		if until.After(T) && slices.Contains(args, any(fmtTime(until))) {
+			t.Errorf("%s: args %v still carry until, which the cursor bound replaces", name, args)
+		}
+	}
+}
+
+// TestAuditLogCursorKeepsTiedRows pages across rows that share one timestamp
+// (PORM-20). The cursor's upper bound is <=, so a page edge that falls inside
+// the tie keeps the rows with a smaller id; the walk visits every row once in
+// timestamp DESC, id DESC order, with and without until. The tied rows go in
+// out of id order, so a lost id DESC fails. The last case sends a cursor from
+// an unbounded walk with an until below the cursor's time, the one path that
+// takes the until side of the bound: an inverted comparison there would return
+// rows newer than until.
+func TestAuditLogCursorKeepsTiedRows(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	rows := map[string]time.Time{"n": T.Add(time.Second), "o": T.Add(-time.Second)}
+	for _, id := range []string{"t3", "t1", "t5", "t2", "t4"} {
+		rows[id] = T
+	}
+	for id, ts := range rows {
+		if err := s.InsertAuditLog(ctx, auditRow(id, ts)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"n", "t5", "t4", "t3", "t2", "t1", "o"}
+
+	since := T.Add(-time.Hour)
+	until := T.Add(time.Hour)
+	walk := func(f models.LogFilter) []string {
+		t.Helper()
+		var seen []string
+		for page := 0; page < 10; page++ {
+			got, next, err := s.ListAuditLogs(ctx, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen = append(seen, auditIDs(got)...)
+			if next == "" {
+				return seen
+			}
+			f.Cursor = next
+		}
+		t.Fatalf("walk did not end within 10 pages: %v", seen)
+		return nil
+	}
+	if got := walk(models.LogFilter{Since: &since, Limit: 2}); !slices.Equal(got, want) {
+		t.Errorf("since, pages of 2: %v, want %v", got, want)
+	}
+	if got := walk(models.LogFilter{Since: &since, Until: &until, Limit: 2}); !slices.Equal(got, want) {
+		t.Errorf("since and until, pages of 2: %v, want %v", got, want)
+	}
+
+	// The first page of an unbounded walk ends at (T, t5).
+	_, cur, err := s.ListAuditLogs(ctx, models.LogFilter{Limit: 2})
+	if err != nil || cur != encodeCursor(T, "t5") {
+		t.Fatalf("first page cursor = %q, %v; want the cursor at (T, t5)", cur, err)
+	}
+	early := T.Add(-500 * time.Millisecond)
+	got, _, err := s.ListAuditLogs(ctx, models.LogFilter{Until: &early, Cursor: cur, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(auditIDs(got), []string{"o"}) {
+		t.Errorf("cursor at T with until T-0.5s: %v, want [o] (rows at or before until, older than the cursor)", auditIDs(got))
+	}
+}
+
+// TestAdminEventsCursorQueryWalksTheIndex is the same pin for admin_events,
+// whose builder calls the one cursorConds helper with no until.
+func TestAdminEventsCursorQueryWalksTheIndex(t *testing.T) {
+	s := testStore(t)
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	since := T.Add(-7 * 24 * time.Hour)
+	cur := encodeCursor(T, "m")
+	for name, tc := range map[string]struct {
+		f    models.AdminEventFilter
+		want string
+	}{
+		"cursor only": {
+			models.AdminEventFilter{Cursor: cur, Limit: 50},
+			"SEARCH admin_events USING INDEX admin_events_ts (timestamp<?)",
+		},
+		"since and cursor": {
+			models.AdminEventFilter{Since: &since, Cursor: cur, Limit: 50},
+			"SEARCH admin_events USING INDEX admin_events_ts (timestamp>? AND timestamp<?)",
+		},
+	} {
+		query, args, err := s.adminEventsQuery(tc.f)
+		if got := firstPlanLine(t, s, query, args, err); got != tc.want {
+			t.Errorf("%s: plan starts %q, want %q", name, got, tc.want)
+		}
 	}
 }
 
