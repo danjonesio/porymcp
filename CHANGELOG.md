@@ -4,6 +4,10 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The Go toolchain moves to 1.26.10 and the build image to Go 1.27.3
+
+- **GO-2026-6809 cleared.** `go.mod` pins `toolchain go1.26.10`, which adds a denylist of intermediate certificates that are no longer trusted to `crypto/x509` (`Certificate.Verify` refuses a chain through one). `govulncheck` reported it against go1.26.9. The `golang:1.27-alpine` build image digest moves from Go 1.27.2 to Go 1.27.3, the release that carries the same fix, so the published image is built on a patched compiler.
+
 ### Every dashboard table's row actions sit behind one Actions menu (PORM-219)
 
 - **One Actions button per row.** On Virtual keys, Upstreams and Groups each
