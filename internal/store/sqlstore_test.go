@@ -2361,6 +2361,7 @@ func TestDecodeCursorRefusesEmptyTimestamp(t *testing.T) {
 		"empty id half":        enc("2026-10-21T09:00:00.000000000Z|"),
 		"id half not UTF-8":    enc("2026-10-21T09:00:00.000000000Z|\xff"),
 		"id half holds a NUL":  enc("2026-10-21T09:00:00.000000000Z|a\x00b"),
+		"time past year 9999":  enc("9999-12-31T23:59:59-23:59|x"), // year 10000 in UTC
 	}
 	for name, cur := range cases {
 		if _, _, err := decodeCursor(cur); !errors.Is(err, ErrInvalidCursor) {
@@ -2405,19 +2406,20 @@ func TestListClampsAnOversizedLimit(t *testing.T) {
 	}
 }
 
-// firstPlanLine runs EXPLAIN QUERY PLAN on a built query and returns its first
-// detail line, the access path. Every shape, old and new, then adds
-// "USE TEMP B-TREE FOR LAST TERM OF ORDER BY" for the id tie-break.
-func firstPlanLine(t *testing.T, s *SQLStore, query string, args []any, err error) string {
+// lastTermSort is the one plan step a cursor page may add after its access
+// path: a sort of the rows that share one timestamp, for the id tie-break. A
+// full "USE TEMP B-TREE FOR ORDER BY" is the sort of the window this guards
+// against.
+const lastTermSort = "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+
+// joinedPlan runs EXPLAIN QUERY PLAN on a built query and returns every step,
+// joined, so a test pins the whole plan as assertLookupUsesUniqueIndex does.
+func joinedPlan(t *testing.T, s *SQLStore, query string, args []any, err error) string {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := queryPlan(t, s, query, args...)
-	if len(plan) == 0 {
-		t.Fatal("empty query plan")
-	}
-	return plan[0]
+	return strings.Join(queryPlan(t, s, query, args...), " | ")
 }
 
 // TestAuditLogsCursorQueryWalksTheIndex pins the access path of a Load more
@@ -2449,8 +2451,8 @@ func TestAuditLogsCursorQueryWalksTheIndex(t *testing.T) {
 		},
 	} {
 		query, args, err := s.auditLogsQuery(tc.f)
-		if got := firstPlanLine(t, s, query, args, err); got != tc.want {
-			t.Errorf("%s: plan starts %q, want %q", name, got, tc.want)
+		if got, want := joinedPlan(t, s, query, args, err), tc.want+" | "+lastTermSort; got != want {
+			t.Errorf("%s: plan %q, want %q", name, got, want)
 		}
 	}
 
@@ -2469,15 +2471,14 @@ func TestAuditLogsCursorQueryWalksTheIndex(t *testing.T) {
 		if n := strings.Count(query, "timestamp <= ?"); n != 1 {
 			t.Errorf("%s: %d upper bounds in %q, want 1", name, n, query)
 		}
-		want := fmtTime(T)
+		bound := fmtTime(T)
 		if until.Before(T) {
-			want = fmtTime(until)
+			bound = fmtTime(until)
 		}
-		if !slices.Contains(args, any(want)) {
-			t.Errorf("%s: args %v do not carry the upper bound %q", name, args, want)
-		}
-		if until.After(T) && slices.Contains(args, any(fmtTime(until))) {
-			t.Errorf("%s: args %v still carry until, which the cursor bound replaces", name, args)
+		// since, the one upper bound, the cursor's time twice for the OR, its id, LIMIT.
+		want := []any{fmtTime(since), bound, fmtTime(T), fmtTime(T), "m", 51}
+		if !slices.Equal(args, want) {
+			t.Errorf("%s: args %v, want %v", name, args, want)
 		}
 	}
 }
@@ -2486,7 +2487,7 @@ func TestAuditLogsCursorQueryWalksTheIndex(t *testing.T) {
 // (PORM-20). The cursor's upper bound is <=, so a page edge that falls inside
 // the tie keeps the rows with a smaller id; the walk visits every row once in
 // timestamp DESC, id DESC order, with and without until. The tied rows go in
-// out of id order, so a lost id DESC fails. The last case sends a cursor from
+// in a fixed order that is not id order, so a lost id DESC fails. The last case sends a cursor from
 // an unbounded walk with an until below the cursor's time, the one path that
 // takes the until side of the bound: an inverted comparison there would return
 // rows newer than until.
@@ -2494,12 +2495,15 @@ func TestAuditLogCursorKeepsTiedRows(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
-	rows := map[string]time.Time{"n": T.Add(time.Second), "o": T.Add(-time.Second)}
-	for _, id := range []string{"t3", "t1", "t5", "t2", "t4"} {
-		rows[id] = T
-	}
-	for id, ts := range rows {
-		if err := s.InsertAuditLog(ctx, auditRow(id, ts)); err != nil {
+	// A slice, not a map: the order is fixed, and it is not id order.
+	for _, r := range []struct {
+		id string
+		ts time.Time
+	}{
+		{"t3", T}, {"t1", T}, {"t5", T}, {"t2", T}, {"t4", T},
+		{"n", T.Add(time.Second)}, {"o", T.Add(-time.Second)},
+	} {
+		if err := s.InsertAuditLog(ctx, auditRow(r.id, r.ts)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2567,8 +2571,8 @@ func TestAdminEventsCursorQueryWalksTheIndex(t *testing.T) {
 		},
 	} {
 		query, args, err := s.adminEventsQuery(tc.f)
-		if got := firstPlanLine(t, s, query, args, err); got != tc.want {
-			t.Errorf("%s: plan starts %q, want %q", name, got, tc.want)
+		if got, want := joinedPlan(t, s, query, args, err), tc.want+" | "+lastTermSort; got != want {
+			t.Errorf("%s: plan %q, want %q", name, got, want)
 		}
 	}
 }

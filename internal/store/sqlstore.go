@@ -2448,9 +2448,12 @@ func decodeCursor(cur string) (time.Time, string, error) {
 	// An empty id half would skip the rows at the cursor's instant (no id
 	// sorts below ""), and an id half that is not valid UTF-8 or holds a NUL
 	// is a 500 on Postgres rather than a 400, so both are refused here too.
-	// Every cursor the server issues carries a time and an id.
+	// A time past year 9999 in UTC (a parse with an offset can reach it)
+	// formats wider than tsLayout and would not compare as a time against
+	// the stored values, so it is refused too. Every cursor the server issues
+	// carries a time in range and an id.
 	id := parts[1]
-	if ts.IsZero() || id == "" || !utf8.ValidString(id) || strings.IndexByte(id, 0) >= 0 {
+	if ts.IsZero() || len(fmtTime(ts)) != len(tsLayout) || id == "" || !utf8.ValidString(id) || strings.IndexByte(id, 0) >= 0 {
 		return time.Time{}, "", ErrInvalidCursor
 	}
 	return ts, id, nil
