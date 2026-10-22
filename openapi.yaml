@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: PoryMCP Management API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     REST API for registering MCP upstreams, grouping them, minting per-agent virtual keys,
     and querying audit logs and admin events. All routes below are served under `/api/v1` and require
