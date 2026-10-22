@@ -4,6 +4,8 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+## v0.2.0 (2026-10-22)
+
 ### The Logs page pages back through history and narrows Proxy calls to a period (PORM-20)
 
 - **Load more under each table.** Proxy calls and Admin activity show 50 rows
