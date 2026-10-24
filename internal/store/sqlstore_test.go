@@ -1967,19 +1967,52 @@ func TestParseDBURLFileFormKeepsItsSettings(t *testing.T) {
 		t.Error("a query that does not parse was accepted")
 	}
 
-	// A connection opened after Open's first one reads busy_timeout from the
-	// DSN alone. With no idle connection kept, every statement opens one.
-	path := filepath.Join(t.TempDir(), "op.db")
-	s, err := Open("file:" + path + "?mode=rwc")
+	// Each connection, Open's first and every one opened after it, reads its
+	// settings from the DSN alone, so an operator's value holds on both and the
+	// defaults hold where the operator set nothing. With no idle connection
+	// kept, every statement opens a new one.
+	pragmas := func(t *testing.T, s *SQLStore) string {
+		t.Helper()
+		var fk, busy int
+		var journal string
+		if err := s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRow(`PRAGMA journal_mode`).Scan(&journal); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("foreign_keys=%d busy_timeout=%d journal_mode=%s", fk, busy, journal)
+	}
+	for name, tc := range map[string]struct{ query, want string }{
+		"operator params, defaults added": {"?mode=rwc", "foreign_keys=1 busy_timeout=5000 journal_mode=wal"},
+		"operator busy_timeout":           {"?_pragma=busy_timeout(100)", "foreign_keys=1 busy_timeout=100 journal_mode=wal"},
+		"operator _busy_timeout":          {"?_busy_timeout=100", "foreign_keys=1 busy_timeout=100 journal_mode=wal"},
+		"operator journal_mode":           {"?_pragma=journal_mode(DELETE)", "foreign_keys=1 busy_timeout=5000 journal_mode=delete"},
+	} {
+		s, err := Open("file:" + filepath.Join(t.TempDir(), "op.db") + tc.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := pragmas(t, s); got != tc.want {
+			t.Errorf("%s, first connection: %s, want %s", name, got, tc.want)
+		}
+		s.db.SetMaxIdleConns(0)
+		if got := pragmas(t, s); got != tc.want {
+			t.Errorf("%s, a new connection: %s, want %s", name, got, tc.want)
+		}
+		_ = s.Close()
+	}
+	s, err := Open(filepath.Join(t.TempDir(), "plain.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-	s.db.SetMaxIdleConns(0)
-	var timeout int
-	if err := s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil || timeout != 5000 {
-		t.Errorf("busy_timeout on a new connection = %d, %v; want 5000", timeout, err)
+	if got, want := pragmas(t, s), "foreign_keys=1 busy_timeout=5000 journal_mode=wal"; got != want {
+		t.Errorf("a plain path, first connection: %s, want %s", got, want)
 	}
+	_ = s.Close()
 
 	// file::memory:?cache=shared still opens an in-memory database: no file
 	// named ":memory:" appears, and the main database has no file.
@@ -4031,12 +4064,22 @@ func TestAuditFacetsQueryWalksTheIndex(t *testing.T) {
 		"key and since":        {models.LogFilter{VirtualKeyID: "k1", Since: &since}, "SEARCH audit_logs USING INDEX audit_logs_virtual_key (virtual_key_id=? AND timestamp>?)"},
 		"key, since and until": {models.LogFilter{VirtualKeyID: "k1", Since: &since, Until: &T}, "SEARCH audit_logs USING INDEX audit_logs_virtual_key (virtual_key_id=? AND timestamp>? AND timestamp<?)"},
 		"no window":            {models.LogFilter{}, "SCAN audit_logs"},
-		"status is not in SQL": {models.LogFilter{Since: &since, Status: "error", Method: "m", Tool: "x"}, "SEARCH audit_logs USING INDEX audit_logs_ts (timestamp>?)"},
 	} {
 		query, args, err := s.auditFacetsQuery(tc.f)
 		if got, want := joinedPlan(t, s, query, args, err), tc.want+grouped; got != want {
 			t.Errorf("%s: plan %q, want %q", name, got, want)
 		}
+	}
+
+	// No unindexed term changes the plan, so the filters the read must not
+	// see are checked on the built query: Status, Method, Tool, HasTool,
+	// Cursor and Limit leave the SQL and its args as the window alone builds
+	// them.
+	yes := true
+	q1, a1, err1 := s.auditFacetsQuery(models.LogFilter{Since: &since})
+	q2, a2, err2 := s.auditFacetsQuery(models.LogFilter{Since: &since, Status: "error", Method: "m", Tool: "x", HasTool: &yes, Cursor: "not a cursor", Limit: 3})
+	if err1 != nil || err2 != nil || q1 != q2 || !slices.Equal(a1, a2) {
+		t.Errorf("the facet query changed with filters it must not read:\n %q %v %v\n %q %v %v", q1, a1, err1, q2, a2, err2)
 	}
 }
 

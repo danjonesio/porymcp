@@ -93,11 +93,13 @@ func Open(databaseURL string) (*SQLStore, error) {
 		return nil, err
 	}
 	if driver == "sqlite" {
+		// No PRAGMA exec here. Every SQLite DSN parseDBURL returns sets
+		// foreign_keys, busy_timeout and journal_mode, so the first connection
+		// and each one database/sql opens after an interrupt get the same
+		// settings from the DSN alone. An exec would reach the first only, and
+		// would override an operator's own value there until the first
+		// interrupted read put it back (PORM-224).
 		db.SetMaxOpenConns(1)
-		if _, err := db.Exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;`); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
 	}
 	s := &SQLStore{db: db, driver: driver}
 	if err := s.migrate(); err != nil {
@@ -2520,7 +2522,9 @@ func (s *SQLStore) ListAuditFacets(ctx context.Context, f models.LogFilter) (mod
 // auditFacetsQuery builds the one GROUP BY behind ListAuditFacets, so the plan
 // test explains the real query. Only VirtualKeyID, Since and Until reach it.
 // The GROUP BY temp b-tree is filled in the first step, which is where the
-// deadline can stop it; the output after it is short and runs uninterrupted.
+// deadline can stop it. The per-group output after it runs with no interrupt
+// armed; database/sql stops it between groups, measured up to about 0.1 s past
+// the deadline at 1M rows over 30 days.
 func (s *SQLStore) auditFacetsQuery(f models.LogFilter) (string, []any, error) {
 	where, args, err := auditLogWhere(models.LogFilter{VirtualKeyID: f.VirtualKeyID, Since: f.Since, Until: f.Until})
 	if err != nil {
