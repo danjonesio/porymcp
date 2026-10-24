@@ -1210,3 +1210,23 @@ func TestCreateUpstreamWithEmptyAuthConfigRecordsNoCredential(t *testing.T) {
 		}
 	})
 }
+
+// slowEvents holds ListAdminEvents until its context ends, as a walk of
+// Admin activity under a Resource filter would.
+type slowEvents struct{ store.Store }
+
+func (slowEvents) ListAdminEvents(ctx context.Context, _ models.AdminEventFilter) ([]models.AdminEvent, string, error) {
+	<-ctx.Done()
+	return nil, "", ctx.Err()
+}
+
+// TestListAdminEventsStopsAtTheDeadline is PORM-224 criterion 1 for Admin
+// activity: the same deadline and the same exact 503 body as GET /logs.
+func TestListAdminEventsStopsAtTheDeadline(t *testing.T) {
+	shortReadTimeout(t)
+	_, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return slowEvents{st} })
+	rr := answerWithin(t, h, "/admin-events?resource_type=upstream", time.Second)
+	if rr.Code != http.StatusServiceUnavailable || rr.Body.String() != "{\"error\":\"log query took too long\"}\n" {
+		t.Errorf("%d %q, want 503 {\"error\":\"log query took too long\"}", rr.Code, rr.Body.String())
+	}
+}

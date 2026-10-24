@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"time"
 
@@ -153,17 +152,10 @@ func (s *Server) getVirtualKeyPolicy(w http.ResponseWriter, r *http.Request) {
 	// since after until is an empty period, as GET /logs answers it: zeros.
 	if !since.After(until) {
 		cctx, cancel := context.WithTimeout(ctx, policyCountTimeout)
+		defer cancel()
 		counts, err := s.store.CountBlockedByReason(cctx, vk.ID, since, until, proxy.PolicyReasons(), sentences)
-		timedOut := errors.Is(cctx.Err(), context.DeadlineExceeded)
-		cancel()
 		if err != nil {
-			// Checked on the context, not the error: the SQLite and pgx
-			// drivers report an interrupted query differently.
-			if timedOut {
-				writeError(w, http.StatusServiceUnavailable, "policy counts took too long")
-				return
-			}
-			storeError(w, err)
+			s.readFailed(cctx, w, r, err, "policy counts took too long")
 			return
 		}
 		for _, rule := range proxy.PolicyRules() {

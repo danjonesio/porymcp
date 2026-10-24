@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -224,9 +225,11 @@ func (s *Server) listAdminEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Since = since
 
-	events, next, err := s.store.ListAdminEvents(r.Context(), f)
+	ctx, cancel := context.WithTimeout(r.Context(), logReadTimeout)
+	defer cancel()
+	events, next, err := s.store.ListAdminEvents(ctx, f)
 	if err != nil {
-		storeError(w, err)
+		s.readFailed(ctx, w, r, err, errLogReadTimeout)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"admin_events": events, "next_cursor": next})

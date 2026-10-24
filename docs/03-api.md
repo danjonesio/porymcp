@@ -1064,6 +1064,14 @@ SQLite a page that follows a cursor reads one index range down from the cursor
 (the timestamp index, or the virtual key index with `virtual_key_id`) instead
 of sorting every row below it.
 
+A page runs under a two-second deadline, the wait for the database connection
+included, past which the answer is `503 {"error":"log query took too long"}`.
+Only `virtual_key_id` and the period are indexed: `method`, `tool` and `status`
+are checked row by row, so a filter that matches few rows in a long period
+reads every row in it. A shorter period or a `virtual_key_id` reads fewer. A
+request the client abandons is stopped when the server sees the connection
+close; the deadline is the bound.
+
 ## Admin events
 - `GET /admin-events?since=&resource_type=&limit=&cursor=`
 
@@ -1089,6 +1097,14 @@ is a `400`, because on an audit endpoint an empty answer would read as
 fraction of a second. `limit` below 1 or not an integer is a `400`; above 200 it
 is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 `400`.
+
+A page runs under the two-second deadline `/logs` has, the wait for the
+database connection included, past which the answer is
+`503 {"error":"log query took too long"}`. Only the period is indexed:
+`resource_type` is checked row by row, so a type with few rows in a long
+history reads every row in it. A shorter period reads fewer. A request the
+client abandons is stopped when the server sees the connection close; the
+deadline is the bound.
 
 | action | details keys |
 |---|---|

@@ -763,6 +763,11 @@ paths:
           description: Page of logs
         "400":
           description: Invalid limit, since, until or cursor
+        "503":
+          description: >-
+            `{"error":"log query took too long"}`: the read passed its
+            two-second deadline. A shorter period or a `virtual_key_id` reads
+            fewer rows.
   /logs/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -814,6 +819,10 @@ paths:
                 $ref: "#/components/schemas/AdminEventPage"
         "400":
           description: Invalid resource_type, limit, since or cursor
+        "503":
+          description: >-
+            `{"error":"log query took too long"}`: the read passed its
+            two-second deadline. A shorter period reads fewer rows.
 components:
   securitySchemes:
     adminKey:

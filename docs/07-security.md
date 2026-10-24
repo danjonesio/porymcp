@@ -1157,7 +1157,11 @@
 - The dashboard admin key still lives in `sessionStorage` and is readable by
   any script that runs in the page. CSP is the current mitigation; moving
   the session to an httpOnly cookie is PORM-49.
-- Run container as non-root, prefer read-only root filesystem.
+- Run container as non-root, prefer read-only root filesystem. A read-only
+  root needs a writable tmpfs at `/tmp`: SQLite writes a large sort, such as a
+  Logs read over a long period, to temporary files there, and with nowhere to
+  write the read fails. The store error goes to the server log as
+  `store read failed`; the response is the generic `500`.
 - Rate limiting enforced at the proxy layer (per virtual key), on failed admin
   authentication (per IP), and on discovery (thirty a minute and four in flight,
   per deployment). The three are separate budgets on purpose: spending one never

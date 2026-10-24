@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -37,9 +38,11 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Since, f.Until = since, until
 
-	logs, next, err := s.store.ListAuditLogs(r.Context(), f)
+	ctx, cancel := context.WithTimeout(r.Context(), logReadTimeout)
+	defer cancel()
+	logs, next, err := s.store.ListAuditLogs(ctx, f)
 	if err != nil {
-		storeError(w, err)
+		s.readFailed(ctx, w, r, err, errLogReadTimeout)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "next_cursor": next})
