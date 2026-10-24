@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -2415,7 +2417,7 @@ func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
 
 // auditLogWhere returns the WHERE clause every audit_logs read shares ("" when
 // there are no terms) and its args, in one order: virtual_key_id, method,
-// tool_name, status, since, then the cursor's bound or until.
+// tool_name, has_tool, status, since, then the cursor's bound or until.
 func auditLogWhere(f models.LogFilter) (string, []any, error) {
 	var conds []string
 	var args []any
@@ -2430,6 +2432,14 @@ func auditLogWhere(f models.LogFilter) (string, []any, error) {
 	if f.Tool != "" {
 		conds = append(conds, "tool_name = ?")
 		args = append(args, f.Tool)
+	}
+	if f.HasTool != nil {
+		if *f.HasTool {
+			conds = append(conds, "tool_name <> ?")
+		} else {
+			conds = append(conds, "tool_name = ?")
+		}
+		args = append(args, "")
 	}
 	if f.Status != "" {
 		conds = append(conds, "status = ?")
@@ -2454,6 +2464,95 @@ func auditLogWhere(f models.LogFilter) (string, []any, error) {
 		return "", args, nil
 	}
 	return "WHERE " + strings.Join(conds, " AND "), args, nil
+}
+
+const facetCap = 200
+
+// facetFoldCap bounds the distinct methods or tools one facet read folds in
+// memory. Callers with no key choose tool names (a relay row records its
+// path), so the window's cardinality is not the operator's. A package var so
+// a test can shorten it.
+var facetFoldCap = 50000
+
+// ListAuditFacets reads one GROUP BY over the key and window and folds it into
+// the three lists, so they come from one walk and one snapshot and cannot
+// disagree under concurrent inserts. The order is decided here, not in SQL:
+// Postgres sorts text by the database collation and SQLite cannot be told
+// otherwise, while strings.Compare is bytewise on both.
+func (s *SQLStore) ListAuditFacets(ctx context.Context, f models.LogFilter) (models.LogFacets, error) {
+	query, args, err := s.auditFacetsQuery(f)
+	if err != nil {
+		return models.LogFacets{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return models.LogFacets{}, err
+	}
+	defer rows.Close()
+	methods, tools, statuses := map[string]int{}, map[string]int{}, map[string]int{}
+	for rows.Next() {
+		var method, tool, status string
+		var n int64
+		if err := rows.Scan(&method, &tool, &status, &n); err != nil {
+			return models.LogFacets{}, err
+		}
+		statuses[status] += int(n)
+		if f.Status == "" || status == f.Status {
+			methods[method] += int(n)
+			tools[tool] += int(n)
+		}
+		if len(methods) > facetFoldCap || len(tools) > facetFoldCap {
+			return models.LogFacets{}, ErrTooManyFacetValues
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return models.LogFacets{}, err
+	}
+	out := models.LogFacets{}
+	var methodsCut, toolsCut bool
+	out.Methods, methodsCut = facetList(methods, false)
+	out.Tools, toolsCut = facetList(tools, true)
+	out.Statuses, _ = facetList(statuses, false)
+	out.Truncated = methodsCut || toolsCut
+	return out, nil
+}
+
+// auditFacetsQuery builds the one GROUP BY behind ListAuditFacets, so the plan
+// test explains the real query. Only VirtualKeyID, Since and Until reach it.
+// The GROUP BY temp b-tree is filled in the first step, which is where the
+// deadline can stop it; the output after it is short and runs uninterrupted.
+func (s *SQLStore) auditFacetsQuery(f models.LogFilter) (string, []any, error) {
+	where, args, err := auditLogWhere(models.LogFilter{VirtualKeyID: f.VirtualKeyID, Since: f.Since, Until: f.Until})
+	if err != nil {
+		return "", nil, err
+	}
+	return s.q(`SELECT method, tool_name, status, COUNT(*) FROM audit_logs ` + where + ` GROUP BY method, tool_name, status`), args, nil
+}
+
+// facetList sorts one fold most frequent first, then by value in byte order,
+// cuts it to facetCap and reports whether the cap cut anything. With
+// keepEmpty, a "" past the cut takes the last place kept, so the Tool select
+// can always offer None. It is never nil.
+func facetList(counts map[string]int, keepEmpty bool) ([]models.FacetEntry, bool) {
+	out := make([]models.FacetEntry, 0, len(counts))
+	for v, n := range counts {
+		out = append(out, models.FacetEntry{Value: v, Count: n})
+	}
+	slices.SortFunc(out, func(a, b models.FacetEntry) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		return strings.Compare(a.Value, b.Value)
+	})
+	if len(out) <= facetCap {
+		return out, false
+	}
+	if keepEmpty {
+		if i := slices.IndexFunc(out[facetCap:], func(e models.FacetEntry) bool { return e.Value == "" }); i >= 0 {
+			out[facetCap-1] = out[facetCap+i]
+		}
+	}
+	return out[:facetCap:facetCap], true
 }
 
 const logCols = `id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, latency_ms, response_size_bytes, upstream_id, error_message, request_id`

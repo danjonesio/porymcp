@@ -355,7 +355,27 @@ type LogFilter struct {
 	Until        *time.Time
 	Method       string
 	Tool         string
-	Status       string
-	Limit        int
-	Cursor       string
+	// HasTool narrows to rows whose tool_name is empty (false) or not (true);
+	// nil is no filter. The API refuses it beside Tool.
+	HasTool *bool
+	Status  string
+	Limit   int
+	Cursor  string
+}
+
+// FacetEntry is one recorded value of an audit_logs column and how many rows
+// in the window hold it.
+type FacetEntry struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
+// LogFacets is the answer to GET /logs/facets. Each list is most frequent
+// first, then by value in byte order, at most 200 entries, and never nil.
+// Truncated reports that the cap cut Methods or Tools.
+type LogFacets struct {
+	Methods   []FacetEntry `json:"methods"`
+	Tools     []FacetEntry `json:"tools"`
+	Statuses  []FacetEntry `json:"statuses"`
+	Truncated bool         `json:"truncated"`
 }

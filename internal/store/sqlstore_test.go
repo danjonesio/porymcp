@@ -3742,3 +3742,314 @@ func TestCountBlockedByReason(t *testing.T) {
 		t.Errorf("errored only = %+v", onlyErr)
 	}
 }
+
+// --- Facets (PORM-149) ---
+
+// insertTools adds count rows for key at ts for each tool name
+// printf(format, i), i from first to last, in one statement.
+func insertTools(t *testing.T, s *SQLStore, key, format string, first, last, count int, ts time.Time) {
+	t.Helper()
+	if _, err := s.db.Exec(`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, status)
+		WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i + 1 FROM n WHERE i < ?),
+		c(j) AS (SELECT 1 UNION ALL SELECT j + 1 FROM c WHERE j < ?)
+		SELECT printf('%s-%d-%d', ?, i, j), ?, ?, 'bot', 'tools/call', printf(?, i), 'success' FROM n, c`,
+		first, last, count, key, fmtTime(ts), key, format); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func facetSum(es []models.FacetEntry) int {
+	n := 0
+	for _, e := range es {
+		n += e.Count
+	}
+	return n
+}
+
+func facetCount(es []models.FacetEntry, value string) int {
+	for _, e := range es {
+		if e.Value == value {
+			return e.Count
+		}
+	}
+	return 0
+}
+
+// TestAuditLogsHasTool is PORM-149 criterion 2's store half: HasTool false
+// lists only rows that named no tool, true only rows that named one, and both
+// combine with the other filters.
+func TestAuditLogsHasTool(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	for i, r := range []struct{ key, tool, status string }{
+		{"k1", "", "success"}, {"k1", "echo", "success"}, {"k1", "", "error"},
+		{"k2", "", "success"}, {"k2", "echo", "error"},
+	} {
+		e := auditRow(fmt.Sprintf("h%d", i), T.Add(-time.Duration(i)*time.Second))
+		e.VirtualKeyID, e.ToolName, e.Status = r.key, r.tool, r.status
+		if err := s.InsertAuditLog(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	no, yes := false, true
+	for name, tc := range map[string]struct {
+		f    models.LogFilter
+		want []string
+	}{
+		"no tool":              {models.LogFilter{HasTool: &no}, []string{"h0", "h2", "h3"}},
+		"a tool":               {models.LogFilter{HasTool: &yes}, []string{"h1", "h4"}},
+		"no tool, key":         {models.LogFilter{HasTool: &no, VirtualKeyID: "k1"}, []string{"h0", "h2"}},
+		"no tool, key, status": {models.LogFilter{HasTool: &no, VirtualKeyID: "k1", Status: "error"}, []string{"h2"}},
+		"a tool, status":       {models.LogFilter{HasTool: &yes, Status: "error"}, []string{"h4"}},
+		"nil is no filter":     {models.LogFilter{VirtualKeyID: "k2"}, []string{"h3", "h4"}},
+	} {
+		got, _, err := s.ListAuditLogs(ctx, tc.f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(auditIDs(got), tc.want) {
+			t.Errorf("%s: %v, want %v", name, auditIDs(got), tc.want)
+		}
+	}
+}
+
+// TestListAuditFacets is PORM-149 criteria 1 and 8: each list counts the rows
+// ListAuditLogs would page through for the same key and window. Statuses
+// ignore Status; Methods and Tools honour it; nothing honours Method, Tool,
+// HasTool, Cursor or Limit. Both window ends are inclusive and exact. Ties
+// are ordered by bytes, and the lists are never nil.
+func TestListAuditFacets(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	since, until := T.Add(-time.Hour), T
+	mid := T.Add(-30 * time.Minute)
+	n := 0
+	add := func(key, method, tool, status string, ts time.Time, times int) {
+		for i := 0; i < times; i++ {
+			n++
+			e := auditRow(fmt.Sprintf("f%03d", n), ts)
+			e.VirtualKeyID, e.Method, e.ToolName, e.Status = key, method, tool, status
+			if err := s.InsertAuditLog(ctx, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	add("k1", "tools/call", "b", "success", mid, 3)
+	add("k1", "tools/call", "a", "success", mid, 2)
+	add("k1", "tools/call", "a", "error", mid, 1)
+	add("k1", "tools/list", "", "success", mid, 2)
+	add("k1", "initialize", "", "success", since, 1)
+	add("k1", "tools/call", "b", "blocked", until, 1)
+	add("k2", "tools/call", "c", "error", mid, 2)
+	add("k1", "tools/call", "x", "success", since.Add(-time.Nanosecond), 1)
+	add("k1", "tools/call", "y", "success", until.Add(time.Nanosecond), 1)
+
+	facets := func(f models.LogFilter) models.LogFacets {
+		t.Helper()
+		got, err := s.ListAuditFacets(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	walk := func(f models.LogFilter) int {
+		t.Helper()
+		f.Limit, f.Cursor = 200, ""
+		total := 0
+		for {
+			got, next, err := s.ListAuditLogs(ctx, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			total += len(got)
+			if next == "" {
+				return total
+			}
+			f.Cursor = next
+		}
+	}
+
+	// The exact lists for k1 over the window: "" and a tie at 3 and sort by
+	// bytes, as blocked and error do at 1; the rows on since and until count,
+	// the two a nanosecond outside (x, y) do not.
+	e := func(v string, c int) models.FacetEntry { return models.FacetEntry{Value: v, Count: c} }
+	k1 := models.LogFilter{VirtualKeyID: "k1", Since: &since, Until: &until}
+	want := models.LogFacets{
+		Methods:  []models.FacetEntry{e("tools/call", 7), e("tools/list", 2), e("initialize", 1)},
+		Tools:    []models.FacetEntry{e("b", 4), e("", 3), e("a", 3)},
+		Statuses: []models.FacetEntry{e("success", 8), e("blocked", 1), e("error", 1)},
+	}
+	if got := facets(k1); !reflect.DeepEqual(got, want) {
+		t.Errorf("k1 over the window:\n got %+v\nwant %+v", got, want)
+	}
+	k1err := k1
+	k1err.Status = models.StatusError
+	want = models.LogFacets{
+		Methods:  []models.FacetEntry{e("tools/call", 1)},
+		Tools:    []models.FacetEntry{e("a", 1)},
+		Statuses: []models.FacetEntry{e("success", 8), e("blocked", 1), e("error", 1)},
+	}
+	if got := facets(k1err); !reflect.DeepEqual(got, want) {
+		t.Errorf("k1 errors over the window:\n got %+v\nwant %+v", got, want)
+	}
+
+	// Method, Tool, HasTool, Cursor and Limit change nothing.
+	yes, no := true, false
+	noise := k1err
+	noise.Method, noise.Tool, noise.HasTool, noise.Cursor, noise.Limit = "tools/list", "zzz", &yes, "not a cursor", 3
+	if got := facets(noise); !reflect.DeepEqual(got, want) {
+		t.Errorf("k1 errors with Method, Tool, HasTool, Cursor and Limit set:\n got %+v\nwant %+v", got, want)
+	}
+
+	// Every list sums to the rows the same filters page through.
+	midSince := mid
+	for name, f := range map[string]models.LogFilter{
+		"all keys over the window": {Since: &since, Until: &until},
+		"k1 over the window":       k1,
+		"k2 over the window":       {VirtualKeyID: "k2", Since: &since, Until: &until},
+		"k1 from mid":              {VirtualKeyID: "k1", Since: &midSince},
+		"no window":                {},
+	} {
+		got := facets(f)
+		if got.Methods == nil || got.Tools == nil || got.Statuses == nil {
+			t.Errorf("%s: a nil list in %+v", name, got)
+		}
+		if a, b := facetSum(got.Statuses), walk(f); a != b {
+			t.Errorf("%s: statuses sum to %d, the walk lists %d", name, a, b)
+		}
+		none := f
+		none.HasTool = &no
+		if a, b := facetCount(got.Tools, ""), walk(none); a != b {
+			t.Errorf("%s: tools[\"\"] = %d, the walk with HasTool false lists %d", name, a, b)
+		}
+		for _, status := range []string{models.StatusSuccess, models.StatusError, models.StatusBlocked} {
+			fs := f
+			fs.Status = status
+			gs := facets(fs)
+			w := walk(fs)
+			if facetSum(gs.Methods) != w || facetSum(gs.Tools) != w {
+				t.Errorf("%s, %s: methods sum to %d and tools to %d, the walk lists %d", name, status, facetSum(gs.Methods), facetSum(gs.Tools), w)
+			}
+			if !reflect.DeepEqual(gs.Statuses, got.Statuses) {
+				t.Errorf("%s, %s: statuses %+v, want the unfiltered %+v", name, status, gs.Statuses, got.Statuses)
+			}
+		}
+	}
+
+	// An empty window answers three empty lists, never nil.
+	later := T.Add(time.Hour)
+	got := facets(models.LogFilter{Since: &later})
+	if got.Methods == nil || got.Tools == nil || got.Statuses == nil || len(got.Methods)+len(got.Tools)+len(got.Statuses) != 0 || got.Truncated {
+		t.Errorf("an empty window: %+v, want three empty lists", got)
+	}
+}
+
+// TestListAuditFacetsCap is PORM-149 criteria 4 and 8: a list keeps its 200
+// most frequent values and reports the cut, and a "" in tools keeps its place
+// however rare it is, so the Tool select can always offer None.
+func TestListAuditFacetsCap(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	// 201 names: t000 to t099 twice, t100 to t200 once.
+	insertTools(t, s, "cut", "t%03d", 0, 99, 2, T)
+	insertTools(t, s, "cut", "t%03d", 100, 200, 1, T)
+	got, err := s.ListAuditFacets(ctx, models.LogFilter{VirtualKeyID: "cut"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 200 || !got.Truncated || got.Tools[0].Value != "t000" || got.Tools[199].Value != "t199" || facetCount(got.Tools, "t200") != 0 {
+		t.Errorf("201 names: %d tools from %v to %v, truncated %v; want 200 from t000 to t199, t200 dropped, truncated",
+			len(got.Tools), got.Tools[0], got.Tools[len(got.Tools)-1], got.Truncated)
+	}
+
+	insertTools(t, s, "full", "t%03d", 0, 199, 1, T)
+	got, err = s.ListAuditFacets(ctx, models.LogFilter{VirtualKeyID: "full"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 200 || got.Truncated {
+		t.Errorf("200 names: %d tools, truncated %v; want 200, not truncated", len(got.Tools), got.Truncated)
+	}
+
+	// 201 names twice each, and one row with no tool: "" is the rarest and
+	// keeps the 200th place.
+	insertTools(t, s, "none", "t%03d", 0, 200, 2, T)
+	e := auditRow("none-empty", T)
+	e.VirtualKeyID, e.ToolName = "none", ""
+	if err := s.InsertAuditLog(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ListAuditFacets(ctx, models.LogFilter{VirtualKeyID: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 200 || !got.Truncated || got.Tools[199] != (models.FacetEntry{Value: "", Count: 1}) || got.Tools[198].Value != "t198" {
+		t.Errorf("201 names and a rarer \"\": %d tools ending %v, %v, truncated %v; want 200 ending t198 and {\"\" 1}, truncated",
+			len(got.Tools), got.Tools[198], got.Tools[199], got.Truncated)
+	}
+}
+
+// TestListAuditFacetsStopsPastTheFoldCap is S22: a window holding more
+// distinct tools than the fold keeps is refused whole, with no partial list.
+func TestListAuditFacetsStopsPastTheFoldCap(t *testing.T) {
+	if facetFoldCap != 50000 {
+		t.Fatalf("facetFoldCap = %d, want the shipped 50000", facetFoldCap)
+	}
+	facetFoldCap = 300
+	t.Cleanup(func() { facetFoldCap = 50000 })
+	s := testStore(t)
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	insertTools(t, s, "k1", "p%03d", 0, 300, 1, T)
+	got, err := s.ListAuditFacets(context.Background(), models.LogFilter{})
+	if !errors.Is(err, ErrTooManyFacetValues) || !reflect.DeepEqual(got, models.LogFacets{}) {
+		t.Errorf("301 tools past a cap of 300: %+v, %v; want no answer and ErrTooManyFacetValues", got, err)
+	}
+	insertTools(t, s, "k2", "p%03d", 0, 299, 1, T)
+	if _, err := s.ListAuditFacets(context.Background(), models.LogFilter{VirtualKeyID: "k2"}); err != nil {
+		t.Errorf("300 tools at a cap of 300: %v", err)
+	}
+}
+
+// TestAuditFacetsQueryWalksTheIndex pins the access path of the one facet
+// statement (S3): the window or the key and window reads one index range,
+// and the grouping is a temp b-tree filled in the statement's first step,
+// where the deadline can stop it.
+func TestAuditFacetsQueryWalksTheIndex(t *testing.T) {
+	s := testStore(t)
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	since := T.Add(-7 * 24 * time.Hour)
+	const grouped = " | USE TEMP B-TREE FOR GROUP BY"
+	for name, tc := range map[string]struct {
+		f    models.LogFilter
+		want string
+	}{
+		"since":                {models.LogFilter{Since: &since}, "SEARCH audit_logs USING INDEX audit_logs_ts (timestamp>?)"},
+		"since and until":      {models.LogFilter{Since: &since, Until: &T}, "SEARCH audit_logs USING INDEX audit_logs_ts (timestamp>? AND timestamp<?)"},
+		"key and since":        {models.LogFilter{VirtualKeyID: "k1", Since: &since}, "SEARCH audit_logs USING INDEX audit_logs_virtual_key (virtual_key_id=? AND timestamp>?)"},
+		"key, since and until": {models.LogFilter{VirtualKeyID: "k1", Since: &since, Until: &T}, "SEARCH audit_logs USING INDEX audit_logs_virtual_key (virtual_key_id=? AND timestamp>? AND timestamp<?)"},
+		"no window":            {models.LogFilter{}, "SCAN audit_logs"},
+		"status is not in SQL": {models.LogFilter{Since: &since, Status: "error", Method: "m", Tool: "x"}, "SEARCH audit_logs USING INDEX audit_logs_ts (timestamp>?)"},
+	} {
+		query, args, err := s.auditFacetsQuery(tc.f)
+		if got, want := joinedPlan(t, s, query, args, err), tc.want+grouped; got != want {
+			t.Errorf("%s: plan %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestListAuditFacetsStopsAtItsDeadline is S3 for the facet read: on the
+// walk fixture a deadline of a tenth of the read stops it before half, and
+// the connection is free for an insert afterwards.
+func TestListAuditFacetsStopsAtItsDeadline(t *testing.T) {
+	s := walkStore(t, "audit_logs")
+	stopsAtItsDeadline(t, s, func(ctx context.Context) error {
+		got, err := s.ListAuditFacets(ctx, models.LogFilter{Since: &walkSince})
+		if err == nil && (facetCount(got.Tools, "needle") != 2 || facetCount(got.Tools, "haystack") != walkRows()) {
+			return fmt.Errorf("tools %v, want haystack %d and needle 2", got.Tools, walkRows())
+		}
+		return err
+	})
+}
