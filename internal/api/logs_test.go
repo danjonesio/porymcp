@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,5 +243,18 @@ func TestListLogsStopsWhenTheClientGoesAway(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the store call was still running 1 s after the client went away")
+	}
+}
+
+// TestLogReadTimeoutMatchesTheDashboard is S18: the dashboard shows its own
+// sentence only for a 503 whose text is exactly errLogReadTimeout, so the two
+// constants must not drift apart.
+func TestLogReadTimeoutMatchesTheDashboard(t *testing.T) {
+	src, err := os.ReadFile("../../web/src/lib/logs-view.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "LOG_READ_TIMEOUT = '" + errLogReadTimeout + "'"; !strings.Contains(string(src), want) {
+		t.Errorf("web/src/lib/logs-view.ts has no %s", want)
 	}
 }

@@ -1,17 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { ApiError } from './api.ts'
 import {
   countLine,
   customPrefill,
   customProblems,
   DEFAULT_FILTERS,
   fromLocalInput,
+  LOG_READ_TIMEOUT,
   type LogFilters,
+  listErrorMessage,
   logQuery,
   logWindow,
   NO_LOGS,
   PERIODS,
   pagePath,
+  SLOW_CALLS,
+  SLOW_CHANGES,
+  SLOW_QUERY,
   toLocalInput,
   untilFromLocalInput,
   upstreamCell,
@@ -144,4 +150,21 @@ test('DEFAULT_FILTERS: Last 7 days', () => {
   assert.equal(DEFAULT_FILTERS.period, '7d')
   assert.equal(PERIODS.find((p) => p.value === DEFAULT_FILTERS.period)?.label, 'Last 7 days')
   assert.equal(NO_LOGS, 'No matching log entries.')
+})
+
+// S18: the mapping keys on 503 and the server's exact text, so the upstream
+// busy and OAuth 503s, an edge proxy's 503, and every other status keep the
+// house mapper's words.
+test("listErrorMessage: the deadline's 503 gets the table's sentence; another 503 and a 500 keep the server text; a TypeError gets the network sentence", () => {
+  assert.equal(SLOW_QUERY['/logs'], SLOW_CALLS)
+  assert.equal(SLOW_QUERY['/admin-events'], SLOW_CHANGES)
+  assert.equal(listErrorMessage(new ApiError(503, LOG_READ_TIMEOUT), SLOW_CALLS), SLOW_CALLS)
+  assert.equal(listErrorMessage(new ApiError(503, LOG_READ_TIMEOUT), SLOW_CHANGES), SLOW_CHANGES)
+  assert.equal(listErrorMessage(new ApiError(503, 'upstream is busy'), SLOW_CALLS), 'upstream is busy')
+  assert.equal(listErrorMessage(new ApiError(500, LOG_READ_TIMEOUT), SLOW_CALLS), LOG_READ_TIMEOUT)
+  assert.equal(listErrorMessage(new ApiError(500, 'internal error'), SLOW_CALLS), 'internal error')
+  assert.equal(
+    listErrorMessage(new TypeError('Failed to fetch'), SLOW_CALLS),
+    'Could not reach PoryMCP. Check that the server is still running.',
+  )
 })

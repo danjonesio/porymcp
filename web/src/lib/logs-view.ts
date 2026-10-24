@@ -1,4 +1,5 @@
-import type { PageEnd } from './cursor-pages.ts'
+import { ApiError, requestErrorMessage } from './api.ts'
+import type { PageEnd, PagedPath } from './cursor-pages.ts'
 import { plural } from './plural.ts'
 
 /**
@@ -57,6 +58,24 @@ export const NOT_LISTED = 'Not in the upstream list.'
 export const SINCE_MISSING = 'Enter a start time.'
 export const INPUT_INCOMPLETE = 'Enter a full date and time.'
 export const UNTIL_BEFORE_SINCE = 'Until is earlier than Since.'
+
+/** The server's text for a read its deadline stopped (internal/api/helpers.go errLogReadTimeout). */
+export const LOG_READ_TIMEOUT = 'log query took too long'
+export const SLOW_CALLS = 'This query took too long. Choose a shorter period or a narrower filter.'
+export const SLOW_CHANGES = 'This query took too long. Choose All resources or reload the page.'
+/** The sentence each paged table shows for a read its deadline stopped (PORM-224). */
+export const SLOW_QUERY: Record<PagedPath, string> = { '/logs': SLOW_CALLS, '/admin-events': SLOW_CHANGES }
+
+/**
+ * One sentence for a failed audit read: the deadline's own copy, then the
+ * house mapper. Keyed on 503 and the exact server text, so another 503 (an
+ * upstream that is busy, an OAuth step, an edge proxy in front of PoryMCP)
+ * keeps its own words.
+ */
+export function listErrorMessage(err: unknown, slow: string): string {
+  if (err instanceof ApiError && err.status === 503 && err.message === LOG_READ_TIMEOUT) return slow
+  return requestErrorMessage(err)
+}
 
 const HOUR_MS = 3_600_000
 

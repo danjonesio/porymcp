@@ -23,7 +23,7 @@ var logReadTimeout = 2 * time.Second
 
 // errLogReadTimeout is the answer to a read logReadTimeout stopped. The
 // dashboard matches it (web/src/lib/logs-view.ts LOG_READ_TIMEOUT) to show its
-// own sentence.
+// own sentence; TestLogReadTimeoutMatchesTheDashboard keeps the two equal.
 const errLogReadTimeout = "log query took too long"
 
 type errorBody struct {
