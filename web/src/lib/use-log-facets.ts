@@ -17,6 +17,8 @@ import { FACET_WAIT_MS, type FacetAnswer, facetFetchDue, facetsFor, listErrorMes
  * key, period or status changes or the page reloads. `waitedFor` is the facet
  * query whose wait has ended: a boolean reset by the [fq] effect would still
  * read true in the render where fq changes, and start the next fetch at once.
+ * The [fq] cleanup clears it, so a Custom period that comes back to an
+ * earlier facet query within the wait waits again.
  * Under StrictMode the [fq] cleanup runs between the two mounts, so the first
  * request is aborted and the second mount sends one.
  */
@@ -32,6 +34,7 @@ export function useLogFacets(fq: string | null, listAnswered: boolean): { facets
       clearTimeout(timer)
       held.current?.ctrl.abort()
       held.current = null
+      setWaitedFor(null)
     }
   }, [fq])
 

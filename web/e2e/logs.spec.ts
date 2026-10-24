@@ -8,6 +8,7 @@ import {
   counted,
   countLine,
   FACET_CUT,
+  FACET_WAIT_MS,
   INPUT_INCOMPLETE,
   LOAD_MORE_CALLS,
   LOAD_MORE_CHANGES,
@@ -509,30 +510,59 @@ test('A selected tool stays when the key or the period changes', async ({ page, 
 })
 
 // Settled point 7: the count starts once the rows' first page has answered,
-// and a Method or Tool pick or a Load more keeps the facet query, so none of
-// them sends another.
+// or FACET_WAIT_MS after the facet query changed if it has not, and a Method
+// or Tool pick or a Load more keeps the facet query, so none of them sends
+// another. The first half is checked where the rows answered well inside the
+// wait, so a slow host cannot fail it; the second by holding a first page.
 test('The facets load after the rows, and a Method or Tool pick or a Load more fetches none', async ({
   page,
   prefix,
   created,
 }) => {
   const key = await seededKey(prefix, created, 'fo', 51)
-  const events: string[] = []
+  const events: { what: string; at: number }[] = []
+  const keyOf = (u: URL) => u.searchParams.get('virtual_key_id') ?? ''
+  const isFirstPage = (u: URL) => u.pathname === '/api/v1/logs' && !u.searchParams.has('cursor')
   page.on('request', (r) => {
-    if (isFacets(new URL(r.url()))) events.push(`facets ${new URL(r.url()).searchParams.get('virtual_key_id') ?? ''}`)
+    const u = new URL(r.url())
+    if (isFacets(u)) events.push({ what: `facets ${keyOf(u)}`, at: Date.now() })
+    if (isFirstPage(u)) events.push({ what: `sent ${keyOf(u)}`, at: Date.now() })
   })
   page.on('response', (r) => {
     const u = new URL(r.url())
-    if (u.pathname === '/api/v1/logs' && !u.searchParams.has('cursor')) events.push(`rows ${u.searchParams.get('virtual_key_id') ?? ''}`)
+    if (isFirstPage(u)) events.push({ what: `rows ${keyOf(u)}`, at: Date.now() })
   })
+  const at = (what: string) => events.findIndex((e) => e.what === what)
+  const allKeys = page.waitForResponse((r) => isFacets(new URL(r.url())) && !r.url().includes('virtual_key_id='))
   await page.goto('/logs/')
-  await filtered(page, (u) => u.includes(`virtual_key_id=${key.id}`), () => showKey(page, key.id, key.name), FACETS)
-  for (const k of ['', key.id]) {
-    const rowsAt = events.indexOf(`rows ${k}`)
-    const facetsAt = events.indexOf(`facets ${k}`)
-    expect(rowsAt >= 0 && rowsAt < facetsAt, `the rows for "${k ? 'the key' : 'all keys'}" answered before the facets were asked`).toBe(true)
+  await allKeys
+  const sent = events[at('sent ')]
+  const rows = events[at('rows ')]
+  if (rows !== undefined && rows.at - sent.at < FACET_WAIT_MS - 100) {
+    expect(at('rows ') < at('facets '), 'rows that answered inside the wait came before the facets request').toBe(true)
   }
-  const asked = () => events.filter((e) => e.startsWith('facets ')).length
+
+  // A first page still held after FACET_WAIT_MS: the facets request goes out
+  // without it.
+  let release: () => void = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  const isKeyPage = (u: URL) => isFirstPage(u) && keyOf(u) === key.id
+  await page.route(isKeyPage, async (route) => {
+    await held
+    await route.continue()
+  })
+  const facetsSent = page.waitForRequest((r) => isFacets(new URL(r.url())) && keyOf(new URL(r.url())) === key.id)
+  const keyRows = page.waitForResponse((r) => isKeyPage(new URL(r.url())))
+  await page.getByLabel('Virtual key', { exact: true }).selectOption({ label: key.name })
+  await facetsSent
+  expect(at(`rows ${key.id}`), 'the facets request went out while the first page was held').toBe(-1)
+  release()
+  await keyRows
+  await page.unroute(isKeyPage)
+  await expect(proxyRows(page)).toHaveCount(50)
+  const asked = () => events.filter((e) => e.what.startsWith('facets ')).length
   const before = asked()
 
   await loadMoreCalls(page).click()

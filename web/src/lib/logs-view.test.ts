@@ -168,14 +168,20 @@ test("toolOptions: None first with its count, then the API's order", () => {
   ])
 })
 
-test('toolOptions: a named tool None gives the empty option the (no tool) suffix, decided by value', () => {
+test('toolOptions: a named tool None gives the empty option the (no tool) suffix, decided by the name as shown', () => {
   const f = facetsOf({ tools: [{ value: '', count: 5 }, { value: 'None', count: 3 }] })
   const opts = toolOptions(f, noPick)
   assert.deepEqual(opts[1], { value: NONE_CHOICE, label: counted(`${ABSENT} (no tool)`, 5) })
   assert.deepEqual(opts[2], { value: 'tool:None', label: counted('None', 3) })
-  // A tool whose label could read None but whose value is not None leaves the empty option alone.
-  const lookalike = facetsOf({ tools: [{ value: '', count: 5 }, { value: '‮None', count: 3 }] })
-  assert.equal(toolOptions(lookalike, noPick)[1].label, counted(ABSENT, 5))
+  // A name that shows as None once its bidi controls are dropped, or its ends
+  // trimmed, gets the suffix too; its value keeps the raw name.
+  for (const name of ['\u202eNone', '\u2066None\u2069', ' None ']) {
+    const lookalike = toolOptions(facetsOf({ tools: [{ value: '', count: 5 }, { value: name, count: 3 }] }), noPick)
+    assert.equal(lookalike[1].label, counted(`${ABSENT} (no tool)`, 5), JSON.stringify(name))
+    assert.equal(lookalike[2].value, `tool:${name}`)
+  }
+  // A name that only contains None does not.
+  assert.equal(toolOptions(facetsOf({ tools: [{ value: '', count: 5 }, { value: 'None2', count: 3 }] }), noPick)[1].label, counted(ABSENT, 5))
   // The suffix also follows a kept, bare selection named None.
   assert.equal(toolOptions(facetsOf({ tools: [{ value: '', count: 1 }] }), { tool: 'None', noTool: false })[1].label, counted(`${ABSENT} (no tool)`, 1))
 })
@@ -233,14 +239,14 @@ test('facetCut: only a list of 200 under truncated', () => {
 // S20: an upstream-chosen name cannot carry a bidi control into the option
 // text, so the count always reads after the name.
 test('counted: a name holding U+202E, and one holding U+2069 then U+202E, cannot reorder the count', () => {
-  assert.equal(counted('fetch', 3), '⁨fetch⁩ (3)')
-  for (const name of ['ab‮cd', 'ab⁩‮cd', '⁦x⁧y⁨z‪‫‬‭']) {
+  assert.equal(counted('fetch', 3), '\u2068fetch\u2069 (3)')
+  for (const name of ['ab\u202ecd', 'ab\u2069\u202ecd', '\u2066x\u2067y\u2068z\u202a\u202b\u202c\u202d']) {
     const label = counted(name, 7)
-    const inner = label.slice(1, label.indexOf('⁩'))
-    assert.equal(/[‪-‮⁦-⁩]/.test(inner), false, `controls left in ${JSON.stringify(label)}`)
-    assert.ok(label.startsWith('⁨'))
-    assert.ok(label.endsWith('⁩ (7)'))
-    assert.equal(label.split('⁩').length, 2, 'exactly one closing isolate')
+    const inner = label.slice(1, label.indexOf('\u2069'))
+    assert.equal(/[\u202a-\u202e\u2066-\u2069]/.test(inner), false, `controls left in ${JSON.stringify(label)}`)
+    assert.ok(label.startsWith('\u2068'))
+    assert.ok(label.endsWith('\u2069 (7)'))
+    assert.equal(label.split('\u2069').length, 2, 'exactly one closing isolate')
   }
 })
 

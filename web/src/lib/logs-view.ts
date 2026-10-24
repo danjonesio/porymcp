@@ -256,22 +256,30 @@ export function methodOptions(facets: LogFacets | null, selected: string): Filte
  * The Tool select's options: All tools; None first when the window holds
  * calls with no tool or None is chosen, counted when listed; then the named
  * tools in the API's order, counted; a selected tool the list does not hold
- * last, bare. When a rendered tool is itself named None (decided by its value,
- * never its label), the empty option reads `None (no tool)` so the two differ.
+ * last, bare. When a rendered tool shows as None, the empty option reads
+ * `None (no tool)` so the two differ. That is decided on the tool's name as
+ * its option shows it (bidi controls dropped, as `counted` drops them, and the
+ * ends trimmed, as an option's text is), never on a label's text, so a name
+ * such as U+202E then None cannot pass for the empty option.
  */
 export function toolOptions(facets: LogFacets | null, f: Pick<LogFilters, 'tool' | 'noTool'>): FilterOption[] {
   const named: FilterOption[] = []
+  const names: string[] = []
   let empty: number | undefined
   for (const e of facets?.tools ?? []) {
     if (e.value === '') empty = e.count
-    else named.push({ value: NAMED_TOOL + e.value, label: counted(e.value, e.count) })
+    else {
+      named.push({ value: NAMED_TOOL + e.value, label: counted(e.value, e.count) })
+      names.push(e.value)
+    }
   }
   if (f.tool && !f.noTool && !named.some((o) => o.value === NAMED_TOOL + f.tool)) {
     named.push({ value: NAMED_TOOL + f.tool, label: f.tool })
+    names.push(f.tool)
   }
   const out: FilterOption[] = [{ value: '', label: ALL_TOOLS }]
   if (empty !== undefined || f.noTool) {
-    const clash = named.some((o) => o.value === NAMED_TOOL + ABSENT)
+    const clash = names.some((n) => n.replace(BIDI_CONTROLS, '').trim() === ABSENT)
     const label = clash ? `${ABSENT} (${NO_TOOL})` : ABSENT
     out.push({ value: NONE_CHOICE, label: empty === undefined ? label : counted(label, empty) })
   }
