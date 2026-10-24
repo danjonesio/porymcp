@@ -130,9 +130,11 @@ func (s slowLogs) ListAuditLogs(ctx context.Context, _ models.LogFilter) ([]mode
 	return nil, "", ctx.Err()
 }
 
+// ListAuditFacets ends with an error of its own, not ctx.Err(), as pgx
+// reports an interrupted query: readFailed must decide on the context.
 func (s slowLogs) ListAuditFacets(ctx context.Context, _ models.LogFilter) (models.LogFacets, error) {
 	<-ctx.Done()
-	return models.LogFacets{}, ctx.Err()
+	return models.LogFacets{}, errors.New("interrupted")
 }
 
 // failingLogs fails ListAuditLogs at once with an error that is not a
@@ -463,6 +465,28 @@ func TestListLogFacetsRefusesItsOwnFilters(t *testing.T) {
 			t.Errorf("%s: %d %q, want 400 %q", query, rr.Code, rr.Body.String(), want)
 		}
 	}
+	// The documented order: each refusal wins over every one after it,
+	// whatever order the query string holds them in.
+	order := []struct{ param, msg string }{
+		{"method=x", "method cannot be set on facets"},
+		{"tool=y", "tool cannot be set on facets"},
+		{"has_tool=z", "has_tool cannot be set on facets"},
+		{"status=ok", "invalid status"},
+		{"since=bad", "invalid since"},
+		{"until=bad", "invalid until"},
+	}
+	for i := range order {
+		var parts []string
+		for _, o := range order[i:] {
+			parts = append(parts, o.param)
+		}
+		slices.Reverse(parts)
+		query := strings.Join(parts, "&")
+		rr := doJSON(t, h, http.MethodGet, "/logs/facets?"+query, "test-admin", nil)
+		if want := "{\"error\":\"" + order[i].msg + "\"}\n"; rr.Code != http.StatusBadRequest || rr.Body.String() != want {
+			t.Errorf("%s: %d %q, want 400 %q", query, rr.Code, rr.Body.String(), want)
+		}
+	}
 	for _, admin := range []string{"", "wrong-key"} {
 		if rr := doJSON(t, h, http.MethodGet, "/logs/facets?method=tools/call", admin, nil); rr.Code != http.StatusUnauthorized {
 			t.Errorf("admin key %q: %d, want 401 before any 400", admin, rr.Code)
@@ -501,7 +525,8 @@ func TestListLogFacetsCutsAt200(t *testing.T) {
 }
 
 // TestListLogFacetsStopsAtTheDeadline is the facet route under the same
-// deadline and the same 503 as GET /logs.
+// deadline and the same 503 as GET /logs. The store answers an error that is
+// not the context's, so the 503 is decided on the context.
 func TestListLogFacetsStopsAtTheDeadline(t *testing.T) {
 	shortReadTimeout(t)
 	_, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return slowLogs{Store: st} })
