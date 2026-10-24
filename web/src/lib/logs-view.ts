@@ -1,5 +1,6 @@
-import { ApiError, requestErrorMessage } from './api.ts'
+import { ApiError, type LogFacets, requestErrorMessage } from './api.ts'
 import type { PageEnd, PagedPath } from './cursor-pages.ts'
+import { ABSENT } from './placeholder.ts'
 import { plural } from './plural.ts'
 
 /**
@@ -30,6 +31,8 @@ export type LogFilters = {
   virtual_key_id: string
   method: string
   tool: string
+  /** None is chosen in the Tool select: has_tool=false, and tool is ''. */
+  noTool: boolean
   status: string
   period: Period
   since: string
@@ -42,6 +45,7 @@ export const DEFAULT_FILTERS: LogFilters = {
   virtual_key_id: '',
   method: '',
   tool: '',
+  noTool: false,
   status: '',
   period: '7d',
   since: '',
@@ -63,6 +67,7 @@ export const UNTIL_BEFORE_SINCE = 'Until is earlier than Since.'
 export const LOG_READ_TIMEOUT = 'log query took too long'
 export const SLOW_CALLS = 'This query took too long. Choose a shorter period or a narrower filter.'
 export const SLOW_CHANGES = 'This query took too long. Choose All resources or reload the page.'
+export const SLOW_FACETS = 'Counting the calls in this period took too long. Choose a shorter period or a virtual key.'
 /** The sentence each paged table shows for a read its deadline stopped (PORM-224). */
 export const SLOW_QUERY: Record<PagedPath, string> = { '/logs': SLOW_CALLS, '/admin-events': SLOW_CHANGES }
 
@@ -155,20 +160,147 @@ export function customProblems(f: LogFilters): { since?: string; until?: string 
  * Custom period with no usable start, or an Until the browser could not read.
  * An Until earlier than Since is still sent; the server answers an empty page.
  * Built with URLSearchParams in a fixed order, never by concatenation, so a
- * typed value such as `x&limit=200` stays one tool value. No limit or cursor:
- * pagePath adds those.
+ * value such as `x&limit=200` stays one tool value. None sends has_tool=false
+ * and never a tool. No limit or cursor: pagePath adds those.
  */
 export function logQuery(f: LogFilters, anchor: number): string | null {
   if (f.period === 'custom' && (customProblems(f).since || f.untilBad)) return null
   const q = new URLSearchParams()
   if (f.virtual_key_id) q.set('virtual_key_id', f.virtual_key_id)
   if (f.method) q.set('method', f.method)
-  if (f.tool) q.set('tool', f.tool)
+  if (f.noTool) q.set('has_tool', 'false')
+  else if (f.tool) q.set('tool', f.tool)
   if (f.status) q.set('status', f.status)
   const { since, until } = logWindow(f, anchor)
   if (since) q.set('since', since)
   if (until) q.set('until', until)
   return q.toString()
+}
+
+/**
+ * The /logs/facets query for a filter set: the virtual key, status and window
+ * only (PORM-149), so a Method or Tool pick leaves it the same string. Null
+ * exactly when logQuery is.
+ */
+export function facetQuery(f: LogFilters, anchor: number): string | null {
+  return logQuery({ ...f, method: '', tool: '', noTool: false }, anchor)
+}
+
+export const ALL_METHODS = 'All methods'
+export const ALL_TOOLS = 'All tools'
+export const ALL_STATUSES = 'All statuses'
+export const NO_TOOL = 'no tool'
+/** The store's cap on each facet list (internal/store facetCap). */
+export const FACET_CAP = 200
+export const FACET_CUT = 'The 200 most frequent are listed. The API accepts any exact value.'
+export const STATUSES = [
+  { value: 'success', label: 'Success' },
+  { value: 'error', label: 'Error' },
+  { value: 'blocked', label: 'Blocked' },
+] as const
+/** The Tool select's value for None. A named tool's value is 'tool:' + its name, so no name can equal it or ''. */
+export const NONE_CHOICE = 'none'
+/** How long the facet request waits for the rows' first answer before it starts anyway, so a slow list and the facet walk share one deadline window. */
+export const FACET_WAIT_MS = 250
+
+export type FilterOption = { value: string; label: string }
+/** A facet answer or failure, tagged with the facet query it answers. */
+export type FacetAnswer = { fq: string; facets: LogFacets | null; error: string }
+
+const NAMED_TOOL = 'tool:'
+
+/** The Tool select's value for a filter set: '' for All, NONE_CHOICE, or 'tool:' + the name. */
+export function toolChoice(f: Pick<LogFilters, 'tool' | 'noTool'>): string {
+  if (f.noTool) return NONE_CHOICE
+  return f.tool ? NAMED_TOOL + f.tool : ''
+}
+
+/** The filters a Tool select value stands for; the inverse of toolChoice. */
+export function fromToolChoice(v: string): Pick<LogFilters, 'tool' | 'noTool'> {
+  if (v === NONE_CHOICE) return { tool: '', noTool: true }
+  if (v.startsWith(NAMED_TOOL)) return { tool: v.slice(NAMED_TOOL.length), noTool: false }
+  return { tool: '', noTool: false }
+}
+
+// The bidi embedding, override and isolate controls, U+202A to U+202E and
+// U+2066 to U+2069.
+const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069]/g
+
+/**
+ * 'name (n)'. Bidi controls (U+202A to U+202E, U+2066 to U+2069) are dropped
+ * from the name, which then sits between U+2068 and U+2069, so an
+ * upstream-chosen name cannot reorder the count. An `<option>` cannot hold a
+ * `<bdi>`, so the isolate is written into the text. The option's value keeps
+ * the raw name.
+ */
+export function counted(label: string, count: number): string {
+  return `\u2068${label.replace(BIDI_CONTROLS, '')}\u2069 (${count})`
+}
+
+/**
+ * The Method select's options: All methods, then each recorded method in the
+ * API's order with its count. '' (rows from before v0.1.0) is never offered,
+ * because method= cannot select it. A selected method the list does not hold
+ * is added last, bare, so the filter stays visible until it is changed.
+ */
+export function methodOptions(facets: LogFacets | null, selected: string): FilterOption[] {
+  const out: FilterOption[] = [{ value: '', label: ALL_METHODS }]
+  for (const e of facets?.methods ?? []) {
+    if (e.value) out.push({ value: e.value, label: counted(e.value, e.count) })
+  }
+  if (selected && !out.some((o) => o.value === selected)) out.push({ value: selected, label: selected })
+  return out
+}
+
+/**
+ * The Tool select's options: All tools; None first when the window holds
+ * calls with no tool or None is chosen, counted when listed; then the named
+ * tools in the API's order, counted; a selected tool the list does not hold
+ * last, bare. When a rendered tool is itself named None (decided by its value,
+ * never its label), the empty option reads `None (no tool)` so the two differ.
+ */
+export function toolOptions(facets: LogFacets | null, f: Pick<LogFilters, 'tool' | 'noTool'>): FilterOption[] {
+  const named: FilterOption[] = []
+  let empty: number | undefined
+  for (const e of facets?.tools ?? []) {
+    if (e.value === '') empty = e.count
+    else named.push({ value: NAMED_TOOL + e.value, label: counted(e.value, e.count) })
+  }
+  if (f.tool && !f.noTool && !named.some((o) => o.value === NAMED_TOOL + f.tool)) {
+    named.push({ value: NAMED_TOOL + f.tool, label: f.tool })
+  }
+  const out: FilterOption[] = [{ value: '', label: ALL_TOOLS }]
+  if (empty !== undefined || f.noTool) {
+    const clash = named.some((o) => o.value === NAMED_TOOL + ABSENT)
+    const label = clash ? `${ABSENT} (${NO_TOOL})` : ABSENT
+    out.push({ value: NONE_CHOICE, label: empty === undefined ? label : counted(label, empty) })
+  }
+  return out.concat(named)
+}
+
+/** The Status select's options: All statuses, then the three in a fixed order, counted (0 when absent) once facets arrive, bare before. */
+export function statusOptions(facets: LogFacets | null): FilterOption[] {
+  const out: FilterOption[] = [{ value: '', label: ALL_STATUSES }]
+  for (const s of STATUSES) {
+    const count = facets?.statuses.find((e) => e.value === s.value)?.count ?? 0
+    out.push({ value: s.value, label: facets ? counted(s.label, count) : s.label })
+  }
+  return out
+}
+
+/** Whether the cut sentence goes under a list: the answer was truncated and this list holds the cap. */
+export function facetCut(facets: LogFacets | null, list: 'methods' | 'tools'): boolean {
+  return facets?.truncated === true && facets[list].length === FACET_CAP
+}
+
+/** Whether the facet request for fq should start now. */
+export function facetFetchDue(heldFq: string | null, fq: string | null, listAnswered: boolean, waited: boolean): boolean {
+  return fq !== null && heldFq !== fq && (listAnswered || waited)
+}
+
+/** The facets and error for the current fq, from an answer that may belong to an older one. */
+export function facetsFor(answer: FacetAnswer | null, fq: string | null): { facets: LogFacets | null; error: string } {
+  return answer !== null && answer.fq === fq ? { facets: answer.facets, error: answer.error } : { facets: null, error: '' }
 }
 
 /** One page's path: the query, limit 50, and the cursor when there is one. */

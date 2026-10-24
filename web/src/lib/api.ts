@@ -331,6 +331,11 @@ export type PolicyView = {
   }
 }
 
+/** One recorded value of an audit column and how many rows in the window hold it. */
+export type FacetEntry = { value: string; count: number }
+/** GET /logs/facets (PORM-149). */
+export type LogFacets = { methods: FacetEntry[]; tools: FacetEntry[]; statuses: FacetEntry[]; truncated: boolean }
+
 export type AuditLog = {
   id: string
   timestamp: string
