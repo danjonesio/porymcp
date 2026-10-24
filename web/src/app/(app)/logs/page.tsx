@@ -20,28 +20,40 @@ import {
   customPrefill,
   customProblems,
   DEFAULT_FILTERS,
+  FACET_CUT,
+  facetCut,
+  facetQuery,
+  fromToolChoice,
   LOAD_MORE_CALLS,
   type LogFilters,
   logQuery,
+  methodOptions,
   NO_LOGS,
   NOT_LISTED,
   PERIODS,
   type Period,
+  statusOptions,
+  toolChoice,
+  toolOptions,
   type UpstreamCell,
   type UpstreamName,
   upstreamCell,
 } from '@/lib/logs-view'
 import { ABSENT, LOADING } from '@/lib/placeholder'
 import { useCursorPages } from '@/lib/use-cursor-pages'
+import { useLogFacets } from '@/lib/use-log-facets'
 
 /**
  * The Logs page: Proxy calls, 50 at a time with Load more, narrowed by a
  * period (Last 7 days by default) and four filters; then Admin activity.
  *
- * Every control goes through `change`, which also moves the anchor the
- * period's start is measured from, so the window is fixed for a listing and a
- * Load more never moves it. useCursorPages owns the rows and drops any answer
- * for an older filter. The virtual key and upstream lists load once, on their
+ * The virtual key, period, status and dates go through `change`, which also
+ * moves the anchor the period's start is measured from, so the window is fixed
+ * for a listing and a Load more never moves it. Method and Tool go through
+ * `pick`, which keeps the anchor: they are selects filled from GET
+ * /logs/facets for the key, period and status (PORM-149), and their counts
+ * were taken over this window. useCursorPages owns the rows and drops any
+ * answer for an older filter; useLogFacets owns the counts. The virtual key and upstream lists load once, on their
  * own: neither failing withholds the rows. The upstream name in the detail
  * dialog is the upstream's current one; a row whose upstream is not in the
  * list shows its full id.
@@ -59,6 +71,9 @@ export default function LogsPage() {
 
   const query = useMemo(() => logQuery(filters, anchor), [filters, anchor])
   const pages = useCursorPages<AuditLog>('/logs', query)
+  // Unchanged by a Method or Tool pick, so a pick sends no facets request.
+  const fq = useMemo(() => facetQuery(filters, anchor), [filters, anchor])
+  const facets = useLogFacets(fq, pages.end !== null)
   const problems = customProblems(filters)
 
   useEffect(() => {
@@ -70,9 +85,17 @@ export default function LogsPage() {
       .catch(() => setNamesFailed(true))
   }, [])
 
+  /** A change to the virtual key, period, status or dates: a new window, measured from now. */
   function change(patch: Partial<LogFilters>) {
     setFilters((f) => ({ ...f, ...patch }))
     setAnchor(Date.now())
+  }
+
+  // Method and Tool keep the anchor: their counts were taken over this window,
+  // so a pick lists the rows the count describes, and the facet query, which
+  // leaves both out, stays the same string.
+  function pick(patch: Partial<Pick<LogFilters, 'method' | 'tool' | 'noTool'>>) {
+    setFilters((f) => ({ ...f, ...patch }))
   }
 
   function changePeriod(period: Period) {
@@ -95,7 +118,9 @@ export default function LogsPage() {
     change(field === 'since' ? { since: el.value, sinceBad: el.validity.badInput } : { until: el.value, untilBad: el.validity.badInput })
   }
 
-  const error = pages.error || keysError
+  // The list's own failure wins; a facet failure shares the line and never
+  // hides the rows or the empty copy.
+  const error = pages.error || facets.error || keysError
   // Read in the browser and only once Custom is chosen, so the static export
   // never bakes in the build host's zone. Each input carries it as its
   // description; the visible line under the row is the same sentence.
@@ -192,19 +217,34 @@ export default function LogsPage() {
         </Field>
         <Field>
           <Label>Method</Label>
-          <Input name="method" value={filters.method} onChange={(e) => change({ method: e.target.value })} placeholder="tools/call" />
+          <Select name="method" dir="ltr" value={filters.method} onChange={(e) => pick({ method: e.target.value })}>
+            {methodOptions(facets.facets, filters.method).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+          {facetCut(facets.facets, 'methods') ? <Description>{FACET_CUT}</Description> : null}
         </Field>
         <Field>
           <Label>Tool</Label>
-          <Input name="tool" value={filters.tool} onChange={(e) => change({ tool: e.target.value })} />
+          <Select name="tool" dir="ltr" value={toolChoice(filters)} onChange={(e) => pick(fromToolChoice(e.target.value))}>
+            {toolOptions(facets.facets, filters).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+          {facetCut(facets.facets, 'tools') ? <Description>{FACET_CUT}</Description> : null}
         </Field>
         <Field>
           <Label>Status</Label>
           <Select name="status" value={filters.status} onChange={(e) => change({ status: e.target.value })}>
-            <option value="">All statuses</option>
-            <option value="success">Success</option>
-            <option value="error">Error</option>
-            <option value="blocked">Blocked</option>
+            {statusOptions(facets.facets).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
           </Select>
         </Field>
       </div>
