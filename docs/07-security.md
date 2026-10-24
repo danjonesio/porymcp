@@ -1167,9 +1167,11 @@
   rows, not a record: the rows stay the record, and a value the list leaves
   out is still found with an exact `method` or `tool`.
 - Run container as non-root, prefer read-only root filesystem. A read-only
-  root needs a writable tmpfs at `/tmp`: SQLite writes a large sort, such as a
-  Logs read over a long period, to temporary files there, and with nowhere to
-  write the read fails. The store error goes to the server log as
+  root needs a writable tmpfs at `/tmp`: SQLite writes a large sort to
+  temporary files there, and with nowhere to write the read fails. The Logs
+  facet count (`GET /logs/facets`, which the Logs page asks for on every open)
+  is the read that spills, once its period holds a few tens of thousands of
+  rows. The store error goes to the server log as
   `store read failed`; the response is the generic `500`.
 - Rate limiting enforced at the proxy layer (per virtual key), on failed admin
   authentication (per IP), and on discovery (thirty a minute and four in flight,

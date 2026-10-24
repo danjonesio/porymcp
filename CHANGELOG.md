@@ -29,6 +29,11 @@ Behaviour changes that affect a running deployment. Newest first.
 - **`has_tool=true|false` on `GET /api/v1/logs`** narrows to the rows that
   named a tool or did not. Beside `tool`, or with any other value, it is a
   `400`.
+- **A read-only root filesystem needs a writable `/tmp`.** The facet count
+  sorts in SQLite temporary files once the period holds a few tens of
+  thousands of rows, and the Logs page asks for it on every open; with no
+  writable temporary directory it answers `500`. A deployment that mounts the
+  root read-only adds a tmpfs at `/tmp` (`docs/07-security.md`).
 
 ### A Logs read stops at two seconds and answers 503 (PORM-224)
 

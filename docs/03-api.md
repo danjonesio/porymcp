@@ -1065,7 +1065,9 @@ the rows of the chosen `status`; `statuses` counts every row in the key and
 period, whatever `status` says, so each status keeps its count while one is
 chosen. The two lists do not narrow each other. Each list is ordered by count,
 highest first, then by value in byte order, holds at most 200 entries and is
-`[]`, never null. `tools` carries a `""` entry for the rows with no tool,
+`[]`, never null. Each count is at least 1: a value with no rows in the
+period, a status included, is left out of its list, so a missing status is a
+count of 0. `tools` carries a `""` entry for the rows with no tool,
 which keeps its place when the cap cuts the list; `methods` holds `""` only
 for rows written before v0.1.0, which `method=` cannot select. `truncated` is
 `true` when the cap cut `methods` or `tools`. The route reads one statement,

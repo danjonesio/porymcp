@@ -1944,6 +1944,8 @@ components:
           type: string
         count:
           type: integer
+          minimum: 1
+          description: A value with no rows in the period is left out of its list.
     AdminEventPage:
       type: object
       required: [admin_events, next_cursor]
