@@ -1,9 +1,11 @@
 'use client'
 
+import clsx from 'clsx'
 import { Stat } from '@/app/stat'
 import { Badge } from '@/components/badge'
 import { Heading, Subheading } from '@/components/heading'
 import { Link } from '@/components/link'
+import { errorLine } from '@/components/primitives'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/table'
 import { Text } from '@/components/text'
 import { api, type AuditLog, type Stats } from '@/lib/api'
@@ -93,7 +95,11 @@ export default function OverviewPage() {
       <Text className="mt-2 max-w-[56ch] text-pretty">
         This page summarises your virtual keys, upstream connections and recent proxy activity.
       </Text>
-      {error ? <Text className="mt-4 text-pink-600 dark:text-pink-400">{error}</Text> : null}
+      {error ? (
+        <p role="alert" className={clsx('mt-4', errorLine)}>
+          {error}
+        </p>
+      ) : null}
       <div role="status" aria-live="polite">
         {stats ? <CredentialNotice stats={stats} /> : null}
       </div>

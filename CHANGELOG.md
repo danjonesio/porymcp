@@ -4,6 +4,14 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The sign-in and Overview error lines are pink (PORM-225)
+
+- **A refused admin key and a failed Overview load read as errors.** Both
+  lines were a `Text` paragraph whose grey overrode the pink they asked for,
+  so a wrong key on the sign-in page read as a muted note. They are now
+  `role="alert"` lines drawn with the same recipe as every other error line,
+  pink in light and dark mode, and the sign-in refusal is announced.
+
 ### The Logs Method and Tool filters list what was recorded (PORM-149)
 
 - **Method and Tool are selects.** Each lists the values recorded under the

@@ -6,6 +6,7 @@ import { Button } from '@/components/button'
 import { Field, Label } from '@/components/fieldset'
 import { Heading } from '@/components/heading'
 import { Input } from '@/components/input'
+import { errorLine } from '@/components/primitives'
 import { Text } from '@/components/text'
 import { ApiError, api, setAdminKey } from '@/lib/api'
 import { useRouter } from 'next/navigation'
@@ -56,7 +57,11 @@ export default function LoginPage() {
               required
             />
           </Field>
-          {error ? <Text className="text-pink-600 dark:text-pink-400">{error}</Text> : null}
+          {error ? (
+            <p role="alert" className={errorLine}>
+              {error}
+            </p>
+          ) : null}
           <Button type="submit" color="cyan" className="w-full" disabled={pending}>
             {pending ? 'Checking…' : 'Open dashboard'}
           </Button>
