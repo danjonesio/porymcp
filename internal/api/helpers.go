@@ -13,12 +13,12 @@ import (
 	"github.com/danjonesio/porymcp/internal/webutil"
 )
 
-// logReadTimeout bounds one read of the audit log on GET /logs and GET
-// /admin-events, the wait for the database connection included. On SQLite
-// that connection is shared with the proxy's key lookups and the audit writer,
-// whose insert gives up after 5 s (internal/audit). An indexed page reads in
-// under a millisecond, so 2 s stops only a walk of the period. A package var,
-// as the proxy's budgets are, so a test can shorten it.
+// logReadTimeout bounds one read of the audit log on GET /logs, GET
+// /logs/facets and GET /admin-events, the wait for the database connection
+// included. On SQLite that connection is shared with the proxy's key lookups
+// and the audit writer, whose insert gives up after 5 s (internal/audit). An
+// indexed page reads in under a millisecond, so 2 s stops only a walk of the
+// period. A package var, as the proxy's budgets are, so a test can shorten it.
 var logReadTimeout = 2 * time.Second
 
 // errLogReadTimeout is the answer to a read logReadTimeout stopped. The
@@ -71,8 +71,8 @@ func storeError(w http.ResponseWriter, err error) {
 // readFailed answers a bounded store read that returned err under ctx, a
 // WithTimeout child of r's context. It is decided on the context, not the
 // error, because SQLite and pgx report an interrupted query differently.
-// Past the deadline it is a 503 with slow and one warning line naming the
-// path and request id. When the caller has gone (the dashboard aborts a
+// Past the deadline, or when the facet fold passed its cap, it is a 503 with
+// slow and one warning line naming the path and request id. When the caller has gone (the dashboard aborts a
 // request it no longer wants) nothing is written: nobody reads it, and a 500
 // would log a store failure for an ordinary filter change. Anything else is
 // storeError's, so an invalid cursor stays a 400, and the store error goes to
@@ -80,7 +80,7 @@ func storeError(w http.ResponseWriter, err error) {
 func (s *Server) readFailed(ctx context.Context, w http.ResponseWriter, r *http.Request, err error, slow string) {
 	gone := r.Context().Err() != nil
 	switch {
-	case !gone && errors.Is(ctx.Err(), context.DeadlineExceeded):
+	case !gone && (errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, store.ErrTooManyFacetValues)):
 		s.log.Warn("store read stopped", "path", r.URL.Path, "request_id", middleware.GetReqID(r.Context()))
 		writeError(w, http.StatusServiceUnavailable, slow)
 	case gone:

@@ -1157,6 +1157,15 @@
 - The dashboard admin key still lives in `sessionStorage` and is readable by
   any script that runs in the page. CSP is the current mitigation; moving
   the session to an httpOnly cookie is PORM-49.
+- The Logs page's Method and Tool lists (`GET /logs/facets`, PORM-149) are
+  values callers wrote, callers with no key included: a call refused before
+  authentication still writes a row, and on the HTTP relay door its
+  `tool_name` is the request path, so anyone who can reach a proxy door can
+  add entries. Each list keeps the 200 most frequent with `truncated` set
+  when it cut, and a period holding more than 50,000 distinct values is
+  refused with a `503` rather than counted. The lists are a way into the
+  rows, not a record: the rows stay the record, and a value the list leaves
+  out is still found with an exact `method` or `tool`.
 - Run container as non-root, prefer read-only root filesystem. A read-only
   root needs a writable tmpfs at `/tmp`: SQLite writes a large sort, such as a
   Logs read over a long period, to temporary files there, and with nowhere to

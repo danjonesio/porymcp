@@ -727,6 +727,16 @@ paths:
             single-upstream key it is the upstream's own bare name.
           schema:
             type: string
+        - name: has_tool
+          in: query
+          description: >-
+            `false` lists the rows whose `tool_name` is empty (every call that
+            named no tool, such as `ping`, `tools/list` and `initialize`);
+            `true` the rows that name one. Exactly `true` or `false`; empty is
+            no filter. A 400 beside a non-empty `tool`.
+          schema:
+            type: string
+            enum: ["true", "false"]
         - name: status
           in: query
           description: >-
@@ -762,12 +772,59 @@ paths:
         "200":
           description: Page of logs
         "400":
-          description: Invalid limit, since, until or cursor
+          description: Invalid limit, since, until, cursor or has_tool, or has_tool sent with tool
         "503":
           description: >-
             `{"error":"log query took too long"}`: the read passed its
             two-second deadline. A shorter period or a `virtual_key_id` reads
             fewer rows.
+  /logs/facets:
+    get:
+      summary: Count the recorded methods, tools and statuses
+      description: >-
+        The methods, tools and statuses the rows `GET /logs` would list for
+        the same `virtual_key_id`, period and `status` carry, with a count
+        each, from one read. Each list is ordered by count, highest first,
+        then by value in byte order, and holds at most 200 entries. `tools`
+        carries a `""` entry for the rows with no tool, which keeps its place
+        when the cap cuts the list. `limit` and `cursor` are not read. The read
+        covers every row in the period and can hold the shared connection for
+        up to two seconds; it is not for polling. See `docs/03-api.md`, Logs.
+      parameters:
+        - name: virtual_key_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Since"
+        - $ref: "#/components/parameters/Until"
+        - name: status
+          in: query
+          description: Narrows methods and tools; statuses ignores it.
+          schema:
+            type: string
+            enum: [success, error, blocked]
+      responses:
+        "200":
+          description: The three lists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogFacets"
+        "400":
+          description: >-
+            `{"error":"method cannot be set on facets"}`,
+            `{"error":"tool cannot be set on facets"}`,
+            `{"error":"has_tool cannot be set on facets"}`,
+            `{"error":"invalid status"}`, `{"error":"invalid since"}` or
+            `{"error":"invalid until"}`, checked in that order
+        "401":
+          description: Missing or wrong admin key
+        "503":
+          description: >-
+            `{"error":"log query took too long"}`: the read passed its
+            two-second deadline, or the period holds more than 50,000
+            distinct methods or tools. A shorter period or a `virtual_key_id`
+            reads fewer rows.
   /logs/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
@@ -1859,6 +1916,34 @@ components:
             hold whitespace, a control character or U+FFFD.
           items:
             type: string
+    LogFacets:
+      type: object
+      required: [methods, tools, statuses, truncated]
+      properties:
+        methods:
+          type: array
+          items:
+            $ref: "#/components/schemas/FacetEntry"
+        tools:
+          type: array
+          description: A `""` entry counts the rows with no tool.
+          items:
+            $ref: "#/components/schemas/FacetEntry"
+        statuses:
+          type: array
+          items:
+            $ref: "#/components/schemas/FacetEntry"
+        truncated:
+          type: boolean
+          description: The 200-entry cap cut `methods` or `tools`.
+    FacetEntry:
+      type: object
+      required: [value, count]
+      properties:
+        value:
+          type: string
+        count:
+          type: integer
     AdminEventPage:
       type: object
       required: [admin_events, next_cursor]
