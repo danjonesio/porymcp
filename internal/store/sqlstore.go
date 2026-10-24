@@ -2404,6 +2404,19 @@ func (s *SQLStore) ListAuditLogs(ctx context.Context, f models.LogFilter) ([]mod
 // its first row, and a page that streamed would hold the one connection past
 // the deadline (PORM-224).
 func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
+	where, args, err := auditLogWhere(f)
+	if err != nil {
+		return "", nil, err
+	}
+	args = append(args, f.Limit+1)
+	return s.q(`WITH page AS MATERIALIZED (SELECT ` + logCols + ` FROM audit_logs ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?) ` +
+		`SELECT ` + logCols + ` FROM page ORDER BY timestamp DESC, id DESC`), args, nil
+}
+
+// auditLogWhere returns the WHERE clause every audit_logs read shares ("" when
+// there are no terms) and its args, in one order: virtual_key_id, method,
+// tool_name, status, since, then the cursor's bound or until.
+func auditLogWhere(f models.LogFilter) (string, []any, error) {
 	var conds []string
 	var args []any
 	if f.VirtualKeyID != "" {
@@ -2437,13 +2450,10 @@ func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
 		conds = append(conds, "timestamp <= ?")
 		args = append(args, fmtTime(*f.Until))
 	}
-	where := ""
-	if len(conds) > 0 {
-		where = "WHERE " + strings.Join(conds, " AND ")
+	if len(conds) == 0 {
+		return "", args, nil
 	}
-	args = append(args, f.Limit+1)
-	return s.q(`WITH page AS MATERIALIZED (SELECT ` + logCols + ` FROM audit_logs ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?) ` +
-		`SELECT ` + logCols + ` FROM page ORDER BY timestamp DESC, id DESC`), args, nil
+	return "WHERE " + strings.Join(conds, " AND "), args, nil
 }
 
 const logCols = `id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, latency_ms, response_size_bytes, upstream_id, error_message, request_id`
