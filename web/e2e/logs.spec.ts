@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Page, Route } from '@playwright/test'
 import { eventSentence } from '../src/lib/admin-event.ts'
 import type { AdminEvent } from '../src/lib/api.ts'
 import {
@@ -6,8 +6,11 @@ import {
   INPUT_INCOMPLETE,
   LOAD_MORE_CALLS,
   LOAD_MORE_CHANGES,
+  LOG_READ_TIMEOUT,
   NO_LOGS,
   PERIODS,
+  SLOW_CALLS,
+  SLOW_CHANGES,
   toLocalInput,
   UNTIL_BEFORE_SINCE,
 } from '../src/lib/logs-view.ts'
@@ -170,13 +173,13 @@ test('proxy rows for the run key appear and the filters narrow them; admin activ
   await filtered(
     page,
     (u) => u.includes('status=error'),
-    () => page.getByLabel('Status', { exact: true }).selectOption({ label: 'Error' })
+    () => page.getByLabel('Status', { exact: true }).selectOption({ value: 'error' })
   )
   await expect(page.getByText(NO_LOGS, { exact: true })).toBeVisible()
   await filtered(
     page,
     (u) => u.includes('status=success'),
-    () => page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    () => page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
   await expect(rows('tools/list')).toHaveCount(1)
   await expect(rows('initialize')).toHaveCount(1)
@@ -256,7 +259,7 @@ test('Load more pages the proxy calls and a filter change starts again', async (
   await expect(last).toBeFocused()
 
   await filtered(page, (u) => u.includes('status=success'), () =>
-    page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
   await filtered(page, (u) => !u.includes('status='), () =>
     page.getByLabel('Status', { exact: true }).selectOption({ label: 'All statuses' })
@@ -266,9 +269,11 @@ test('Load more pages the proxy calls and a filter change starts again', async (
   expect(listFetches, 'the upstream and key lists load once').toEqual({ upstreams: 1, keys: 1 })
 })
 
-// S1: a Load more still in flight when the filter changes is dropped, never
-// appended under the new filter.
-test('A Load more in flight is dropped when the filter changes', async ({ page, prefix, created }) => {
+// S1, PORM-224 criterion 3: a Load more still in flight when the filter
+// changes is aborted in the browser, never appended under the new filter. An
+// aborted request never gets a response, so the test waits on requestfailed;
+// unrouteAll with ignoreErrors swallows the held handler's late continue.
+test('A Load more in flight is aborted when the filter changes', async ({ page, prefix, created }) => {
   const key = await seededKey(prefix, created, 'lf', 51)
   let release: () => void = () => {}
   const held = new Promise<void>((r) => {
@@ -282,24 +287,26 @@ test('A Load more in flight is dropped when the filter changes', async ({ page, 
   await page.goto('/logs/')
   await showKey(page, key.id, key.name)
   await expect(proxyRows(page)).toHaveCount(50)
-  const heldPage = page.waitForResponse((r) => isCursorPage(new URL(r.url())))
+  const aborted = page.waitForEvent('requestfailed', (r) => isCursorPage(new URL(r.url())))
   await loadMoreCalls(page).click()
   await filtered(page, (u) => u.includes('status=success'), () =>
-    page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
+  const failed = await aborted
+  expect(failed.failure()?.errorText === 'net::ERR_ABORTED', 'the held Load more was aborted').toBe(true)
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
   release()
-  await (await heldPage).finished()
-  await page.evaluate(() => new Promise(requestAnimationFrame))
-  // The held page carried one row. Dropped, Success still shows its first 50
-  // and its own Load more brings exactly the 51st; appended, it would be 52.
+  // The held page carried one row. Success still shows its first 50 and its
+  // own Load more brings exactly the 51st; appended, it would be 52.
   await expect(proxyRows(page)).toHaveCount(50)
   await loadMoreCalls(page).click()
   await expect(page.getByText(countLine(51, 'call', 'last'), { exact: true })).toBeVisible()
   await expect(proxyRows(page)).toHaveCount(51)
 })
 
-// S1: a slow first page for an older filter never replaces a newer answer.
-test('A stale first page never lands', async ({ page, prefix, created }) => {
+// S1, PORM-224 criterion 3: a slow first page for an older filter is aborted
+// when the filter changes, so it can never replace the newer answer.
+test('A first page for an older filter is aborted', async ({ page, prefix, created }) => {
   const key = await seededKey(prefix, created, 'sf', 51)
   let release: () => void = () => {}
   const held = new Promise<void>((r) => {
@@ -313,20 +320,80 @@ test('A stale first page never lands', async ({ page, prefix, created }) => {
 
   await page.goto('/logs/')
   await showKey(page, key.id, key.name)
-  const heldPage = page.waitForResponse((r) => isErrorPage(new URL(r.url())))
-  await page.getByLabel('Status', { exact: true }).selectOption({ label: 'Error' })
+  const aborted = page.waitForEvent('requestfailed', (r) => isErrorPage(new URL(r.url())))
+  await page.getByLabel('Status', { exact: true }).selectOption({ value: 'error' })
   await filtered(page, (u) => u.includes('status=success'), () =>
-    page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
+  const failed = await aborted
+  expect(failed.failure()?.errorText === 'net::ERR_ABORTED', 'the held Error page was aborted').toBe(true)
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
   release()
-  await (await heldPage).finished()
-  await page.evaluate(() => new Promise(requestAnimationFrame))
   // Had the Error answer (no rows) landed, Success would have lost its rows
   // and its Load more; it keeps both, and the next page is its own.
   await expect(proxyRows(page)).toHaveCount(50)
   await loadMoreCalls(page).click()
   await expect(page.getByText(countLine(51, 'call', 'last'), { exact: true })).toBeVisible()
   await expect(page.getByText(NO_LOGS, { exact: true })).toHaveCount(0)
+})
+
+// PORM-224 criterion 4: a read the server stopped at its deadline shows the
+// table's own sentence, keeps the rows it had, and claims no count and no Load
+// more for them, on both tables.
+test('A list that took too long keeps its rows and names the remedy', async ({ page, prefix, created }) => {
+  const key = await seededKey(prefix, created, 'sl', 51)
+  const slow = (route: Route) =>
+    route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: LOG_READ_TIMEOUT }) })
+  await page.goto('/logs/')
+  await showKey(page, key.id, key.name)
+  await expect(proxyRows(page)).toHaveCount(50)
+  await expect(page.getByText(countLine(50, 'call', 'more'), { exact: true })).toBeVisible()
+
+  await page.route((u) => u.pathname === '/api/v1/logs' && u.searchParams.get('status') === 'success', slow, { times: 1 })
+  await page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
+  await expect(page.locator('p[role="alert"]').filter({ hasText: SLOW_CALLS })).toBeVisible()
+  await expect(proxyRows(page)).toHaveCount(50)
+  await expect(page.getByText(countLine(50, 'call', 'more'), { exact: true })).toHaveCount(0)
+  await expect(loadMoreCalls(page)).toHaveCount(0)
+  await expect(page.getByText(NO_LOGS, { exact: true })).toHaveCount(0)
+
+  const adminTable = page.getByRole('table').filter({ has: page.getByRole('columnheader', { name: 'Event', exact: true }) })
+  const adminRows = adminTable.locator('tbody > tr')
+  await expect(adminRows).not.toHaveCount(0)
+  const n = await adminRows.count()
+  await page.route((u) => u.pathname === '/api/v1/admin-events' && u.searchParams.get('resource_type') === 'upstream', slow, {
+    times: 1,
+  })
+  await page.getByLabel('Resource', { exact: true }).selectOption({ label: 'Upstreams' })
+  await expect(page.locator('p[role="alert"]').filter({ hasText: SLOW_CHANGES })).toBeVisible()
+  await expect(adminRows).toHaveCount(n)
+  await expect(page.getByText(countLine(n, 'change', 'more'), { exact: true })).toHaveCount(0)
+  await expect(page.getByText(countLine(n, 'change', 'last'), { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: LOAD_MORE_CHANGES, exact: true })).toHaveCount(0)
+})
+
+// PORM-224 edge case: leaving the page while its first page is in flight
+// aborts that request.
+test('Leaving the Logs page aborts its pending request', async ({ page }) => {
+  let release: () => void = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  const isFirstPage = (u: URL) => u.pathname === '/api/v1/logs' && !u.searchParams.has('cursor')
+  await page.route(isFirstPage, async (route) => {
+    await held
+    await route.continue()
+  })
+  const sent = page.waitForRequest((r) => isFirstPage(new URL(r.url())))
+  await page.goto('/logs/')
+  await sent
+  const aborted = page.waitForEvent('requestfailed', (r) => isFirstPage(new URL(r.url())))
+  await page.getByRole('link', { name: 'Virtual keys', exact: true }).click()
+  const failed = await aborted
+  expect(failed.failure()?.errorText === 'net::ERR_ABORTED', 'the pending first page was aborted').toBe(true)
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+  release()
+  await expect(page.getByRole('heading', { name: 'Virtual keys', exact: true })).toBeVisible()
 })
 
 // A 400 to a Load more is a cursor the server refuses: the control goes and

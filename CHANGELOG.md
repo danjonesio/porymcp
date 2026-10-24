@@ -4,6 +4,36 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### A Logs read stops at two seconds and answers 503 (PORM-224)
+
+- **`GET /logs` and `GET /admin-events` run under a two-second deadline,**
+  the wait for the database connection included, and past it answer
+  `503 {"error":"log query took too long"}`. Before, a filter that matched
+  few rows in a long period read every row in it with no bound, on the one
+  SQLite connection the proxy's key lookups and the audit writer share; an
+  audit insert waits at most five seconds for it, and a missed insert is a
+  lost audit row. A shorter period or a `virtual_key_id` reads fewer rows.
+- **The Logs page names the remedy and keeps its rows.** The error line
+  reads `This query took too long. Choose a shorter period or a narrower
+  filter.` on Proxy calls and `This query took too long. Choose All
+  resources or reload the page.` on Admin activity. Any other `503` keeps
+  its own words.
+- **The Logs page aborts a request it no longer wants.** A filter change, or
+  leaving the page, aborts the first page or Load more in flight; on a
+  direct connection the server stops that read too.
+- **A list page is read in SQLite's first step.** modernc's SQLite driver
+  interrupts a statement only until it returns its first row, so a page
+  whose matches sat at the top of the period held the connection past any
+  deadline. Each page is now built whole before its first row returns; the
+  rows are unchanged and a page costs about 0.1 ms more.
+- **An operator `file:` `DATABASE_URL` keeps `busy_timeout` on every
+  connection.** An interrupted read makes the server open a new SQLite
+  connection, which gets only the DSN's settings, and a `file:` DSN with a
+  query of its own gained only `_txlock`: after one stopped read,
+  `busy_timeout` was 0. It now gains `foreign_keys`, `busy_timeout` and
+  `journal_mode` as the default DSN sets them, each only when the operator's
+  DSN does not set it.
+
 ## v0.2.0 (2026-10-22)
 
 ### The Logs page pages back through history and narrows Proxy calls to a period (PORM-20)
