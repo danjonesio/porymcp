@@ -4,6 +4,24 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The Logs Method and Tool filters list what was recorded (PORM-149)
+
+- **Method and Tool are selects.** Each lists the values recorded under the
+  chosen virtual key, period and status, with a count (`tools/call (41)`),
+  most frequent first. Before, both were free-text exact matches: a
+  misspelling answered the same empty table a real empty answer did.
+- **`None` in Tool lists the calls that named no tool** (`ping`,
+  `tools/list`, `initialize`), the rows whose Tool column reads `None`. There
+  was no way to ask for them before.
+- **Status shows counts** for Success, Error and Blocked over the key and
+  period.
+- **`GET /api/v1/logs/facets`** answers the three lists, from one read,
+  under the same two-second deadline and `503` as `GET /logs`. Each list
+  holds at most 200 entries with `truncated` when the cap cut one.
+- **`has_tool=true|false` on `GET /api/v1/logs`** narrows to the rows that
+  named a tool or did not. Beside `tool`, or with any other value, it is a
+  `400`.
+
 ### A Logs read stops at two seconds and answers 503 (PORM-224)
 
 - **`GET /logs` and `GET /admin-events` run under a two-second deadline,**
