@@ -1896,13 +1896,18 @@ func countColumns(t *testing.T, s *SQLStore, table, want string) int {
 	return n
 }
 
-// TestParseDBURLFileFormKeepsTxlock pins the PORM-25 fix for the parked
-// PORM-52 residual: a file: DATABASE_URL used to reach the driver verbatim and
-// so missed _txlock=immediate, the one connection setting Open's imperative
-// PRAGMAs cannot supply, and what lets `porymcp rekey` run against a live
-// server. Operator-supplied parameters are kept; an explicit _txlock is never
+// TestParseDBURLFileFormKeepsItsSettings pins the connection settings a file:
+// DATABASE_URL carries. It used to reach the driver verbatim and so missed
+// _txlock=immediate, what lets `porymcp rekey` run against a live server
+// (PORM-25, the parked PORM-52 residual), and the three pragmas fileDSN sets.
+// Open's PRAGMA exec reaches the first connection only; an interrupted
+// statement makes database/sql open a new one, which gets only the DSN, so an
+// operator DSN lost busy_timeout after one Logs read past its deadline
+// (PORM-224, S21). Operator-supplied parameters are kept byte for byte, and a
+// setting the operator chose, in either of modernc's spellings, is never
 // overridden.
-func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
+func TestParseDBURLFileFormKeepsItsSettings(t *testing.T) {
+	const fk, busy, wal = "_pragma=foreign_keys(1)", "_pragma=busy_timeout(5000)", "_pragma=journal_mode(WAL)"
 	cases := []struct {
 		name string
 		raw  string
@@ -1911,12 +1916,24 @@ func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
 	}{
 		{name: "bare file DSN gains the full setting set", raw: "file:./x.db",
 			want: "_txlock=immediate"},
-		{name: "operator params kept, txlock added", raw: "file:./x.db?_pragma=busy_timeout(1)",
-			full: "file:./x.db?_pragma=busy_timeout(1)&_txlock=immediate"},
-		{name: "explicit txlock untouched", raw: "file:./x.db?_txlock=deferred",
-			full: "file:./x.db?_txlock=deferred"},
+		{name: "operator busy_timeout kept, the rest added", raw: "file:./x.db?_pragma=busy_timeout(1)",
+			full: "file:./x.db?_pragma=busy_timeout(1)&" + fk + "&" + wal + "&_txlock=immediate"},
+		{name: "explicit txlock untouched, pragmas added", raw: "file:./x.db?_txlock=deferred",
+			full: "file:./x.db?_txlock=deferred&" + fk + "&" + busy + "&" + wal},
 		{name: "trailing ? gains no stray separator", raw: "file:./x.db?",
-			full: "file:./x.db?_txlock=immediate"},
+			full: "file:./x.db?" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
+		{name: "other operator params gain every setting", raw: "file:/x.db?mode=rwc",
+			full: "file:/x.db?mode=rwc&" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
+		{name: "upper-case pragma name counts as set", raw: "file:/x.db?_pragma=BUSY_TIMEOUT(100)",
+			full: "file:/x.db?_pragma=BUSY_TIMEOUT(100)&" + fk + "&" + wal + "&_txlock=immediate"},
+		{name: "modernc's _busy_timeout counts as set", raw: "file:/x.db?_busy_timeout=100",
+			full: "file:/x.db?_busy_timeout=100&" + fk + "&" + wal + "&_txlock=immediate"},
+		{name: "modernc's _timeout, _fk and _journal count as set", raw: "file:/x.db?_timeout=100&_fk=1&_journal=DELETE",
+			full: "file:/x.db?_timeout=100&_fk=1&_journal=DELETE&_txlock=immediate"},
+		{name: "every setting present: unchanged", raw: "file:/x.db?" + fk + "&" + busy + "&" + wal + "&_txlock=immediate",
+			full: "file:/x.db?" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
+		{name: "shared memory gains the settings", raw: "file::memory:?cache=shared",
+			full: "file::memory:?cache=shared&" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1941,10 +1958,44 @@ func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"_pragma=foreign_keys(1)", "_pragma=busy_timeout(5000)", "_pragma=journal_mode(WAL)"} {
+	for _, p := range []string{fk, busy, wal} {
 		if !strings.Contains(bare, p) {
 			t.Fatalf("bare file: DSN %q missing %q", bare, p)
 		}
+	}
+	if _, _, err := parseDBURL("file:/x.db?mode=%zz"); err == nil {
+		t.Error("a query that does not parse was accepted")
+	}
+
+	// A connection opened after Open's first one reads busy_timeout from the
+	// DSN alone. With no idle connection kept, every statement opens one.
+	path := filepath.Join(t.TempDir(), "op.db")
+	s, err := Open("file:" + path + "?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.db.SetMaxIdleConns(0)
+	var timeout int
+	if err := s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil || timeout != 5000 {
+		t.Errorf("busy_timeout on a new connection = %d, %v; want 5000", timeout, err)
+	}
+
+	// file::memory:?cache=shared still opens an in-memory database: no file
+	// named ":memory:" appears, and the main database has no file.
+	t.Chdir(t.TempDir())
+	m, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	var seq int
+	var name, file string
+	if err := m.db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &file); err != nil || file != "" {
+		t.Errorf("shared memory database file = %q, %v; want \"\"", file, err)
+	}
+	if _, err := os.Stat(":memory:"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a file named :memory: exists: %v", err)
 	}
 }
 

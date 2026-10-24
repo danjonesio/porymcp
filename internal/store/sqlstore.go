@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -117,28 +118,84 @@ func parseDBURL(raw string) (driver, dsn string, err error) {
 		path := strings.TrimPrefix(raw, "sqlite://")
 		return sqliteFile(path)
 	case strings.HasPrefix(raw, "file:"):
-		// A file: DSN used to reach the driver verbatim, so it missed the one
-		// setting Open's own PRAGMAs cannot supply: _txlock=immediate, which
-		// is what lets `porymcp rekey` run against a live server (PORM-52
-		// residual, parked with PORM-25). A DSN with no query is re-derived
-		// through fileDSN so one function owns the connection settings; one
-		// that carries the operator's own parameters keeps them and gains only
-		// what is missing, rewriting it wholesale would turn
-		// file::memory:?cache=shared into an on-disk file called ":memory:".
-		if !strings.Contains(raw, "?") {
+		// A file: DSN used to reach the driver verbatim, so it missed the
+		// settings fileDSN gives every connection. Open's own PRAGMA exec
+		// reaches the first connection only, and an interrupted statement
+		// (a Logs read past its deadline, PORM-224) makes database/sql open a
+		// new one that gets only the DSN: busy_timeout fell to 0 there.
+		// _txlock=immediate is what lets `porymcp rekey` run against a live
+		// server (PORM-52 residual, parked with PORM-25). A DSN with no query
+		// is re-derived through fileDSN so one function owns the connection
+		// settings; one that carries the operator's own parameters keeps them
+		// byte for byte and gains only what it does not set, rewriting it
+		// wholesale would turn file::memory:?cache=shared into an on-disk file
+		// called ":memory:".
+		i := strings.Index(raw, "?")
+		if i < 0 {
 			return sqliteFile(fileFromDSN(raw))
 		}
-		if !strings.Contains(raw, "_txlock=") {
-			if strings.HasSuffix(raw, "?") {
-				raw += "_txlock=immediate"
-			} else {
-				raw += "&_txlock=immediate"
+		q, err := url.ParseQuery(raw[i+1:])
+		if err != nil {
+			return "", "", fmt.Errorf("DATABASE_URL: %w", err)
+		}
+		var add []string
+		for _, p := range dsnPragmas {
+			if !dsnSets(q, p.name, p.keys) {
+				add = append(add, "_pragma="+p.value)
 			}
+		}
+		if !strings.Contains(raw, "_txlock=") {
+			add = append(add, "_txlock=immediate")
+		}
+		if len(add) > 0 {
+			if !strings.HasSuffix(raw, "?") {
+				raw += "&"
+			}
+			raw += strings.Join(add, "&")
 		}
 		return "sqlite", raw, nil
 	default:
 		return sqliteFile(raw)
 	}
+}
+
+// dsnPragmas are the pragmas fileDSN sets, in its order, with the query keys
+// modernc v1.60.1 reads for each besides _pragma (sqlite.go, applyQueryParams:
+// _busy_timeout and _timeout set busy_timeout, _foreign_keys and _fk set
+// foreign_keys, _journal_mode and _journal set journal_mode). modernc applies
+// those keys before the _pragma list, so an appended _pragma would override an
+// operator's ?_busy_timeout=100; dsnSets checks both forms.
+var dsnPragmas = []struct {
+	name, value string
+	keys        []string
+}{
+	{"foreign_keys", "foreign_keys(1)", []string{"_foreign_keys", "_fk"}},
+	{"busy_timeout", "busy_timeout(5000)", []string{"_busy_timeout", "_timeout"}},
+	{"journal_mode", "journal_mode(WAL)", []string{"_journal_mode", "_journal"}},
+}
+
+// dsnSets reports whether a DSN query already sets the pragma name: a _pragma
+// value whose leading name, lower-cased, is name, or one of modernc's own keys
+// for it with a value.
+func dsnSets(q url.Values, name string, keys []string) bool {
+	for _, k := range keys {
+		if q.Get(k) != "" {
+			return true
+		}
+	}
+	for _, v := range q["_pragma"] {
+		v = strings.ToLower(strings.TrimSpace(v))
+		end := strings.IndexFunc(v, func(r rune) bool {
+			return r != '_' && (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		})
+		if end >= 0 {
+			v = v[:end]
+		}
+		if v == name {
+			return true
+		}
+	}
+	return false
 }
 
 func sqliteFile(path string) (string, string, error) {
