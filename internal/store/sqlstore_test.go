@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2412,6 +2413,13 @@ func TestListClampsAnOversizedLimit(t *testing.T) {
 // against.
 const lastTermSort = "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
 
+// materializedPage is the plan of a list page around its access path: the page
+// is built in the statement's first step, where modernc can interrupt it, then
+// read back in order with no second sort (PORM-224).
+func materializedPage(access string) string {
+	return "MATERIALIZE page | " + access + " | " + lastTermSort + " | SCAN page"
+}
+
 // joinedPlan runs EXPLAIN QUERY PLAN on a built query and returns every step,
 // joined, so a test pins the whole plan as assertLookupUsesUniqueIndex does.
 func joinedPlan(t *testing.T, s *SQLStore, query string, args []any, err error) string {
@@ -2451,7 +2459,7 @@ func TestAuditLogsCursorQueryWalksTheIndex(t *testing.T) {
 		},
 	} {
 		query, args, err := s.auditLogsQuery(tc.f)
-		if got, want := joinedPlan(t, s, query, args, err), tc.want+" | "+lastTermSort; got != want {
+		if got, want := joinedPlan(t, s, query, args, err), materializedPage(tc.want); got != want {
 			t.Errorf("%s: plan %q, want %q", name, got, want)
 		}
 	}
@@ -2571,10 +2579,192 @@ func TestAdminEventsCursorQueryWalksTheIndex(t *testing.T) {
 		},
 	} {
 		query, args, err := s.adminEventsQuery(tc.f)
-		if got, want := joinedPlan(t, s, query, args, err), tc.want+" | "+lastTermSort; got != want {
+		if got, want := joinedPlan(t, s, query, args, err), materializedPage(tc.want); got != want {
 			t.Errorf("%s: plan %q, want %q", name, got, want)
 		}
 	}
+}
+
+// walkTop is the newest row in the deadline fixture, and walkSince the start
+// of a window that holds every row it seeds.
+var (
+	walkTop   = time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	walkSince = walkTop.Add(-30 * 24 * time.Hour)
+)
+
+// walkRows is the deadline fixture's size: enough rows, one second apart, that
+// an uncancelled walk of the window takes at least 100 ms. The race detector
+// slows every SQLite step, so it seeds fewer.
+func walkRows() int {
+	if raceBuild {
+		return 20_000
+	}
+	return 320_000
+}
+
+// walk is the database the deadline tests share. Seeding takes seconds under
+// the race detector, so each table is seeded once per test binary, and
+// TestMain removes the directory, which no one test's TempDir can hold.
+var walk struct {
+	open  sync.Once
+	dir   string
+	store *SQLStore
+	err   error
+	seeds map[string]*walkSeed
+}
+
+type walkSeed struct {
+	once sync.Once
+	err  error
+}
+
+func init() {
+	walk.seeds = map[string]*walkSeed{"audit_logs": {}, "admin_events": {}}
+}
+
+// TestMain removes the deadline fixture after the run.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if walk.store != nil {
+		_ = walk.store.Close()
+	}
+	if walk.dir != "" {
+		_ = os.RemoveAll(walk.dir)
+	}
+	os.Exit(code)
+}
+
+// walkStore returns the shared deadline fixture with table seeded: walkRows()
+// rows in the window that do not match, and two at its top, on two different
+// timestamps, whose tool_name or resource_type is "needle", with none below
+// them. A page that streamed would return the two in its first step and then
+// walk the rest of the window with no interrupt armed.
+func walkStore(t *testing.T, table string) *SQLStore {
+	t.Helper()
+	walk.open.Do(func() {
+		walk.dir, walk.err = os.MkdirTemp("", "porymcp-walk-")
+		if walk.err == nil {
+			walk.store, walk.err = Open(filepath.Join(walk.dir, "walk.db"))
+		}
+	})
+	if walk.err != nil {
+		t.Fatal(walk.err)
+	}
+	seed := walk.seeds[table]
+	seed.once.Do(func() { seed.err = seedWalk(walk.store, table) })
+	if seed.err != nil {
+		t.Fatal(seed.err)
+	}
+	return walk.store
+}
+
+// seedWalk fills table with one statement, so the seed stays short under the
+// race detector, then adds the two matching rows through the store.
+func seedWalk(s *SQLStore, table string) error {
+	ctx := context.Background()
+	rows := `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) `
+	at := `strftime('%Y-%m-%dT%H:%M:%S', ?, printf('-%d seconds', i)) || '.000000000Z'`
+	top := walkTop.Format(time.DateTime)
+	switch table {
+	case "audit_logs":
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, status) `+
+			rows+`SELECT printf('w%07d', i), `+at+`, 'k1', 'walk', 'tools/call', 'haystack', 'success' FROM n`, walkRows(), top); err != nil {
+			return err
+		}
+		for i := 1; i <= 2; i++ {
+			e := auditRow(fmt.Sprintf("needle%d", i), walkTop.Add(time.Duration(i)*time.Second))
+			e.Method, e.ToolName = "tools/call", "needle"
+			if err := s.InsertAuditLog(ctx, e); err != nil {
+				return err
+			}
+		}
+	case "admin_events":
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO admin_events (id, timestamp, actor, action, resource_type, resource_id) `+
+			rows+`SELECT printf('w%07d', i), `+at+`, 'admin', 'update', 'haystack', 'r' FROM n`, walkRows(), top); err != nil {
+			return err
+		}
+		for i := 1; i <= 2; i++ {
+			e := &models.AdminEvent{
+				ID: fmt.Sprintf("needle%d", i), Timestamp: walkTop.Add(time.Duration(i) * time.Second),
+				Actor: "admin", Action: "update", ResourceType: "needle", ResourceID: "r",
+			}
+			if err := s.InsertAdminEvent(ctx, e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// stopsAtItsDeadline is the check the deadline tests share (PORM-224 S1, S2).
+// W is the shortest of three uncancelled reads of the window. A deadline of
+// W/10 must end the read with context.DeadlineExceeded before W/2, which a
+// read that held the connection to the end of its walk cannot, and an insert
+// under its own 1 s deadline must then get the connection, which an
+// interrupted SQLite connection gives up for a new one.
+func stopsAtItsDeadline(t *testing.T, s *SQLStore, read func(context.Context) error) {
+	t.Helper()
+	var w time.Duration
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		if err := read(context.Background()); err != nil {
+			t.Fatalf("uncancelled read: %v", err)
+		}
+		if d := time.Since(start); i == 0 || d < w {
+			w = d
+		}
+	}
+	t.Logf("uncancelled read of %d rows: %v", walkRows(), w)
+	if w < 20*time.Millisecond {
+		t.Fatalf("the read took %v, too short to time a deadline against; raise walkRows", w)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), w/10)
+	defer cancel()
+	start := time.Now()
+	err := read(ctx)
+	took := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("read under a %v deadline: %v, want context.DeadlineExceeded", w/10, err)
+	}
+	if took >= w/2 {
+		t.Errorf("read under a %v deadline returned after %v, want before %v", w/10, took, w/2)
+	}
+
+	ictx, icancel := context.WithTimeout(context.Background(), time.Second)
+	defer icancel()
+	// Older than walkSince, so no later read of the window counts it.
+	e := auditRow(fmt.Sprintf("after-%s-%d", t.Name(), time.Now().UnixNano()), walkSince.Add(-time.Hour))
+	if err := s.InsertAuditLog(ictx, e); err != nil {
+		t.Errorf("insert after the stopped read: %v", err)
+	}
+}
+
+// TestListAuditLogsStopsAtItsDeadline is PORM-224's store half: the page is
+// materialized, so the deadline frees the connection even though the first
+// matching rows sit at the top of the window.
+func TestListAuditLogsStopsAtItsDeadline(t *testing.T) {
+	s := walkStore(t, "audit_logs")
+	stopsAtItsDeadline(t, s, func(ctx context.Context) error {
+		got, _, err := s.ListAuditLogs(ctx, models.LogFilter{Since: &walkSince, Tool: "needle", Limit: 50})
+		if err == nil && !slices.Equal(auditIDs(got), []string{"needle2", "needle1"}) {
+			return fmt.Errorf("listed %v, want [needle2 needle1]", auditIDs(got))
+		}
+		return err
+	})
+}
+
+// TestListAdminEventsStopsAtItsDeadline is the same check for Admin activity's
+// Resource filter.
+func TestListAdminEventsStopsAtItsDeadline(t *testing.T) {
+	s := walkStore(t, "admin_events")
+	stopsAtItsDeadline(t, s, func(ctx context.Context) error {
+		got, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Since: &walkSince, ResourceType: "needle", Limit: 50})
+		if err == nil && len(got) != 2 {
+			return fmt.Errorf("listed %d events, want 2", len(got))
+		}
+		return err
+	})
 }
 
 // v5Fixture builds a database as a version-5 server left it, without ever

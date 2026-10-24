@@ -2342,7 +2342,10 @@ func (s *SQLStore) ListAuditLogs(ctx context.Context, f models.LogFilter) ([]mod
 
 // auditLogsQuery builds the SELECT ListAuditLogs runs, so the query-plan tests
 // explain the real query. f.Limit is already clamped: the caller slices the
-// page with the same value.
+// page with the same value. The page is materialized so SQLite does the whole
+// walk in its first step: modernc interrupts a statement only until it returns
+// its first row, and a page that streamed would hold the one connection past
+// the deadline (PORM-224).
 func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
 	var conds []string
 	var args []any
@@ -2382,7 +2385,8 @@ func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	args = append(args, f.Limit+1)
-	return s.q(`SELECT ` + logCols + ` FROM audit_logs ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?`), args, nil
+	return s.q(`WITH page AS MATERIALIZED (SELECT ` + logCols + ` FROM audit_logs ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?) ` +
+		`SELECT ` + logCols + ` FROM page ORDER BY timestamp DESC, id DESC`), args, nil
 }
 
 const logCols = `id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, latency_ms, response_size_bytes, upstream_id, error_message, request_id`
@@ -2520,7 +2524,8 @@ func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilte
 
 // adminEventsQuery builds the SELECT ListAdminEvents runs, so the query-plan
 // tests explain the real query. f.Limit is already clamped: the caller slices
-// the page with the same value.
+// the page with the same value. The page is materialized for the reason
+// auditLogsQuery gives.
 func (s *SQLStore) adminEventsQuery(f models.AdminEventFilter) (string, []any, error) {
 	var conds []string
 	var args []any
@@ -2545,7 +2550,8 @@ func (s *SQLStore) adminEventsQuery(f models.AdminEventFilter) (string, []any, e
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	args = append(args, f.Limit+1)
-	return s.q(`SELECT ` + adminEventCols + ` FROM admin_events ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?`), args, nil
+	return s.q(`WITH page AS MATERIALIZED (SELECT ` + adminEventCols + ` FROM admin_events ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?) ` +
+		`SELECT ` + adminEventCols + ` FROM page ORDER BY timestamp DESC, id DESC`), args, nil
 }
 
 func scanAdminEvent(row rowScanner) (*models.AdminEvent, error) {
