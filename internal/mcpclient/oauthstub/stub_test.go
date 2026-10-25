@@ -166,3 +166,18 @@ func getJSON(t *testing.T, u string, into any) {
 		t.Fatal(err)
 	}
 }
+
+// TestMintedTokensCannotOccurInAUUID: leak tests search a log full of
+// random UUIDs for these tokens, so each one holds a letter no UUID can
+// hold. "acc-2" once matched the event id "90d8daca-d376-42fd-bacc-23650a911268".
+func TestMintedTokensCannotOccurInAUUID(t *testing.T) {
+	s := New(t)
+	for range 3 {
+		access, refresh := s.Seed()
+		for _, tok := range []string{access, refresh} {
+			if !strings.ContainsFunc(tok, func(r rune) bool { return !strings.ContainsRune("0123456789abcdef-", r) }) {
+				t.Fatalf("token %q could occur inside a UUID", tok)
+			}
+		}
+	}
+}

@@ -528,7 +528,7 @@ func (s *Server) writeTokens(w http.ResponseWriter) {
 
 func (s *Server) mintLocked() (access, refresh string) {
 	s.seq++
-	access = fmt.Sprintf("acc-%d", s.seq)
+	access = fmt.Sprintf("access-%d", s.seq)
 	if s.AccessTokenBytes > 0 {
 		access = strings.Repeat("a", s.AccessTokenBytes)
 	}
