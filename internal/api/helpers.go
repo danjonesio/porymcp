@@ -72,16 +72,24 @@ func storeError(w http.ResponseWriter, err error) {
 // WithTimeout child of r's context. It is decided on the context, not the
 // error, because SQLite and pgx report an interrupted query differently.
 // Past the deadline, or when the facet fold passed its cap, it is a 503 with
-// slow and one warning line naming the path and request id. When the caller has gone (the dashboard aborts a
-// request it no longer wants) nothing is written: nobody reads it, and a 500
-// would log a store failure for an ordinary filter change. Anything else is
-// storeError's, so an invalid cursor stays a 400, and the store error goes to
-// the server log only.
+// slow and one warning line naming the path, the request id and the reason:
+// deadline, or too_many_values for the cap, which callers with no key can
+// reach by choosing relay paths. When the caller has gone (the dashboard
+// aborts a request it no longer wants) nothing is written: nobody reads it,
+// and a 500 would log a store failure for an ordinary filter change. Anything
+// else is storeError's, so an invalid cursor stays a 400, and the store error
+// goes to the server log only.
 func (s *Server) readFailed(ctx context.Context, w http.ResponseWriter, r *http.Request, err error, slow string) {
 	gone := r.Context().Err() != nil
 	switch {
 	case !gone && (errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, store.ErrTooManyFacetValues)):
-		s.log.Warn("store read stopped", "path", r.URL.Path, "request_id", middleware.GetReqID(r.Context()))
+		// The cap's error names the cause even when the deadline has passed
+		// since: the fold stopped itself.
+		reason := "deadline"
+		if errors.Is(err, store.ErrTooManyFacetValues) {
+			reason = "too_many_values"
+		}
+		s.log.Warn("store read stopped", "path", r.URL.Path, "request_id", middleware.GetReqID(r.Context()), "reason", reason)
 		writeError(w, http.StatusServiceUnavailable, slow)
 	case gone:
 		// Nothing written.

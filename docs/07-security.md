@@ -1163,7 +1163,10 @@
   `tool_name` is the request path, so anyone who can reach a proxy door can
   add entries. Each list keeps the 200 most frequent with `truncated` set
   when it cut, and a period holding more than 50,000 distinct values is
-  refused with a `503` rather than counted. The lists are a way into the
+  refused with a `503` rather than counted. The refusal writes a Warn line,
+  `store read stopped` with `reason` `too_many_values`, which a slow read
+  (`reason` `deadline`) does not: a period flooded with made-up relay paths
+  shows in the server log as its own cause. The lists are a way into the
   rows, not a record: the rows stay the record, and a value the list leaves
   out is still found with an exact `method` or `tool`.
 - Run container as non-root, prefer read-only root filesystem. A read-only

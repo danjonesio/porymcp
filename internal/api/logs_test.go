@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -178,10 +180,14 @@ func answerWithin(t *testing.T, h http.Handler, path string, d time.Duration) *h
 // outlives logReadTimeout answers the exact 503 body, decided on the context.
 func TestListLogsStopsAtTheDeadline(t *testing.T) {
 	shortReadTimeout(t)
-	_, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return slowLogs{Store: st} })
+	s, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return slowLogs{Store: st} })
+	reason := stoppedReason(t, s)
 	rr := answerWithin(t, h, "/logs?method=nothing", time.Second)
 	if rr.Code != http.StatusServiceUnavailable || rr.Body.String() != "{\"error\":\"log query took too long\"}\n" {
 		t.Errorf("%d %q, want 503 {\"error\":\"log query took too long\"}", rr.Code, rr.Body.String())
+	}
+	if got := reason(); got != "deadline" {
+		t.Errorf("reason %q, want deadline", got)
 	}
 }
 
@@ -274,6 +280,38 @@ type foldCapped struct{ store.Store }
 
 func (foldCapped) ListAuditFacets(context.Context, models.LogFilter) (models.LogFacets, error) {
 	return models.LogFacets{}, store.ErrTooManyFacetValues
+}
+
+// lateCapped reaches the fold cap only after the deadline has passed, as a
+// fold still reading rows when the two seconds end does.
+type lateCapped struct{ store.Store }
+
+func (lateCapped) ListAuditFacets(ctx context.Context, _ models.LogFilter) (models.LogFacets, error) {
+	<-ctx.Done()
+	return models.LogFacets{}, store.ErrTooManyFacetValues
+}
+
+// stoppedReason captures s's log and returns a func that reads the reason on
+// the one "store read stopped" line, failing the test unless there is exactly
+// one.
+func stoppedReason(t *testing.T, s *Server) func() string {
+	t.Helper()
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewJSONHandler(&logs, nil))
+	return func() string {
+		t.Helper()
+		var reasons []string
+		for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+			var rec struct{ Msg, Reason string }
+			if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "store read stopped" {
+				reasons = append(reasons, rec.Reason)
+			}
+		}
+		if len(reasons) != 1 {
+			t.Fatalf("store read stopped reasons %q in %s", reasons, logs.String())
+		}
+		return reasons[0]
+	}
 }
 
 // facetRows inserts one audit row per spec at ts, ids prefixed by tag.
@@ -529,19 +567,43 @@ func TestListLogFacetsCutsAt200(t *testing.T) {
 // not the context's, so the 503 is decided on the context.
 func TestListLogFacetsStopsAtTheDeadline(t *testing.T) {
 	shortReadTimeout(t)
-	_, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return slowLogs{Store: st} })
+	s, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return slowLogs{Store: st} })
+	reason := stoppedReason(t, s)
 	rr := answerWithin(t, h, "/logs/facets", time.Second)
 	if rr.Code != http.StatusServiceUnavailable || rr.Body.String() != "{\"error\":\"log query took too long\"}\n" {
 		t.Errorf("%d %q, want 503 {\"error\":\"log query took too long\"}", rr.Code, rr.Body.String())
 	}
+	if got := reason(); got != "deadline" {
+		t.Errorf("reason %q, want deadline", got)
+	}
 }
 
 // TestListLogFacetsFoldCapIsA503 is S22: a window past the fold cap answers
-// as a read that took too long.
+// as a read that took too long, and the log line says it was the cap, which
+// callers with no key can reach by choosing relay paths.
 func TestListLogFacetsFoldCapIsA503(t *testing.T) {
-	_, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return foldCapped{st} })
+	s, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return foldCapped{st} })
+	reason := stoppedReason(t, s)
 	rr := doJSON(t, h, http.MethodGet, "/logs/facets", "test-admin", nil)
 	if rr.Code != http.StatusServiceUnavailable || rr.Body.String() != "{\"error\":\"log query took too long\"}\n" {
 		t.Errorf("%d %q, want 503 {\"error\":\"log query took too long\"}", rr.Code, rr.Body.String())
+	}
+	if got := reason(); got != "too_many_values" {
+		t.Errorf("reason %q, want too_many_values", got)
+	}
+}
+
+// TestListLogFacetsFoldCapAfterTheDeadlineNamesTheCap: the fold returned the
+// cap's error, so the cap stopped the read even though the deadline had also
+// passed by the time the handler looked.
+func TestListLogFacetsFoldCapAfterTheDeadlineNamesTheCap(t *testing.T) {
+	shortReadTimeout(t)
+	s, h, _, _ := testAPIWrappedStore(t, "http://localhost:8080", func(st store.Store) store.Store { return lateCapped{st} })
+	reason := stoppedReason(t, s)
+	if rr := answerWithin(t, h, "/logs/facets", time.Second); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("%d %q, want 503", rr.Code, rr.Body.String())
+	}
+	if got := reason(); got != "too_many_values" {
+		t.Errorf("reason %q, want too_many_values", got)
 	}
 }

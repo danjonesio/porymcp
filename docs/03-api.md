@@ -1084,7 +1084,9 @@ after `until` answers three empty lists. A facet read runs under the same
 two-second deadline as a page and answers the same
 `503 {"error":"log query took too long"}` past it, and also when the period
 holds more than 50,000 distinct methods or tools, which the server will not
-hold in memory to count. The facet read covers every row in the period, so
+hold in memory to count. The answer is the same for both; the
+`store read stopped` line's `reason` tells them apart: `deadline`, or
+`too_many_values` for the cap. The facet read covers every row in the period, so
 its cost grows with the period's rows and it can hold the shared connection
 for up to two seconds; it is not for polling.
 
@@ -1104,7 +1106,9 @@ SQLite a page that follows a cursor reads one index range down from the cursor
 of sorting every row below it.
 
 A page runs under a two-second deadline, the wait for the database connection
-included, past which the answer is `503 {"error":"log query took too long"}`.
+included, past which the answer is `503 {"error":"log query took too long"}`
+and the server log has one Warn line, `store read stopped`, with `path`,
+`request_id` and `reason` `deadline`.
 Only `virtual_key_id` and the period are indexed: `method`, `tool`, `has_tool`
 and `status` are checked row by row, so a filter that matches few rows in a long period
 reads every row in it. A shorter period or a `virtual_key_id` reads fewer. A

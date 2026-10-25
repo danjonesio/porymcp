@@ -25,7 +25,14 @@ Behaviour changes that affect a running deployment. Newest first.
   period.
 - **`GET /api/v1/logs/facets`** answers the three lists, from one read,
   under the same two-second deadline and `503` as `GET /logs`. Each list
-  holds at most 200 entries with `truncated` when the cap cut one.
+  holds at most 200 entries with `truncated` when the cap cut one. A period
+  holding more than 50,000 distinct methods or tools answers the same `503`
+  instead of being counted.
+- **The server log says why a Logs read stopped.** Each `503` writes one
+  Warn line, `store read stopped`, whose `reason` is `deadline` past the two
+  seconds or `too_many_values` past the 50,000 cap. Callers with no key can
+  reach the cap by choosing relay paths, so it is worth telling apart from a
+  slow read.
 - **`has_tool=true|false` on `GET /api/v1/logs`** narrows to the rows that
   named a tool or did not. Beside `tool`, or with any other value, it is a
   `400`.
