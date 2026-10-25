@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1895,13 +1896,18 @@ func countColumns(t *testing.T, s *SQLStore, table, want string) int {
 	return n
 }
 
-// TestParseDBURLFileFormKeepsTxlock pins the PORM-25 fix for the parked
-// PORM-52 residual: a file: DATABASE_URL used to reach the driver verbatim and
-// so missed _txlock=immediate, the one connection setting Open's imperative
-// PRAGMAs cannot supply, and what lets `porymcp rekey` run against a live
-// server. Operator-supplied parameters are kept; an explicit _txlock is never
+// TestParseDBURLFileFormKeepsItsSettings pins the connection settings a file:
+// DATABASE_URL carries. It used to reach the driver verbatim and so missed
+// _txlock=immediate, what lets `porymcp rekey` run against a live server
+// (PORM-25, the parked PORM-52 residual), and the three pragmas fileDSN sets.
+// Open's PRAGMA exec reaches the first connection only; an interrupted
+// statement makes database/sql open a new one, which gets only the DSN, so an
+// operator DSN lost busy_timeout after one Logs read past its deadline
+// (PORM-224, S21). Operator-supplied parameters are kept byte for byte, and a
+// setting the operator chose, in either of modernc's spellings, is never
 // overridden.
-func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
+func TestParseDBURLFileFormKeepsItsSettings(t *testing.T) {
+	const fk, busy, wal = "_pragma=foreign_keys(1)", "_pragma=busy_timeout(5000)", "_pragma=journal_mode(WAL)"
 	cases := []struct {
 		name string
 		raw  string
@@ -1910,12 +1916,24 @@ func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
 	}{
 		{name: "bare file DSN gains the full setting set", raw: "file:./x.db",
 			want: "_txlock=immediate"},
-		{name: "operator params kept, txlock added", raw: "file:./x.db?_pragma=busy_timeout(1)",
-			full: "file:./x.db?_pragma=busy_timeout(1)&_txlock=immediate"},
-		{name: "explicit txlock untouched", raw: "file:./x.db?_txlock=deferred",
-			full: "file:./x.db?_txlock=deferred"},
+		{name: "operator busy_timeout kept, the rest added", raw: "file:./x.db?_pragma=busy_timeout(1)",
+			full: "file:./x.db?_pragma=busy_timeout(1)&" + fk + "&" + wal + "&_txlock=immediate"},
+		{name: "explicit txlock untouched, pragmas added", raw: "file:./x.db?_txlock=deferred",
+			full: "file:./x.db?_txlock=deferred&" + fk + "&" + busy + "&" + wal},
 		{name: "trailing ? gains no stray separator", raw: "file:./x.db?",
-			full: "file:./x.db?_txlock=immediate"},
+			full: "file:./x.db?" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
+		{name: "other operator params gain every setting", raw: "file:/x.db?mode=rwc",
+			full: "file:/x.db?mode=rwc&" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
+		{name: "upper-case pragma name counts as set", raw: "file:/x.db?_pragma=BUSY_TIMEOUT(100)",
+			full: "file:/x.db?_pragma=BUSY_TIMEOUT(100)&" + fk + "&" + wal + "&_txlock=immediate"},
+		{name: "modernc's _busy_timeout counts as set", raw: "file:/x.db?_busy_timeout=100",
+			full: "file:/x.db?_busy_timeout=100&" + fk + "&" + wal + "&_txlock=immediate"},
+		{name: "modernc's _timeout, _fk and _journal count as set", raw: "file:/x.db?_timeout=100&_fk=1&_journal=DELETE",
+			full: "file:/x.db?_timeout=100&_fk=1&_journal=DELETE&_txlock=immediate"},
+		{name: "every setting present: unchanged", raw: "file:/x.db?" + fk + "&" + busy + "&" + wal + "&_txlock=immediate",
+			full: "file:/x.db?" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
+		{name: "shared memory gains the settings", raw: "file::memory:?cache=shared",
+			full: "file::memory:?cache=shared&" + fk + "&" + busy + "&" + wal + "&_txlock=immediate"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1940,10 +1958,77 @@ func TestParseDBURLFileFormKeepsTxlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"_pragma=foreign_keys(1)", "_pragma=busy_timeout(5000)", "_pragma=journal_mode(WAL)"} {
+	for _, p := range []string{fk, busy, wal} {
 		if !strings.Contains(bare, p) {
 			t.Fatalf("bare file: DSN %q missing %q", bare, p)
 		}
+	}
+	if _, _, err := parseDBURL("file:/x.db?mode=%zz"); err == nil {
+		t.Error("a query that does not parse was accepted")
+	}
+
+	// Each connection, Open's first and every one opened after it, reads its
+	// settings from the DSN alone, so an operator's value holds on both and the
+	// defaults hold where the operator set nothing. With no idle connection
+	// kept, every statement opens a new one.
+	pragmas := func(t *testing.T, s *SQLStore) string {
+		t.Helper()
+		var fk, busy int
+		var journal string
+		if err := s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRow(`PRAGMA journal_mode`).Scan(&journal); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("foreign_keys=%d busy_timeout=%d journal_mode=%s", fk, busy, journal)
+	}
+	for name, tc := range map[string]struct{ query, want string }{
+		"operator params, defaults added": {"?mode=rwc", "foreign_keys=1 busy_timeout=5000 journal_mode=wal"},
+		"operator busy_timeout":           {"?_pragma=busy_timeout(100)", "foreign_keys=1 busy_timeout=100 journal_mode=wal"},
+		"operator _busy_timeout":          {"?_busy_timeout=100", "foreign_keys=1 busy_timeout=100 journal_mode=wal"},
+		"operator journal_mode":           {"?_pragma=journal_mode(DELETE)", "foreign_keys=1 busy_timeout=5000 journal_mode=delete"},
+	} {
+		s, err := Open("file:" + filepath.Join(t.TempDir(), "op.db") + tc.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := pragmas(t, s); got != tc.want {
+			t.Errorf("%s, first connection: %s, want %s", name, got, tc.want)
+		}
+		s.db.SetMaxIdleConns(0)
+		if got := pragmas(t, s); got != tc.want {
+			t.Errorf("%s, a new connection: %s, want %s", name, got, tc.want)
+		}
+		_ = s.Close()
+	}
+	s, err := Open(filepath.Join(t.TempDir(), "plain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := pragmas(t, s), "foreign_keys=1 busy_timeout=5000 journal_mode=wal"; got != want {
+		t.Errorf("a plain path, first connection: %s, want %s", got, want)
+	}
+	_ = s.Close()
+
+	// file::memory:?cache=shared still opens an in-memory database: no file
+	// named ":memory:" appears, and the main database has no file.
+	t.Chdir(t.TempDir())
+	m, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	var seq int
+	var name, file string
+	if err := m.db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &file); err != nil || file != "" {
+		t.Errorf("shared memory database file = %q, %v; want \"\"", file, err)
+	}
+	if _, err := os.Stat(":memory:"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a file named :memory: exists: %v", err)
 	}
 }
 
@@ -2412,6 +2497,13 @@ func TestListClampsAnOversizedLimit(t *testing.T) {
 // against.
 const lastTermSort = "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
 
+// materializedPage is the plan of a list page around its access path: the page
+// is built in the statement's first step, where modernc can interrupt it, then
+// read back in order with no second sort (PORM-224).
+func materializedPage(access string) string {
+	return "MATERIALIZE page | " + access + " | " + lastTermSort + " | SCAN page"
+}
+
 // joinedPlan runs EXPLAIN QUERY PLAN on a built query and returns every step,
 // joined, so a test pins the whole plan as assertLookupUsesUniqueIndex does.
 func joinedPlan(t *testing.T, s *SQLStore, query string, args []any, err error) string {
@@ -2451,7 +2543,7 @@ func TestAuditLogsCursorQueryWalksTheIndex(t *testing.T) {
 		},
 	} {
 		query, args, err := s.auditLogsQuery(tc.f)
-		if got, want := joinedPlan(t, s, query, args, err), tc.want+" | "+lastTermSort; got != want {
+		if got, want := joinedPlan(t, s, query, args, err), materializedPage(tc.want); got != want {
 			t.Errorf("%s: plan %q, want %q", name, got, want)
 		}
 	}
@@ -2571,10 +2663,192 @@ func TestAdminEventsCursorQueryWalksTheIndex(t *testing.T) {
 		},
 	} {
 		query, args, err := s.adminEventsQuery(tc.f)
-		if got, want := joinedPlan(t, s, query, args, err), tc.want+" | "+lastTermSort; got != want {
+		if got, want := joinedPlan(t, s, query, args, err), materializedPage(tc.want); got != want {
 			t.Errorf("%s: plan %q, want %q", name, got, want)
 		}
 	}
+}
+
+// walkTop is the newest row in the deadline fixture, and walkSince the start
+// of a window that holds every row it seeds.
+var (
+	walkTop   = time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	walkSince = walkTop.Add(-30 * 24 * time.Hour)
+)
+
+// walkRows is the deadline fixture's size: enough rows, one second apart, that
+// an uncancelled walk of the window takes at least 100 ms. The race detector
+// slows every SQLite step, so it seeds fewer.
+func walkRows() int {
+	if raceBuild {
+		return 20_000
+	}
+	return 320_000
+}
+
+// walk is the database the deadline tests share. Seeding takes seconds under
+// the race detector, so each table is seeded once per test binary, and
+// TestMain removes the directory, which no one test's TempDir can hold.
+var walk struct {
+	open  sync.Once
+	dir   string
+	store *SQLStore
+	err   error
+	seeds map[string]*walkSeed
+}
+
+type walkSeed struct {
+	once sync.Once
+	err  error
+}
+
+func init() {
+	walk.seeds = map[string]*walkSeed{"audit_logs": {}, "admin_events": {}}
+}
+
+// TestMain removes the deadline fixture after the run.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if walk.store != nil {
+		_ = walk.store.Close()
+	}
+	if walk.dir != "" {
+		_ = os.RemoveAll(walk.dir)
+	}
+	os.Exit(code)
+}
+
+// walkStore returns the shared deadline fixture with table seeded: walkRows()
+// rows in the window that do not match, and two at its top, on two different
+// timestamps, whose tool_name or resource_type is "needle", with none below
+// them. A page that streamed would return the two in its first step and then
+// walk the rest of the window with no interrupt armed.
+func walkStore(t *testing.T, table string) *SQLStore {
+	t.Helper()
+	walk.open.Do(func() {
+		walk.dir, walk.err = os.MkdirTemp("", "porymcp-walk-")
+		if walk.err == nil {
+			walk.store, walk.err = Open(filepath.Join(walk.dir, "walk.db"))
+		}
+	})
+	if walk.err != nil {
+		t.Fatal(walk.err)
+	}
+	seed := walk.seeds[table]
+	seed.once.Do(func() { seed.err = seedWalk(walk.store, table) })
+	if seed.err != nil {
+		t.Fatal(seed.err)
+	}
+	return walk.store
+}
+
+// seedWalk fills table with one statement, so the seed stays short under the
+// race detector, then adds the two matching rows through the store.
+func seedWalk(s *SQLStore, table string) error {
+	ctx := context.Background()
+	rows := `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) `
+	at := `strftime('%Y-%m-%dT%H:%M:%S', ?, printf('-%d seconds', i)) || '.000000000Z'`
+	top := walkTop.Format(time.DateTime)
+	switch table {
+	case "audit_logs":
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, status) `+
+			rows+`SELECT printf('w%07d', i), `+at+`, 'k1', 'walk', 'tools/call', 'haystack', 'success' FROM n`, walkRows(), top); err != nil {
+			return err
+		}
+		for i := 1; i <= 2; i++ {
+			e := auditRow(fmt.Sprintf("needle%d", i), walkTop.Add(time.Duration(i)*time.Second))
+			e.Method, e.ToolName = "tools/call", "needle"
+			if err := s.InsertAuditLog(ctx, e); err != nil {
+				return err
+			}
+		}
+	case "admin_events":
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO admin_events (id, timestamp, actor, action, resource_type, resource_id) `+
+			rows+`SELECT printf('w%07d', i), `+at+`, 'admin', 'update', 'haystack', 'r' FROM n`, walkRows(), top); err != nil {
+			return err
+		}
+		for i := 1; i <= 2; i++ {
+			e := &models.AdminEvent{
+				ID: fmt.Sprintf("needle%d", i), Timestamp: walkTop.Add(time.Duration(i) * time.Second),
+				Actor: "admin", Action: "update", ResourceType: "needle", ResourceID: "r",
+			}
+			if err := s.InsertAdminEvent(ctx, e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// stopsAtItsDeadline is the check the deadline tests share (PORM-224 S1, S2).
+// W is the shortest of three uncancelled reads of the window. A deadline of
+// W/10 must end the read with context.DeadlineExceeded before W/2, which a
+// read that held the connection to the end of its walk cannot, and an insert
+// under its own 1 s deadline must then get the connection, which an
+// interrupted SQLite connection gives up for a new one.
+func stopsAtItsDeadline(t *testing.T, s *SQLStore, read func(context.Context) error) {
+	t.Helper()
+	var w time.Duration
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		if err := read(context.Background()); err != nil {
+			t.Fatalf("uncancelled read: %v", err)
+		}
+		if d := time.Since(start); i == 0 || d < w {
+			w = d
+		}
+	}
+	t.Logf("uncancelled read of %d rows: %v", walkRows(), w)
+	if w < 20*time.Millisecond {
+		t.Fatalf("the read took %v, too short to time a deadline against; raise walkRows", w)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), w/10)
+	defer cancel()
+	start := time.Now()
+	err := read(ctx)
+	took := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("read under a %v deadline: %v, want context.DeadlineExceeded", w/10, err)
+	}
+	if took >= w/2 {
+		t.Errorf("read under a %v deadline returned after %v, want before %v", w/10, took, w/2)
+	}
+
+	ictx, icancel := context.WithTimeout(context.Background(), time.Second)
+	defer icancel()
+	// Older than walkSince, so no later read of the window counts it.
+	e := auditRow(fmt.Sprintf("after-%s-%d", t.Name(), time.Now().UnixNano()), walkSince.Add(-time.Hour))
+	if err := s.InsertAuditLog(ictx, e); err != nil {
+		t.Errorf("insert after the stopped read: %v", err)
+	}
+}
+
+// TestListAuditLogsStopsAtItsDeadline is PORM-224's store half: the page is
+// materialized, so the deadline frees the connection even though the first
+// matching rows sit at the top of the window.
+func TestListAuditLogsStopsAtItsDeadline(t *testing.T) {
+	s := walkStore(t, "audit_logs")
+	stopsAtItsDeadline(t, s, func(ctx context.Context) error {
+		got, _, err := s.ListAuditLogs(ctx, models.LogFilter{Since: &walkSince, Tool: "needle", Limit: 50})
+		if err == nil && !slices.Equal(auditIDs(got), []string{"needle2", "needle1"}) {
+			return fmt.Errorf("listed %v, want [needle2 needle1]", auditIDs(got))
+		}
+		return err
+	})
+}
+
+// TestListAdminEventsStopsAtItsDeadline is the same check for Admin activity's
+// Resource filter.
+func TestListAdminEventsStopsAtItsDeadline(t *testing.T) {
+	s := walkStore(t, "admin_events")
+	stopsAtItsDeadline(t, s, func(ctx context.Context) error {
+		got, _, err := s.ListAdminEvents(ctx, models.AdminEventFilter{Since: &walkSince, ResourceType: "needle", Limit: 50})
+		if err == nil && len(got) != 2 {
+			return fmt.Errorf("listed %d events, want 2", len(got))
+		}
+		return err
+	})
 }
 
 // v5Fixture builds a database as a version-5 server left it, without ever
@@ -3500,4 +3774,325 @@ func TestCountBlockedByReason(t *testing.T) {
 	if len(onlyErr.Blocked) != 0 || onlyErr.Errored[loopback] != 1 {
 		t.Errorf("errored only = %+v", onlyErr)
 	}
+}
+
+// --- Facets (PORM-149) ---
+
+// insertTools adds count rows for key at ts for each tool name
+// printf(format, i), i from first to last, in one statement.
+func insertTools(t *testing.T, s *SQLStore, key, format string, first, last, count int, ts time.Time) {
+	t.Helper()
+	if _, err := s.db.Exec(`INSERT INTO audit_logs (id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, status)
+		WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i + 1 FROM n WHERE i < ?),
+		c(j) AS (SELECT 1 UNION ALL SELECT j + 1 FROM c WHERE j < ?)
+		SELECT printf('%s-%d-%d', ?, i, j), ?, ?, 'bot', 'tools/call', printf(?, i), 'success' FROM n, c`,
+		first, last, count, key, fmtTime(ts), key, format); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func facetSum(es []models.FacetEntry) int {
+	n := 0
+	for _, e := range es {
+		n += e.Count
+	}
+	return n
+}
+
+func facetCount(es []models.FacetEntry, value string) int {
+	for _, e := range es {
+		if e.Value == value {
+			return e.Count
+		}
+	}
+	return 0
+}
+
+// TestAuditLogsHasTool is PORM-149 criterion 2's store half: HasTool false
+// lists only rows that named no tool, true only rows that named one, and both
+// combine with the other filters.
+func TestAuditLogsHasTool(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	for i, r := range []struct{ key, tool, status string }{
+		{"k1", "", "success"}, {"k1", "echo", "success"}, {"k1", "", "error"},
+		{"k2", "", "success"}, {"k2", "echo", "error"},
+	} {
+		e := auditRow(fmt.Sprintf("h%d", i), T.Add(-time.Duration(i)*time.Second))
+		e.VirtualKeyID, e.ToolName, e.Status = r.key, r.tool, r.status
+		if err := s.InsertAuditLog(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	no, yes := false, true
+	for name, tc := range map[string]struct {
+		f    models.LogFilter
+		want []string
+	}{
+		"no tool":              {models.LogFilter{HasTool: &no}, []string{"h0", "h2", "h3"}},
+		"a tool":               {models.LogFilter{HasTool: &yes}, []string{"h1", "h4"}},
+		"no tool, key":         {models.LogFilter{HasTool: &no, VirtualKeyID: "k1"}, []string{"h0", "h2"}},
+		"no tool, key, status": {models.LogFilter{HasTool: &no, VirtualKeyID: "k1", Status: "error"}, []string{"h2"}},
+		"a tool, status":       {models.LogFilter{HasTool: &yes, Status: "error"}, []string{"h4"}},
+		"nil is no filter":     {models.LogFilter{VirtualKeyID: "k2"}, []string{"h3", "h4"}},
+	} {
+		got, _, err := s.ListAuditLogs(ctx, tc.f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(auditIDs(got), tc.want) {
+			t.Errorf("%s: %v, want %v", name, auditIDs(got), tc.want)
+		}
+	}
+}
+
+// TestListAuditFacets is PORM-149 criteria 1 and 8: each list counts the rows
+// ListAuditLogs would page through for the same key and window. Statuses
+// ignore Status; Methods and Tools honour it; nothing honours Method, Tool,
+// HasTool, Cursor or Limit. Both window ends are inclusive and exact. Ties
+// are ordered by bytes, and the lists are never nil.
+func TestListAuditFacets(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	since, until := T.Add(-time.Hour), T
+	mid := T.Add(-30 * time.Minute)
+	n := 0
+	add := func(key, method, tool, status string, ts time.Time, times int) {
+		for i := 0; i < times; i++ {
+			n++
+			e := auditRow(fmt.Sprintf("f%03d", n), ts)
+			e.VirtualKeyID, e.Method, e.ToolName, e.Status = key, method, tool, status
+			if err := s.InsertAuditLog(ctx, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	add("k1", "tools/call", "b", "success", mid, 3)
+	add("k1", "tools/call", "a", "success", mid, 2)
+	add("k1", "tools/call", "a", "error", mid, 1)
+	add("k1", "tools/list", "", "success", mid, 2)
+	add("k1", "initialize", "", "success", since, 1)
+	add("k1", "tools/call", "b", "blocked", until, 1)
+	add("k2", "tools/call", "c", "error", mid, 2)
+	add("k1", "tools/call", "x", "success", since.Add(-time.Nanosecond), 1)
+	add("k1", "tools/call", "y", "success", until.Add(time.Nanosecond), 1)
+
+	facets := func(f models.LogFilter) models.LogFacets {
+		t.Helper()
+		got, err := s.ListAuditFacets(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	walk := func(f models.LogFilter) int {
+		t.Helper()
+		f.Limit, f.Cursor = 200, ""
+		total := 0
+		for {
+			got, next, err := s.ListAuditLogs(ctx, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			total += len(got)
+			if next == "" {
+				return total
+			}
+			f.Cursor = next
+		}
+	}
+
+	// The exact lists for k1 over the window: "" and a tie at 3 and sort by
+	// bytes, as blocked and error do at 1; the rows on since and until count,
+	// the two a nanosecond outside (x, y) do not.
+	e := func(v string, c int) models.FacetEntry { return models.FacetEntry{Value: v, Count: c} }
+	k1 := models.LogFilter{VirtualKeyID: "k1", Since: &since, Until: &until}
+	want := models.LogFacets{
+		Methods:  []models.FacetEntry{e("tools/call", 7), e("tools/list", 2), e("initialize", 1)},
+		Tools:    []models.FacetEntry{e("b", 4), e("", 3), e("a", 3)},
+		Statuses: []models.FacetEntry{e("success", 8), e("blocked", 1), e("error", 1)},
+	}
+	if got := facets(k1); !reflect.DeepEqual(got, want) {
+		t.Errorf("k1 over the window:\n got %+v\nwant %+v", got, want)
+	}
+	k1err := k1
+	k1err.Status = models.StatusError
+	want = models.LogFacets{
+		Methods:  []models.FacetEntry{e("tools/call", 1)},
+		Tools:    []models.FacetEntry{e("a", 1)},
+		Statuses: []models.FacetEntry{e("success", 8), e("blocked", 1), e("error", 1)},
+	}
+	if got := facets(k1err); !reflect.DeepEqual(got, want) {
+		t.Errorf("k1 errors over the window:\n got %+v\nwant %+v", got, want)
+	}
+
+	// Method, Tool, HasTool, Cursor and Limit change nothing.
+	yes, no := true, false
+	noise := k1err
+	noise.Method, noise.Tool, noise.HasTool, noise.Cursor, noise.Limit = "tools/list", "zzz", &yes, "not a cursor", 3
+	if got := facets(noise); !reflect.DeepEqual(got, want) {
+		t.Errorf("k1 errors with Method, Tool, HasTool, Cursor and Limit set:\n got %+v\nwant %+v", got, want)
+	}
+
+	// Every list sums to the rows the same filters page through.
+	midSince := mid
+	for name, f := range map[string]models.LogFilter{
+		"all keys over the window": {Since: &since, Until: &until},
+		"k1 over the window":       k1,
+		"k2 over the window":       {VirtualKeyID: "k2", Since: &since, Until: &until},
+		"k1 from mid":              {VirtualKeyID: "k1", Since: &midSince},
+		"no window":                {},
+	} {
+		got := facets(f)
+		if got.Methods == nil || got.Tools == nil || got.Statuses == nil {
+			t.Errorf("%s: a nil list in %+v", name, got)
+		}
+		if a, b := facetSum(got.Statuses), walk(f); a != b {
+			t.Errorf("%s: statuses sum to %d, the walk lists %d", name, a, b)
+		}
+		none := f
+		none.HasTool = &no
+		if a, b := facetCount(got.Tools, ""), walk(none); a != b {
+			t.Errorf("%s: tools[\"\"] = %d, the walk with HasTool false lists %d", name, a, b)
+		}
+		for _, status := range []string{models.StatusSuccess, models.StatusError, models.StatusBlocked} {
+			fs := f
+			fs.Status = status
+			gs := facets(fs)
+			w := walk(fs)
+			if facetSum(gs.Methods) != w || facetSum(gs.Tools) != w {
+				t.Errorf("%s, %s: methods sum to %d and tools to %d, the walk lists %d", name, status, facetSum(gs.Methods), facetSum(gs.Tools), w)
+			}
+			if !reflect.DeepEqual(gs.Statuses, got.Statuses) {
+				t.Errorf("%s, %s: statuses %+v, want the unfiltered %+v", name, status, gs.Statuses, got.Statuses)
+			}
+		}
+	}
+
+	// An empty window answers three empty lists, never nil.
+	later := T.Add(time.Hour)
+	got := facets(models.LogFilter{Since: &later})
+	if got.Methods == nil || got.Tools == nil || got.Statuses == nil || len(got.Methods)+len(got.Tools)+len(got.Statuses) != 0 || got.Truncated {
+		t.Errorf("an empty window: %+v, want three empty lists", got)
+	}
+}
+
+// TestListAuditFacetsCap is PORM-149 criteria 4 and 8: a list keeps its 200
+// most frequent values and reports the cut, and a "" in tools keeps its place
+// however rare it is, so the Tool select can always offer None.
+func TestListAuditFacetsCap(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	// 201 names: t000 to t099 twice, t100 to t200 once.
+	insertTools(t, s, "cut", "t%03d", 0, 99, 2, T)
+	insertTools(t, s, "cut", "t%03d", 100, 200, 1, T)
+	got, err := s.ListAuditFacets(ctx, models.LogFilter{VirtualKeyID: "cut"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 200 || !got.Truncated || got.Tools[0].Value != "t000" || got.Tools[199].Value != "t199" || facetCount(got.Tools, "t200") != 0 {
+		t.Errorf("201 names: %d tools from %v to %v, truncated %v; want 200 from t000 to t199, t200 dropped, truncated",
+			len(got.Tools), got.Tools[0], got.Tools[len(got.Tools)-1], got.Truncated)
+	}
+
+	insertTools(t, s, "full", "t%03d", 0, 199, 1, T)
+	got, err = s.ListAuditFacets(ctx, models.LogFilter{VirtualKeyID: "full"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 200 || got.Truncated {
+		t.Errorf("200 names: %d tools, truncated %v; want 200, not truncated", len(got.Tools), got.Truncated)
+	}
+
+	// 201 names twice each, and one row with no tool: "" is the rarest and
+	// keeps the 200th place.
+	insertTools(t, s, "none", "t%03d", 0, 200, 2, T)
+	e := auditRow("none-empty", T)
+	e.VirtualKeyID, e.ToolName = "none", ""
+	if err := s.InsertAuditLog(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ListAuditFacets(ctx, models.LogFilter{VirtualKeyID: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 200 || !got.Truncated || got.Tools[199] != (models.FacetEntry{Value: "", Count: 1}) || got.Tools[198].Value != "t198" {
+		t.Errorf("201 names and a rarer \"\": %d tools ending %v, %v, truncated %v; want 200 ending t198 and {\"\" 1}, truncated",
+			len(got.Tools), got.Tools[198], got.Tools[199], got.Truncated)
+	}
+}
+
+// TestListAuditFacetsStopsPastTheFoldCap is S22: a window holding more
+// distinct tools than the fold keeps is refused whole, with no partial list.
+func TestListAuditFacetsStopsPastTheFoldCap(t *testing.T) {
+	if facetFoldCap != 50000 {
+		t.Fatalf("facetFoldCap = %d, want the shipped 50000", facetFoldCap)
+	}
+	facetFoldCap = 300
+	t.Cleanup(func() { facetFoldCap = 50000 })
+	s := testStore(t)
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	insertTools(t, s, "k1", "p%03d", 0, 300, 1, T)
+	got, err := s.ListAuditFacets(context.Background(), models.LogFilter{})
+	if !errors.Is(err, ErrTooManyFacetValues) || !reflect.DeepEqual(got, models.LogFacets{}) {
+		t.Errorf("301 tools past a cap of 300: %+v, %v; want no answer and ErrTooManyFacetValues", got, err)
+	}
+	insertTools(t, s, "k2", "p%03d", 0, 299, 1, T)
+	if _, err := s.ListAuditFacets(context.Background(), models.LogFilter{VirtualKeyID: "k2"}); err != nil {
+		t.Errorf("300 tools at a cap of 300: %v", err)
+	}
+}
+
+// TestAuditFacetsQueryWalksTheIndex pins the access path of the one facet
+// statement (S3): the window or the key and window reads one index range,
+// and the grouping is a temp b-tree filled in the statement's first step,
+// where the deadline can stop it.
+func TestAuditFacetsQueryWalksTheIndex(t *testing.T) {
+	s := testStore(t)
+	T := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	since := T.Add(-7 * 24 * time.Hour)
+	const grouped = " | USE TEMP B-TREE FOR GROUP BY"
+	for name, tc := range map[string]struct {
+		f    models.LogFilter
+		want string
+	}{
+		"since":                {models.LogFilter{Since: &since}, "SEARCH audit_logs USING INDEX audit_logs_ts (timestamp>?)"},
+		"since and until":      {models.LogFilter{Since: &since, Until: &T}, "SEARCH audit_logs USING INDEX audit_logs_ts (timestamp>? AND timestamp<?)"},
+		"key and since":        {models.LogFilter{VirtualKeyID: "k1", Since: &since}, "SEARCH audit_logs USING INDEX audit_logs_virtual_key (virtual_key_id=? AND timestamp>?)"},
+		"key, since and until": {models.LogFilter{VirtualKeyID: "k1", Since: &since, Until: &T}, "SEARCH audit_logs USING INDEX audit_logs_virtual_key (virtual_key_id=? AND timestamp>? AND timestamp<?)"},
+		"no window":            {models.LogFilter{}, "SCAN audit_logs"},
+	} {
+		query, args, err := s.auditFacetsQuery(tc.f)
+		if got, want := joinedPlan(t, s, query, args, err), tc.want+grouped; got != want {
+			t.Errorf("%s: plan %q, want %q", name, got, want)
+		}
+	}
+
+	// No unindexed term changes the plan, so the filters the read must not
+	// see are checked on the built query: Status, Method, Tool, HasTool,
+	// Cursor and Limit leave the SQL and its args as the window alone builds
+	// them.
+	yes := true
+	q1, a1, err1 := s.auditFacetsQuery(models.LogFilter{Since: &since})
+	q2, a2, err2 := s.auditFacetsQuery(models.LogFilter{Since: &since, Status: "error", Method: "m", Tool: "x", HasTool: &yes, Cursor: "not a cursor", Limit: 3})
+	if err1 != nil || err2 != nil || q1 != q2 || !slices.Equal(a1, a2) {
+		t.Errorf("the facet query changed with filters it must not read:\n %q %v %v\n %q %v %v", q1, a1, err1, q2, a2, err2)
+	}
+}
+
+// TestListAuditFacetsStopsAtItsDeadline is S3 for the facet read: on the
+// walk fixture a deadline of a tenth of the read stops it before half, and
+// the connection is free for an insert afterwards.
+func TestListAuditFacetsStopsAtItsDeadline(t *testing.T) {
+	s := walkStore(t, "audit_logs")
+	stopsAtItsDeadline(t, s, func(ctx context.Context) error {
+		got, err := s.ListAuditFacets(ctx, models.LogFilter{Since: &walkSince})
+		if err == nil && (facetCount(got.Tools, "needle") != 2 || facetCount(got.Tools, "haystack") != walkRows()) {
+			return fmt.Errorf("tools %v, want haystack %d and needle 2", got.Tools, walkRows())
+		}
+		return err
+	})
 }

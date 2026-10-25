@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, api, requestErrorMessage } from '@/lib/api'
+import { ApiError, api } from '@/lib/api'
 import {
   afterMoreFailure,
   appended,
@@ -14,7 +14,7 @@ import {
   showEmpty,
   startQuery,
 } from '@/lib/cursor-pages'
-import { pagePath } from '@/lib/logs-view'
+import { listErrorMessage, pagePath, SLOW_QUERY } from '@/lib/logs-view'
 
 export type CursorPages<T> = {
   rows: T[]
@@ -43,6 +43,14 @@ export type CursorPages<T> = {
  * callback that applies an answer; a press while a page is in flight is
  * dropped. The control draws itself as busy meanwhile; `inFlight` is the
  * guard that does not depend on it.
+ *
+ * Each generation also has an AbortController (PORM-224), aborted when the
+ * query changes or the page unmounts, so the browser drops a request nobody
+ * wants and, on a direct connection, the server stops its read. A Load more
+ * takes the signal of the generation it was sent in. Every answer checks its
+ * signal first: an aborted request sets nothing, because the next generation
+ * already reset the state. `seq` stays for an answer that resolved before the
+ * abort landed.
  */
 export function useCursorPages<T>(path: PagedPath, query: string | null): CursorPages<T> {
   const [pages, setPages] = useState<Pages<T>>(emptyPages)
@@ -52,9 +60,12 @@ export function useCursorPages<T>(path: PagedPath, query: string | null): Cursor
   const seq = useRef(0)
   const inFlight = useRef(false)
   const next = useRef<{ query: string; cursor: string } | null>(null)
+  const abort = useRef<AbortController | null>(null)
 
   useEffect(() => {
     const mine = ++seq.current
+    const ctrl = new AbortController()
+    abort.current = ctrl
     inFlight.current = false
     next.current = null
     setPages(startQuery)
@@ -62,16 +73,18 @@ export function useCursorPages<T>(path: PagedPath, query: string | null): Cursor
     setMoreError('')
     setBusy(false)
     if (query === null) return
-    api<Record<string, unknown>>(pagePath(path, query, ''))
+    api<Record<string, unknown>>(pagePath(path, query, ''), { signal: ctrl.signal })
       .then((body) => {
-        if (seq.current !== mine) return
+        if (ctrl.signal.aborted || seq.current !== mine) return
         const p = firstPage(query, rowsOf<T>(body, path), cursorOf(body))
         next.current = nextRequest(p, query)
         setPages(p)
       })
       .catch((err: unknown) => {
-        if (seq.current === mine) setError(requestErrorMessage(err))
+        if (ctrl.signal.aborted || seq.current !== mine) return
+        setError(listErrorMessage(err, SLOW_QUERY[path]))
       })
+    return () => ctrl.abort()
   }, [path, query])
 
   const loadMore = useCallback(() => {
@@ -81,9 +94,10 @@ export function useCursorPages<T>(path: PagedPath, query: string | null): Cursor
     setBusy(true)
     setMoreError('')
     const mine = seq.current
-    api<Record<string, unknown>>(pagePath(path, req.query, req.cursor))
+    const signal = abort.current?.signal
+    api<Record<string, unknown>>(pagePath(path, req.query, req.cursor), { signal })
       .then((body) => {
-        if (seq.current !== mine) return
+        if (signal?.aborted || seq.current !== mine) return
         const rows = rowsOf<T>(body, path)
         const cursor = cursorOf(body)
         setPages((p) => appended(p, rows, cursor))
@@ -92,9 +106,9 @@ export function useCursorPages<T>(path: PagedPath, query: string | null): Cursor
         setBusy(false)
       })
       .catch((err: unknown) => {
-        if (seq.current !== mine) return
+        if (signal?.aborted || seq.current !== mine) return
         const status = err instanceof ApiError ? err.status : undefined
-        setMoreError(requestErrorMessage(err))
+        setMoreError(listErrorMessage(err, SLOW_QUERY[path]))
         setPages((p) => afterMoreFailure(p, status))
         if (status === 400) next.current = null
         inFlight.current = false

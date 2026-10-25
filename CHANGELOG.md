@@ -4,6 +4,74 @@ Behaviour changes that affect a running deployment. Newest first.
 
 ## Unreleased
 
+### The sign-in and Overview error lines are pink (PORM-225)
+
+- **A refused admin key and a failed Overview load read as errors.** Both
+  lines were a `Text` paragraph whose grey overrode the pink they asked for,
+  so a wrong key on the sign-in page read as a muted note. They are now
+  `role="alert"` lines drawn with the same recipe as every other error line,
+  pink in light and dark mode, and the sign-in refusal is announced.
+
+### The Logs Method and Tool filters list what was recorded (PORM-149)
+
+- **Method and Tool are selects.** Each lists the values recorded under the
+  chosen virtual key, period and status, with a count (`tools/call (41)`),
+  most frequent first. Before, both were free-text exact matches: a
+  misspelling answered the same empty table a real empty answer did.
+- **`None` in Tool lists the calls that named no tool** (`ping`,
+  `tools/list`, `initialize`), the rows whose Tool column reads `None`. There
+  was no way to ask for them before.
+- **Status shows counts** for Success, Error and Blocked over the key and
+  period.
+- **`GET /api/v1/logs/facets`** answers the three lists, from one read,
+  under the same two-second deadline and `503` as `GET /logs`. Each list
+  holds at most 200 entries with `truncated` when the cap cut one. A period
+  holding more than 50,000 distinct methods or tools answers the same `503`
+  instead of being counted.
+- **The server log says why a Logs read stopped.** Each `503` writes one
+  Warn line, `store read stopped`, whose `reason` is `deadline` past the two
+  seconds or `too_many_values` past the 50,000 cap. Callers with no key can
+  reach the cap by choosing relay paths, so it is worth telling apart from a
+  slow read.
+- **`has_tool=true|false` on `GET /api/v1/logs`** narrows to the rows that
+  named a tool or did not. Beside `tool`, or with any other value, it is a
+  `400`.
+- **A read-only root filesystem needs a writable `/tmp`.** The facet count
+  sorts in SQLite temporary files once the period holds a few tens of
+  thousands of rows, and the Logs page asks for it on every open; with no
+  writable temporary directory it answers `500`. A deployment that mounts the
+  root read-only adds a tmpfs at `/tmp` (`docs/07-security.md`).
+
+### A Logs read stops at two seconds and answers 503 (PORM-224)
+
+- **`GET /logs` and `GET /admin-events` run under a two-second deadline,**
+  the wait for the database connection included, and past it answer
+  `503 {"error":"log query took too long"}`. Before, a filter that matched
+  few rows in a long period read every row in it with no bound, on the one
+  SQLite connection the proxy's key lookups and the audit writer share; an
+  audit insert waits at most five seconds for it, and a missed insert is a
+  lost audit row. A shorter period or a `virtual_key_id` reads fewer rows.
+- **The Logs page names the remedy and keeps its rows.** The error line
+  reads `This query took too long. Choose a shorter period or a narrower
+  filter.` on Proxy calls and `This query took too long. Choose All
+  resources or reload the page.` on Admin activity. Any other `503` keeps
+  its own words.
+- **The Logs page aborts a request it no longer wants.** A filter change, or
+  leaving the page, aborts the first page or Load more in flight; on a
+  direct connection the server stops that read too.
+- **A list page is read in SQLite's first step.** modernc's SQLite driver
+  interrupts a statement only until it returns its first row, so a page
+  whose matches sat at the top of the period held the connection past any
+  deadline. Each page is now built whole before its first row returns; the
+  rows are unchanged and a page costs about 0.1 ms more.
+- **An operator `file:` `DATABASE_URL` keeps `busy_timeout` on every
+  connection.** An interrupted read makes the server open a new SQLite
+  connection, which gets only the DSN's settings, and a `file:` DSN with a
+  query of its own gained only `_txlock`: after one stopped read,
+  `busy_timeout` was 0. It now gains `foreign_keys`, `busy_timeout` and
+  `journal_mode` as the default DSN sets them, each only when the operator's
+  DSN does not set it.
+
 ## v0.2.0 (2026-10-22)
 
 ### The Logs page pages back through history and narrows Proxy calls to a period (PORM-20)

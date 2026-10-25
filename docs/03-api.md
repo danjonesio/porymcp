@@ -1035,7 +1035,8 @@ curl -sS -H "Authorization: Bearer $ADMIN_API_KEY" \
   `503 {"error":"policy counts took too long"}`.
 
 ## Logs
-- `GET /logs?virtual_key_id=&since=&until=&method=&tool=&status=&limit=&cursor=`
+- `GET /logs?virtual_key_id=&since=&until=&method=&tool=&has_tool=&status=&limit=&cursor=`
+- `GET /logs/facets?virtual_key_id=&since=&until=&status=`
 - `GET /logs/{id}`
 
 `tool` is an exact match on the recorded `tool_name`, not a prefix or a
@@ -1046,8 +1047,48 @@ one group's calls for a tool therefore takes the spelling the path uses. On a
 relayed HTTP API request (PORM-146) `tool_name` is the request path after
 `/api`, beginning with `/` and bounded at 256 bytes, so `?tool=/user` finds
 the calls to one path exactly and a path carrying an id is its own value;
-`?method=GET` finds every relayed `GET`. A facet or path grouping is
-PORM-149's.
+`?method=GET` finds every relayed `GET`.
+
+`has_tool=false` lists the rows whose `tool_name` is empty (`ping`,
+`tools/list`, `initialize`: every call that named no tool) and `has_tool=true`
+the rows that name one; it is the only way to ask for the first, because
+`tool=` with no value is no filter and any word in `tool` could be a real
+tool's name. Exactly `true` or `false`: any other value is a
+`400 {"error":"invalid has_tool"}`, sent with a non-empty `tool` it is a
+`400 {"error":"has_tool cannot be set with tool"}`, and empty is no filter.
+
+`GET /logs/facets` answers what the rows `GET /logs` would list for the same
+`virtual_key_id`, period and `status` hold (PORM-149):
+`{"methods": [...], "tools": [...], "statuses": [...], "truncated": false}`,
+each entry `{"value": "tools/call", "count": 41}`. `methods` and `tools` count
+the rows of the chosen `status`; `statuses` counts every row in the key and
+period, whatever `status` says, so each status keeps its count while one is
+chosen. The two lists do not narrow each other. Each list is ordered by count,
+highest first, then by value in byte order, holds at most 200 entries and is
+`[]`, never null. Each count is at least 1: a value with no rows in the
+period, a status included, is left out of its list, so a missing status is a
+count of 0. `tools` carries a `""` entry for the rows with no tool,
+which keeps its place when the cap cuts the list; `methods` holds `""` only
+for rows written before v0.1.0, which `method=` cannot select. `truncated` is
+`true` when the cap cut `methods` or `tools`. The route reads one statement,
+so the three lists describe the same rows.
+
+`method`, `tool` and `has_tool` on the facet route are refused, in that order
+and each with a fixed `400 {"error":"<name> cannot be set on facets"}`,
+because a list filtered by its own value is one entry; "set" means a
+non-empty value, as everywhere here. Then `status` outside `success`, `error`
+and `blocked` is a `400 {"error":"invalid status"}` (on `/logs` an unknown
+`status` still lists nothing), then `since` and `until` as on `/logs`.
+`limit` and `cursor` are not read. No `since` reads every row; a `since`
+after `until` answers three empty lists. A facet read runs under the same
+two-second deadline as a page and answers the same
+`503 {"error":"log query took too long"}` past it, and also when the period
+holds more than 50,000 distinct methods or tools, which the server will not
+hold in memory to count. The answer is the same for both; the
+`store read stopped` line's `reason` tells them apart: `deadline`, or
+`too_many_values` for the cap. The facet read covers every row in the period, so
+its cost grows with the period's rows and it can hold the shared connection
+for up to two seconds; it is not for polling.
 
 `limit` below 1 or not an integer is a `400`; above 200 it is treated as 50.
 
@@ -1063,6 +1104,16 @@ query of the page that returned it, as the dashboard's Load more does. On
 SQLite a page that follows a cursor reads one index range down from the cursor
 (the timestamp index, or the virtual key index with `virtual_key_id`) instead
 of sorting every row below it.
+
+A page runs under a two-second deadline, the wait for the database connection
+included, past which the answer is `503 {"error":"log query took too long"}`
+and the server log has one Warn line, `store read stopped`, with `path`,
+`request_id` and `reason` `deadline`.
+Only `virtual_key_id` and the period are indexed: `method`, `tool`, `has_tool`
+and `status` are checked row by row, so a filter that matches few rows in a long period
+reads every row in it. A shorter period or a `virtual_key_id` reads fewer. A
+request the client abandons is stopped when the server sees the connection
+close; the deadline is the bound.
 
 ## Admin events
 - `GET /admin-events?since=&resource_type=&limit=&cursor=`
@@ -1089,6 +1140,14 @@ is a `400`, because on an audit endpoint an empty answer would read as
 fraction of a second. `limit` below 1 or not an integer is a `400`; above 200 it
 is treated as 50, as on `/logs`. `cursor` is opaque; a malformed one is a
 `400`.
+
+A page runs under the two-second deadline `/logs` has, the wait for the
+database connection included, past which the answer is
+`503 {"error":"log query took too long"}`. Only the period is indexed:
+`resource_type` is checked row by row, so a type with few rows in a long
+history reads every row in it. A shorter period reads fewer. A request the
+client abandons is stopped when the server sees the connection close; the
+deadline is the bound.
 
 | action | details keys |
 |---|---|

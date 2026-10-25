@@ -1157,7 +1157,25 @@
 - The dashboard admin key still lives in `sessionStorage` and is readable by
   any script that runs in the page. CSP is the current mitigation; moving
   the session to an httpOnly cookie is PORM-49.
-- Run container as non-root, prefer read-only root filesystem.
+- The Logs page's Method and Tool lists (`GET /logs/facets`, PORM-149) are
+  values callers wrote, callers with no key included: a call refused before
+  authentication still writes a row, and on the HTTP relay door its
+  `tool_name` is the request path, so anyone who can reach a proxy door can
+  add entries. Each list keeps the 200 most frequent with `truncated` set
+  when it cut, and a period holding more than 50,000 distinct values is
+  refused with a `503` rather than counted. The refusal writes a Warn line,
+  `store read stopped` with `reason` `too_many_values`, which a slow read
+  (`reason` `deadline`) does not: a period flooded with made-up relay paths
+  shows in the server log as its own cause. The lists are a way into the
+  rows, not a record: the rows stay the record, and a value the list leaves
+  out is still found with an exact `method` or `tool`.
+- Run container as non-root, prefer read-only root filesystem. A read-only
+  root needs a writable tmpfs at `/tmp`: SQLite writes a large sort to
+  temporary files there, and with nowhere to write the read fails. The Logs
+  facet count (`GET /logs/facets`, which the Logs page asks for on every open)
+  is the read that spills, once its period holds a few tens of thousands of
+  rows. The store error goes to the server log as
+  `store read failed`; the response is the generic `500`.
 - Rate limiting enforced at the proxy layer (per virtual key), on failed admin
   authentication (per IP), and on discovery (thirty a minute and four in flight,
   per deployment). The three are separate budgets on purpose: spending one never

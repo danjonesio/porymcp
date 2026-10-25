@@ -1,14 +1,17 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -90,11 +93,13 @@ func Open(databaseURL string) (*SQLStore, error) {
 		return nil, err
 	}
 	if driver == "sqlite" {
+		// No PRAGMA exec here. Every SQLite DSN parseDBURL returns sets
+		// foreign_keys, busy_timeout and journal_mode, so the first connection
+		// and each one database/sql opens after an interrupt get the same
+		// settings from the DSN alone. An exec would reach the first only, and
+		// would override an operator's own value there until the first
+		// interrupted read put it back (PORM-224).
 		db.SetMaxOpenConns(1)
-		if _, err := db.Exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;`); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
 	}
 	s := &SQLStore{db: db, driver: driver}
 	if err := s.migrate(); err != nil {
@@ -117,28 +122,84 @@ func parseDBURL(raw string) (driver, dsn string, err error) {
 		path := strings.TrimPrefix(raw, "sqlite://")
 		return sqliteFile(path)
 	case strings.HasPrefix(raw, "file:"):
-		// A file: DSN used to reach the driver verbatim, so it missed the one
-		// setting Open's own PRAGMAs cannot supply: _txlock=immediate, which
-		// is what lets `porymcp rekey` run against a live server (PORM-52
-		// residual, parked with PORM-25). A DSN with no query is re-derived
-		// through fileDSN so one function owns the connection settings; one
-		// that carries the operator's own parameters keeps them and gains only
-		// what is missing, rewriting it wholesale would turn
-		// file::memory:?cache=shared into an on-disk file called ":memory:".
-		if !strings.Contains(raw, "?") {
+		// A file: DSN used to reach the driver verbatim, so it missed the
+		// settings fileDSN gives every connection. Open's own PRAGMA exec
+		// reaches the first connection only, and an interrupted statement
+		// (a Logs read past its deadline, PORM-224) makes database/sql open a
+		// new one that gets only the DSN: busy_timeout fell to 0 there.
+		// _txlock=immediate is what lets `porymcp rekey` run against a live
+		// server (PORM-52 residual, parked with PORM-25). A DSN with no query
+		// is re-derived through fileDSN so one function owns the connection
+		// settings; one that carries the operator's own parameters keeps them
+		// byte for byte and gains only what it does not set, rewriting it
+		// wholesale would turn file::memory:?cache=shared into an on-disk file
+		// called ":memory:".
+		i := strings.Index(raw, "?")
+		if i < 0 {
 			return sqliteFile(fileFromDSN(raw))
 		}
-		if !strings.Contains(raw, "_txlock=") {
-			if strings.HasSuffix(raw, "?") {
-				raw += "_txlock=immediate"
-			} else {
-				raw += "&_txlock=immediate"
+		q, err := url.ParseQuery(raw[i+1:])
+		if err != nil {
+			return "", "", fmt.Errorf("DATABASE_URL: %w", err)
+		}
+		var add []string
+		for _, p := range dsnPragmas {
+			if !dsnSets(q, p.name, p.keys) {
+				add = append(add, "_pragma="+p.value)
 			}
+		}
+		if !strings.Contains(raw, "_txlock=") {
+			add = append(add, "_txlock=immediate")
+		}
+		if len(add) > 0 {
+			if !strings.HasSuffix(raw, "?") {
+				raw += "&"
+			}
+			raw += strings.Join(add, "&")
 		}
 		return "sqlite", raw, nil
 	default:
 		return sqliteFile(raw)
 	}
+}
+
+// dsnPragmas are the pragmas fileDSN sets, in its order, with the query keys
+// modernc v1.60.1 reads for each besides _pragma (sqlite.go, applyQueryParams:
+// _busy_timeout and _timeout set busy_timeout, _foreign_keys and _fk set
+// foreign_keys, _journal_mode and _journal set journal_mode). modernc applies
+// those keys before the _pragma list, so an appended _pragma would override an
+// operator's ?_busy_timeout=100; dsnSets checks both forms.
+var dsnPragmas = []struct {
+	name, value string
+	keys        []string
+}{
+	{"foreign_keys", "foreign_keys(1)", []string{"_foreign_keys", "_fk"}},
+	{"busy_timeout", "busy_timeout(5000)", []string{"_busy_timeout", "_timeout"}},
+	{"journal_mode", "journal_mode(WAL)", []string{"_journal_mode", "_journal"}},
+}
+
+// dsnSets reports whether a DSN query already sets the pragma name: a _pragma
+// value whose leading name, lower-cased, is name, or one of modernc's own keys
+// for it with a value.
+func dsnSets(q url.Values, name string, keys []string) bool {
+	for _, k := range keys {
+		if q.Get(k) != "" {
+			return true
+		}
+	}
+	for _, v := range q["_pragma"] {
+		v = strings.ToLower(strings.TrimSpace(v))
+		end := strings.IndexFunc(v, func(r rune) bool {
+			return r != '_' && (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		})
+		if end >= 0 {
+			v = v[:end]
+		}
+		if v == name {
+			return true
+		}
+	}
+	return false
 }
 
 func sqliteFile(path string) (string, string, error) {
@@ -2342,8 +2403,24 @@ func (s *SQLStore) ListAuditLogs(ctx context.Context, f models.LogFilter) ([]mod
 
 // auditLogsQuery builds the SELECT ListAuditLogs runs, so the query-plan tests
 // explain the real query. f.Limit is already clamped: the caller slices the
-// page with the same value.
+// page with the same value. The page is materialized so SQLite does the whole
+// walk in its first step: modernc interrupts a statement only until it returns
+// its first row, and a page that streamed would hold the one connection past
+// the deadline (PORM-224).
 func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
+	where, args, err := auditLogWhere(f)
+	if err != nil {
+		return "", nil, err
+	}
+	args = append(args, f.Limit+1)
+	return s.q(`WITH page AS MATERIALIZED (SELECT ` + logCols + ` FROM audit_logs ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?) ` +
+		`SELECT ` + logCols + ` FROM page ORDER BY timestamp DESC, id DESC`), args, nil
+}
+
+// auditLogWhere returns the WHERE clause every audit_logs read shares ("" when
+// there are no terms) and its args, in one order: virtual_key_id, method,
+// tool_name, has_tool, status, since, then the cursor's bound or until.
+func auditLogWhere(f models.LogFilter) (string, []any, error) {
 	var conds []string
 	var args []any
 	if f.VirtualKeyID != "" {
@@ -2357,6 +2434,14 @@ func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
 	if f.Tool != "" {
 		conds = append(conds, "tool_name = ?")
 		args = append(args, f.Tool)
+	}
+	if f.HasTool != nil {
+		if *f.HasTool {
+			conds = append(conds, "tool_name <> ?")
+		} else {
+			conds = append(conds, "tool_name = ?")
+		}
+		args = append(args, "")
 	}
 	if f.Status != "" {
 		conds = append(conds, "status = ?")
@@ -2377,12 +2462,101 @@ func (s *SQLStore) auditLogsQuery(f models.LogFilter) (string, []any, error) {
 		conds = append(conds, "timestamp <= ?")
 		args = append(args, fmtTime(*f.Until))
 	}
-	where := ""
-	if len(conds) > 0 {
-		where = "WHERE " + strings.Join(conds, " AND ")
+	if len(conds) == 0 {
+		return "", args, nil
 	}
-	args = append(args, f.Limit+1)
-	return s.q(`SELECT ` + logCols + ` FROM audit_logs ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?`), args, nil
+	return "WHERE " + strings.Join(conds, " AND "), args, nil
+}
+
+const facetCap = 200
+
+// facetFoldCap bounds the distinct methods or tools one facet read folds in
+// memory. Callers with no key choose tool names (a relay row records its
+// path), so the window's cardinality is not the operator's. A package var so
+// a test can shorten it.
+var facetFoldCap = 50000
+
+// ListAuditFacets reads one GROUP BY over the key and window and folds it into
+// the three lists, so they come from one walk and one snapshot and cannot
+// disagree under concurrent inserts. The order is decided here, not in SQL:
+// Postgres sorts text by the database collation and SQLite cannot be told
+// otherwise, while strings.Compare is bytewise on both.
+func (s *SQLStore) ListAuditFacets(ctx context.Context, f models.LogFilter) (models.LogFacets, error) {
+	query, args, err := s.auditFacetsQuery(f)
+	if err != nil {
+		return models.LogFacets{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return models.LogFacets{}, err
+	}
+	defer rows.Close()
+	methods, tools, statuses := map[string]int{}, map[string]int{}, map[string]int{}
+	for rows.Next() {
+		var method, tool, status string
+		var n int64
+		if err := rows.Scan(&method, &tool, &status, &n); err != nil {
+			return models.LogFacets{}, err
+		}
+		statuses[status] += int(n)
+		if f.Status == "" || status == f.Status {
+			methods[method] += int(n)
+			tools[tool] += int(n)
+		}
+		if len(methods) > facetFoldCap || len(tools) > facetFoldCap {
+			return models.LogFacets{}, ErrTooManyFacetValues
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return models.LogFacets{}, err
+	}
+	out := models.LogFacets{}
+	var methodsCut, toolsCut bool
+	out.Methods, methodsCut = facetList(methods, false)
+	out.Tools, toolsCut = facetList(tools, true)
+	out.Statuses, _ = facetList(statuses, false)
+	out.Truncated = methodsCut || toolsCut
+	return out, nil
+}
+
+// auditFacetsQuery builds the one GROUP BY behind ListAuditFacets, so the plan
+// test explains the real query. Only VirtualKeyID, Since and Until reach it.
+// The GROUP BY temp b-tree is filled in the first step, which is where the
+// deadline can stop it. The per-group output after it runs with no interrupt
+// armed; database/sql stops it between groups, measured up to about 0.1 s past
+// the deadline at 1M rows over 30 days.
+func (s *SQLStore) auditFacetsQuery(f models.LogFilter) (string, []any, error) {
+	where, args, err := auditLogWhere(models.LogFilter{VirtualKeyID: f.VirtualKeyID, Since: f.Since, Until: f.Until})
+	if err != nil {
+		return "", nil, err
+	}
+	return s.q(`SELECT method, tool_name, status, COUNT(*) FROM audit_logs ` + where + ` GROUP BY method, tool_name, status`), args, nil
+}
+
+// facetList sorts one fold most frequent first, then by value in byte order,
+// cuts it to facetCap and reports whether the cap cut anything. With
+// keepEmpty, a "" past the cut takes the last place kept, so the Tool select
+// can always offer None. It is never nil.
+func facetList(counts map[string]int, keepEmpty bool) ([]models.FacetEntry, bool) {
+	out := make([]models.FacetEntry, 0, len(counts))
+	for v, n := range counts {
+		out = append(out, models.FacetEntry{Value: v, Count: n})
+	}
+	slices.SortFunc(out, func(a, b models.FacetEntry) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		return strings.Compare(a.Value, b.Value)
+	})
+	if len(out) <= facetCap {
+		return out, false
+	}
+	if keepEmpty {
+		if i := slices.IndexFunc(out[facetCap:], func(e models.FacetEntry) bool { return e.Value == "" }); i >= 0 {
+			out[facetCap-1] = out[facetCap+i]
+		}
+	}
+	return out[:facetCap:facetCap], true
 }
 
 const logCols = `id, timestamp, virtual_key_id, virtual_key_name, method, tool_name, params, status, latency_ms, response_size_bytes, upstream_id, error_message, request_id`
@@ -2520,7 +2694,8 @@ func (s *SQLStore) ListAdminEvents(ctx context.Context, f models.AdminEventFilte
 
 // adminEventsQuery builds the SELECT ListAdminEvents runs, so the query-plan
 // tests explain the real query. f.Limit is already clamped: the caller slices
-// the page with the same value.
+// the page with the same value. The page is materialized for the reason
+// auditLogsQuery gives.
 func (s *SQLStore) adminEventsQuery(f models.AdminEventFilter) (string, []any, error) {
 	var conds []string
 	var args []any
@@ -2545,7 +2720,8 @@ func (s *SQLStore) adminEventsQuery(f models.AdminEventFilter) (string, []any, e
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	args = append(args, f.Limit+1)
-	return s.q(`SELECT ` + adminEventCols + ` FROM admin_events ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?`), args, nil
+	return s.q(`WITH page AS MATERIALIZED (SELECT ` + adminEventCols + ` FROM admin_events ` + where + ` ORDER BY timestamp DESC, id DESC LIMIT ?) ` +
+		`SELECT ` + adminEventCols + ` FROM page ORDER BY timestamp DESC, id DESC`), args, nil
 }
 
 func scanAdminEvent(row rowScanner) (*models.AdminEvent, error) {

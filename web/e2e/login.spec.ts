@@ -14,8 +14,19 @@ test('a wrong key shows the refusal line', async ({ page }) => {
   const probe = page.waitForResponse((r) => r.url().endsWith('/api/v1/stats'))
   await page.getByRole('button', { name: 'Open dashboard', exact: true }).click()
   expect((await probe).status(), 'the probe with a wrong key answers 401').toBe(401)
-  // web/src/app/login/page.tsx:32
-  await expect(page.getByText('That admin key was not accepted.', { exact: true })).toBeVisible()
+  // web/src/app/login/page.tsx:33
+  const line = page.locator('p[role="alert"]')
+  await expect(line).toHaveText('That admin key was not accepted.')
+  // PORM-225 criterion 1: drawn with errorLine, the line is pink, not the
+  // grey of body text, in light and in dark.
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme })
+    const [alert, text] = await Promise.all([
+      line.evaluate((el) => getComputedStyle(el).color),
+      page.locator('p[data-slot="text"]').first().evaluate((el) => getComputedStyle(el).color),
+    ])
+    expect(alert !== text, `the refusal line has its own colour in ${scheme} mode`).toBe(true)
+  }
 })
 
 test('the right key opens the overview and sign out returns to the login page', async ({ page }) => {

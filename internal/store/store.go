@@ -13,6 +13,11 @@ var (
 	ErrConflict      = errors.New("conflict")
 	ErrInUse         = errors.New("resource is still referenced")
 	ErrInvalidCursor = errors.New("invalid cursor")
+	// ErrTooManyFacetValues reports a facet read whose window held more
+	// distinct methods or tools than the fold keeps in memory. The API
+	// answers it as a read that took too long: a shorter period or a virtual
+	// key is the remedy.
+	ErrTooManyFacetValues = errors.New("store: too many facet values")
 )
 
 type Store interface {
@@ -91,6 +96,12 @@ type Store interface {
 
 	InsertAuditLog(ctx context.Context, e *models.AuditLog) error
 	ListAuditLogs(ctx context.Context, f models.LogFilter) (logs []models.AuditLog, next string, err error)
+	// ListAuditFacets counts the rows ListAuditLogs would list for f by
+	// method, by tool_name and by status. Methods and Tools honour f.Status;
+	// Statuses ignores it. Method, Tool, HasTool, Limit and Cursor are not
+	// read. Each list is most frequent first, then by value in byte order, at
+	// most 200 entries; when Tools is cut, a "" entry keeps its place.
+	ListAuditFacets(ctx context.Context, f models.LogFilter) (models.LogFacets, error)
 	// CountBlockedByReason counts one key's audit rows in [since, until] whose
 	// error_message is one of blocked (status blocked) or one of errored
 	// (status error). Both lists are closed sets the caller names, so a

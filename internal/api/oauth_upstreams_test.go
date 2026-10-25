@@ -433,7 +433,7 @@ func TestDiscoverOAuthRowRefreshesWithAdminActor(t *testing.T) {
 	if len(events) != 1 || events[0].Actor != models.ActorAdmin || events[0].RemoteAddr != "203.0.113.9" {
 		t.Fatalf("events %+v", events)
 	}
-	if reqs := stub.Requests(); len(reqs) == 0 || !strings.HasPrefix(reqs[0].Header.Get("Authorization"), "Bearer acc-") {
+	if reqs := stub.Requests(); len(reqs) == 0 || !strings.HasPrefix(reqs[0].Header.Get("Authorization"), "Bearer access-") {
 		t.Fatalf("stub requests %+v", reqs)
 	}
 

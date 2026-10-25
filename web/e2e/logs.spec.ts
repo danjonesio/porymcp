@@ -1,14 +1,26 @@
-import type { Page } from '@playwright/test'
+import type { Page, Route } from '@playwright/test'
 import { eventSentence } from '../src/lib/admin-event.ts'
 import type { AdminEvent } from '../src/lib/api.ts'
 import {
+  ALL_METHODS,
+  ALL_STATUSES,
+  ALL_TOOLS,
+  counted,
   countLine,
+  FACET_CUT,
+  FACET_WAIT_MS,
   INPUT_INCOMPLETE,
   LOAD_MORE_CALLS,
   LOAD_MORE_CHANGES,
+  LOG_READ_TIMEOUT,
   NO_LOGS,
+  NONE_CHOICE,
   PERIODS,
+  SLOW_CALLS,
+  SLOW_CHANGES,
+  SLOW_FACETS,
   toLocalInput,
+  toolChoice,
   UNTIL_BEFORE_SINCE,
 } from '../src/lib/logs-view.ts'
 import { ABSENT } from '../src/lib/placeholder.ts'
@@ -88,11 +100,33 @@ async function seededKey(prefix: string, created: Created, tag: string, n: numbe
   return { id: k.id, name, plaintext, init }
 }
 
-// A filter change waits for its own /logs answer before the table is read.
-async function filtered(page: Page, answer: (url: string) => boolean, change: () => Promise<unknown>) {
-  const res = page.waitForResponse((r) => r.url().includes('/api/v1/logs?') && answer(r.url()))
+// A filter change waits for its own /logs answer, or with path its
+// /logs/facets answer, before the table or the selects are read.
+async function filtered(
+  page: Page,
+  answer: (url: string) => boolean,
+  change: () => Promise<unknown>,
+  path = '/api/v1/logs?'
+) {
+  const res = page.waitForResponse((r) => r.url().includes(path) && answer(r.url()))
   await change()
   await res
+}
+
+const FACETS = '/api/v1/logs/facets?'
+const isFacets = (u: URL) => u.pathname === '/api/v1/logs/facets'
+const optionsOf = (page: Page, label: string) => page.getByLabel(label, { exact: true }).locator('option')
+const echoChoice = toolChoice({ tool: 'echo', noTool: false })
+
+// A key whose calls are initialize, tools/list and two tools/call echo.
+async function echoKey(prefix: string, created: Created, tag: string) {
+  const key = await seededKey(prefix, created, tag, 2)
+  for (let i = 0; i < 2; i++) {
+    const call = await rpc(key.id, key.plaintext, 'tools/call', { name: 'echo', arguments: { message: `m${i}` } }, key.init)
+    expect(call.status, 'tools/call echo through the seeded key').toBe(200)
+  }
+  await waitForRows(key.id, 4)
+  return key
 }
 
 const proxyTableOf = (page: Page) =>
@@ -170,26 +204,29 @@ test('proxy rows for the run key appear and the filters narrow them; admin activ
   await filtered(
     page,
     (u) => u.includes('status=error'),
-    () => page.getByLabel('Status', { exact: true }).selectOption({ label: 'Error' })
+    () => page.getByLabel('Status', { exact: true }).selectOption({ value: 'error' })
   )
   await expect(page.getByText(NO_LOGS, { exact: true })).toBeVisible()
   await filtered(
     page,
     (u) => u.includes('status=success'),
-    () => page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    () => page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
   await expect(rows('tools/list')).toHaveCount(1)
   await expect(rows('initialize')).toHaveCount(1)
+  // PORM-149 criterion 6: Method lists only what the key recorded in the
+  // period under the chosen status.
+  await expect(optionsOf(page, 'Method')).toHaveText([ALL_METHODS, counted('initialize', 1), counted('tools/list', 1)])
   await filtered(
     page,
-    (u) => u.includes('method='),
-    () => page.getByLabel('Method', { exact: true }).fill('tools/call')
+    (u) => u.includes('method=tools%2Flist'),
+    () => page.getByLabel('Method', { exact: true }).selectOption({ value: 'tools/list' })
   )
-  await expect(page.getByText(NO_LOGS, { exact: true })).toBeVisible()
+  await expect(proxyRows(page)).toHaveCount(1)
   await filtered(
     page,
     (u) => u.includes('status=success') && !u.includes('method='),
-    () => page.getByLabel('Method', { exact: true }).fill('')
+    () => page.getByLabel('Method', { exact: true }).selectOption({ value: '' })
   )
   await expect(rows('tools/list')).toHaveCount(1)
   await rows('tools/list').click()
@@ -256,7 +293,7 @@ test('Load more pages the proxy calls and a filter change starts again', async (
   await expect(last).toBeFocused()
 
   await filtered(page, (u) => u.includes('status=success'), () =>
-    page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
   await filtered(page, (u) => !u.includes('status='), () =>
     page.getByLabel('Status', { exact: true }).selectOption({ label: 'All statuses' })
@@ -266,9 +303,11 @@ test('Load more pages the proxy calls and a filter change starts again', async (
   expect(listFetches, 'the upstream and key lists load once').toEqual({ upstreams: 1, keys: 1 })
 })
 
-// S1: a Load more still in flight when the filter changes is dropped, never
-// appended under the new filter.
-test('A Load more in flight is dropped when the filter changes', async ({ page, prefix, created }) => {
+// S1, PORM-224 criterion 3: a Load more still in flight when the filter
+// changes is aborted in the browser, never appended under the new filter. An
+// aborted request never gets a response, so the test waits on requestfailed;
+// unrouteAll with ignoreErrors swallows the held handler's late continue.
+test('A Load more in flight is aborted when the filter changes', async ({ page, prefix, created }) => {
   const key = await seededKey(prefix, created, 'lf', 51)
   let release: () => void = () => {}
   const held = new Promise<void>((r) => {
@@ -282,24 +321,26 @@ test('A Load more in flight is dropped when the filter changes', async ({ page, 
   await page.goto('/logs/')
   await showKey(page, key.id, key.name)
   await expect(proxyRows(page)).toHaveCount(50)
-  const heldPage = page.waitForResponse((r) => isCursorPage(new URL(r.url())))
+  const aborted = page.waitForEvent('requestfailed', (r) => isCursorPage(new URL(r.url())))
   await loadMoreCalls(page).click()
   await filtered(page, (u) => u.includes('status=success'), () =>
-    page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
+  const failed = await aborted
+  expect(failed.failure()?.errorText === 'net::ERR_ABORTED', 'the held Load more was aborted').toBe(true)
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
   release()
-  await (await heldPage).finished()
-  await page.evaluate(() => new Promise(requestAnimationFrame))
-  // The held page carried one row. Dropped, Success still shows its first 50
-  // and its own Load more brings exactly the 51st; appended, it would be 52.
+  // The held page carried one row. Success still shows its first 50 and its
+  // own Load more brings exactly the 51st; appended, it would be 52.
   await expect(proxyRows(page)).toHaveCount(50)
   await loadMoreCalls(page).click()
   await expect(page.getByText(countLine(51, 'call', 'last'), { exact: true })).toBeVisible()
   await expect(proxyRows(page)).toHaveCount(51)
 })
 
-// S1: a slow first page for an older filter never replaces a newer answer.
-test('A stale first page never lands', async ({ page, prefix, created }) => {
+// S1, PORM-224 criterion 3: a slow first page for an older filter is aborted
+// when the filter changes, so it can never replace the newer answer.
+test('A first page for an older filter is aborted', async ({ page, prefix, created }) => {
   const key = await seededKey(prefix, created, 'sf', 51)
   let release: () => void = () => {}
   const held = new Promise<void>((r) => {
@@ -313,20 +354,248 @@ test('A stale first page never lands', async ({ page, prefix, created }) => {
 
   await page.goto('/logs/')
   await showKey(page, key.id, key.name)
-  const heldPage = page.waitForResponse((r) => isErrorPage(new URL(r.url())))
-  await page.getByLabel('Status', { exact: true }).selectOption({ label: 'Error' })
+  const aborted = page.waitForEvent('requestfailed', (r) => isErrorPage(new URL(r.url())))
+  await page.getByLabel('Status', { exact: true }).selectOption({ value: 'error' })
   await filtered(page, (u) => u.includes('status=success'), () =>
-    page.getByLabel('Status', { exact: true }).selectOption({ label: 'Success' })
+    page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
   )
+  const failed = await aborted
+  expect(failed.failure()?.errorText === 'net::ERR_ABORTED', 'the held Error page was aborted').toBe(true)
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
   release()
-  await (await heldPage).finished()
-  await page.evaluate(() => new Promise(requestAnimationFrame))
   // Had the Error answer (no rows) landed, Success would have lost its rows
   // and its Load more; it keeps both, and the next page is its own.
   await expect(proxyRows(page)).toHaveCount(50)
   await loadMoreCalls(page).click()
   await expect(page.getByText(countLine(51, 'call', 'last'), { exact: true })).toBeVisible()
   await expect(page.getByText(NO_LOGS, { exact: true })).toHaveCount(0)
+})
+
+// PORM-224 criterion 4: a read the server stopped at its deadline shows the
+// table's own sentence, keeps the rows it had, and claims no count and no Load
+// more for them, on both tables.
+test('A list that took too long keeps its rows and names the remedy', async ({ page, prefix, created }) => {
+  const key = await seededKey(prefix, created, 'sl', 51)
+  const slow = (route: Route) =>
+    route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: LOG_READ_TIMEOUT }) })
+  await page.goto('/logs/')
+  // The key's count runs past its deadline: the selects lose their counts and
+  // nothing else changes.
+  await page.route((u) => isFacets(u) && u.searchParams.get('virtual_key_id') === key.id, slow, { times: 1 })
+  await filtered(page, (u) => u.includes(`virtual_key_id=${key.id}`), () => showKey(page, key.id, key.name), FACETS)
+  await expect(page.locator('p[role="alert"]').filter({ hasText: SLOW_FACETS })).toBeVisible()
+  await expect(optionsOf(page, 'Status')).toHaveText([ALL_STATUSES, 'Success', 'Error', 'Blocked'])
+  await expect(proxyRows(page)).toHaveCount(50)
+  await expect(page.getByText(countLine(50, 'call', 'more'), { exact: true })).toBeVisible()
+
+  await page.route((u) => u.pathname === '/api/v1/logs' && u.searchParams.get('status') === 'success', slow, { times: 1 })
+  await page.getByLabel('Status', { exact: true }).selectOption({ value: 'success' })
+  await expect(page.locator('p[role="alert"]').filter({ hasText: SLOW_CALLS })).toBeVisible()
+  await expect(proxyRows(page)).toHaveCount(50)
+  await expect(page.getByText(countLine(50, 'call', 'more'), { exact: true })).toHaveCount(0)
+  await expect(loadMoreCalls(page)).toHaveCount(0)
+  await expect(page.getByText(NO_LOGS, { exact: true })).toHaveCount(0)
+
+  const adminTable = page.getByRole('table').filter({ has: page.getByRole('columnheader', { name: 'Event', exact: true }) })
+  const adminRows = adminTable.locator('tbody > tr')
+  await expect(adminRows).not.toHaveCount(0)
+  const n = await adminRows.count()
+  await page.route((u) => u.pathname === '/api/v1/admin-events' && u.searchParams.get('resource_type') === 'upstream', slow, {
+    times: 1,
+  })
+  await page.getByLabel('Resource', { exact: true }).selectOption({ label: 'Upstreams' })
+  await expect(page.locator('p[role="alert"]').filter({ hasText: SLOW_CHANGES })).toBeVisible()
+  await expect(adminRows).toHaveCount(n)
+  await expect(page.getByText(countLine(n, 'change', 'more'), { exact: true })).toHaveCount(0)
+  await expect(page.getByText(countLine(n, 'change', 'last'), { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: LOAD_MORE_CHANGES, exact: true })).toHaveCount(0)
+})
+
+// PORM-224 edge case: leaving the page while its first page is in flight
+// aborts that request.
+test('Leaving the Logs page aborts its pending request', async ({ page }) => {
+  let release: () => void = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  const isFirstPage = (u: URL) => u.pathname === '/api/v1/logs' && !u.searchParams.has('cursor')
+  await page.route(isFirstPage, async (route) => {
+    await held
+    await route.continue()
+  })
+  const sent = page.waitForRequest((r) => isFirstPage(new URL(r.url())))
+  await page.goto('/logs/')
+  await sent
+  const aborted = page.waitForEvent('requestfailed', (r) => isFirstPage(new URL(r.url())))
+  await page.getByRole('link', { name: 'Virtual keys', exact: true }).click()
+  const failed = await aborted
+  expect(failed.failure()?.errorText === 'net::ERR_ABORTED', 'the pending first page was aborted').toBe(true)
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+  release()
+  await expect(page.getByRole('heading', { name: 'Virtual keys', exact: true })).toBeVisible()
+})
+
+// PORM-149 criteria 5 and 6: the selects list what the key recorded in the
+// period, each counted; None is the calls that named no tool and narrows to
+// rows whose Tool cell reads None; a tool narrows to its own rows.
+test('The Method, Tool and Status selects list what the period recorded, with None for calls that named no tool', async ({
+  page,
+  prefix,
+  created,
+}) => {
+  const key = await echoKey(prefix, created, 'fs')
+  await page.goto('/logs/')
+  await filtered(page, (u) => u.includes(`virtual_key_id=${key.id}`), () => showKey(page, key.id, key.name), FACETS)
+  await expect(optionsOf(page, 'Method')).toHaveText([
+    ALL_METHODS,
+    counted('tools/call', 2),
+    counted('initialize', 1),
+    counted('tools/list', 1),
+  ])
+  await expect(optionsOf(page, 'Tool')).toHaveText([ALL_TOOLS, counted(ABSENT, 2), counted('echo', 2)])
+  await expect(optionsOf(page, 'Status')).toHaveText([
+    ALL_STATUSES,
+    counted('Success', 4),
+    counted('Error', 0),
+    counted('Blocked', 0),
+  ])
+
+  await filtered(
+    page,
+    (u) => new URL(u).searchParams.get('has_tool') === 'false' && !new URL(u).searchParams.has('tool'),
+    () => page.getByLabel('Tool', { exact: true }).selectOption({ value: NONE_CHOICE })
+  )
+  await expect(proxyRows(page)).toHaveCount(2)
+  await expect(proxyRows(page).locator('td:nth-child(4)')).toHaveText([ABSENT, ABSENT])
+  await filtered(
+    page,
+    (u) => u.includes('tool=echo'),
+    () => page.getByLabel('Tool', { exact: true }).selectOption({ value: echoChoice })
+  )
+  await expect(proxyRows(page)).toHaveCount(2)
+  await expect(proxyRows(page).locator('td:nth-child(4)')).toHaveText(['echo', 'echo'])
+})
+
+// PORM-149 criterion 7: a chosen tool the new key or period never recorded
+// stays chosen, bare, and the table says nothing matched.
+test('A selected tool stays when the key or the period changes', async ({ page, prefix, created }) => {
+  const a = await echoKey(prefix, created, 'ka')
+  const b = await seededKey(prefix, created, 'kb', 1)
+  await page.goto('/logs/')
+  await filtered(page, (u) => u.includes(`virtual_key_id=${a.id}`), () => showKey(page, a.id, a.name), FACETS)
+  await filtered(
+    page,
+    (u) => u.includes('tool=echo'),
+    () => page.getByLabel('Tool', { exact: true }).selectOption({ value: echoChoice })
+  )
+  const tool = page.getByLabel('Tool', { exact: true })
+  await filtered(
+    page,
+    (u) => u.includes(`virtual_key_id=${b.id}`),
+    () => page.getByLabel('Virtual key', { exact: true }).selectOption({ label: b.name }),
+    FACETS
+  )
+  await expect(tool).toHaveValue(echoChoice)
+  await expect(tool.locator('option:checked')).toHaveText('echo')
+  await expect(page.getByText(NO_LOGS, { exact: true })).toBeVisible()
+  await filtered(
+    page,
+    (u) => u.includes(`virtual_key_id=${b.id}`),
+    () => page.getByLabel('Period', { exact: true }).selectOption({ label: PERIODS[0].label }),
+    FACETS
+  )
+  await expect(tool).toHaveValue(echoChoice)
+  await expect(tool.locator('option:checked')).toHaveText('echo')
+  await expect(page.getByText(NO_LOGS, { exact: true })).toBeVisible()
+})
+
+// Settled point 7: the count starts once the rows' first page has answered,
+// or FACET_WAIT_MS after the facet query changed if it has not, and a Method
+// or Tool pick or a Load more keeps the facet query, so none of them sends
+// another. The first half is checked where the rows answered well inside the
+// wait, so a slow host cannot fail it; the second by holding a first page.
+test('The facets load after the rows, and a Method or Tool pick or a Load more fetches none', async ({
+  page,
+  prefix,
+  created,
+}) => {
+  const key = await seededKey(prefix, created, 'fo', 51)
+  const events: { what: string; at: number }[] = []
+  const keyOf = (u: URL) => u.searchParams.get('virtual_key_id') ?? ''
+  const isFirstPage = (u: URL) => u.pathname === '/api/v1/logs' && !u.searchParams.has('cursor')
+  page.on('request', (r) => {
+    const u = new URL(r.url())
+    if (isFacets(u)) events.push({ what: `facets ${keyOf(u)}`, at: Date.now() })
+    if (isFirstPage(u)) events.push({ what: `sent ${keyOf(u)}`, at: Date.now() })
+  })
+  page.on('response', (r) => {
+    const u = new URL(r.url())
+    if (isFirstPage(u)) events.push({ what: `rows ${keyOf(u)}`, at: Date.now() })
+  })
+  const at = (what: string) => events.findIndex((e) => e.what === what)
+  const allKeys = page.waitForResponse((r) => isFacets(new URL(r.url())) && !r.url().includes('virtual_key_id='))
+  await page.goto('/logs/')
+  await allKeys
+  const sent = events[at('sent ')]
+  const rows = events[at('rows ')]
+  if (rows !== undefined && rows.at - sent.at < FACET_WAIT_MS - 100) {
+    expect(at('rows ') < at('facets '), 'rows that answered inside the wait came before the facets request').toBe(true)
+  }
+
+  // A first page still held after FACET_WAIT_MS: the facets request goes out
+  // without it.
+  let release: () => void = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  const isKeyPage = (u: URL) => isFirstPage(u) && keyOf(u) === key.id
+  await page.route(isKeyPage, async (route) => {
+    await held
+    await route.continue()
+  })
+  const facetsSent = page.waitForRequest((r) => isFacets(new URL(r.url())) && keyOf(new URL(r.url())) === key.id)
+  const keyRows = page.waitForResponse((r) => isKeyPage(new URL(r.url())))
+  await page.getByLabel('Virtual key', { exact: true }).selectOption({ label: key.name })
+  await facetsSent
+  expect(at(`rows ${key.id}`), 'the facets request went out while the first page was held').toBe(-1)
+  release()
+  await keyRows
+  await page.unroute(isKeyPage)
+  await expect(proxyRows(page)).toHaveCount(50)
+  const asked = () => events.filter((e) => e.what.startsWith('facets ')).length
+  const before = asked()
+
+  await loadMoreCalls(page).click()
+  await expect(proxyRows(page)).toHaveCount(51)
+  await filtered(
+    page,
+    (u) => u.includes('method=tools%2Flist'),
+    () => page.getByLabel('Method', { exact: true }).selectOption({ value: 'tools/list' })
+  )
+  await filtered(
+    page,
+    (u) => u.includes('has_tool=false'),
+    () => page.getByLabel('Tool', { exact: true }).selectOption({ value: NONE_CHOICE })
+  )
+  await page.waitForTimeout(500)
+  expect(asked(), 'no facets request for a Load more, a Method pick or a Tool pick').toBe(before)
+})
+
+// PORM-149 criterion 4 on the page: a list the server cut at 200 says so
+// under its select, as the select's description.
+test('A cut tool list says so', async ({ page }) => {
+  const tools = Array.from({ length: 200 }, (_, i) => ({ value: `cut${String(i).padStart(3, '0')}`, count: 1 }))
+  await page.route(isFacets, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ methods: [], tools, statuses: [], truncated: true }),
+    })
+  )
+  await page.goto('/logs/')
+  await expect(optionsOf(page, 'Tool')).toHaveCount(201)
+  await expect(page.getByLabel('Tool', { exact: true })).toHaveAccessibleDescription(FACET_CUT)
+  await expect(page.getByText(FACET_CUT, { exact: true })).toHaveCount(1)
 })
 
 // A 400 to a Load more is a cursor the server refuses: the control goes and

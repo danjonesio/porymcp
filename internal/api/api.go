@@ -163,6 +163,9 @@ func (s *Server) Routes() http.Handler {
 		r.Delete("/virtual-keys/{id}", s.deleteVirtualKey)
 
 		r.Get("/logs", s.listLogs)
+		// chi prefers the static "facets" child over {id}, so no audit row id
+		// can shadow it; TestListLogFacetsRefusesItsOwnFilters pins it.
+		r.Get("/logs/facets", s.listLogFacets)
 		r.Get("/logs/{id}", s.getLog)
 		// Admin events are the management-plane half of the audit trail
 		// (PORM-54): insert from the handlers above, list here, nothing else.
