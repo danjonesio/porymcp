@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
   // The dashboard's lint tool since PORM-214 (the decision is PORM-47's lint
   // half). Lint only: the formatter and assists stay off so this change
   // touches no source file for style.
@@ -14,7 +14,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "correctness": {
         "useHookAtTopLevel": "error",
         "useExhaustiveDependencies": {
